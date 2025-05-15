@@ -32,8 +32,8 @@ local settings_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/MediaPropertie
 -- Configuration variables
 local config = {
     -- Interface
-    font_name = "FiraSans-Regular",
-    font_size = 15,
+    font_name = "Verdana",
+    font_size = 14,
     entry_height = 20,
     entry_width = 60,
     name_width = 220,
@@ -289,10 +289,20 @@ function loadSettings()
                 elseif key == "source_width" then
                     config.source_width = tonumber(value) or config.source_width
                 end
-            -- Nouvelle condition pour gérer les entrées de couleur au niveau racine (sans section)
-            elseif not section and (key == "background_color" or key == "text_color" or 
-                   key == "frame_color" or key == "frame_color_active") then
-                if value:match("^{.+}$") then
+            else
+                -- Traitement direct pour les paramètres au niveau racine
+                if key == "font_name" then
+                    config.font_name = value
+                elseif key == "font_size" then
+                    config.font_size = tonumber(value) or config.font_size
+                elseif key == "entry_height" then
+                    config.entry_height = tonumber(value) or config.entry_height
+                elseif key == "name_width" then
+                    config.name_width = tonumber(value) or config.name_width
+                elseif key == "source_width" then
+                    config.source_width = tonumber(value) or config.source_width
+                elseif (key == "background_color" or key == "text_color" or 
+                       key == "frame_color" or key == "frame_color_active") and value:match("^{.+}$") then
                     -- Parse color array
                     local values = {}
                     for v in value:sub(2, -2):gmatch("[^,]+") do
@@ -380,14 +390,23 @@ function truncateString(str, maxWidth)
     
     local ellipsis = "..."
     local ellipsis_w = gfx.measurestr(ellipsis)
-    local available_w = maxWidth - ellipsis_w
+    local available_w = maxWidth - ellipsis_w - 4 -- Marge supplémentaire pour éviter l'overlap
     
+    -- Tronquer du milieu vers la fin
     while str_w > available_w and #str > 1 do
-        str = str:sub(2)
+        -- Enlever le caractère du milieu pour préserver début et fin
+        local mid = math.floor(#str / 2)
+        str = str:sub(1, mid-1) .. str:sub(mid+1)
         str_w = gfx.measurestr(str)
     end
     
-    return ellipsis .. str
+    -- Insertion des ellipsis au milieu
+    if #str > 6 then
+        local mid = math.floor(#str / 2)
+        return str:sub(1, mid-1) .. ellipsis .. str:sub(mid)
+    else
+        return str .. ellipsis -- Fallback si la chaîne est déjà trop courte
+    end
 end
 
 function drawTooltip(text, x, y)
@@ -426,6 +445,8 @@ end
 function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     -- Check if value is modified from default
     local is_negative = false
+    local is_modified = false
+    
     if param_type == "volume" or param_type == "takevol" then
         local db = 20 * math.log(value, 10)
         is_negative = db < 0
@@ -433,6 +454,20 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         is_negative = value < 0
     elseif param_type == "rate" then  
         is_negative = value < 1.0
+    elseif param_type == "time" and param_name == "length" then
+        -- Déterminer si la longueur est inférieure à la longueur de source
+        local item = r.GetSelectedMediaItem(0, 0)
+        if item then
+            local take = r.GetActiveTake(item)
+            if take then
+                local source = r.GetMediaItemTake_Source(take)
+                local source_length = r.GetMediaSourceLength(source)
+                local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+                local original_length = source_length / playrate
+                is_negative = value < original_length * 0.99 -- Marge de 1%
+                is_modified = math.abs(value - original_length) > original_length * 0.01
+            end
+        end
     end
     
     -- Then check for any modifications
@@ -445,6 +480,22 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         is_modified = math.abs(value - 1.0) > 0.001
     elseif param_type == "time" and (param_name == "snap" or param_name == "fadein" or param_name == "fadeout") then
         is_modified = value > 0.001 
+    elseif param_name == "length" then
+        local original_length = nil
+        if state.last_item then
+            local take = r.GetActiveTake(state.last_item)
+            if take then
+                local source = r.GetMediaItemTake_Source(take)
+                local source_length = r.GetMediaSourceLength(source)
+                local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+                original_length = source_length / playrate
+            end
+        end
+        
+        if original_length then
+            -- Considérer modified si différent de l'original de plus de 1%
+            is_modified = math.abs(value - original_length) > (original_length * 0.01)
+        end
     end
 
     -- Special handling for boolean values
@@ -1535,6 +1586,25 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 elseif id == "snap" then reset_value = 0
                 elseif id == "preserve_pitch" then reset_value = false
                 elseif id == "mute" then reset_value = false
+                elseif id == "length" then
+                    -- Réinitialiser la longueur à la longueur d'origine de la source
+                    r.Undo_BeginBlock()
+                    for i = 0, r.CountSelectedMediaItems(0) - 1 do
+                        local item = r.GetSelectedMediaItem(0, i)
+                        if item then
+                            local take = r.GetActiveTake(item)
+                            if take then
+                                local source = r.GetMediaItemTake_Source(take)
+                                local source_length = r.GetMediaSourceLength(source)
+                                local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+                                local original_length = source_length / playrate
+                                r.SetMediaItemInfo_Value(item, "D_LENGTH", original_length)
+                                r.UpdateItemInProject(item)
+                            end
+                        end
+                    end
+                    r.Undo_EndBlock("Reset item length to source", -1)
+                    return -- Sortir après avoir traité tous les items
                 end
                     
                 if reset_value ~= nil then
@@ -1560,10 +1630,15 @@ function calculateWidgetWidths(available_width)
     local widget_widths = {}
     local visible_widgets = {}
     
-    -- Toujours afficher nom et source si possible
-    local min_required = config.min_widget_width * 2 -- Au minimum pour nom et source
-    if available_width < min_required then
-        -- Si pas assez de place, n'afficher que le nom
+    -- Initialiser les largeurs avec les valeurs de configuration
+    widget_widths.name = config.name_width
+    widget_widths.source = config.source_width
+    
+    -- Commencer par déterminer quels widgets sont visibles
+    local total_space_needed = widget_widths.name + widget_widths.source
+    
+    -- Si pas assez d'espace pour les deux, prioriser le nom
+    if available_width < total_space_needed then
         if available_width >= config.min_widget_width then
             visible_widgets.name = true
             widget_widths.name = available_width
@@ -1571,57 +1646,34 @@ function calculateWidgetWidths(available_width)
         return visible_widgets, widget_widths
     end
     
-    -- Commencer par déterminer quels widgets sont visibles
-    local total_weight = 0
-    local widget_count = 0
-    
-    -- Priorité 1 : Nom et source sont toujours visibles si possible
+    -- Assez d'espace pour nom et source
     visible_widgets.name = true
     visible_widgets.source = true
-    total_weight = total_weight + (config.widget_weights.name or 1) + (config.widget_weights.source or 1)
-    widget_count = widget_count + 2
     
-    -- Ajouter les autres widgets par ordre de priorité
-    for i = 3, #config.widget_priority do -- Commencer à 3 car nom et source sont déjà ajoutés
-        local widget = config.widget_priority[i]
-        
-        -- Calculer la largeur minimale actuelle
-        local current_min_width = config.min_widget_width * widget_count
-        
-        -- Vérifier si nous avons de la place pour un widget supplémentaire
-        if current_min_width + config.min_widget_width <= available_width then
-            visible_widgets[widget] = true
-            total_weight = total_weight + (config.widget_weights[widget] or 1)
-            widget_count = widget_count + 1
+    -- Espace restant pour les autres widgets
+    local remaining_width = available_width - total_space_needed
+    local other_widgets_count = 0
+    
+    -- Compter combien d'autres widgets peuvent tenir
+    for i = 3, #config.widget_priority do 
+        if remaining_width >= config.min_widget_width then
+            other_widgets_count = other_widgets_count + 1
+            remaining_width = remaining_width - config.min_widget_width
         else
-            break -- Sortir dès que nous n'avons plus de place
+            break
         end
     end
     
-    -- Maintenant calculer les largeurs basées sur les poids
-    local width_unit = available_width / total_weight
-    
-    for widget in pairs(visible_widgets) do
-        local weight = config.widget_weights[widget] or 1
-        widget_widths[widget] = math.max(config.min_widget_width, math.floor(width_unit * weight))
-    end
-    
-    -- Ajuster les largeurs pour utiliser précisément l'espace disponible (éviter les pixels perdus)
-    local used_width = 0
-    for _, width in pairs(widget_widths) do
-        used_width = used_width + width
-    end
-    
-    local remaining = available_width - used_width
-    if remaining > 0 and widget_count > 0 then
-        -- Distribuer les pixels restants équitablement
-        local widgets_with_extra = math.min(widget_count, remaining)
-        local i = 1
+    -- Ajouter les autres widgets par ordre de priorité
+    remaining_width = available_width - total_space_needed  -- réinitialiser
+    if other_widgets_count > 0 then
+        local width_per_widget = remaining_width / other_widgets_count
         
-        for widget in pairs(visible_widgets) do
-            if i <= widgets_with_extra then
-                widget_widths[widget] = widget_widths[widget] + 1
-                i = i + 1
+        for i = 3, #config.widget_priority do
+            if i - 2 <= other_widgets_count then
+                local widget = config.widget_priority[i]
+                visible_widgets[widget] = true
+                widget_widths[widget] = math.max(config.min_widget_width, math.floor(width_per_widget))
             end
         end
     end
@@ -1635,6 +1687,10 @@ function drawInterface()
     
     -- Calculer quels widgets sont visibles et leurs largeurs
     local visible_widgets, widget_widths = calculateWidgetWidths(total_width)
+    
+    -- Stocker les largeurs dans state pour d'autres fonctions
+    state.visible_widgets = visible_widgets
+    state.widget_widths = widget_widths
     
     -- Préparer la liste des headers et paramètres de valeurs
     local headers = {}
@@ -1652,13 +1708,13 @@ function drawInterface()
     -- Ajouter les paramètres dans l'ordre de priorité
     for _, key in ipairs(config.widget_priority) do
         if key == "name" then
-            addParam("name", "Name", "text")
+            addParam("name", "Name", "name")
         elseif key == "source" then
-            addParam("source", "Source", "text")
+            addParam("source", "Source", "source")
         elseif key == "position" then
             addParam("position", "Position", "time")
         elseif key == "length" then
-            addParam("length", "Length", "text")
+            addParam("length", "Length", "time") -- Changé de "text" à "time"
         elseif key == "snap" then
             addParam("snap", "Snap", "time")
         elseif key == "fadein" then
@@ -1695,6 +1751,9 @@ function drawInterface()
     local item = r.GetSelectedMediaItem(0, 0)
     if not item then return end
     
+    -- Stocker l'item courant pour les calculs de couleur
+    state.last_item = item
+    
     local take = r.GetActiveTake(item)
     if not take then return end
     
@@ -1726,18 +1785,47 @@ function drawInterface()
             local source_name = data.source
             local filename = source_name ~= "" and source_name:match("([^/\\]+)$") or "[No source]"
             
-            controls.source = drawValueCell(truncateString(filename, param.width - 8), 
-                                           x, config.entry_height, param.width)
+            -- Ajouter une marge de 8 pixels pour éviter l'overlap
+            local cell = drawValueCell(
+                truncateString(filename, param.width - 8),
+                x, config.entry_height, 
+                param.width,
+                state.active_control == param.key,
+                "source",
+                param.key
+            )
+            
             controls.source = {
-                x = x, y = config.entry_height,
-                w = param.width, h = config.entry_height,
+                x = x, 
+                y = config.entry_height,
+                w = param.width, 
+                h = config.entry_height,
                 value = filename,
                 full_source = source_name,
-                param_type = "source"  -- Ajout important pour le type
+                param_type = "source"
+            }
+        elseif param.key == "name" then
+            -- Traitement spécial pour le nom
+            local cell = drawValueCell(
+                truncateString(data[param.key], param.width - 8),
+                x, config.entry_height,
+                param.width,
+                state.active_control == param.key,
+                "name",
+                param.key
+            )
+            
+            controls[param.key] = {
+                x = x, 
+                y = config.entry_height,
+                w = param.width, 
+                h = config.entry_height,
+                value = data[param.key],
+                param_type = "name"
             }
         else
-            -- Traitement des autres valeurs
-            controls[param.key] = drawValueCell(
+            -- Traitement standard pour les autres valeurs
+            local cell = drawValueCell(
                 data[param.key],
                 x, config.entry_height,
                 param.width,
@@ -1745,7 +1833,16 @@ function drawInterface()
                 param.type,
                 param.key
             )
-            controls[param.key].value = data[param.key]
+            
+            controls[param.key] = {
+                x = x, 
+                y = config.entry_height,
+                w = param.width, 
+                h = config.entry_height,
+                value = data[param.key],
+                param_type = param.type,
+                text_metrics = cell.text_metrics
+            }
         end
         
         x = x + param.width
