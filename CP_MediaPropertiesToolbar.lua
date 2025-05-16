@@ -460,12 +460,22 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         if item then
             local take = r.GetActiveTake(item)
             if take then
-                local source = r.GetMediaItemTake_Source(take)
-                local source_length = r.GetMediaSourceLength(source)
-                local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
-                local original_length = source_length / playrate
-                is_negative = value < original_length * 0.99 -- Marge de 1%
-                is_modified = math.abs(value - original_length) > original_length * 0.01
+                -- Ajouter cette vérification
+                local is_midi = r.TakeIsMIDI(take)
+                
+                if is_midi then
+                    -- Pour les items MIDI, ne pas marquer la longueur comme modifiée
+                    is_negative = false
+                    is_modified = false
+                else
+                    -- Logique originale pour les items audio
+                    local source = r.GetMediaItemTake_Source(take)
+                    local source_length = r.GetMediaSourceLength(source)
+                    local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+                    local original_length = source_length / playrate
+                    is_negative = value < original_length * 0.99 -- Marge de 1%
+                    is_modified = math.abs(value - original_length) > original_length * 0.01
+                end
             end
         end
     end
@@ -485,16 +495,24 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         if state.last_item then
             local take = r.GetActiveTake(state.last_item)
             if take then
-                local source = r.GetMediaItemTake_Source(take)
-                local source_length = r.GetMediaSourceLength(source)
-                local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
-                original_length = source_length / playrate
+                -- Ajouter cette vérification
+                local is_midi = r.TakeIsMIDI(take)
+                
+                if not is_midi then
+                    local source = r.GetMediaItemTake_Source(take)
+                    local source_length = r.GetMediaSourceLength(source)
+                    local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+                    original_length = source_length / playrate
+                end
             end
         end
         
         if original_length then
             -- Considérer modified si différent de l'original de plus de 1%
             is_modified = math.abs(value - original_length) > (original_length * 0.01)
+        else
+            -- Pour les items MIDI ou si original_length n'a pas pu être déterminé
+            is_modified = false
         end
     end
 
@@ -1594,17 +1612,23 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                         if item then
                             local take = r.GetActiveTake(item)
                             if take then
-                                local source = r.GetMediaItemTake_Source(take)
-                                local source_length = r.GetMediaSourceLength(source)
-                                local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
-                                local original_length = source_length / playrate
-                                r.SetMediaItemInfo_Value(item, "D_LENGTH", original_length)
-                                r.UpdateItemInProject(item)
+                                -- Ajouter cette vérification
+                                local is_midi = r.TakeIsMIDI(take)
+                                
+                                if not is_midi then
+                                    local source = r.GetMediaItemTake_Source(take)
+                                    local source_length = r.GetMediaSourceLength(source)
+                                    local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+                                    local original_length = source_length / playrate
+                                    r.SetMediaItemInfo_Value(item, "D_LENGTH", original_length)
+                                    r.UpdateItemInProject(item)
+                                end
+                                -- Pour les items MIDI, ne rien faire
                             end
                         end
                     end
                     r.Undo_EndBlock("Reset item length to source", -1)
-                    return -- Sortir après avoir traité tous les items
+                    return -- Sortir après avoir traité tous les items_count    
                 end
                     
                 if reset_value ~= nil then
