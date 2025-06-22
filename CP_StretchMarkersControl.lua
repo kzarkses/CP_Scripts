@@ -1,41 +1,45 @@
--- @description Add stretch markers with GUI interface
--- @version 1.0
--- @author Original: nvk, GUI: Claude
 local r = reaper
 
--- Create context at script start
+local sl = nil
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
+
 local ctx = r.ImGui_CreateContext('Stretch Markers Control')
+local pc, pv = 0, 0
 
--- Style loader integration
-local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
-local style_loader = nil
-local pushed_colors = 0
-local pushed_vars = 0
+function getFont(font_name)
+    if sl then
+        return sl.getFont(ctx, font_name)
+    end
+    return nil
+end
 
-local WINDOW_FLAGS = 0
-local WINDOW_X_OFFSET = -235  -- Horizontal offset from mouse position in pixels
-local WINDOW_Y_OFFSET = 35  -- Vertical offset from mouse position in pixels
-local WINDOW_WIDTH = 200    -- Initial window width in pixels
-local WINDOW_HEIGHT = 150   -- Initial window height in pixels
+if sl then sl.applyFontsToContext(ctx) end
 
--- Settings variables
+local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse()
+
+local WINDOW_X_OFFSET = -235  
+local WINDOW_Y_OFFSET = 35  
+local WINDOW_WIDTH = 200    
+local WINDOW_HEIGHT = 76   
+
 local window_position_set = false
 local settings = {
     slope = 0,
-    last_slope = 0  -- To track changes
+    last_slope = 0  
 }
 
--- Try to load style loader module
-local file = io.open(style_loader_path, "r")
+
+local file = io.open(sp, "r")
 if file then
   file:close()
-  local loader_func = dofile(style_loader_path)
+  local loader_func = dofile(sp)
   if loader_func then
-    style_loader = loader_func()
+    sl = loader_func()
   end
 end
 
--- Function to save selected items
+
 function SaveSelectedItems()
     local items = {}
     for i = 0, r.CountSelectedMediaItems(0) - 1 do
@@ -44,10 +48,10 @@ function SaveSelectedItems()
     return items
 end
 
--- Main function to apply stretch markers
+
 function ApplyStretchMarkers(slopeIn)
     local items = SaveSelectedItems()
-    if #items == 0 then return end  -- Don't process if no items selected
+    if #items == 0 then return end  
     
     r.PreventUIRefresh(1)
     r.Undo_BeginBlock()
@@ -58,14 +62,14 @@ function ApplyStretchMarkers(slopeIn)
             local itemLength = r.GetMediaItemInfo_Value(item, 'D_LENGTH')
             local playrate = r.GetMediaItemTakeInfo_Value(take, 'D_PLAYRATE')
             
-            -- Delete existing stretch markers
+            
             r.DeleteTakeStretchMarkers(take, 0, r.GetTakeNumStretchMarkers(take))
             
-            -- Add new stretch markers
+            
             local idx = r.SetTakeStretchMarker(take, -1, 0)
             r.SetTakeStretchMarker(take, -1, itemLength * playrate)
             
-            -- Calculate and set slope
+            
             local slope = slopeIn
             if slope > 4 then
                 slope = math.random() * math.min(4, (slope - 4)) / 4
@@ -83,98 +87,116 @@ function ApplyStretchMarkers(slopeIn)
 end
 
 function Loop()
-    -- Set window position to mouse cursor on first open
     if not window_position_set then
-        local mouse_x, mouse_y = r.GetMousePosition()
-        r.ImGui_SetNextWindowPos(ctx, mouse_x + WINDOW_X_OFFSET, mouse_y + WINDOW_Y_OFFSET)
+        if WINDOW_FOLLOW_MOUSE then
+            local mouse_x, mouse_y = r.GetMousePosition()
+            r.ImGui_SetNextWindowPos(ctx, mouse_x + WINDOW_X_OFFSET, mouse_y + WINDOW_Y_OFFSET)
+        end
         r.ImGui_SetNextWindowSize(ctx, WINDOW_WIDTH, WINDOW_HEIGHT)
         window_position_set = true
     end
 
-    if style_loader then
-        local success, colors, vars = style_loader.applyToContext(ctx)
-        if success then
-            pushed_colors, pushed_vars = colors, vars
-        end
+    if sl then
+        local success, colors, vars = sl.applyToContext(ctx)
+        if success then pc, pv = colors, vars end
     end
 
-    local visible, open = r.ImGui_Begin(ctx, 'Stretch Markers Control', true, WINDOW_FLAGS)
-    
+    local header_font = getFont("header")
+    local main_font = getFont("main")
+
+    local visible, open = r.ImGui_Begin(ctx, 'Stretch Marker', true, WINDOW_FLAGS)
     if visible then
-        -- Slope slider
+        if header_font then r.ImGui_PushFont(ctx, header_font) end
+        r.ImGui_Text(ctx, "Stretch Marker")
+        if header_font then r.ImGui_PopFont(ctx) end
+        if main_font then r.ImGui_PushFont(ctx, main_font) end
+        r.ImGui_SameLine(ctx)
+
+
+        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
+        r.ImGui_SetCursorPosX(ctx, close_x)
+        if r.ImGui_Button(ctx, "X", 22, 22) then
+            open = false
+        end
+        
+        r.ImGui_Separator(ctx)
+        r.ImGui_Spacing(ctx)
+
+        
         local slope_changed
         slope_changed, settings.slope = r.ImGui_SliderDouble(ctx, 'Slope', settings.slope, -4, 4, '%.2f')
         r.ImGui_Spacing(ctx)
         
-        -- Preset buttons
-        r.ImGui_Text(ctx, "Presets:")
         
-        -- Negative presets row
-        if r.ImGui_Button(ctx, "-2") then
-            settings.slope = -4
-            slope_changed = true
-        end
-        r.ImGui_SameLine(ctx)
-        if r.ImGui_Button(ctx, "-1.75") then
-            settings.slope = -3
-            slope_changed = true
-        end
-        r.ImGui_SameLine(ctx)
-        if r.ImGui_Button(ctx, "-1.50") then
-            settings.slope = -2
-            slope_changed = true
-        end
-        r.ImGui_SameLine(ctx)
-        if r.ImGui_Button(ctx, "-1.25") then
-            settings.slope = -1
-            slope_changed = true
-        end
+        -- r.ImGui_Text(ctx, "Presets:")
         
-        -- Positive presets row
-        if r.ImGui_Button(ctx, "0") then
-            settings.slope = 0
-            slope_changed = true
-        end
-        r.ImGui_SameLine(ctx)
-        if r.ImGui_Button(ctx, "1.25") then
-            settings.slope = 1
-            slope_changed = true
-        end
-        r.ImGui_SameLine(ctx)
-        if r.ImGui_Button(ctx, "1.50") then
-            settings.slope = 2
-            slope_changed = true
-        end
-        r.ImGui_SameLine(ctx)
-        if r.ImGui_Button(ctx, "1.75") then
-            settings.slope = 3
-            slope_changed = true
-        end
-        r.ImGui_SameLine(ctx)
-        if r.ImGui_Button(ctx, "2") then
-            settings.slope = 4
-            slope_changed = true
-        end
         
-        -- Apply changes if slider moved or button pressed
+        -- if r.ImGui_Button(ctx, "-2") then
+        --     settings.slope = -4
+        --     slope_changed = true
+        -- end
+        -- r.ImGui_SameLine(ctx)
+        -- if r.ImGui_Button(ctx, "-1.75") then
+        --     settings.slope = -3
+        --     slope_changed = true
+        -- end
+        -- r.ImGui_SameLine(ctx)
+        -- if r.ImGui_Button(ctx, "-1.50") then
+        --     settings.slope = -2
+        --     slope_changed = true
+        -- end
+        -- r.ImGui_SameLine(ctx)
+        -- if r.ImGui_Button(ctx, "-1.25") then
+        --     settings.slope = -1
+        --     slope_changed = true
+        -- end
+        
+        
+        -- if r.ImGui_Button(ctx, "0") then
+        --     settings.slope = 0
+        --     slope_changed = true
+        -- end
+        -- r.ImGui_SameLine(ctx)
+        -- if r.ImGui_Button(ctx, "1.25") then
+        --     settings.slope = 1
+        --     slope_changed = true
+        -- end
+        -- r.ImGui_SameLine(ctx)
+        -- if r.ImGui_Button(ctx, "1.50") then
+        --     settings.slope = 2
+        --     slope_changed = true
+        -- end
+        -- r.ImGui_SameLine(ctx)
+        -- if r.ImGui_Button(ctx, "1.75") then
+        --     settings.slope = 3
+        --     slope_changed = true
+        -- end
+        -- r.ImGui_SameLine(ctx)
+        -- if r.ImGui_Button(ctx, "2") then
+        --     settings.slope = 4
+        --     slope_changed = true
+        -- end
+        
+        
         if slope_changed or settings.slope ~= settings.last_slope then
             ApplyStretchMarkers(settings.slope)
             settings.last_slope = settings.slope
         end
+
+        if main_font then r.ImGui_PopFont(ctx) end
         
         r.ImGui_End(ctx)
     end
     
-    if style_loader then
-        style_loader.clearStyles(ctx, pushed_colors, pushed_vars)
-    end
+    
+    if sl then sl.clearStyles(ctx, pc, pv) end
 
     if open then
         r.defer(Loop)
     end
 end
 
--- Script toggle function
+
 function ToggleScript()
     local _, _, sectionID, cmdID = r.get_action_context()
     local state = r.GetToggleCommandState(cmdID)

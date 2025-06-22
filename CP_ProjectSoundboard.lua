@@ -1,6 +1,6 @@
 -- CP_ProjectSoundboard.lua
 -- Description: Enhanced Soundboard for REAPER with folder structure and improved UI
--- Version: 2.3.1 (with style manager integration and fixed playback)
+-- Version: 2.2 (avec intégration du style manager)
 
 local r = reaper
 
@@ -22,7 +22,7 @@ function loadUltraschall()
   end
 end
 
--- Configuration (default values)
+-- Configuration (valeurs par défaut)
 local config = {
   columns_per_page = 10,   -- Number of columns per page
   item_height = 26,       -- Height of item buttons (increased for more spacing)
@@ -56,14 +56,14 @@ local config = {
   scrollbar_size = 14,   -- Size of scrollbars
   
   -- Font settings
-  font_name = "georgia", -- Font name
+  font_name = "Georgia", -- Font name
   font_size = 16,           -- Font size
   title_font_size = 24,     -- Font size for titles
   
   -- Visual behavior
-  show_tooltips = false,     -- Whether to show tooltips
+  show_tooltips = true,     -- Whether to show tooltips
   compact_view = false,     -- More compact layout with smaller spacing
-  enable_animations = true, -- Enable smooth animations
+  enable_animations = true, -- Enable smooth animations (non implémenté)
   theme_variant = "dark",   -- Current theme variant ("dark", "light", "custom")
   
   -- Folder browsing settings
@@ -72,9 +72,9 @@ local config = {
   
   -- Soundboard tracks settings
   num_sb_tracks = 2,     -- Number of dedicated soundboard tracks
-  sb_track_name = "Musics Track", -- Base name for soundboard tracks
+  sb_track_name = "Musics Track", -- Base name for soundboard tracks (changed from Soundboard to Musics)
   use_folder_track = true, -- Whether to use a folder track for organization
-  folder_track_name = "Musics" -- Name for the folder track
+  folder_track_name = "Musics" -- Changed from Soundboard to Musics
 }
 
 -- Global variables
@@ -96,22 +96,12 @@ local track_item_counts = {}      -- Track the number of items per track
 local last_click_time = 0         -- Time of last click for double-click detection
 local actually_playing = false    -- Flag to track if the preview is actually playing
 local last_play_state = 0         -- To track play state changes
-local has_file_ended = false      -- Flag to track if a file has ended
-local played_files = {}  -- To track which files have been played in this session
 
 -- Folder file browser variables
 local folder_files = {}           -- Table to store audio files from folder
 local current_folder = nil        -- Currently selected folder
 local current_folder_file = nil   -- Currently playing folder file
 local next_folder_file = nil      -- Next file for crossfade
-local ignore_stop_after_fade = false -- Flag to ignore stopping after fade when another file is started
-local music_end_time = 0          -- Time when music is expected to end (for validation)
-local last_cursor_position = 0    -- Track cursor position for validation
-
--- Column settings for loop and multi-selection
-local column_settings = {}        -- Table to store settings for each column
-local column_loops = {}           -- Table to track which columns have loop enabled
-local column_multi = {}           -- Table to track which columns allow multiple playback
 
 -- Style loader integration
 local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
@@ -119,21 +109,12 @@ local style_loader = nil
 local pushed_colors = 0
 local pushed_vars = 0
 
--- Variables for the enhanced preview system
-local preview_handles = {} -- Table to store preview handles by item
-local preview_info = {} -- To store precise information about each preview
-local CF_API_available = false -- Flag to check if CF_Preview API is available
-local playing_items = {}  -- Track all currently playing items for multi-selection
+-- Variables globales pour le système de preview amélioré
+local preview_handles = {} -- Table pour stocker les handles de preview par item
+local preview_info = {} -- Pour stocker les informations précises sur chaque preview
+local CF_API_available = false -- Flag pour vérifier si l'API CF_Preview est disponible
 
-function safeGetPlayPosition()
-   local pos = r.GetPlayPosition()
-   if type(pos) ~= "number" then
-      return 0.01  -- Valeur par défaut sécurisée
-   end
-   return pos
-end
-
--- Check if CF_Preview API is available
+-- Vérifier la disponibilité de l'API CF_Preview
 function checkCFPreviewAPI()
   if r.CF_CreatePreview and r.CF_Preview_Play and r.CF_Preview_Stop then
     CF_API_available = true
@@ -153,13 +134,13 @@ if file then
   end
 end
 
--- Function to load style configuration from ExtState
+-- Fonction pour charger la configuration de style depuis l'ExtState
 function loadStyleConfig()
   local ext_state = r.GetExtState("CP_ProjectSoundboard", "style_config")
   if ext_state ~= "" then
     local success, loaded_config = pcall(function() return load("return " .. ext_state)() end)
     if success and type(loaded_config) == "table" then
-      -- Merge loaded configuration with default values
+      -- Fusionner la configuration chargée avec les valeurs par défaut
       for k, v in pairs(loaded_config) do
         config[k] = v
       end
@@ -174,11 +155,11 @@ function init()
   -- Try to load Ultraschall
   loadUltraschall()
   
-  -- Load style configuration before creating the context
+  -- Charger la configuration de style avant de créer le contexte
   loadStyleConfig()
   
   -- Create ImGui context
-  gui.ctx = r.ImGui_CreateContext('Musics')
+  gui.ctx = r.ImGui_CreateContext('Musics') -- Changed from 'Soundboard' to 'Musics'
   
   -- Check if context was created successfully
   if not gui.ctx then
@@ -202,17 +183,9 @@ function init()
   -- Setup dedicated soundboard tracks
   createDedicatedTracks()
   
-  -- Create markers (new feature)
-  createMarkers()
-  
-  -- Initialize column settings for all tracks
-  initializeColumnSettings()
-  
   -- Load tracks and items from project
   refresh_tracks_and_items()
   
-  played_files = {}  -- Initialize played files tracking
-
   -- Load audio files from last folder if available
   if config.last_folder ~= "" then
     current_folder = config.last_folder
@@ -224,75 +197,6 @@ function init()
   
   ctx_valid = true
   return true
-end
-
--- Create markers for soundboard organization
-function createMarkers()
-  -- Check if "items" marker already exists at 1:00:00.000
-  local items_marker_exists = false
-  local musics_marker_exists = false
-  local num_markers = r.CountProjectMarkers(0)
-  
-  for i = 0, num_markers - 1 do
-    local retval, isrgn, pos, rgnend, name, markrgnindexnumber, color = r.EnumProjectMarkers3(0, i)
-    if not isrgn then
-      if name == "items" and math.abs(pos - 3600) < 0.001 then
-        items_marker_exists = true
-      elseif name == "musics" and math.abs(pos - 0) < 0.001 then
-        musics_marker_exists = true
-      end
-    end
-  end
-  
-  -- Create items marker at 1:00:00.000 if it doesn't exist
-  if not items_marker_exists then
-    r.AddProjectMarker2(0, false, 3600, 0, "items", -1, 0)
-  end
-  
-  -- Create musics marker at 0:00.000 if it doesn't exist
-  if not musics_marker_exists then
-    r.AddProjectMarker2(0, false, 0, 0, "musics", -1, 0)
-  end
-end
-
--- Initialize column settings
-function initializeColumnSettings()
-  -- Initialize settings for each column
-  column_loops = {
-    [0] = false -- First column (folder files) has loop disabled by default
-  }
-  
-  column_multi = {
-    [0] = false -- First column (folder files) has multi-selection disabled by default
-  }
-  
-  -- Also initialize settings for regular track columns
-  local num_tracks = r.CountTracks(0)
-  for i = 0, num_tracks - 1 do
-    column_loops[i] = false
-    column_multi[i] = false
-  end
-  
-  -- Load column settings from ExtState if available
-  local saved_column_loops = r.GetExtState("CP_SoundboardPistes", "column_loops")
-  if saved_column_loops ~= "" then
-    local success, loaded_loops = pcall(function() return load("return " .. saved_column_loops)() end)
-    if success and type(loaded_loops) == "table" then
-      for k, v in pairs(loaded_loops) do
-        column_loops[tonumber(k)] = v
-      end
-    end
-  end
-  
-  local saved_column_multi = r.GetExtState("CP_SoundboardPistes", "column_multi")
-  if saved_column_multi ~= "" then
-    local success, loaded_multi = pcall(function() return load("return " .. saved_column_multi)() end)
-    if success and type(loaded_multi) == "table" then
-      for k, v in pairs(loaded_multi) do
-        column_multi[tonumber(k)] = v
-      end
-    end
-  end
 end
 
 -- Create or find dedicated tracks for soundboard
@@ -384,18 +288,14 @@ function createDedicatedTracks()
     if folder_track then
       -- Find the last track in our group
       local last_track_idx = insert_position - 1
-      if last_track_idx >= 0 then
-        local last_track = r.GetTrack(0, last_track_idx)
-        
-        -- Set the folder closing flag on the last track
-        if last_track then
-          r.SetMediaTrackInfo_Value(last_track, "I_FOLDERDEPTH", -1) -- -1 means end of folder
-        end
-      end
+      local last_track = r.GetTrack(0, last_track_idx)
+      
+      -- Set the folder closing flag on the last track
+      r.SetMediaTrackInfo_Value(last_track, "I_FOLDERDEPTH", -1) -- -1 means end of folder
     end
   end
   
-  r.Undo_EndBlock("Create Musics Tracks", -1)
+  r.Undo_EndBlock("Create Musics Tracks", -1) -- Changed from "Soundboard" to "Musics"
   
   -- Store tracks in ordered array
   dedicated_tracks = {}
@@ -447,42 +347,22 @@ function saveSettings()
   r.SetExtState("CP_SoundboardPistes", "crossfade", tostring(config.crossfade_duration), true)
   r.SetExtState("CP_SoundboardPistes", "num_sb_tracks", tostring(config.num_sb_tracks), true)
   r.SetExtState("CP_SoundboardPistes", "use_folder_track", config.use_folder_track and "1" or "0", true)
-  
-  -- Save column settings
-  r.SetExtState("CP_SoundboardPistes", "column_loops", r.serialize(column_loops), true)
-  r.SetExtState("CP_SoundboardPistes", "column_multi", r.serialize(column_multi), true)
-end
-
--- Helper function for r.serialize if it doesn't exist
-if not r.serialize then
-  function r.serialize(tbl)
-    if type(tbl) ~= "table" then return tostring(tbl) end
-    local result = "{"
-    for k, v in pairs(tbl) do
-      local key = type(k) == "string" and string.format('"%s"', k) or "["..tostring(k).."]"
-      local value = type(v) == "table" and r.serialize(v) or 
-                   type(v) == "string" and string.format('"%s"', v) or tostring(v)
-      result = result .. key .. "=" .. value .. ","
-    end
-    return result .. "}"
-  end
 end
 
 -- Safely stop all previews (without affecting arranger)
+-- Modifier la fonction existante stopAllPreviews pour utiliser la nouvelle API
 function stopAllPreviews()
   actually_playing = false
   
   if CF_API_available then
-    -- Stop each preview individually
+    -- Arrêter chaque preview individuellement
     for ptr, preview in pairs(preview_handles) do
-      if type(preview) == "userdata" then
-        r.CF_Preview_Stop(preview)
-      end
+      r.CF_Preview_Stop(preview)
     end
     preview_handles = {}
     preview_info = {}
   elseif ultraschall_available then
-    -- Ultraschall existing methods
+    -- Méthodes Ultraschall existantes
     if type(ultraschall.StopAllPreviews) == "function" then
       ultraschall.StopAllPreviews()
     elseif type(ultraschall.StopPreviewMediaItemPeaksBuilding) == "function" then
@@ -491,22 +371,21 @@ function stopAllPreviews()
       ultraschall.StopPreviews()
     end
   else
-    -- Standard method
+    -- Méthode standard
     r.StopPreview()
   end
   
-  -- Reset tracking variables
+  -- Réinitialiser les variables de suivi
   preview_start_time = 0
   preview_duration = 0
-  playing_items = {}  -- Clear all playing items
   
-  -- Reset previewed item state
+  -- Réinitialiser l'état de l'item prévisualisé
   if current_preview_item then
     current_preview_item.playing = false
     current_preview_item = nil
   end
   
-  -- Clear playback states for all items
+  -- Effacer les états de lecture pour tous les items
   for track_idx, items in pairs(items_by_track) do
     for _, item in ipairs(items) do
       item.playing = false
@@ -516,61 +395,43 @@ end
 
 -- Stop all folder files playback (tracks version)
 function stopAllFolderFiles()
-    -- Si ignore_stop_after_fade est défini, ne pas arrêter la lecture
-    if ignore_stop_after_fade then
-        ignore_stop_after_fade = false
-        return
+  -- Arrêter la lecture
+  r.Main_OnCommand(1016, 0)  -- Transport: Stop
+  
+  -- Réinitialiser tous les états de fichiers
+  for _, file in ipairs(folder_files) do
+    file.active = false
+    file.fading_out = false
+    file.fade_start_time = nil
+  end
+  
+  current_folder_file = nil
+  next_folder_file = nil
+  
+  -- Désactiver le solo sur toutes les pistes
+  for _, track in ipairs(dedicated_tracks) do
+    r.SetMediaTrackInfo_Value(track, "I_SOLO", 0)
+  end
+  
+  -- Optionnel: Effacer les items des pistes dédiées
+  r.PreventUIRefresh(1)
+  
+  for _, track in ipairs(dedicated_tracks) do
+    local item_count = r.CountTrackMediaItems(track)
+    for i = item_count-1, 0, -1 do
+      local item = r.GetTrackMediaItem(track, i)
+      if item then
+        r.DeleteTrackMediaItem(track, item)
+      end
     end
-    
-    -- Vérifier si la lecture est en cours
-    if r.GetPlayState() & 1 == 1 then 
-        -- Arrêter la lecture
-        r.Main_OnCommand(1016, 0)  -- Transport: Stop
-    end
-    
-    -- Réinitialiser tous les états de fichiers
-    for _, file in ipairs(folder_files) do
-        file.active = false
-        file.fading_out = false
-        file.fade_start_time = nil
-    end
-    
-    current_folder_file = nil
-    next_folder_file = nil
-    has_file_ended = false
-    music_end_time = 0  -- AJOUT: Réinitialiser le temps de fin de musique
-    
-    -- Désactiver le solo sur toutes les pistes
-    for _, track in ipairs(dedicated_tracks) do
-        r.SetMediaTrackInfo_Value(track, "I_SOLO", 0)
-    end
-    
-    -- Effacer les éléments des pistes dédiées
-    r.PreventUIRefresh(1)
-    
-    for _, track in ipairs(dedicated_tracks) do
-        local item_count = r.CountTrackMediaItems(track)
-        for i = item_count-1, 0, -1 do
-            local item = r.GetTrackMediaItem(track, i)
-            if item then
-                r.DeleteTrackMediaItem(track, item)
-            end
-        end
-    end
-    
-    r.PreventUIRefresh(-1)
-    r.UpdateArrange()
+  end
+  
+  r.PreventUIRefresh(-1)
+  r.UpdateArrange()
 end
 
 -- Check if preview has ended and update UI accordingly
--- Check if preview has ended and update UI accordingly
--- Check if preview has ended and update UI accordingly
 function checkPreviewState()
-  -- Si le contexte n'est plus valide, ne rien faire
-  if not ctx_valid then
-    return
-  end
-
   -- Check if the play state has changed (for detecting space bar)
   local current_play_state = r.GetPlayState()
   
@@ -585,319 +446,166 @@ function checkPreviewState()
   -- Update last play state
   last_play_state = current_play_state
   
-  -- Check item previews with the CF_Preview API
+  -- Vérifier les previews d'items avec la nouvelle API
   if CF_API_available then
-    -- Update visual state of previewed items
-    local to_remove = {}
-    
+    -- Mise à jour de l'état visuel des items en preview
     for ptr, preview in pairs(preview_handles) do
-      if type(preview) ~= "userdata" then
-        table.insert(to_remove, ptr)
-      else
-        -- Check if preview is still active
-        local is_active = false
-        local status, position = pcall(function() return r.CF_Preview_GetValue(preview, "D_POSITION") end)
+      -- Vérifier si la preview est encore active
+      local is_active = false
+      local status, position = r.CF_Preview_GetValue(preview, "D_POSITION")
+      
+      if status then
+        is_active = true
         
-        if status and type(position) == "number" then
-          is_active = true
+        -- Vérifier si nous sommes à la fin de l'item
+        if preview_info[ptr] then
+          local info = preview_info[ptr]
           
-          -- Check if we're at the end of the item
-          if preview_info[ptr] then
-            local info = preview_info[ptr]
-            
-            -- If we've passed the calculated end, check if we should loop or stop
-            if position >= info.end_position - 0.01 then
-              local track_idx = info.track_idx
-              
-              -- If loop is enabled for this column, restart the playback
-              if track_idx and column_loops[track_idx] then
-                -- Restart from the beginning
-                pcall(function()
-                  r.CF_Preview_SetValue(preview, "D_POSITION", info.start_offset)
-                end)
-              else
-                -- End of playback, stop the preview
-                is_active = false
-                pcall(function() r.CF_Preview_Stop(preview) end)
-                table.insert(to_remove, ptr)
-              end
-            end
-          else
-            -- Fallback if info isn't available
-            local status2, length = pcall(function() return r.CF_Preview_GetValue(preview, "D_LENGTH") end)
-            if status2 and type(length) == "number" and position >= length - 0.01 then
-              is_active = false
-              pcall(function() r.CF_Preview_Stop(preview) end)
-              table.insert(to_remove, ptr)
-            end
+          -- Si on a dépassé la fin calculée, arrêter la preview
+          if position >= info.end_position - 0.01 then
+            is_active = false
+            r.CF_Preview_Stop(preview)
+            preview_handles[ptr] = nil
+            preview_info[ptr] = nil
           end
         else
-          -- Preview is no longer active
-          is_active = false
-          table.insert(to_remove, ptr)
+          -- Fallback si les infos ne sont pas disponibles
+          local status2, length = r.CF_Preview_GetValue(preview, "D_LENGTH")
+          if status2 and position >= length - 0.01 then
+            is_active = false
+            r.CF_Preview_Stop(preview)
+            preview_handles[ptr] = nil
+          end
         end
-        
-        -- Update item states
-        for track_idx, items in pairs(items_by_track) do
-          for i, item in ipairs(items) do
-            if item.ptr == ptr then
-              item.playing = is_active
-              item.item_idx = i  -- Store the item index for loop functionality
-              if not is_active and current_preview_item and current_preview_item.ptr == ptr then
-                current_preview_item = nil
-                actually_playing = false
-              end
-              
-              -- Update playing_items tracking
-              if is_active then
-                playing_items[ptr] = {item = item, track_idx = track_idx, item_idx = i}
-              else
-                playing_items[ptr] = nil
-              end
+      else
+        -- La preview n'est plus active
+        is_active = false
+        preview_handles[ptr] = nil
+        if preview_info then preview_info[ptr] = nil end
+      end
+      
+      -- Mettre à jour l'état des items
+      for track_idx, items in pairs(items_by_track) do
+        for _, item in ipairs(items) do
+          if item.ptr == ptr then
+            item.playing = is_active
+            if not is_active and current_preview_item and current_preview_item.ptr == ptr then
+              current_preview_item = nil
+              actually_playing = false
             end
           end
         end
       end
     end
-    
-    -- Clean up previews that have ended
-    for _, ptr in ipairs(to_remove) do
-      preview_handles[ptr] = nil
-      preview_info[ptr] = nil
-      playing_items[ptr] = nil
-    end
   else
     if current_preview_item then
-      -- Check if preview has reached its end
+      -- Vérifier si la preview a atteint sa fin
       local current_time = r.time_precise()
       if preview_start_time > 0 and preview_duration > 0 then
         if current_time > preview_start_time + preview_duration then
-          -- Check if looping is enabled for this track
-          local track_idx = nil
-          for tidx, items in pairs(items_by_track) do
-            for i, item in ipairs(items) do
-              if item.ptr == current_preview_item.ptr then
-                track_idx = tidx
-                current_preview_item.item_idx = i
-                break
-              end
-            end
-            if track_idx then break end
-          end
-          
-          if track_idx and column_loops[track_idx] then
-            -- Restart the item
-            local item_idx = current_preview_item.item_idx or 1
-            local item_ptr = current_preview_item.ptr
-            
-            -- Stop the current preview
-            stopAllPreviews()
-            
-            -- Restart it in the next frame
-            r.defer(function()
-              if not ctx_valid then return end
-              for i, item in ipairs(items_by_track[track_idx] or {}) do
-                if item.ptr == item_ptr then
-                  play_preview_item(track_idx, i)
-                  break
-                end
-              end
-            end)
-          else
-            -- Preview ended, update state
-            current_preview_item.playing = false
-            if playing_items[current_preview_item.ptr] then
-              playing_items[current_preview_item.ptr] = nil
-            end
-            current_preview_item = nil
-            actually_playing = false
-            preview_start_time = 0
-            preview_duration = 0
-          end
+          -- Preview terminée, mettre à jour l'état
+          current_preview_item.playing = false
+          current_preview_item = nil
+          actually_playing = false
+          preview_start_time = 0
+          preview_duration = 0
         end
       end
     end
   end
 
-  -- Check if a file is fading out
+  -- Vérifier si un fichier est en fade-out
   for i, file in ipairs(folder_files) do
     if file.fading_out and file.fade_start_time then
       local current_time = r.time_precise()
       local fade_time_elapsed = current_time - file.fade_start_time
       
-      -- If fade has completed
+      -- Si le fade est terminé
       if fade_time_elapsed >= config.crossfade_duration then
         file.fading_out = false
         file.fade_start_time = nil
         file.active = false
         
-        -- If this was the current file, stop playback
-        if file == current_folder_file and not next_folder_file then
+        -- Si c'était le fichier courant, arrêter la lecture
+        if file == current_folder_file then
           current_folder_file = nil
-          pcall(stopAllFolderFiles)
+          stopAllFolderFiles()
         end
       end
     end
   end
   
-  -- Wrap the entire file checking section in pcall for sécurité
-  pcall(function()
-    -- For files played on tracks, check if they've finished
-    if current_folder_file and current_folder_file.active then
-      -- Check if playback has stopped
-      if r.GetPlayState() == 0 then
-        -- If playback has stopped, reset all file statuses
-        for _, file in ipairs(folder_files) do
-          file.active = false
-          file.fading_out = false
-          file.fade_start_time = nil
-        end
-        current_folder_file = nil
-        next_folder_file = nil
-        has_file_ended = false
-        music_end_time = 0
-      else
-        -- Check if we've reached the end of the track
-        local play_position = safeGetPlayPosition()
-        
-        -- Track cursor movement for validation
-        if math.abs(play_position - last_cursor_position) < 0.001 then
-          -- Cursor hasn't moved, might indicate end of playback
-          local current_time = r.time_precise()
-          if not has_file_ended and music_end_time > 0 and current_time > music_end_time then
-            has_file_ended = true
+  -- Vérifier les items de piste en preview
+  if current_preview_item then
+    -- Vérifier si la preview a atteint sa fin
+    local current_time = r.time_precise()
+    if preview_start_time > 0 and preview_duration > 0 then
+      if current_time > preview_start_time + preview_duration then
+        -- Preview terminée, mettre à jour l'état
+        current_preview_item.playing = false
+        current_preview_item = nil
+        actually_playing = false
+        preview_start_time = 0
+        preview_duration = 0
+      end
+    end
+  end
+  
+  -- Pour les fichiers joués sur les pistes, vérifier s'ils sont terminés
+  if current_folder_file and current_folder_file.active then
+    -- Vérifier si la lecture s'est arrêtée
+    if not r.GetPlayState() then
+      -- Si la lecture s'est arrêtée, reset tous les statuts de fichiers
+      for _, file in ipairs(folder_files) do
+        file.active = false
+        file.fading_out = false
+        file.fade_start_time = nil
+      end
+      current_folder_file = nil
+      next_folder_file = nil
+    else
+      -- Vérifier si nous avons atteint la fin du morceau
+      local play_position = r.GetPlayPosition()
+      local item_start = 0 -- Les items commencent généralement à 0
+      
+      -- Trouver l'item sur la piste actuelle
+      local current_track = dedicated_tracks[active_track_index]
+      local item_count = r.CountTrackMediaItems(current_track)
+      
+      if item_count > 0 then
+        local item = r.GetTrackMediaItem(current_track, 0) -- Généralement un seul item
+        if item then
+          item_start = r.GetMediaItemInfo_Value(item, "D_POSITION")
+          local item_length = r.GetMediaItemInfo_Value(item, "D_LENGTH")
+          
+          -- Si nous avons atteint la fin de l'item
+          if play_position >= (item_start + item_length - 0.01) then
+            -- Marquer le fichier comme inactif et arrêter la lecture
+            current_folder_file.active = false
+            current_folder_file = nil
             
-            -- Force stop if we're at the end
+            -- Arrêter la lecture avec un petit délai pour s'assurer que le fade out est joué
             r.defer(function()
-              if not ctx_valid then return end
-              if current_folder_file then
-                -- Check if looping is enabled for folder column
-                if column_loops and column_loops[0] then
-                  -- Restart the same file
-                  local file_to_restart = current_folder_file
-                  
-                  -- Reset the current state
-                  current_folder_file.active = false
-                  current_folder_file = nil
-                  
-                  -- Find the file index
-                  local file_idx = nil
-                  for i, file in ipairs(folder_files) do
-                    if file == file_to_restart then
-                      file_idx = i
-                      break
-                    end
-                  end
-                  
-                  if file_idx then
-                    -- Restart the file
-                    pcall(function() play_folder_file(file_idx) end)
-                  end
-                else
-                  pcall(stopAllFolderFiles)
-                end
-              end
+              r.Main_OnCommand(1016, 0)  -- Transport: Stop
             end)
-          end
-        else
-          -- Cursor is moving, update last position
-          last_cursor_position = play_position
-        end
-        
-        -- Find the item on the current track
-        if dedicated_tracks and active_track_index and dedicated_tracks[active_track_index] then
-          local current_track = dedicated_tracks[active_track_index]
-          if current_track then
-            local item_count = r.CountTrackMediaItems(current_track)
-            
-            if item_count > 0 then
-              local item = r.GetTrackMediaItem(current_track, 0) -- Usually a single item
-              if item then
-                local item_start = r.GetMediaItemInfo_Value(item, "D_POSITION")
-                local item_length = r.GetMediaItemInfo_Value(item, "D_LENGTH")
-                
-                -- Calculate expected end time if not set
-                if music_end_time == 0 then
-                  music_end_time = r.time_precise() + item_length - (play_position - item_start)
-                end
-                
-                -- If we've reached the end of the item or are very close to it
-                if play_position >= (item_start + item_length - 0.05) then
-                  has_file_ended = true
-                  
-                  -- Check if looping is enabled for folder column
-                  if column_loops and column_loops[0] then
-                    -- Set up to restart the same file
-                    local file_to_restart = current_folder_file
-                    
-                    -- Reset the current state
-                    current_folder_file.active = false
-                    current_folder_file = nil
-                    
-                    -- Find the file index for restart
-                    local file_idx = nil
-                    for i, file in ipairs(folder_files) do
-                      if file == file_to_restart then
-                        file_idx = i
-                        break
-                      end
-                    end
-                    
-                    if file_idx then
-                      -- Queue restart after current frame
-                      r.defer(function()
-                        if not ctx_valid then return end
-                        pcall(function() play_folder_file(file_idx) end)
-                      end)
-                    end
-                  else
-                    -- Mark the file as inactive and stop playback
-                    current_folder_file.active = false
-                    current_folder_file = nil
-                    
-                    -- Stop playback immediately to ensure clean state
-                    r.Main_OnCommand(1016, 0)  -- Transport: Stop
-                  end
-                end
-              end
-            end
           end
         end
       end
     end
-  end)
+  end
   
-  -- If a crossfade is in progress, check if it's completed
+  -- Si un crossfade est en cours, vérifier s'il est terminé
   if next_folder_file and next_folder_file.active then
     local time_elapsed = r.time_precise() - next_folder_file.start_time
     if time_elapsed > config.crossfade_duration * 1.1 then
-      -- Crossfade is complete, update statuses
+      -- Le crossfade est terminé, mettre à jour les statuts
       if current_folder_file then
         current_folder_file.active = false
       end
       current_folder_file = next_folder_file
       next_folder_file = nil
-      
-      -- Reset end detection for the new file
-      has_file_ended = false
-      music_end_time = 0
     end
   end
-  
-  -- Safely clean up any dangling references
-  pcall(function()
-    -- Add additional validation for current preview items
-    local current_time = r.time_precise()
-    for ptr, info in pairs(playing_items) do
-      if not preview_handles[ptr] then
-        -- This item is marked as playing but has no handle
-        if info and info.item then
-          info.item.playing = false
-        end
-        playing_items[ptr] = nil
-      end
-    end
-  end)
 end
 
 -- Check if double-click detected
@@ -1015,8 +723,7 @@ function refresh_tracks_and_items()
           name = r.GetTakeName(take) or "Unnamed",
           position = r.GetMediaItemInfo_Value(item, "D_POSITION"),
           length = r.GetMediaItemInfo_Value(item, "D_LENGTH"),
-          playing = false,
-          progress = 0 -- For progress indicator
+          playing = false
         }
         
         -- Add item to its track's list
@@ -1036,15 +743,11 @@ function refresh_tracks_and_items()
   if current_preview_item then
     local found = false
     for track_idx, items in pairs(items_by_track) do
-      for i, item in ipairs(items) do
+      for _, item in ipairs(items) do
         if item.ptr == current_preview_item.ptr then
           item.playing = true
-          item.item_idx = i
           found = true
           current_preview_item = item
-          
-          -- Update playing_items tracking
-          playing_items[item.ptr] = {item = item, track_idx = track_idx, item_idx = i}
           break
         end
       end
@@ -1106,8 +809,7 @@ function refresh_folder_files()
         filename = filename,
         active = false,
         volume = 1.0,
-        start_time = 0,
-        progress = 0 -- For progress indicator
+        start_time = 0
       }
       table.insert(folder_files, file_info)
     end
@@ -1125,12 +827,7 @@ function play_folder_file(file_idx)
   -- Si ce son est déjà en lecture, l'arrêter avec un fade
   if file.active then
     -- Prolonger l'item pour le fade-out avant de stopper
-    local play_position = safeGetPlayPosition()
-    
-    -- Vérification cruciale pour s'assurer que play_position est un nombre
-    if type(play_position) ~= "number" then
-      play_position = 0
-    end
+    local position = r.GetPlayPosition()
     
     -- Trouver la piste et l'item en lecture
     local current_track = dedicated_tracks[active_track_index]
@@ -1143,7 +840,7 @@ function play_folder_file(file_idx)
           -- Prolonger l'item pour le fade et ajouter le fade
           local current_pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
           local current_length = r.GetMediaItemInfo_Value(item, "D_LENGTH")
-          local new_length = play_position - current_pos + config.crossfade_duration
+          local new_length = position - current_pos + config.crossfade_duration
           
           -- Ne pas dépasser la longueur originale de l'item
           if new_length <= current_length then
@@ -1181,31 +878,11 @@ function play_folder_file(file_idx)
     end
   end
   
-  -- Reset file end detection flags
-  has_file_ended = false
-  music_end_time = 0
-  
   -- Si nous avons un fichier en cours et qu'on change pour un nouveau, faire un crossfade
   if current_folder_file and current_folder_file ~= file then
-    -- Set the flag to ignore stopping after the fade
-    ignore_stop_after_fade = true
-    
     -- Ajouter le nouveau fichier sur la piste suivante avec un fade-in
     local current_track = dedicated_tracks[active_track_index]
-    local cursor_pos = safeGetPlayPosition()
-    
-    -- Vérification cruciale pour s'assurer que cursor_pos est un nombre
-    if type(cursor_pos) ~= "number" then
-      cursor_pos = 0.01
-    end
-    
-    -- Ensure we have a valid cursor position - must be greater than 0
-    if cursor_pos <= 0 then
-      cursor_pos = 0.01  -- Use a small positive value to avoid position 0
-    end
-    
-    -- Store last cursor position for validation
-    last_cursor_position = cursor_pos
+    local cursor_pos = r.GetPlayPosition()
     
     -- Effacer la piste de destination
     local item_count = r.CountTrackMediaItems(next_track)
@@ -1218,58 +895,56 @@ function play_folder_file(file_idx)
     
     -- Insérer le nouveau fichier sur la piste suivante
     local new_item = r.AddMediaItemToTrack(next_track)
-    if new_item then
-      r.SetMediaItemPosition(new_item, cursor_pos, false)
-      local new_take = r.AddTakeToMediaItem(new_item)
-      local pcm_source = r.PCM_Source_CreateFromFile(file.path)
-      r.SetMediaItemTake_Source(new_take, pcm_source)
-      r.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", file.name, true)
-      
-      -- Set item length based on source
-      local source_length = r.GetMediaSourceLength(pcm_source)
-      r.SetMediaItemLength(new_item, source_length, false)
-      
-      -- Add fade-in to the new item
-      r.SetMediaItemInfo_Value(new_item, "D_FADEINLEN", config.crossfade_duration)
-      
-      -- Pour l'item en cours de lecture, ajouter un fade-out et couper sa longueur
-      local item_count = r.CountTrackMediaItems(current_track)
-      for i = 0, item_count - 1 do
-        local item = r.GetTrackMediaItem(current_track, i)
-        if item then
-          -- Set total length up to fade point + fade duration
-          local current_length = r.GetMediaItemInfo_Value(item, "D_LENGTH")
-          local new_length = cursor_pos - r.GetMediaItemInfo_Value(item, "D_POSITION") + config.crossfade_duration
-          new_length = math.min(current_length, new_length) -- Don't exceed original length
-          
-          -- Set new length and fade out
-          r.SetMediaItemInfo_Value(item, "D_LENGTH", new_length)
-          r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", config.crossfade_duration)
-        end
+    r.SetMediaItemPosition(new_item, cursor_pos, false)
+    local new_take = r.AddTakeToMediaItem(new_item)
+    local pcm_source = r.PCM_Source_CreateFromFile(file.path)
+    r.SetMediaItemTake_Source(new_take, pcm_source)
+    r.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", file.name, true)
+    
+    -- Définir la longueur de l'item selon la source
+    local source_length = r.GetMediaSourceLength(pcm_source)
+    r.SetMediaItemLength(new_item, source_length, false)
+    
+    -- Ajouter un fade-in au nouvel item
+    r.SetMediaItemInfo_Value(new_item, "D_FADEINLEN", config.crossfade_duration)
+    
+    -- Pour l'item en cours de lecture, ajouter un fade-out et couper sa longueur
+    local current_items = {}
+    local item_count = r.CountTrackMediaItems(current_track)
+    for i = 0, item_count - 1 do
+      local item = r.GetTrackMediaItem(current_track, i)
+      if item then
+        -- Définir la longueur totale jusqu'au point de fade + durée du fade
+        local current_length = r.GetMediaItemInfo_Value(item, "D_LENGTH")
+        local new_length = cursor_pos - r.GetMediaItemInfo_Value(item, "D_POSITION") + config.crossfade_duration
+        new_length = math.min(current_length, new_length) -- Ne pas dépasser la longueur originale
+        
+        -- Définir la nouvelle longueur et le fade out
+        r.SetMediaItemInfo_Value(item, "D_LENGTH", new_length)
+        r.SetMediaItemInfo_Value(item, "D_FADEOUTLEN", config.crossfade_duration)
       end
-      
-      -- Marquer le nouveau fichier comme actif pour l'affichage
-      file.active = true
-      file.start_time = r.time_precise()
-      file.source_length = source_length
-      
-      -- Store the next file and update active track index
-      next_folder_file = file
-      active_track_index = next_track_index
-      
-      -- Ensure playback is in progress
-      local play_state = r.GetPlayState()
-      if play_state == 0 then -- Not playing
-        r.OnPlayButton()
-      end
+    end
+    
+    -- Marquer le nouveau fichier comme actif pour l'affichage
+    file.active = true
+    file.start_time = r.time_precise()
+    
+    -- Stocker le prochain fichier et mettre à jour l'index de piste active
+    next_folder_file = file
+    active_track_index = next_track_index
+    
+    -- S'assurer que la lecture est en cours
+    local play_state = r.GetPlayState()
+    if play_state == 0 then -- Pas en lecture
+      r.OnPlayButton()
     end
   else
     -- Pas de crossfade nécessaire, juste démarrer la lecture depuis le début
     
-    -- Arrêter toute lecture en cours d'abord
+    -- Arrêter toute lecture en cours
     stopAllFolderFiles()
     
-    -- Clean the current track
+    -- Nettoyer la piste courante
     local current_track = dedicated_tracks[active_track_index]
     local item_count = r.CountTrackMediaItems(current_track)
     for i = item_count - 1, 0, -1 do
@@ -1279,44 +954,36 @@ function play_folder_file(file_idx)
       end
     end
     
-    -- Add the file to the track at the beginning
+    -- Ajouter le fichier à la piste au début
     local new_item = r.AddMediaItemToTrack(current_track)
-    if new_item then
-      r.SetMediaItemPosition(new_item, 0.01, false)  -- Use 0.01 instead of 0 to avoid edge case issues
-      local new_take = r.AddTakeToMediaItem(new_item)
-      local pcm_source = r.PCM_Source_CreateFromFile(file.path)
-      r.SetMediaItemTake_Source(new_take, pcm_source)
-      r.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", file.name, true)
-      
-      -- Set item length based on source
-      local source_length = r.GetMediaSourceLength(pcm_source)
-      r.SetMediaItemLength(new_item, source_length, false)
-      
-      -- Add fade-in to the new item even without crossfade
-      r.SetMediaItemInfo_Value(new_item, "D_FADEINLEN", config.crossfade_duration)
-      
-      -- Move cursor to beginning
-      r.SetEditCurPos(0.01, true, false)  -- Use 0.01 instead of 0
-      
-      -- Store last cursor position for validation
-      last_cursor_position = 0.01
-      
-      -- Select the item and start playback
-      r.SetMediaItemSelected(new_item, true)
-      r.Main_OnCommand(1007, 0)  -- Item: Play selected items
-      
-      -- Mark as current file and record start time
-      current_folder_file = file
-      file.active = true
-      file.start_time = r.time_precise()
-      file.source_length = source_length -- Store length to detect end
-      
-      -- Set expected end time for validation
-      music_end_time = r.time_precise() + source_length
-    end
+    r.SetMediaItemPosition(new_item, 0, false)
+    local new_take = r.AddTakeToMediaItem(new_item)
+    local pcm_source = r.PCM_Source_CreateFromFile(file.path)
+    r.SetMediaItemTake_Source(new_take, pcm_source)
+    r.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", file.name, true)
+    
+    -- Définir la longueur de l'item selon la source
+    local source_length = r.GetMediaSourceLength(pcm_source)
+    r.SetMediaItemLength(new_item, source_length, false)
+    
+    -- Ajouter un fade-in au nouvel item même sans crossfade
+    r.SetMediaItemInfo_Value(new_item, "D_FADEINLEN", config.crossfade_duration)
+    
+    -- Déplacer le curseur au début
+    r.SetEditCurPos(0, true, false)
+    
+    -- Sélectionner l'item et démarrer la lecture
+    r.SetMediaItemSelected(new_item, true)
+    r.Main_OnCommand(40317, 0)  -- Item: Play selected items
+    
+    -- Marquer comme fichier courant et enregistrer le temps de démarrage
+    current_folder_file = file
+    file.active = true
+    file.start_time = r.time_precise()
+    file.source_length = source_length -- Stocker la longueur pour détecter la fin
   end
   
-  r.Undo_EndBlock("Play Music File", -1)
+  r.Undo_EndBlock("Play Music File", -1) -- Changed from "Soundboard" to "Music"
   r.PreventUIRefresh(-1)
   r.UpdateArrange()
   
@@ -1329,118 +996,95 @@ function updateStartTime(file)
 end
 
 -- Play a track item via preview (without affecting arranger)
+-- Jouer un aperçu d'item avec la nouvelle API
 function play_preview_item(track_idx, item_idx)
   local items = items_by_track[track_idx]
   if not items or not items[item_idx] then return end
   
   local item = items[item_idx]
   
-  -- Check directly if item is playing for more reliable toggle
-  if item.playing then
+  -- Vérifier si cet item est déjà en lecture - si oui, l'arrêter et sortir
+  if current_preview_item and current_preview_item.ptr == item.ptr then
     stop_preview_item(item)
     return
   end
   
-  -- If multi-selection is disabled for this column, stop all other items in this column
-  if not column_multi[track_idx] then
-    -- Stop all other items in this track
-    for i, other_item in ipairs(items) do
-      if other_item.ptr ~= item.ptr and other_item.playing then
-        stop_preview_item(other_item)
-      end
-    end
-    
-    -- If multi-selection is disabled, also stop items in other tracks
-    for other_track_idx, other_items in pairs(items_by_track) do
-      if other_track_idx ~= track_idx then
-        for _, other_item in ipairs(other_items) do
-          if other_item.playing then
-            stop_preview_item(other_item)
-          end
-        end
-      end
-    end
-  end
+  -- IMPORTANT: Toujours arrêter toutes les previews existantes d'abord
+  stopAllPreviews()
   
-  -- Is CF_Preview API available?
+  -- L'API CF_Preview est-elle disponible?
   if CF_API_available then
-    -- Get the item source
+    -- Obtenir la source de l'item
     local take = item.take_ptr
     local source = r.GetMediaItemTake_Source(take)
     
-    -- Calculate precise duration and offsets
+    -- Calculer précisément la durée et les offsets
     local take_offset = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
     local item_length = r.GetMediaItemInfo_Value(item.ptr, "D_LENGTH")
     local playback_rate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
     
-    -- Actual duration accounting for playback rate
+    -- Durée réelle tenant compte du playback rate
     local actual_duration = item_length * playback_rate
     
-    -- Create a new preview
+    -- Créer un nouveau preview
     local preview = r.CF_CreatePreview(source)
     if preview then
-      -- Configure the preview
+      -- Configurer le preview
       r.CF_Preview_SetValue(preview, "D_VOLUME", 1.0)
       
-      -- Use the item's track for output
+      -- Utiliser le track de l'item pour la sortie
       local track = r.GetMediaItemTrack(item.ptr)
       r.CF_Preview_SetOutputTrack(preview, 0, track)
       
-      -- Configure fade
+      -- Configurer le fade
       r.CF_Preview_SetValue(preview, "D_FADEINLEN", 0.02)
       r.CF_Preview_SetValue(preview, "D_FADEOUTLEN", 0.1)
       
-      -- Set start position (offset)
+      -- Définir la position de départ (offset)
       r.CF_Preview_SetValue(preview, "D_POSITION", take_offset)
       
-      -- Configure playback rate to match the item
+      -- Configurer le taux de lecture pour correspondre à l'item
       r.CF_Preview_SetValue(preview, "D_PLAYRATE", playback_rate)
-      r.CF_Preview_SetValue(preview, "B_LOOP", column_loops[track_idx] and 1 or 0)
+      r.CF_Preview_SetValue(preview, "B_LOOP", 0)
       
-      -- Start playback
+      -- Démarrer la lecture
       r.CF_Preview_Play(preview)
       
-      -- Store handle and information
+      -- Stocker le handle et les informations
       preview_handles[item.ptr] = preview
       preview_info[item.ptr] = {
         start_offset = take_offset,
         duration = actual_duration,
         end_position = take_offset + (actual_duration / playback_rate),
-        playback_rate = playback_rate,
-        track_idx = track_idx,
-        item_idx = item_idx
+        playback_rate = playback_rate
       }
       
-      -- Update item state
+      -- Mettre à jour l'état de l'item
       item.playing = true
-      item.item_idx = item_idx
       current_preview_item = item
       actually_playing = true
       
-      -- Add to playing_items tracking
-      playing_items[item.ptr] = {item = item, track_idx = track_idx, item_idx = item_idx}
-      
-      -- Update start time and duration
+      -- Mettre à jour le temps de démarrage et la durée
       preview_start_time = r.time_precise()
       preview_duration = actual_duration
       
       return true
     end
   else
-    -- Standard method if CF_Preview isn't available
+    -- Méthode standard si CF_Preview n'est pas disponible
     local success = false
     
     if ultraschall_available then
       success = ultraschall.PreviewMediaItem(item.ptr, 3)
     else
-      -- Standard method with precise duration calculation
+      -- Méthode standard avec calcul précis de la durée
       local take = item.take_ptr
       local source = r.GetMediaItemTake_Source(take)
       local track = r.GetMediaItemTrack(item.ptr)
       local take_offset = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
       local source_file = r.GetMediaSourceFileName(source, "")
       
-      -- Calculate exact duration
+      -- Calculer la durée exacte
       local item_length = r.GetMediaItemInfo_Value(item.ptr, "D_LENGTH")
       local playback_rate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
       local actual_duration = item_length
@@ -1451,12 +1095,8 @@ function play_preview_item(track_idx, item_idx)
     
     if success then
       item.playing = true
-      item.item_idx = item_idx
       current_preview_item = item
       actually_playing = true
-      
-      -- Add to playing_items tracking
-      playing_items[item.ptr] = {item = item, track_idx = track_idx, item_idx = item_idx}
       
       local take = item.take_ptr
       local item_length = r.GetMediaItemInfo_Value(item.ptr, "D_LENGTH") 
@@ -1470,30 +1110,26 @@ function play_preview_item(track_idx, item_idx)
   return false
 end
 
--- Stop a specific preview
+-- Arrêter un preview spécifique
 function stop_preview_item(item)
   if not item then return false end
   
   if CF_API_available and preview_handles[item.ptr] then
-    -- Stop with CF_Preview API
-    pcall(function() r.CF_Preview_Stop(preview_handles[item.ptr]) end)
+    -- Arrêter avec l'API CF_Preview
+    r.CF_Preview_Stop(preview_handles[item.ptr])
     preview_handles[item.ptr] = nil
     preview_info[item.ptr] = nil
     
-    -- Update state
+    -- Mettre à jour l'état
     item.playing = false
     if current_preview_item and current_preview_item.ptr == item.ptr then
       current_preview_item = nil
       actually_playing = false
     end
     
-    -- Remove from playing_items tracking
-    playing_items[item.ptr] = nil
-    
     return true
   else
-    -- If we don't have a reference to the specific preview handle, stop all previews
-    -- This is a fallback but not ideal for multi-selection
+    -- Fallback vers la méthode existante
     stopAllPreviews()
     return true
   end
@@ -1557,83 +1193,6 @@ function renameFolderFile(file_idx)
   end
 end
 
--- Function to toggle loop state for a column
-function toggleLoopColumn(column_idx)
-  column_loops[column_idx] = not column_loops[column_idx]
-  
-  -- Update preview loops if needed
-  if CF_API_available then
-    for ptr, preview in pairs(preview_handles) do
-      -- Check if this item belongs to the target column
-      local item_info = playing_items[ptr]
-      if item_info and item_info.track_idx == column_idx then
-        -- Update loop setting
-        pcall(function()
-          r.CF_Preview_SetValue(preview, "B_LOOP", column_loops[column_idx] and 1 or 0)
-        end)
-      end
-    end
-  end
-  
-  -- Save the settings
-  r.SetExtState("CP_SoundboardPistes", "column_loops", r.serialize(column_loops), true)
-end
-
--- Function to toggle multi-selection for a column
-function toggleMultiColumn(column_idx)
-  column_multi[column_idx] = not column_multi[column_idx]
-  
-  -- If turning off multi-selection, stop all but one item in the column
-  if not column_multi[column_idx] then
-    local found_first = false
-    
-    -- For folder files column
-    if column_idx == 0 then
-      -- Only allow one folder file to be active
-      local active_count = 0
-      local last_active = nil
-      
-      for _, file in ipairs(folder_files) do
-        if file.active then
-          active_count = active_count + 1
-          last_active = file
-        end
-      end
-      
-      if active_count > 1 and last_active then
-        -- Stop all but the last active file
-        for _, file in ipairs(folder_files) do
-          if file.active and file ~= last_active then
-            file.active = false
-            if file.fading_out then
-              file.fading_out = false
-              file.fade_start_time = nil
-            end
-          end
-        end
-      end
-    else
-      -- For track items
-      if items_by_track[column_idx] then
-        local items = items_by_track[column_idx]
-        for i, item in ipairs(items) do
-          if item.playing then
-            if found_first then
-              -- Stop any other playing items
-              stop_preview_item(item)
-            else
-              found_first = true
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- Save the settings
-  r.SetExtState("CP_SoundboardPistes", "column_multi", r.serialize(column_multi), true)
-end
-
 function handleItemClick(track_idx, item_idx)
   play_preview_item(track_idx, item_idx)
 end
@@ -1641,60 +1200,6 @@ end
 -- Function to handle folder file click
 function handleFolderFileClick(file_idx)
   play_folder_file(file_idx)
-end
-
--- Calculate progress for a playing item or file
-function calculateProgress(start_time, duration)
-  if start_time == 0 or duration == 0 then return 0 end
-  
-  local current_time = r.time_precise()
-  local elapsed = current_time - start_time
-  local progress = elapsed / duration
-  
-  -- Clamp progress between 0 and 1
-  return math.max(0, math.min(1, progress))
-end
-
--- Update progress for all playing items
-function updateProgressBars()
-  -- Update progress for folder files
-  for _, file in ipairs(folder_files) do
-    if file.active and file.start_time > 0 and file.source_length then
-      file.progress = calculateProgress(file.start_time, file.source_length)
-    else
-      file.progress = 0
-    end
-  end
-  
-  -- Update progress for preview items
-  if CF_API_available then
-    for ptr, preview in pairs(preview_handles) do
-      local status, position = pcall(function() return r.CF_Preview_GetValue(preview, "D_POSITION") end)
-      local info = preview_info[ptr]
-      
-      if status and position and info then
-        -- Calculate progress based on position
-        local total_length = info.end_position - info.start_offset
-        local current_pos = position - info.start_offset
-        local progress = current_pos / total_length
-        
-        -- Update progress in all relevant items
-        for _, items in pairs(items_by_track) do
-          for _, item in ipairs(items) do
-            if item.ptr == ptr then
-              item.progress = math.max(0, math.min(1, progress))
-            end
-          end
-        end
-      end
-    end
-  elseif current_preview_item then
-    -- Fallback method
-    local elapsed = r.time_precise() - preview_start_time
-    if preview_duration > 0 then
-      current_preview_item.progress = math.max(0, math.min(1, elapsed / preview_duration))
-    end
-  end
 end
 
 -- Function to display folder files column
@@ -1706,7 +1211,7 @@ function display_folder_column(column_width)
   r.ImGui_PushStyleVar(gui.ctx, r.ImGui_StyleVar_ChildRounding(), config.child_rounding)
   
   -- Create the column container with border
-  local child_flags = r.ImGui_WindowFlags_None() -- Use None instead of Border which doesn't exist
+  local child_flags = r.ImGui_WindowFlags_None() -- Utilise None au lieu de Border qui n'existe pas
   
   if r.ImGui_BeginChild(gui.ctx, "FolderFiles", column_width, 0, child_flags) then
     -- Increased spacing and padding for header
@@ -1718,16 +1223,12 @@ function display_folder_column(column_width)
     -- Use title font if available
     if gui.title_font then r.ImGui_PushFont(gui.ctx, gui.title_font) end
 
-    -- Calculate the width needed for buttons
-    local browse_width = 85 -- Adjust if necessary based on the actual button size
-    local loop_width = 60
-    local multi_width = 60
-    local buttons_width = browse_width + loop_width
+    -- Calculate the width needed for browse button and spacing
+    local browse_width = 85 -- Ajustez si nécessaire selon la taille réelle du bouton
+    local browse_pos = column_width - browse_width
     local text_width = r.ImGui_CalcTextSize(gui.ctx, "Music")
-    
-    -- Center the title between left edge and buttons
-    local title_pos = (column_width - buttons_width - text_width) / 2
-    
+    local title_pos = (browse_pos - text_width) / 2
+
     -- Set cursor position to center title
     r.ImGui_SetCursorPosX(gui.ctx, title_pos)
     r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Text(), config.first_column_color)
@@ -1737,29 +1238,10 @@ function display_folder_column(column_width)
     if gui.title_font then r.ImGui_PopFont(gui.ctx) end
 
     r.ImGui_SameLine(gui.ctx)
+    r.ImGui_SetCursorPosX(gui.ctx, browse_pos) -- Position the button at the right sides
+
     
-    -- Loop button - only for folder column
-    r.ImGui_SetCursorPosX(gui.ctx, column_width - browse_width - loop_width - 4) -- Position next to Browse
-    
-    -- Loop button styling
-    if column_loops[0] then
-      r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), 0x00AA55FF) -- Green if active
-    else
-      r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), 0x555555FF) -- Gray if inactive
-    end
-    r.ImGui_PushStyleVar(gui.ctx, r.ImGui_StyleVar_FrameRounding(), config.button_rounding)
-    
-    -- Small loop button
-    if r.ImGui_Button(gui.ctx, "Loop##folder") then
-      toggleLoopColumn(0)
-    end
-    
-    r.ImGui_PopStyleVar(gui.ctx)
-    r.ImGui_PopStyleColor(gui.ctx)
-    
-    r.ImGui_SameLine(gui.ctx)
-    
-    -- Browse button styling
+    -- Prettier button style
     r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), 0x3D78B4FF)
     r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_ButtonHovered(), 0x4D88C4FF)
     r.ImGui_PushStyleVar(gui.ctx, r.ImGui_StyleVar_FrameRounding(), config.button_rounding)
@@ -1776,11 +1258,14 @@ function display_folder_column(column_width)
     r.ImGui_PopStyleVar(gui.ctx)
     r.ImGui_PopStyleColor(gui.ctx, 2)
     
+    -- r.ImGui_Dummy(gui.ctx, 0, 5) -- Add bottom spacing to vertically center the title
+    
     -- Crossfade slider with better layout
     r.ImGui_Dummy(gui.ctx, 0, 0) -- Add bottom spacing to vertically center the title
 
-    -- Separator should be at the same level as in display_track_column
+    -- Le séparateur doit être au même niveau que dans display_track_column
     r.ImGui_Separator(gui.ctx)
+    -- r.ImGui_Dummy(gui.ctx, 0, config.section_spacing) -- Add spacing after separator
     
     -- Fade control with more space and proper margins
     r.ImGui_SetCursorPosX(gui.ctx, config.text_margin) -- Left margin for text
@@ -1796,8 +1281,12 @@ function display_folder_column(column_width)
     
     r.ImGui_PopStyleColor(gui.ctx, 2)
     
+    -- Espace supplémentaire après le slider de crossfade
+    -- r.ImGui_Dummy(gui.ctx, 0, config.section_spacing)
+    
     r.ImGui_PopStyleVar(gui.ctx) -- Pop item spacing
     
+    -- r.ImGui_Dummy(gui.ctx, 0, config.section_spacing) -- Add space after the crossfade control
     r.ImGui_Separator(gui.ctx)
     r.ImGui_Dummy(gui.ctx, 0, config.section_spacing) -- Add spacing after separator
     
@@ -1811,12 +1300,12 @@ function display_folder_column(column_width)
         if file.active then
           r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), config.active_color)
           
-          -- Use red for hover on an active file (indicates "stop")
+          -- Utiliser une couleur rouge pour le survol d'un fichier déjà actif (indique "stop")
           r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_ButtonHovered(), 0xAA3333FF)
         else
           r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), config.inactive_color)
           
-          -- Normal hover color for inactive items
+          -- Couleur de survol normale pour les items inactifs
           r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_ButtonHovered(), config.item_hover_color)
         end
         
@@ -1828,25 +1317,15 @@ function display_folder_column(column_width)
           handleFolderFileClick(i)
         end
         
-        -- Draw progress bar overlay if file is active
-        if file.active and file.progress > 0 then
-          local last_pos_x, last_pos_y = r.ImGui_GetItemRectMin(gui.ctx)
-          local last_width, last_height = r.ImGui_GetItemRectSize(gui.ctx)
-          local prog_width = file.progress * last_width
-          
-          -- Draw progress bar with improved contrast
-          local draw_list = r.ImGui_GetWindowDrawList(gui.ctx)
-          r.ImGui_DrawList_AddRectFilled(draw_list, last_pos_x, last_pos_y, last_pos_x + prog_width, last_pos_y + last_height, 0x00AA88FF) -- Increased alpha to FF for more contrast
-        end
-        
         -- Handle right-click for renaming
         if r.ImGui_IsItemClicked(gui.ctx, 1) then -- 1 = right mouse button
           renameFolderFile(i)
         end
         
-        -- Tooltip with path only
+        -- Tooltip with full info
         if config.show_tooltips and r.ImGui_IsItemHovered(gui.ctx) then
           r.ImGui_BeginTooltip(gui.ctx)
+          r.ImGui_Text(gui.ctx, "Filename: " .. file.filename)
           r.ImGui_Text(gui.ctx, "Full path: " .. file.path)
           r.ImGui_EndTooltip(gui.ctx)
         end
@@ -1870,25 +1349,25 @@ function display_folder_column(column_width)
   r.ImGui_PopStyleColor(gui.ctx, 2) -- Pop ChildBg and Border colors
 end
 
--- Helper function for ImGui_BeginChild
+-- Fonction d'aide pour ImGui_BeginChild
 function getChildFlags(border)
   if border then
-    -- No WindowFlags_Border in REAPER, use None() instead
+    -- Pas de WindowFlags_Border dans REAPER, utilisons None() à la place
     return r.ImGui_WindowFlags_None()
   else
     return 0
   end
 end
 
--- Reload and apply styles in real time (for immediate preview)
+-- Recharger et appliquer les styles en temps réel (pour l'aperçu immédiat)
 function reloadStyleConfig()
-  -- Try to load style configuration from ExtState
+  -- Essaie de charger la configuration de style depuis l'ExtState
   local new_config = false
   local ext_state = r.GetExtState("CP_ProjectSoundboard", "style_config")
   if ext_state ~= "" then
     local success, loaded_config = pcall(function() return load("return " .. ext_state)() end)
     if success and type(loaded_config) == "table" then
-      -- Merge with current configuration
+      -- Fusionner avec la configuration actuelle
       for k, v in pairs(loaded_config) do
         config[k] = v
       end
@@ -1912,7 +1391,7 @@ function display_track_column(track_idx, column_width)
   r.ImGui_PushStyleVar(gui.ctx, r.ImGui_StyleVar_ChildRounding(), config.child_rounding)
   
   -- Create the column container with border
-  local child_flags = r.ImGui_WindowFlags_None() -- Use None instead of Border which doesn't exist
+  local child_flags = r.ImGui_WindowFlags_None() -- Utilise None au lieu de Border qui n'existe pas
   
   if r.ImGui_BeginChild(gui.ctx, "Track_" .. track_idx, column_width, 0, child_flags) then
     -- Column header with track name
@@ -1925,17 +1404,10 @@ function display_track_column(track_idx, column_width)
     -- Use title font if available
     if gui.title_font then r.ImGui_PushFont(gui.ctx, gui.title_font) end
     
-    -- Buttons for loop and multi-selection
-    local loop_width = 60
-    local multi_width = 60
-    local buttons_width = loop_width + multi_width
-    
-    -- Calculate center position for track name
+    -- Center track name text
     local text_width = r.ImGui_CalcTextSize(gui.ctx, track.name)
-    local title_pos = (column_width - buttons_width - text_width) / 2
-    
-    -- Set cursor position to center the title
-    r.ImGui_SetCursorPosX(gui.ctx, title_pos)
+    local content_width = r.ImGui_GetContentRegionAvail(gui.ctx)
+    r.ImGui_SetCursorPosX(gui.ctx, (content_width - text_width) / 2)
     
     -- Make track name clickable for right-click renaming
     r.ImGui_Text(gui.ctx, track.name)
@@ -1945,43 +1417,6 @@ function display_track_column(track_idx, column_width)
     if r.ImGui_IsItemClicked(gui.ctx, 1) then -- 1 = right mouse button
       renameTrack(track_idx)
     end
-    
-    r.ImGui_SameLine(gui.ctx)
-    
-    -- Loop button
-    r.ImGui_SetCursorPosX(gui.ctx, column_width - buttons_width - 4)
-    
-    -- Loop button styling
-    if column_loops[track.index] then
-      r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), 0x00AA55FF) -- Green if active
-    else
-      r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), 0x555555FF) -- Gray if inactive
-    end
-    r.ImGui_PushStyleVar(gui.ctx, r.ImGui_StyleVar_FrameRounding(), config.button_rounding)
-    
-    if r.ImGui_Button(gui.ctx, "Loop##track_" .. track_idx) then
-      toggleLoopColumn(track.index)
-    end
-    
-    r.ImGui_PopStyleVar(gui.ctx)
-    r.ImGui_PopStyleColor(gui.ctx)
-    
-    r.ImGui_SameLine(gui.ctx)
-    
-    -- Multi button
-    if column_multi[track.index] then
-      r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), 0x0088AAFF) -- Blue if active
-    else
-      r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), 0x555555FF) -- Gray if inactive
-    end
-    r.ImGui_PushStyleVar(gui.ctx, r.ImGui_StyleVar_FrameRounding(), config.button_rounding)
-    
-    if r.ImGui_Button(gui.ctx, "Multi##track_" .. track_idx) then
-      toggleMultiColumn(track.index)
-    end
-    
-    r.ImGui_PopStyleVar(gui.ctx)
-    r.ImGui_PopStyleColor(gui.ctx)
     
     r.ImGui_Dummy(gui.ctx, 0, 0) -- Add bottom spacing to vertically center the title
     
@@ -1999,14 +1434,14 @@ function display_track_column(track_idx, column_width)
       for item_idx, item in ipairs(column_items) do
         -- Button style based on playback state
         if item.playing then
-          r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), config.active_color) -- Active color
+          r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), config.active_color) -- Couleur active
           
-          -- Use red for hover on an active item (indicates "stop")
+          -- Utiliser une couleur rouge pour le survol d'un item déjà actif (indique "stop")
           r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_ButtonHovered(), 0xAA3333FF)
         else
-          r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), config.inactive_color) -- Inactive color
+          r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_Button(), config.inactive_color) -- Couleur inactive
           
-          -- Normal hover color for inactive items
+          -- Couleur de survol normale pour les items inactifs
           r.ImGui_PushStyleColor(gui.ctx, r.ImGui_Col_ButtonHovered(), config.item_hover_color)
         end
         
@@ -2017,26 +1452,16 @@ function display_track_column(track_idx, column_width)
         if r.ImGui_Button(gui.ctx, item.name .. "##" .. track_idx .. "_" .. item_idx, avail_width, config.item_height) then
           handleItemClick(track.index, item_idx)
         end
-        
-        -- Draw progress bar overlay if item is playing
-        if item.playing and item.progress > 0 then
-          local last_pos_x, last_pos_y = r.ImGui_GetItemRectMin(gui.ctx)
-          local last_width, last_height = r.ImGui_GetItemRectSize(gui.ctx)
-          local prog_width = item.progress * last_width
-          
-          -- Draw progress bar with improved contrast
-          local draw_list = r.ImGui_GetWindowDrawList(gui.ctx)
-          r.ImGui_DrawList_AddRectFilled(draw_list, last_pos_x, last_pos_y, last_pos_x + prog_width, last_pos_y + last_height, 0x0088AAFF) -- Increased alpha to FF for more contrast
-        end
 
-        -- Right-click detection for renaming
-        if r.ImGui_IsItemClicked(gui.ctx, 1) then -- 1 = right click
+        -- Détection du clic droit pour renommer
+        if r.ImGui_IsItemClicked(gui.ctx, 1) then -- 1 = clic droit
           renameItem(track.index, item_idx)
         end
         
-        -- Tooltip with item length only
+        -- Tooltip with item position and length
         if config.show_tooltips and r.ImGui_IsItemHovered(gui.ctx) then
           r.ImGui_BeginTooltip(gui.ctx)
+          r.ImGui_Text(gui.ctx, string.format("Position: %.2f s", item.position))
           r.ImGui_Text(gui.ctx, string.format("Length: %.2f s", item.length))
           r.ImGui_EndTooltip(gui.ctx)
         end
@@ -2078,20 +1503,11 @@ function loop()
   
   -- Check if it's time to update preview state
   if current_time - last_preview_check >= config.preview_check_interval then
-    local success = pcall(checkPreviewState)
-    if not success then
-      -- Si une erreur se produit, arrêter toute la lecture pour éviter des blocages
-      stopAllPreviews()
-      if current_folder_file then
-        stopAllFolderFiles()
-      end
-    end
-    
-    pcall(updateProgressBars)  -- Exécuter updateProgressBars en toute sécurité
+    checkPreviewState()
     last_preview_check = current_time
     
-    -- Check if there are style changes to apply (for immediate preview)
-    pcall(reloadStyleConfig)  -- Exécuter reloadStyleConfig en toute sécurité
+    -- Vérifier s'il y a des modifications de style à appliquer (pour l'aperçu immédiat)
+    reloadStyleConfig()
   end
   
   -- Apply global styles if available
@@ -2113,7 +1529,7 @@ function loop()
   local window_flags = r.ImGui_WindowFlags_None()
   
   -- Begin window
-  local visible, open = r.ImGui_Begin(gui.ctx, 'Musics', true, window_flags)
+  local visible, open = r.ImGui_Begin(gui.ctx, 'Soundboard', true, window_flags) -- Changed from 'Soundboard' to 'Musics'
   
   -- Get new dock state for tracking
   if r.ImGui_GetWindowDockID then
@@ -2129,20 +1545,20 @@ function loop()
       r.ImGui_PushFont(gui.ctx, gui.font)
     end
     
-    -- Modify the dimensions calculation section
+    -- Modifiez la section de calcul des dimensions
     local window_width = r.ImGui_GetWindowWidth(gui.ctx)
     local track_count = #tracks
 
-    -- Reserve space for right margin from the start
+    -- Réservez de l'espace pour la marge droite dès le départ
     local right_margin = config.column_spacing
     local adjusted_width = window_width - right_margin * 2
 
-    -- Calculate columns with the adjusted width
+    -- Calculez ensuite les colonnes avec la largeur ajustée
     local max_columns = track_count + 1 
     local columns_to_display = math.min(max_columns, config.columns_per_page)
     if columns_to_display <= 0 then columns_to_display = 1 end
 
-    -- Calculate column width with the new adjusted width
+    -- Calculez la largeur de colonne avec la nouvelle largeur ajustée
     local total_spacing = config.column_spacing * (columns_to_display - 1)
     local column_width = (adjusted_width - total_spacing) / columns_to_display
         
@@ -2158,7 +1574,7 @@ function loop()
       display_track_column(i, column_width)
     end
     
-    -- Add empty spacing to the right for the last column
+    -- Ajouter un espacement vide à droite pour la dernière colonne
     if columns_to_display > 0 then
       r.ImGui_SameLine(gui.ctx)
       r.ImGui_Dummy(gui.ctx, config.column_spacing, 1)

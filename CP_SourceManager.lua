@@ -1,32 +1,21 @@
--- @description Media Source Version Manager GUI
--- @version 1.0
--- @author Claude
--- @about
---   GUI for managing media source versions and synchronizing with project versions
-
 local r = reaper
 
--- Create ImGui context
-local ctx = r.ImGui_CreateContext('Media Source Version Manager')
-local WINDOW_FLAGS = r.ImGui_WindowFlags_NoCollapse()
+local sl = nil
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
--- Style loader integration
-local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
-local style_loader = nil
-local pushed_colors = 0
-local pushed_vars = 0
+local ctx = r.ImGui_CreateContext('Source Manager')
+local pc, pv = 0, 0
 
--- Try to load style loader module
-local file = io.open(style_loader_path, "r")
-if file then
-  file:close()
-  local loader_func = dofile(style_loader_path)
-  if loader_func then
-    style_loader = loader_func()
-  end
+if sl then sl.applyFontsToContext(ctx) end
+
+function getFont(font_name)
+    if sl then return sl.getFont(ctx, font_name) end
+    return nil
 end
 
--- Configuration variables
+local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse() 
+
 local config = {
     selected_items = {},
     common_directory = "",
@@ -38,12 +27,28 @@ local config = {
     multiple_directories = false,
     search_query = "",
     filtered_media = {},
-    adjust_item_size = true
+    adjust_item_size = true,
+    rename_buffer = ""
 }
 
--- Function to get next file in sequence
+local temp_sources = {}
+
+function safelyDestroySource(source)
+    if source then
+        if r.PCM_Source_Destroy then
+            r.PCM_Source_Destroy(source)
+        end
+    end
+end
+
+function cleanupTempSources()
+    for i, source in ipairs(temp_sources) do
+        safelyDestroySource(source)
+    end
+    temp_sources = {}
+end
+
 function findNextFile(currentFile)
-    -- Get directory and file info
     local directory = currentFile:match("(.+)[/\\]")
     local baseName = currentFile:match("^.+[/\\](.+)$")
     
@@ -52,19 +57,16 @@ function findNextFile(currentFile)
     local extension = baseName:match("%.([^%.]+)$")
     if not extension then return nil end
     
-    -- Obtenir le nom de base sans l'extension
     local nameWithoutExt = baseName:match("(.+)%.")
     if not nameWithoutExt then return nil end
     
-    -- Vérifier si le fichier a déjà une numérotation
     local hasNumber = false
     local prefix, currentNum, separator
     
-    -- Patterns pour détecter différents formats de version
     local patterns = {
-        {pattern = "%-(%d+)%.", separator = "-"},  -- -1, -01, -001
-        {pattern = "_(%d+)%.", separator = "_"},   -- _1, _01, _001
-        {pattern = " (%d+)%.", separator = " "}    -- espace 1, espace 01, espace 001
+        {pattern = "%-(%d+)%.", separator = "-"},
+        {pattern = "_(%d+)%.", separator = "_"},
+        {pattern = " (%d+)%.", separator = " "}
     }
     
     for _, pat in ipairs(patterns) do
@@ -76,15 +78,12 @@ function findNextFile(currentFile)
             prefix = baseName:match("(.+)" .. separator .. "%d+")
             
             if prefix and currentNum then
-                -- Préserve le zéro-padding (ex: 001 -> 002)
                 local formatStr = string.format("%%0%dd", #numStr)
                 local nextNum = string.format(formatStr, currentNum + 1)
                 
-                -- Créer le chemin du fichier suivant
                 local nextFile = string.format("%s%s%s.%s", prefix, separator, nextNum, extension)
                 local fullPath = directory .. "/" .. nextFile
                 
-                -- Vérifier si le fichier existe
                 local file = io.open(fullPath, "r")
                 if file then
                     file:close()
@@ -92,13 +91,11 @@ function findNextFile(currentFile)
                 end
             end
             
-            break -- Sort de la boucle une fois qu'un pattern a été trouvé
+            break
         end
     end
     
-    -- Si le fichier n'a pas de numérotation, chercher la version 01
     if not hasNumber then
-        -- Essayer les différents formats de numérotation pour trouver une version "01"
         local potential_next_files = {
             directory .. "/" .. nameWithoutExt .. "-01." .. extension,
             directory .. "/" .. nameWithoutExt .. "-1." .. extension,
@@ -120,9 +117,7 @@ function findNextFile(currentFile)
     return nil
 end
 
--- Function to get previous file in sequence
 function findPreviousFile(currentFile)
-    -- Get directory and file info
     local directory = currentFile:match("(.+)[/\\]")
     local baseName = currentFile:match("^.+[/\\](.+)$")
     
@@ -131,11 +126,10 @@ function findPreviousFile(currentFile)
     local extension = baseName:match("%.([^%.]+)$")
     if not extension then return nil end
     
-    -- Patterns pour détecter différents formats de version
     local patterns = {
-        {pattern = "%-(%d+)%.", separator = "-"},  -- -1, -01, -001
-        {pattern = "_(%d+)%.", separator = "_"},   -- _1, _01, _001
-        {pattern = " (%d+)%.", separator = " "}    -- espace 1, espace 01, espace 001
+        {pattern = "%-(%d+)%.", separator = "-"},
+        {pattern = "_(%d+)%.", separator = "_"},
+        {pattern = " (%d+)%.", separator = " "}
     }
     
     for _, pat in ipairs(patterns) do
@@ -146,26 +140,21 @@ function findPreviousFile(currentFile)
             
             if prefix and currentNum then
                 if currentNum > 1 then
-                    -- Préserve le zéro-padding (ex: 002 -> 001)
                     local formatStr = string.format("%%0%dd", #numStr)
                     local prevNum = string.format(formatStr, currentNum - 1)
                     
-                    -- Créer le chemin du fichier précédent
                     local prevFile = string.format("%s%s%s.%s", prefix, pat.separator, prevNum, extension)
                     local fullPath = directory .. "/" .. prevFile
                     
-                    -- Vérifier si le fichier existe
                     local file = io.open(fullPath, "r")
                     if file then
                         file:close()
                         return fullPath
                     end
                 elseif currentNum == 1 then
-                    -- Si on est à 1, chercher la version de base sans numéro
                     local baseFile = string.format("%s.%s", prefix, extension)
                     local fullPath = directory .. "/" .. baseFile
                     
-                    -- Vérifier si le fichier de base existe
                     local file = io.open(fullPath, "r")
                     if file then
                         file:close()
@@ -179,7 +168,6 @@ function findPreviousFile(currentFile)
     return nil
 end
 
--- Function to extract project version number
 function getProjectVersion()
     local _, projectPath = r.EnumProjects(-1)
     if not projectPath then return nil end
@@ -191,7 +179,6 @@ function getProjectVersion()
     return tonumber(version)
 end
 
--- Function to construct versioned filename
 function constructVersionedFile(currentFile, targetVersion)
     local directory = currentFile:match("(.+)[/\\]")
     local baseName = currentFile:match("^.+[/\\](.+)$")
@@ -200,19 +187,16 @@ function constructVersionedFile(currentFile, targetVersion)
     local extension = baseName:match("%.([^%.]+)$")
     if not extension then return nil end
     
-    -- Handle different naming patterns
     local prefix
-    local currentVersion = baseName:match("[_-]v?(%d+)%.") -- Match _2. or _v2. or -2. or -v2.
+    local currentVersion = baseName:match("[_-]v?(%d+)%.")
     
     if currentVersion then
         prefix = baseName:match("(.+)[_-]v?%d+")
         if not prefix then return nil end
         
-        -- Create new versioned filename
         local newFile = string.format("%s_%d.%s", prefix, targetVersion, extension)
         return directory .. "/" .. newFile
     else
-        -- Handle case where file doesn't have version number
         prefix = baseName:match("(.+)%.")
         if not prefix then return nil end
         
@@ -221,7 +205,6 @@ function constructVersionedFile(currentFile, targetVersion)
     end
 end
 
--- Function to get common directory and reference files for selected items
 function getCommonDirectoryAndReferenceFiles()
     if #config.selected_items == 0 then return nil, {}, false end
     
@@ -242,7 +225,6 @@ function getCommonDirectoryAndReferenceFiles()
         end
     end
     
-    -- Check if all items are from the same directory
     local common_dir = nil
     local multiple_dirs = false
     
@@ -278,7 +260,6 @@ function filterMedia(media_list, query)
     return filtered
 end
 
--- Function to scan available media files in directory
 function scanAvailableMedia(directory)
     if not directory then return {} end
     
@@ -290,7 +271,6 @@ function scanAvailableMedia(directory)
         ["rpp"] = true
     }
     
-    -- List all files in directory
     local files = {}
     local i = 0
     repeat
@@ -301,7 +281,6 @@ function scanAvailableMedia(directory)
         i = i + 1
     until not fileName
     
-    -- Filter to keep only media files
     for _, fileName in ipairs(files) do
         local extension = fileName:match("%.([^%.]+)$")
         if extension and supported_extensions[extension:lower()] then
@@ -313,19 +292,35 @@ function scanAvailableMedia(directory)
         end
     end
     
-    -- Sort alphabetically
     table.sort(media_files, function(a, b) return a.name < b.name end)
     
     return media_files
 end
 
--- Function to get filename from path
 function getFilenameFromPath(path)
     if not path then return "" end
     return path:match("([^/\\]+)$") or path
 end
 
--- Function to update selected items to previous version
+function getSafeSourceLength(filePath)
+    if not filePath then return 0, false end
+    
+    local source_length = 0
+    local temp_source = r.PCM_Source_CreateFromFile(filePath)
+    
+    table.insert(temp_sources, temp_source)
+    
+    if temp_source then
+        source_length, lengthIsQN = r.GetMediaSourceLength(temp_source)
+        if lengthIsQN then
+            local tempo = r.Master_GetTempo()
+            source_length = source_length * 60 / tempo
+        end
+    end
+    
+    return source_length, lengthIsQN
+end
+
 function updateItemsToPreviousVersion()
     if #config.selected_items == 0 then return 0, 0 end
     
@@ -334,33 +329,29 @@ function updateItemsToPreviousVersion()
     
     r.Undo_BeginBlock()
     
+    cleanupTempSources()
+    
     for _, item in ipairs(config.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local source = r.GetMediaItemTake_Source(take)
             local currentFile = r.GetMediaSourceFileName(source)
             
-            -- Find previous file
             local prevFile = findPreviousFile(currentFile)
             if prevFile then
-                -- Si on ajuste la taille, obtenir d'abord la longueur de la source
                 local source_length = 0
                 if config.adjust_item_size then
-                    local temp_source = r.PCM_Source_CreateFromFile(prevFile)
-                    if temp_source then
-                        source_length, lengthIsQN = r.GetMediaSourceLength(temp_source)
-                        if lengthIsQN then
-                            -- Convertir la longueur MIDI en temps
-                            local tempo = r.Master_GetTempo()
-                            source_length = source_length * 60 / tempo
-                        end
-                    end
+                    source_length = getSafeSourceLength(prevFile)
                 end
                 
-                -- Create new source and set it
+                local oldSource = r.GetMediaItemTake_Source(take)
                 local newSource = r.PCM_Source_CreateFromFile(prevFile)
+                
                 if r.SetMediaItemTake_Source(take, newSource) then
-                    -- Ajuster la longueur de l'item si l'option est activée
+                    if oldSource and r.PCM_Source_Destroy then
+                        r.PCM_Source_Destroy(oldSource)
+                    end
+                    
                     if config.adjust_item_size and source_length > 0 then
                         r.SetMediaItemInfo_Value(item, "D_LENGTH", source_length)
                     end
@@ -369,6 +360,9 @@ function updateItemsToPreviousVersion()
                     r.SetMediaItemSelected(item, true)
                     updatedCount = updatedCount + 1
                 else
+                    if newSource and r.PCM_Source_Destroy then
+                        r.PCM_Source_Destroy(newSource)
+                    end
                     errorCount = errorCount + 1
                 end
             else
@@ -377,17 +371,17 @@ function updateItemsToPreviousVersion()
         end
     end
     
-    -- Force build peaks for all selected items
     if updatedCount > 0 then
-        r.Main_OnCommand(40441, 0) -- Build peaks for selected items
+        r.Main_OnCommand(40441, 0)
     end
+    
+    cleanupTempSources()
     
     r.Undo_EndBlock("Update media sources to previous version", -1)
     
     return updatedCount, errorCount
 end
 
--- Function to update selected items to next version
 function updateItemsToNextVersion()
     if #config.selected_items == 0 then return 0, 0 end
     
@@ -396,33 +390,29 @@ function updateItemsToNextVersion()
     
     r.Undo_BeginBlock()
     
+    cleanupTempSources()
+    
     for _, item in ipairs(config.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local source = r.GetMediaItemTake_Source(take)
             local currentFile = r.GetMediaSourceFileName(source)
             
-            -- Find next file
             local nextFile = findNextFile(currentFile)
             if nextFile then
-                -- Si on ajuste la taille, obtenir d'abord la longueur de la source
                 local source_length = 0
                 if config.adjust_item_size then
-                    local temp_source = r.PCM_Source_CreateFromFile(nextFile)
-                    if temp_source then
-                        source_length, lengthIsQN = r.GetMediaSourceLength(temp_source)
-                        if lengthIsQN then
-                            -- Convertir la longueur MIDI en temps
-                            local tempo = r.Master_GetTempo()
-                            source_length = source_length * 60 / tempo
-                        end
-                    end
+                    source_length = getSafeSourceLength(nextFile)
                 end
                 
-                -- Create new source and set it
+                local oldSource = r.GetMediaItemTake_Source(take)
                 local newSource = r.PCM_Source_CreateFromFile(nextFile)
+                
                 if r.SetMediaItemTake_Source(take, newSource) then
-                    -- Ajuster la longueur de l'item si l'option est activée
+                    if oldSource and r.PCM_Source_Destroy then
+                        r.PCM_Source_Destroy(oldSource)
+                    end
+                    
                     if config.adjust_item_size and source_length > 0 then
                         r.SetMediaItemInfo_Value(item, "D_LENGTH", source_length)
                     end
@@ -431,6 +421,9 @@ function updateItemsToNextVersion()
                     r.SetMediaItemSelected(item, true)
                     updatedCount = updatedCount + 1
                 else
+                    if newSource and r.PCM_Source_Destroy then
+                        r.PCM_Source_Destroy(newSource)
+                    end
                     errorCount = errorCount + 1
                 end
             else
@@ -439,17 +432,17 @@ function updateItemsToNextVersion()
         end
     end
     
-    -- Force build peaks for all selected items
     if updatedCount > 0 then
-        r.Main_OnCommand(40441, 0) -- Build peaks for selected items
+        r.Main_OnCommand(40441, 0)
     end
+    
+    cleanupTempSources()
     
     r.Undo_EndBlock("Update media sources to next version", -1)
     
     return updatedCount, errorCount
 end
 
--- Function to sync with project version
 function syncWithProjectVersion()
     local version = getProjectVersion()
     if not version then return 0, 0 end
@@ -461,6 +454,8 @@ function syncWithProjectVersion()
     
     r.Undo_BeginBlock()
     
+    cleanupTempSources()
+    
     for _, item in ipairs(config.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
@@ -469,29 +464,23 @@ function syncWithProjectVersion()
             
             local versionedFile = constructVersionedFile(currentFile, version)
             if versionedFile then
-                -- Check if versioned file exists
                 local file = io.open(versionedFile, "r")
                 if file then
                     file:close()
                     
-                    -- Si on ajuste la taille, obtenir d'abord la longueur de la source
                     local source_length = 0
                     if config.adjust_item_size then
-                        local temp_source = r.PCM_Source_CreateFromFile(versionedFile)
-                        if temp_source then
-                            source_length, lengthIsQN = r.GetMediaSourceLength(temp_source)
-                            if lengthIsQN then
-                                -- Convertir la longueur MIDI en temps
-                                local tempo = r.Master_GetTempo()
-                                source_length = source_length * 60 / tempo
-                            end
-                        end
+                        source_length = getSafeSourceLength(versionedFile)
                     end
                     
-                    -- Update source
+                    local oldSource = r.GetMediaItemTake_Source(take)
                     local newSource = r.PCM_Source_CreateFromFile(versionedFile)
+                    
                     if r.SetMediaItemTake_Source(take, newSource) then
-                        -- Ajuster la longueur de l'item si l'option est activée
+                        if oldSource and r.PCM_Source_Destroy then
+                            r.PCM_Source_Destroy(oldSource)
+                        end
+                        
                         if config.adjust_item_size and source_length > 0 then
                             r.SetMediaItemInfo_Value(item, "D_LENGTH", source_length)
                         end
@@ -500,6 +489,9 @@ function syncWithProjectVersion()
                         r.SetMediaItemSelected(item, true)
                         updatedCount = updatedCount + 1
                     else
+                        if newSource and r.PCM_Source_Destroy then
+                            r.PCM_Source_Destroy(newSource)
+                        end
                         errorCount = errorCount + 1
                     end
                 else
@@ -511,17 +503,17 @@ function syncWithProjectVersion()
         end
     end
     
-    -- Force build peaks for all selected items
     if updatedCount > 0 then
-        r.Main_OnCommand(40441, 0) -- Build peaks for selected items
+        r.Main_OnCommand(40441, 0)
     end
+    
+    cleanupTempSources()
     
     r.Undo_EndBlock("Sync media sources to project version", -1)
     
     return updatedCount, errorCount
 end
 
--- Function to update to specific media file
 function updateToMediaFile(mediaPath)
     if not mediaPath or #config.selected_items == 0 then return 0, 0 end
     
@@ -530,27 +522,25 @@ function updateToMediaFile(mediaPath)
     
     r.Undo_BeginBlock()
     
-    -- If we need to adjust size, get source length first
+    cleanupTempSources()
+    
     local source_length = 0
     if config.adjust_item_size then
-        local temp_source = r.PCM_Source_CreateFromFile(mediaPath)
-        if temp_source then
-            source_length, lengthIsQN = r.GetMediaSourceLength(temp_source)
-            if lengthIsQN then
-                -- Convert MIDI length to time
-                local tempo = r.Master_GetTempo()
-                source_length = source_length * 60 / tempo
-            end
-        end
+        source_length = getSafeSourceLength(mediaPath)
     end
     
     for _, item in ipairs(config.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
-            -- Create new source and set it
+            local oldSource = r.GetMediaItemTake_Source(take)
+            
             local newSource = r.PCM_Source_CreateFromFile(mediaPath)
+            
             if newSource and r.SetMediaItemTake_Source(take, newSource) then
-                -- Adjust item length if enabled and we have a valid source length
+                if oldSource and r.PCM_Source_Destroy then
+                    r.PCM_Source_Destroy(oldSource)
+                end
+                
                 if config.adjust_item_size and source_length > 0 then
                     r.SetMediaItemInfo_Value(item, "D_LENGTH", source_length)
                 end
@@ -558,50 +548,182 @@ function updateToMediaFile(mediaPath)
                 r.UpdateItemInProject(item)
                 updatedCount = updatedCount + 1
                 
-                -- Force peak building for the item
                 r.SetMediaItemSelected(item, true)
             else
+                if newSource and r.PCM_Source_Destroy then
+                    r.PCM_Source_Destroy(newSource)
+                end
                 errorCount = errorCount + 1
             end
         end
     end
     
-    -- Force build peaks for all selected items
     if updatedCount > 0 then
-        r.Main_OnCommand(40441, 0) -- Build peaks for selected items
+        r.Main_OnCommand(40441, 0)
     end
+    
+    cleanupTempSources()
     
     r.Undo_EndBlock("Update media sources to " .. getFilenameFromPath(mediaPath), -1)
     
     return updatedCount, errorCount
 end
 
--- Main GUI loop
-function MainLoop()
-    -- Apply the global styles if available
-    if style_loader then
-        local success, colors, vars = style_loader.applyToContext(ctx)
-        if success then
-            pushed_colors, pushed_vars = colors, vars
+function sanitizeFilename(name)
+    local sanitized = name:gsub("[\\/:*?\"<>|]", "_")
+    sanitized = sanitized:match("^%s*(.-)%s*$")
+    return sanitized
+end
+
+function copyFile(sourcePath, destPath)
+    local sourceFile = io.open(sourcePath, "rb")
+    if not sourceFile then
+        return false, "Could not open source file"
+    end
+    
+    local destFile = io.open(destPath, "wb")
+    if not destFile then
+        sourceFile:close()
+        return false, "Could not create destination file"
+    end
+    
+    local content = sourceFile:read("*all")
+    destFile:write(content)
+    
+    sourceFile:close()
+    destFile:close()
+    
+    return true, ""
+end
+
+function renameSourceFiles()
+    if #config.selected_items == 0 then return 0, 0 end
+    
+    local updatedCount = 0
+    local errorCount = 0
+    
+    r.Undo_BeginBlock()
+    
+    cleanupTempSources()
+    
+    for _, item in ipairs(config.selected_items) do
+        local take = r.GetActiveTake(item)
+        if take then
+            local source = r.GetMediaItemTake_Source(take)
+            local currentFile = r.GetMediaSourceFileName(source)
+            local directory = currentFile:match("(.+)[/\\]")
+            local extension = currentFile:match("%.([^%.]+)$")
+            
+            if directory and extension then
+                local takeName = r.GetTakeName(take)
+                
+                local sanitizedName = sanitizeFilename(takeName)
+                
+                local newFilename = sanitizedName .. "." .. extension
+                local newFilePath = directory .. "/" .. newFilename
+                
+                local fileExists = io.open(newFilePath, "r") ~= nil
+                if fileExists then
+                    local counter = 1
+                    repeat
+                        newFilename = sanitizedName .. "_" .. counter .. "." .. extension
+                        newFilePath = directory .. "/" .. newFilename
+                        fileExists = io.open(newFilePath, "r") ~= nil
+                        counter = counter + 1
+                    until not fileExists
+                end
+                
+                local success, errorMsg = copyFile(currentFile, newFilePath)
+                
+                if success then
+                    local source_length = 0
+                    if config.adjust_item_size then
+                        source_length = getSafeSourceLength(newFilePath)
+                    end
+                    
+                    local oldSource = r.GetMediaItemTake_Source(take)
+                    local newSource = r.PCM_Source_CreateFromFile(newFilePath)
+                    
+                    if r.SetMediaItemTake_Source(take, newSource) then
+                        if oldSource and r.PCM_Source_Destroy then
+                            r.PCM_Source_Destroy(oldSource)
+                        end
+                        
+                        if config.adjust_item_size and source_length > 0 then
+                            r.SetMediaItemInfo_Value(item, "D_LENGTH", source_length)
+                        end
+                        
+                        r.UpdateItemInProject(item)
+                        r.SetMediaItemSelected(item, true)
+                        updatedCount = updatedCount + 1
+                    else
+                        if newSource and r.PCM_Source_Destroy then
+                            r.PCM_Source_Destroy(newSource)
+                        end
+                        errorCount = errorCount + 1
+                    end
+                else
+                    errorCount = errorCount + 1
+                end
+            else
+                errorCount = errorCount + 1
+            end
         end
     end
+    
+    if updatedCount > 0 then
+        r.Main_OnCommand(40441, 0)
+        
+        config.common_directory, config.reference_files, config.multiple_directories = getCommonDirectoryAndReferenceFiles()
+        if config.common_directory then
+            config.available_media = scanAvailableMedia(config.common_directory)
+            config.filtered_media = filterMedia(config.available_media, config.search_query)
+        end
+    end
+    
+    cleanupTempSources()
+    
+    r.Undo_EndBlock("Rename media sources to take names", -1)
+    
+    return updatedCount, errorCount
+end
 
-    -- Set window position
+function MainLoop()
+    if sl then
+        local success, colors, vars = sl.applyToContext(ctx)
+        if success then pc, pv = colors, vars end
+    end
+
+    local header_font = getFont("header")
+    local main_font = getFont("main")
+
+    if main_font then r.ImGui_PushFont(ctx, main_font) end
+
     if not config.window_position_set then
         r.ImGui_SetNextWindowSize(ctx, 600, 500)
         config.window_position_set = true
     end
     
-    local visible, open = r.ImGui_Begin(ctx, 'Media Source Version Manager', true, WINDOW_FLAGS)
+    local visible, open = r.ImGui_Begin(ctx, 'Source Manager', true, WINDOW_FLAGS)
     
     if visible then
-        -- Update selected items list
+        if header_font then r.ImGui_PushFont(ctx, header_font) end
+        r.ImGui_Text(ctx, "Source Manager")
+        if header_font then r.ImGui_PopFont(ctx) end
+        -- if main_font then r.ImGui_PushFont(ctx, main_font) end
+
+        r.ImGui_SameLine(ctx)
+        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
+        r.ImGui_SetCursorPosX(ctx, close_x)
+        if r.ImGui_Button(ctx, "X", 22, 22) then
+            open = false
+        end
+        r.ImGui_Separator(ctx)
         local selected_items = {}
         for i = 0, r.CountSelectedMediaItems(0) - 1 do
             table.insert(selected_items, r.GetSelectedMediaItem(0, i))
         end
         
-        -- Check if selection changed
         local selection_changed = false
         if #selected_items ~= #config.selected_items then
             selection_changed = true
@@ -615,19 +737,17 @@ function MainLoop()
         end
         
         if selection_changed then
-    config.selected_items = selected_items
-    config.common_directory, config.reference_files, config.multiple_directories = getCommonDirectoryAndReferenceFiles()
-    if config.common_directory then
-        config.available_media = scanAvailableMedia(config.common_directory)
-        -- Initialize filtered media with all media when selection changes
-        config.filtered_media = filterMedia(config.available_media, config.search_query)
-    else
-        config.available_media = {}
-        config.filtered_media = {}
-    end
-end
+            config.selected_items = selected_items
+            config.common_directory, config.reference_files, config.multiple_directories = getCommonDirectoryAndReferenceFiles()
+            if config.common_directory then
+                config.available_media = scanAvailableMedia(config.common_directory)
+                config.filtered_media = filterMedia(config.available_media, config.search_query)
+            else
+                config.available_media = {}
+                config.filtered_media = {}
+            end
+        end
         
-        -- Display current selection info
         r.ImGui_Text(ctx, string.format("Selected items: %d", #config.selected_items))
         if config.multiple_directories then
             r.ImGui_Text(ctx, "Directory: <multiple directories>")
@@ -636,14 +756,12 @@ end
         else
             r.ImGui_Text(ctx, "No directory found")
         end
-        
-        -- Current media info
+        r.ImGui_Dummy(ctx, 0, 0)
         if #config.selected_items > 0 then
             r.ImGui_Separator(ctx)
             r.ImGui_Text(ctx, "Selected media sources:")
             
-            -- Use a child window with scrolling for the item list if many items
-            local list_height = math.min(100, #config.selected_items * 25) -- Scale height based on item count
+            local list_height = math.min(100, #config.selected_items * 25)
             if #config.selected_items > 1 then
                 r.ImGui_BeginChild(ctx, "ItemsList", -1, list_height, 1)
             end
@@ -655,11 +773,9 @@ end
                     local filePath = r.GetMediaSourceFileName(source)
                     local filename = getFilenameFromPath(filePath)
                     
-                    -- Display item info
                     local takeName = r.GetTakeName(take)
                     r.ImGui_Text(ctx, string.format("%d: %s (%s)", i, takeName, filename))
                     
-                    -- Add tooltip with full path
                     if r.ImGui_IsItemHovered(ctx) then
                         r.ImGui_BeginTooltip(ctx)
                         r.ImGui_Text(ctx, filePath)
@@ -675,7 +791,6 @@ end
         
         r.ImGui_Separator(ctx)
         
-        -- Version navigation buttons
         r.ImGui_BeginDisabled(ctx, #config.selected_items == 0)
         
         if r.ImGui_Button(ctx, "Previous Version", 150, 30) then
@@ -690,6 +805,19 @@ end
             config.status_message = string.format("Updated %d items to next version, %d errors", updated, errors)
         end
         
+        r.ImGui_SameLine(ctx)
+        
+        if r.ImGui_Button(ctx, "Rename Source(s)", 150, 30) then
+            local updated, errors = renameSourceFiles()
+            config.status_message = string.format("Renamed %d source files based on item names, %d errors", updated, errors)
+        end
+        
+        if r.ImGui_IsItemHovered(ctx) then
+            r.ImGui_BeginTooltip(ctx)
+            r.ImGui_Text(ctx, "Creates a copy of each source file with a name matching its take name")
+            r.ImGui_EndTooltip(ctx)
+        end
+        
         r.ImGui_EndDisabled(ctx)
         
         r.ImGui_Separator(ctx)
@@ -697,7 +825,7 @@ end
         local adjust_changed
         adjust_changed, config.adjust_item_size = r.ImGui_Checkbox(ctx, "Adjust item size to match source", config.adjust_item_size)
         
-        r.ImGui_SameLine(ctx)
+        -- r.ImGui_SameLine(ctx)
         
         if r.ImGui_IsItemHovered(ctx) then
             r.ImGui_BeginTooltip(ctx)
@@ -705,21 +833,20 @@ end
             r.ImGui_EndTooltip(ctx)
         end
 
-        -- Project version sync
-        local project_version = getProjectVersion()
-        if project_version then
-            r.ImGui_Text(ctx, string.format("Current project version: %d", project_version))
+        -- local project_version = getProjectVersion()
+        -- if project_version then
+        --     r.ImGui_Text(ctx, string.format("Current project version: %d", project_version))
             
-            r.ImGui_BeginDisabled(ctx, #config.selected_items == 0)
-            if r.ImGui_Button(ctx, "Sync with Project Version", 200, 30) then
-                local updated, errors = syncWithProjectVersion()
-                config.status_message = string.format("Synced %d items with project version %d, %d errors", 
-                               updated, project_version, errors)
-            end
-            r.ImGui_EndDisabled(ctx)
-        else
-            r.ImGui_Text(ctx, "No project version detected")
-        end
+        --     r.ImGui_BeginDisabled(ctx, #config.selected_items == 0)
+        --     if r.ImGui_Button(ctx, "Sync with Project Version", 200, 30) then
+        --         local updated, errors = syncWithProjectVersion()
+        --         config.status_message = string.format("Synced %d items with project version %d, %d errors", 
+        --                        updated, project_version, errors)
+        --     end
+        --     r.ImGui_EndDisabled(ctx)
+        -- else
+        --     r.ImGui_Text(ctx, "No project version detected")
+        -- end
         
         r.ImGui_Separator(ctx)
 
@@ -729,36 +856,28 @@ end
         search_changed, config.search_query = r.ImGui_InputText(ctx, "##search", config.search_query)
         
         if search_changed then
-            -- Filter media based on search
             config.filtered_media = filterMedia(config.available_media, config.search_query)
         elseif selection_changed then
-            -- Update filtered media when selection changes
             config.filtered_media = filterMedia(config.available_media, config.search_query)
         end
         
-        -- Available media files list
         r.ImGui_Text(ctx, "Available media in directory:")
         
         if not config.multiple_directories and #config.available_media > 0 then
-    -- Use filtered_media instead of available_media
-    local display_media = config.search_query ~= "" and config.filtered_media or config.available_media
-    
-    -- Use a child window with scrolling for the media files list
-    if r.ImGui_BeginChild(ctx, "MediaList", -1, 200, 1) then
-        -- Only display the filtered media if search is active
-        for i, media in ipairs(display_media) do
-            -- Check if this media file is currently used by any selected item
-            local is_current = false
-            for _, refFile in ipairs(config.reference_files) do
-                if refFile == media.path then
-                    is_current = true
-                    break
-                end
-            end
+            local display_media = config.search_query ~= "" and config.filtered_media or config.available_media
+            
+            if r.ImGui_BeginChild(ctx, "MediaList", -1, 240, 1) then
+                for i, media in ipairs(display_media) do
+                    local is_current = false
+                    for _, refFile in ipairs(config.reference_files) do
+                        if refFile == media.path then
+                            is_current = true
+                            break
+                        end
+                    end
                     
-                    -- Highlight current source
                     if is_current then
-                        r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Text(), 0xFFFF00FF) -- Yellow for current source
+                        r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Text(), 0xFFFF00FF)
                     end
                     
                     if r.ImGui_Selectable(ctx, media.name, false) then
@@ -766,7 +885,6 @@ end
                         config.status_message = string.format("Updated %d items to %s, %d errors", 
                                        updated, media.name, errors)
                         
-                        -- Update reference files after changing sources
                         config.common_directory, config.reference_files, config.multiple_directories = getCommonDirectoryAndReferenceFiles()
                     end
                     
@@ -774,7 +892,6 @@ end
                         r.ImGui_PopStyleColor(ctx)
                     end
                     
-                    -- Add tooltip with full path
                     if r.ImGui_IsItemHovered(ctx) then
                         r.ImGui_BeginTooltip(ctx)
                         r.ImGui_Text(ctx, media.path)
@@ -789,7 +906,6 @@ end
             r.ImGui_Text(ctx, "No media files found")
         end
         
-        -- Status message
         if config.status_message ~= "" then
             r.ImGui_Separator(ctx)
             r.ImGui_TextWrapped(ctx, config.status_message)
@@ -798,13 +914,14 @@ end
         r.ImGui_End(ctx)
     end
     
-    -- Clean up the styles we applied
-    if style_loader then
-        style_loader.clearStyles(ctx, pushed_colors, pushed_vars)
-    end
+    if main_font then r.ImGui_PopFont(ctx) end
+    
+    if sl then sl.clearStyles(ctx, pc, pv) end
     
     if open then
         r.defer(MainLoop)
+    else
+        cleanupTempSources()
     end
 end
 
@@ -827,6 +944,8 @@ function ToggleScript()
 end
 
 function Exit()
+    cleanupTempSources()
+    
     local _, _, sectionID, cmdID = r.get_action_context()
     r.SetToggleCommandState(sectionID, cmdID, 0)
     r.RefreshToolbar2(sectionID, cmdID)

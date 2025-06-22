@@ -1,37 +1,22 @@
--- CP_MediaPropertiesToolbar.lua
---[[
-@description Media Properties Toolbar
-@version 1.4
-@author Claude
-@about
-  Display and edit media item properties in a toolbar
-  With improved multi-item editing support and ImGui name dialog
-]]
-
 local r = reaper
 
--- Style loader integration
-local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
-local style_loader = nil
-local pushed_colors = 0
-local pushed_vars = 0
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local sl = nil
+local pc = 0
+local pv = 0
 
--- Try to load style loader module
-local file = io.open(style_loader_path, "r")
+local file = io.open(sp, "r")
 if file then
   file:close()
-  local loader_func = dofile(style_loader_path)
+  local loader_func = dofile(sp)
   if loader_func then
-    style_loader = loader_func()
+    sl = loader_func()
   end
 end
 
--- Settings file path
 local settings_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/MediaPropertiesToolbar_settings.ini"
 
--- Configuration variables
 local config = {
-    -- Interface
     font_name = "Verdana",
     font_size = 14,
     entry_height = 20,
@@ -45,6 +30,7 @@ local config = {
 
     colors = {
         text_normal = {0.75, 0.75, 0.75, 1.0},
+        text_hovered = {0.85, 0.85, 0.85, 1.0},
         text_modified = {0.0, 0.8, 0.6, 1.0},
         text_negative = {0.8, 0.4, 0.6, 1.0},
         text_bool_on = {0.0, 0.8, 0.0, 1.0},
@@ -57,25 +43,25 @@ local config = {
     min_widget_width = 60,
 
     widget_priority = {
-    "name", 
-    "source", 
-    "position", 
-    "length", 
-    "snap",
-    "fadein", 
-    "fadeout", 
-    "volume", 
-    "takevol", 
-    "pitch", 
-    "preserve_pitch",
-    "pan", 
-    "rate", 
-    "mute"
+        "name", 
+        "source", 
+        "position", 
+        "length", 
+        "snap",
+        "fadein", 
+        "fadeout", 
+        "volume", 
+        "takevol", 
+        "pitch", 
+        "preserve_pitch",
+        "pan", 
+        "rate", 
+        "mute"
     },
 
-    widget_weights = {     -- Poids relatif de chaque widget pour le redimensionnement
-    name = 2.5,                 -- La colonne "name" prendra 3x plus de place que les autres
-    source = 2.5,               -- La colonne "source" également
+    widget_weights = {     
+        name = 2.5,                 
+        source = 2.5,               
     },
 
     mouse = {
@@ -121,6 +107,11 @@ local config = {
         drag_milliseconds = 0.001
     },
 
+    undo = {
+        wheel_timeout = 0.3,
+        drag_timeout = 0.1
+    },
+
     db_to_linear = function(db)
         return 10^(db/20)
     end,
@@ -149,124 +140,37 @@ state = {
     last_settings_update = "",
     last_click_time = 0,
     visible_widgets = {},
-    double_click_handled = false, -- Nouvelle variable pour suivre le traitement des doubles clics
-    double_click_cooldown = 0     -- Pour éviter les déclenchements multiples
+    double_click_handled = false, 
+    double_click_cooldown = 0,
+    undo_active = false,
+    last_wheel_time = 0,
+    current_undo_desc = "",
+    drag_start_time = 0,
+    wheel_undo_active = false,
+    show_pan_dropdown = false,
+    pan_dropdown_y = 0,
+    header_buttons = {},
+    hover_button = nil
 }
 
--- Variables for the ImGui name dialog
-local nameDialog = {
-    ctx = nil,           -- ImGui context for name dialog
-    isOpen = false,      -- Whether dialog is open
-    name = "",           -- Current name
-    prefix = "",         -- Prefix
-    suffix = "",         -- Suffix
-    numberFormat = "",   -- Number format
-    use_prefix = true,   -- Whether to use prefix
-    use_suffix = true,   -- Whether to use number suffix
-    use_numbering = true, -- Whether to use numbering
-    result = nil,        -- Result to return to main function
-    selected_items = {}, -- Items to be renamed
-    window_width = 400,  -- Dialog window width
-    window_height = 300, -- Dialog window height
-    need_focus = false   -- Flag to set focus on input field
-}
+local _,_,sid,cid=r.get_action_context()
+r.SetToggleCommandState(sid,cid,1)
+r.RefreshToolbar2(sid,cid)
 
-local wildcards = 
-{
-    ["$track"] = function(item) 
-        local track = r.GetMediaItemTrack(item)
-        local _, name = r.GetTrackName(track)
-        return name or ""
-    end,
- 
-    ["$project"] = function() 
-        local _, path = r.EnumProjects(-1)
-        if path then
-            return path:match("([^/\\]+)%.RPP$") or path:match("([^/\\]+)%.rpp$") or "Untitled"
-        end
-        return "Untitled"
-    end,
- 
-    ["$parent"] = function(item)
-        local track = r.GetMediaItemTrack(item)
-        local parent = r.GetParentTrack(track)
-        if parent then
-            local _, name = r.GetTrackName(parent)
-            return name or ""
-        end
-        return ""
-    end,
- 
-    ["$region"] = function(item)
-        local pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
-        local _, num_markers, num_regions = r.CountProjectMarkers(0)
-        
-        for i = 0, num_markers + num_regions - 1 do
-            local _, isrgn, start, ending, name, _ = r.EnumProjectMarkers2(0, i)
-            if isrgn and pos >= start and pos < ending then
-                return name or ""
-            end
-        end
-        return ""
-    end,
- 
-    ["$marker"] = function(item)
-        local pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
-        local _, num_markers, num_regions = r.CountProjectMarkers(0)
-        
-        local closest_marker = nil
-        local closest_dist = math.huge
-        
-        for i = 0, num_markers + num_regions - 1 do
-            local _, isrgn, start, _, name, _ = r.EnumProjectMarkers2(0, i)
-            if not isrgn then
-                local dist = math.abs(start - pos)
-                if dist < closest_dist then
-                    closest_dist = dist
-                    closest_marker = name
-                end
-            end
-        end
-        return closest_marker or ""
-    end,
- 
-    ["$folders"] = function(item)
-        local track = r.GetMediaItemTrack(item)
-        local folder_names = {}
-        
-        while track do
-            local _, trackName = r.GetTrackName(track)
-            if trackName then
-                trackName = trackName:gsub("%[%w+%]%s*", "") -- Remove tags
-                table.insert(folder_names, 1, trackName)
-            end
-            track = r.GetParentTrack(track)
-        end
-        
-        return table.concat(folder_names, "_")
-    end
-}
-
--- Load settings from file
 function loadSettings()
     local file = io.open(settings_path, "r")
     if not file then return end
     
     local section
     for line in file:lines() do
-        -- Skip empty lines and comments
         if line:match("^%s*$") or line:match("^%s*;") then
-            -- Do nothing
         elseif line:match("^%[(.+)%]$") then
-            -- Section header
             section = line:match("^%[(.+)%]$")
         elseif line:match("^%s*(.-)%s*=%s*(.-)%s*$") then
-            -- Key-value pair
             local key, value = line:match("^%s*(.-)%s*=%s*(.-)%s*$")
             
             if section == "colors" then
                 if value:match("^{.+}$") then
-                    -- Parse color array
                     local values = {}
                     for v in value:sub(2, -2):gmatch("[^,]+") do
                         table.insert(values, tonumber(v) or 0)
@@ -290,7 +194,6 @@ function loadSettings()
                     config.source_width = tonumber(value) or config.source_width
                 end
             else
-                -- Traitement direct pour les paramètres au niveau racine
                 if key == "font_name" then
                     config.font_name = value
                 elseif key == "font_size" then
@@ -303,7 +206,6 @@ function loadSettings()
                     config.source_width = tonumber(value) or config.source_width
                 elseif (key == "background_color" or key == "text_color" or 
                        key == "frame_color" or key == "frame_color_active") and value:match("^{.+}$") then
-                    -- Parse color array
                     local values = {}
                     for v in value:sub(2, -2):gmatch("[^,]+") do
                         table.insert(values, tonumber(v) or 0)
@@ -327,11 +229,10 @@ function checkForSettingsUpdates()
         state.last_settings_update = last_change
         loadSettings()
         
-        -- Reset font and UI elements when layout changes
         if layout_changed then
             gfx.setfont(1, config.font_name, config.font_size)
             r.SetExtState("MediaPropertiesToolbar", "layout_changed", "0", false)
-            -- Force a window refresh
+            
             gfx.quit()
             init()
         end
@@ -340,25 +241,201 @@ function checkForSettingsUpdates()
     end
     return false
 end
--- Load saved dock state
+
 function loadDockState()
     state.dock_id = tonumber(r.GetExtState("MediaPropertiesToolbar", "dock_id")) or 0
     state.is_docked = r.GetExtState("MediaPropertiesToolbar", "is_docked") == "1"
 end
 
--- Save dock state
 function saveDockState()
     r.SetExtState("MediaPropertiesToolbar", "dock_id", tostring(state.dock_id), true)
     r.SetExtState("MediaPropertiesToolbar", "is_docked", state.is_docked and "1" or "0", true)
 end
 
-function resetPreferences()
-    r.SetExtState("MediaPropertiesToolbar", "last_prefix", "", true)
-    r.SetExtState("MediaPropertiesToolbar", "last_suffix", "", true)
-    r.SetExtState("MediaPropertiesToolbar", "number_format", "", true)
-    r.SetExtState("MediaPropertiesToolbar", "use_prefix", "1", true)
-    r.SetExtState("MediaPropertiesToolbar", "use_suffix", "1", true)
-    r.SetExtState("MediaPropertiesToolbar", "use_numbering", "1", true)
+function beginUndo(description)
+    if not state.undo_active then
+        r.Undo_BeginBlock()
+        state.undo_active = true
+        state.current_undo_desc = description
+    end
+end
+
+function endUndo()
+    if state.undo_active then
+        r.Undo_EndBlock(state.current_undo_desc, -1)
+        state.undo_active = false
+        state.current_undo_desc = ""
+    end
+end
+
+function getUndoDescription(param_name)
+    local descriptions = {
+        volume = "Adjust item volume",
+        takevol = "Adjust take volume", 
+        pitch = "Adjust item pitch",
+        pan = "Adjust item pan",
+        rate = "Adjust playback rate",
+        position = "Move item position",
+        length = "Change item length",
+        fadein = "Adjust fade in",
+        fadeout = "Adjust fade out",
+        snap = "Adjust snap offset",
+        preserve_pitch = "Toggle preserve pitch",
+        mute = "Toggle item mute"
+    }
+    return descriptions[param_name] or "Edit item property"
+end
+
+function getResetDescription(param_name)
+    local descriptions = {
+        volume = "Reset item volume",
+        takevol = "Reset take volume", 
+        pitch = "Reset item pitch",
+        pan = "Reset item pan",
+        rate = "Reset playback rate",
+        fadein = "Reset fade in",
+        fadeout = "Reset fade out",
+        snap = "Reset snap offset",
+        preserve_pitch = "Reset preserve pitch",
+        mute = "Reset item mute",
+        length = "Reset item length"
+    }
+    return descriptions[param_name] or "Reset item property"
+end
+
+-- function drawExtraHeaderButtons(header, data)
+--     -- Debug : vérifier si la fonction est appelée
+--     r.ShowConsoleMsg("drawExtraHeaderButtons called for: " .. header.text .. "\n")
+    
+--     local buttons = {}
+    
+--     -- Force dessiner quelque chose de très visible n'importe où
+--     gfx.set(1, 0, 0, 1)  -- Rouge vif
+--     gfx.rect(0, 0, 50, 50, 1)  -- Coin supérieur gauche
+    
+--     if header.text == "Pan" then
+--         local button_w = 30  -- Plus gros
+--         local button_h = 15  -- Plus haut
+--         local button_x = 100  -- Position fixe complètement différente
+--         local button_y = 25   -- Position fixe complètement différente
+        
+--         -- Force une couleur très visible
+--         gfx.set(1, 0, 1, 1)  -- Magenta vif
+--         gfx.rect(button_x, button_y, button_w, button_h, 1)
+        
+--         gfx.set(1, 1, 1, 1)  -- Blanc
+--         gfx.x = button_x + 10
+--         gfx.y = button_y + 5
+--         gfx.drawstr("PAN")
+        
+--         buttons.pan_dropdown = {
+--             x = button_x,
+--             y = button_y,
+--             w = button_w,
+--             h = button_h
+--         }
+        
+--     elseif header.text == "Length" then
+--         local button_w = 30  -- Plus gros  
+--         local button_h = 15  -- Plus haut
+--         local button_x = 200  -- Position fixe complètement différente
+--         local button_y = 25   -- Position fixe complètement différente
+        
+--         -- Force une couleur très visible
+--         gfx.set(0, 1, 1, 1)  -- Cyan vif
+--         gfx.rect(button_x, button_y, button_w, button_h, 1)
+        
+--         gfx.set(0, 0, 0, 1)  -- Noir
+--         gfx.x = button_x + 8
+--         gfx.y = button_y + 5
+--         gfx.drawstr("LOOP")
+        
+--         buttons.loop_toggle = {
+--             x = button_x,
+--             y = button_y,
+--             w = button_w,
+--             h = button_h
+--         }
+--     end
+    
+--     return buttons
+-- end
+
+function showPanDropdownMenu(button_x, button_y, button_h)
+    local screen_x = button_x + 5
+    local screen_y = button_y + 20
+    
+    gfx.x = screen_x
+    gfx.y = screen_y
+    
+    local current_chanmode = 0
+    local item = r.GetSelectedMediaItem(0, 0)
+    if item then
+        local take = r.GetActiveTake(item)
+        if take then
+            current_chanmode = r.GetMediaItemTakeInfo_Value(take, "I_CHANMODE")
+        end
+    end
+    
+    local menu_items = {
+        "Normal",
+        "Reverse Stereo", 
+        "Mono (Mix L+R)",
+        "Mono (Left)",
+        "Mono (Right)"
+    }
+    
+    for i = 1, #menu_items do
+        if i - 1 == current_chanmode then
+            menu_items[i] = "!" .. menu_items[i]
+        end
+    end
+    
+    local menu_str = table.concat(menu_items, "|")
+    local selection = gfx.showmenu(menu_str)
+    
+    if selection > 0 then
+        local commands = {40176, 40177, 40178, 40179, 40180}
+        r.Main_OnCommand(commands[selection], 0)
+    end
+end
+
+function drawPanDropdown(x, y)
+    return {x = x, y = y, w = 0, h = 0}
+end
+
+function toggleLoopSource()
+    local selected_count = r.CountSelectedMediaItems(0)
+    if selected_count == 0 then return end
+    
+    beginUndo("Toggle loop source")
+    
+    for i = 0, selected_count - 1 do
+        local item = r.GetSelectedMediaItem(0, i)
+        if item then
+            local current_state = r.GetMediaItemInfo_Value(item, "B_LOOPSRC")
+            local new_state = current_state == 1 and 0 or 1
+            r.SetMediaItemInfo_Value(item, "B_LOOPSRC", new_state)
+            r.UpdateItemInProject(item)
+        end
+    end
+    
+    endUndo()
+    r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+end
+
+function showEnvelope(param_name)
+    local commands = {
+        takevol = 40693,
+        pan = 40694,
+        pitch = 41612,
+        mute = 40695
+    }
+    
+    local cmd = commands[param_name]
+    if cmd then
+        r.Main_OnCommand(cmd, 0)
+    end
 end
 
 function init()
@@ -368,19 +445,12 @@ function init()
     local title = 'Media Properties Toolbar'
     local docked = state.is_docked and state.dock_id or 0
     local x, y = 100, 100
-    local w = 1200  -- Increased width to accommodate parameters
+    local w = 1200  
     local h = config.entry_height * 2
     
-    -- Initialize window without focus
     gfx.init(title, w, h, docked, x, y)
     gfx.setfont(1, config.font_name, config.font_size)
     
-    -- Initialize name dialog context if needed
-    if not nameDialog.ctx then
-        nameDialog.ctx = r.ImGui_CreateContext('Media Properties Name Dialog')
-    end
-    
-    -- Keep arrange window focused
     r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
 end
 
@@ -390,22 +460,19 @@ function truncateString(str, maxWidth)
     
     local ellipsis = "..."
     local ellipsis_w = gfx.measurestr(ellipsis)
-    local available_w = maxWidth - ellipsis_w - 4 -- Marge supplémentaire pour éviter l'overlap
+    local available_w = maxWidth - ellipsis_w - 4 
     
-    -- Tronquer du milieu vers la fin
     while str_w > available_w and #str > 1 do
-        -- Enlever le caractère du milieu pour préserver début et fin
         local mid = math.floor(#str / 2)
         str = str:sub(1, mid-1) .. str:sub(mid+1)
         str_w = gfx.measurestr(str)
     end
     
-    -- Insertion des ellipsis au milieu
     if #str > 6 then
         local mid = math.floor(#str / 2)
         return str:sub(1, mid-1) .. ellipsis .. str:sub(mid)
     else
-        return str .. ellipsis -- Fallback si la chaîne est déjà trop courte
+        return str .. ellipsis 
     end
 end
 
@@ -432,7 +499,6 @@ function drawHeaderCell(text, x, y, w)
     gfx.y = y + (config.entry_height - str_h) / 2
     gfx.drawstr(text)
     
-    -- Return header cell coordinates for click detection
     return {
         x = x,
         y = y,
@@ -442,8 +508,79 @@ function drawHeaderCell(text, x, y, w)
     }
 end
 
+function drawExtraHeaderButtons(header, data)
+    local buttons = {}
+    
+    if header.text == "Pan" then
+        local button_w = 12
+        local button_h = 12
+        local button_x = header.x + header.w - button_w - 10
+        local button_y = header.y + 4
+        
+        local mx, my = gfx.mouse_x, gfx.mouse_y
+        local is_hovered = mx >= button_x and mx < button_x + button_w and
+                          my >= button_y and my < button_y + button_h
+        
+        -- if is_hovered then
+        --     gfx.set(0.5, 0.5, 0.5, 1.0)
+        -- else
+        --     gfx.set(0.3, 0.3, 0.3, 1.0)
+        -- end
+        -- gfx.rect(button_x, button_y, button_w, button_h, 1)
+        
+        if is_hovered then
+            gfx.set(table.unpack(config.colors.text_hovered))
+        else
+            gfx.set(table.unpack(config.colors.text_normal))
+        end
+
+        gfx.x = button_x
+        gfx.y = button_y
+        gfx.drawstr("▼")
+        
+        buttons.pan_dropdown = {
+            x = button_x,
+            y = button_y,
+            w = button_w,
+            h = button_h
+        }
+        
+    elseif header.text == "Length" then
+        local button_w = 10
+        local button_h = 10
+        local button_x = header.x + header.w - button_w - 5
+        local button_y = header.y + 6
+        
+        local is_loop = false
+        if data and state.last_item then
+            is_loop = r.GetMediaItemInfo_Value(state.last_item, "B_LOOPSRC") == 1
+        end
+        
+        local mx, my = gfx.mouse_x, gfx.mouse_y
+        local is_hovered = mx >= button_x and mx < button_x + button_w and
+                          my >= button_y and my < button_y + button_h
+        
+        if is_loop then
+            gfx.set(table.unpack(config.colors.text_modified))
+        elseif is_hovered then
+            gfx.set(0.5, 0.5, 0.5, 1.0)
+        else
+            gfx.set(0.3, 0.3, 0.3, 1.0)
+        end
+        gfx.rect(button_x, button_y, button_w, button_h, 1)
+        
+        buttons.loop_toggle = {
+            x = button_x,
+            y = button_y,
+            w = button_w,
+            h = button_h
+        }
+    end
+    
+    return buttons
+end
+
 function drawValueCell(value, x, y, w, is_active, param_type, param_name)
-    -- Check if value is modified from default
     local is_negative = false
     local is_modified = false
     
@@ -455,32 +592,27 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     elseif param_type == "rate" then  
         is_negative = value < 1.0
     elseif param_type == "time" and param_name == "length" then
-        -- Déterminer si la longueur est inférieure à la longueur de source
         local item = r.GetSelectedMediaItem(0, 0)
         if item then
             local take = r.GetActiveTake(item)
             if take then
-                -- Ajouter cette vérification
                 local is_midi = r.TakeIsMIDI(take)
                 
                 if is_midi then
-                    -- Pour les items MIDI, ne pas marquer la longueur comme modifiée
                     is_negative = false
                     is_modified = false
                 else
-                    -- Logique originale pour les items audio
                     local source = r.GetMediaItemTake_Source(take)
                     local source_length = r.GetMediaSourceLength(source)
                     local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
                     local original_length = source_length / playrate
-                    is_negative = value < original_length * 0.99 -- Marge de 1%
+                    is_negative = value < original_length * 0.99 
                     is_modified = math.abs(value - original_length) > original_length * 0.01
                 end
             end
         end
     end
     
-    -- Then check for any modifications
     local is_modified = false
     if param_type == "volume" or param_type == "takevol" then
         is_modified = math.abs(value - 1.0) > 0.001
@@ -495,7 +627,6 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         if state.last_item then
             local take = r.GetActiveTake(state.last_item)
             if take then
-                -- Ajouter cette vérification
                 local is_midi = r.TakeIsMIDI(take)
                 
                 if not is_midi then
@@ -508,22 +639,18 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         end
         
         if original_length then
-            -- Considérer modified si différent de l'original de plus de 1%
             is_modified = math.abs(value - original_length) > (original_length * 0.01)
         else
-            -- Pour les items MIDI ou si original_length n'a pas pu être déterminé
             is_modified = false
         end
     end
 
-    -- Special handling for boolean values
     if param_type == "bool" then
         is_modified = value
         is_negative = not value
         value = value and "ON" or "OFF"
     end
 
-    -- Set color based on state
     if is_negative then
         gfx.set(table.unpack(config.colors.text_negative))
     elseif is_modified then
@@ -536,7 +663,6 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     local display_value
 
     if param_type == "time" or param_name == "position" or param_name == "length" then
-        -- Convert to minutes:seconds.milliseconds format
         local minutes = math.floor(value / 60)
         local seconds = math.floor(value % 60)
         local ms = math.floor((value % 1) * 1000)
@@ -635,13 +761,10 @@ function updateItemRate(item, take, rate)
     r.UpdateItemInProject(item)
 end
 
--- Function to update selected items with a relative offset
--- Function to update selected items with a relative offset
 function updateItemsWithOffset(item_data, param_name, change)
     local selected_items = {}
     local selected_values = {}
     
-    -- Collect the current values from all selected items
     for i = 0, r.CountSelectedMediaItems(0) - 1 do
         local item = r.GetSelectedMediaItem(0, i)
         local take = r.GetActiveTake(item)
@@ -677,9 +800,6 @@ function updateItemsWithOffset(item_data, param_name, change)
     
     if #selected_items == 0 then return end
     
-    r.Undo_BeginBlock()
-    
-    -- Apply the offset to each item
     for i, data in ipairs(selected_items) do
         local item = data.item
         local take = data.take
@@ -687,11 +807,9 @@ function updateItemsWithOffset(item_data, param_name, change)
         local new_value
         
         if param_name == "volume" or param_name == "takevol" then
-            -- Handle volume (dB scale) specially
             local current_db = config.linear_to_db(current_value)
             local new_db = current_db + change
             
-            -- Limit to -150dB minimum
             if new_db < -150 then new_db = -150 end
             
             new_value = config.db_to_linear(new_db)
@@ -704,25 +822,19 @@ function updateItemsWithOffset(item_data, param_name, change)
         else
             new_value = current_value + change
             
-            -- Apply the limits based on parameter type
             if param_name == "snap" or param_name == "fadein" or param_name == "fadeout" then
-                -- Prevent negative values
                 if new_value < 0 then new_value = 0 end
             elseif param_name == "pitch" then
-                -- Limit pitch to -60/+60
                 if new_value < -60 then new_value = -60 end
                 if new_value > 60 then new_value = 60 end
             elseif param_name == "pan" then
-                -- Limit pan to -1/+1 (100L/100R)
                 if new_value < -1 then new_value = -1 end
                 if new_value > 1 then new_value = 1 end
             elseif param_name == "rate" then
-                -- Limit rate to 0.01-40
                 if new_value < 0.01 then new_value = 0.01 end
                 if new_value > 40 then new_value = 40 end
             end
             
-            -- Apply the new value
             if param_name == "position" then
                 r.SetMediaItemInfo_Value(item, "D_POSITION", new_value)
             elseif param_name == "length" then
@@ -744,50 +856,8 @@ function updateItemsWithOffset(item_data, param_name, change)
         
         r.UpdateItemInProject(item)
     end
-    
-    r.Undo_EndBlock("Update item properties", -1)
 end
 
-function processWildcards(name, item)
-    if not item then return name end
-    
-    -- Save original case by making a copy
-    local original_name = name
-    name = name:lower()
-    
-    -- Remove tags [x]
-    name = name:gsub("%[%w+%]%s*", "")
-    
-    -- Build a map of lowercase to original case for wildcards
-    local case_map = {}
-    for pattern, _ in pairs(wildcards) do
-        local lower_pattern = pattern:lower()
-        case_map[lower_pattern] = pattern
-    end
-    
-    -- Replace wildcards
-    for pattern, func in pairs(wildcards) do
-        local replacement = func(item)
-        if replacement then
-            name = name:gsub(pattern:lower(), replacement)
-        end
-    end
-    
-    -- Clean up
-    name = name:gsub("%s+", "_")
-    name = name:gsub("_+", "_")
-    name = name:trim("_")
-    
-    return name
-end
-
-function string.trim(str, char)
-    char = char or "%s"
-    return str:gsub("^" .. char .. "+", ""):gsub(char .. "+$", "")
-end
-
--- Function to handle value input for multiple items with absolute values
--- Function to handle value input for multiple items with absolute values
 function handleValueInput(param_name, current_value)
     if param_name == "position" or param_name == "length" or 
        param_name == "fadein" or param_name == "fadeout" or
@@ -810,7 +880,6 @@ function handleValueInput(param_name, current_value)
             new_ms = tonumber(new_ms) or 0
             local new_value = new_min * 60 + new_sec + new_ms/1000
             
-            -- Prevent negative values for certain parameters
             if (param_name == "snap" or param_name == "fadein" or param_name == "fadeout") and new_value < 0 then
                 new_value = 0
             end
@@ -828,7 +897,6 @@ function handleValueInput(param_name, current_value)
         
         local new_db = tonumber(user_input)
         if new_db then
-            -- Limit to -150dB
             if new_db < -150 then new_db = -150 end
             return 10^(new_db/20)
         end
@@ -841,7 +909,6 @@ function handleValueInput(param_name, current_value)
         if not retval then return current_value end
         local new_value = tonumber(user_input)
         if new_value then 
-            -- Limit Pan to -100/+100
             if new_value < -100 then new_value = -100 end
             if new_value > 100 then new_value = 100 end
             return new_value/100 
@@ -855,7 +922,6 @@ function handleValueInput(param_name, current_value)
         
         local new_value = tonumber(user_input)
         if new_value then
-            -- Limit pitch to -60/+60
             if new_value < -60 then new_value = -60 end
             if new_value > 60 then new_value = 60 end
             return new_value
@@ -869,7 +935,6 @@ function handleValueInput(param_name, current_value)
         
         local new_value = tonumber(user_input)
         if new_value then
-            -- Limit rate to 0.01-40
             if new_value < 0.01 then new_value = 0.01 end
             if new_value > 40 then new_value = 40 end
             return new_value
@@ -880,142 +945,6 @@ function handleValueInput(param_name, current_value)
     return current_value
 end
 
--- Function to load naming preferences
-function loadNamingPreferences()
-    local prefs = {
-        prefix = r.GetExtState("MediaPropertiesToolbar", "last_prefix") or "",
-        suffix = r.GetExtState("MediaPropertiesToolbar", "last_suffix") or "",
-        number_format = r.GetExtState("MediaPropertiesToolbar", "number_format") or "",
-        use_prefix = r.GetExtState("MediaPropertiesToolbar", "use_prefix") == "1",
-        use_suffix = r.GetExtState("MediaPropertiesToolbar", "use_suffix") == "1",
-        use_numbering = r.GetExtState("MediaPropertiesToolbar", "use_numbering") == "1"
-    }
-    
-    -- Set defaults if not set
-    if prefs.use_prefix == nil then prefs.use_prefix = true end
-    if prefs.use_suffix == nil then prefs.use_suffix = true end
-    if prefs.use_numbering == nil then prefs.use_numbering = true end
-    
-    return prefs
-end
-
--- Function to save naming preferences
-function saveNamingPreferences(prefs)
-    r.SetExtState("MediaPropertiesToolbar", "last_prefix", prefs.prefix or "", true)
-    r.SetExtState("MediaPropertiesToolbar", "last_suffix", prefs.suffix or "", true)
-    r.SetExtState("MediaPropertiesToolbar", "number_format", prefs.number_format or "", true)
-    r.SetExtState("MediaPropertiesToolbar", "use_prefix", prefs.use_prefix and "1" or "0", true)
-    r.SetExtState("MediaPropertiesToolbar", "use_suffix", prefs.use_suffix and "1" or "0", true)
-    r.SetExtState("MediaPropertiesToolbar", "use_numbering", prefs.use_numbering and "1" or "0", true)
-end
-
--- Extract base name from a full name
-function extractBaseName(full_name)
-    if not full_name then return "" end
-    
-    local base_name = full_name
-    
-    -- 1. First remove .wav extension
-    base_name = base_name:gsub("%.wav$", "")
-    
-    -- Remove multiple spaces
-    base_name = base_name:gsub("%s+", " ")
-    
-    -- 2. Extract Wwise prefix if it exists
-    local wwise_prefix = base_name:match("^%[%w+%]")
-    if wwise_prefix then
-        base_name = base_name:sub(#wwise_prefix + 1)
-    end
-    
-    -- 3. Load previous preferences
-    local prefs = loadNamingPreferences()
-    
-    -- 4. Remove prefix if it exists and if prefix is not empty
-    if prefs.prefix and prefs.prefix ~= "" and prefs.use_prefix then
-        -- Escape any pattern characters in the prefix
-        local escaped_prefix = prefs.prefix:gsub("[%-%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
-        local prefix_pattern = "^" .. escaped_prefix
-        base_name = base_name:gsub(prefix_pattern, "")
-    end
-    
-    -- 5. Search for and remove numbering according to specific patterns
-    local number_removed = false
-    local number_patterns = {
-        {pattern = "%s+%d+%s*$"},         -- " 01"
-        {pattern = "_%d+%s*$"},          -- "_01"
-        {pattern = "%.%d+%s*$"},          -- ".01"
-        {pattern = "%(%d+%)%s*$"},       -- "(01)"
-        {pattern = "%s+%-%-%s*%d+%s*$"}, -- " -- 01"
-    }
-    
-    for _, pat in ipairs(number_patterns) do
-        local new_name = base_name:gsub(pat.pattern, "")
-        if new_name ~= base_name then
-            base_name = new_name
-            number_removed = true
-            break
-        end
-    end
-    
-    -- 6. Remove suffix if it exists and if suffix is not empty
-    if prefs.suffix and prefs.suffix ~= "" and prefs.use_suffix then
-        -- Escape any pattern characters in the suffix
-        local escaped_suffix = prefs.suffix:gsub("[%-%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")
-        local suffix_pattern = escaped_suffix .. "$"
-        base_name = base_name:gsub(suffix_pattern, "")
-    end
-    
-    -- 7. Final cleanup: remove spaces at beginning/end
-    base_name = base_name:match("^%s*(.-)%s*$") or ""
-    
-    -- 8. Remove commas at the end of the string if present
-    base_name = base_name:gsub(",%s*$", "")
-    
-    return base_name, wwise_prefix
-end
-
--- Build a final filename based on components
-function buildFinalName(base_name, prefix, suffix, number_format, index, wwise_prefix, use_prefix, use_suffix, use_numbering)
-    local final_name = base_name or ""
-    
-    -- Add prefix if present and enabled - preserve case
-    if prefix and prefix ~= "" and use_prefix then
-        final_name = prefix .. final_name
-    end
-    
-    -- Add suffix if present and enabled - preserve case
-    if suffix and suffix ~= "" and use_suffix then
-        final_name = final_name .. suffix
-    end
-    
-    -- Add numbering if format specified, index provided, and enabled
-    if number_format and number_format ~= "" and index and use_numbering then
-        local number_str = ""
-        
-        if number_format == "%02d" then
-            number_str = string.format("_%02d", index)
-        elseif number_format == "%03d" then
-            number_str = string.format("_%03d", index)
-        elseif number_format == " %d" then
-            number_str = string.format(" %d", index)
-        elseif number_format == ".%d" then
-            number_str = string.format(".%d", index)
-        elseif number_format == "(%d)" then
-            number_str = string.format("(%d)", index)
-        end
-        
-        final_name = final_name .. number_str
-    end
-    
-    -- Restore Wwise prefix if it existed
-    if wwise_prefix and wwise_prefix ~= "" then
-        final_name = wwise_prefix .. final_name
-    end
-    
-    return final_name
-end
-
--- Update selected items to a specific value (no relative offset)
 function updateItemValue(item_data, param_name, value)
     local selected_items = {}
     for i = 0, r.CountSelectedMediaItems(0) - 1 do
@@ -1024,68 +953,15 @@ function updateItemValue(item_data, param_name, value)
     
     if #selected_items == 0 then return end
     
-    r.Undo_BeginBlock()
-    
     if param_name == "name" then
-        -- Special handling for name changes - will use the name dialog result
-        if nameDialog.result then
-            local prefs = nameDialog.result
-            
-            for i, item in ipairs(selected_items) do
-                local take = r.GetActiveTake(item)
-                if take then
-                    local new_name
-                    if prefs.use_numbering and #selected_items > 1 and prefs.number_format ~= "" then
-                        -- Apply numbering for multiple items
-                        new_name = buildFinalName(
-                            prefs.base_name,
-                            prefs.prefix,
-                            prefs.suffix,
-                            prefs.number_format,
-                            i,
-                            nil,
-                            prefs.use_prefix,
-                            prefs.use_suffix,
-                            prefs.use_numbering
-                        )
-                    else
-                        -- No numbering
-                        new_name = buildFinalName(
-                            prefs.base_name,
-                            prefs.prefix,
-                            prefs.suffix,
-                            nil,
-                            nil,
-                            nil,
-                            prefs.use_prefix,
-                            prefs.use_suffix,
-                            false
-                        )
-                    end
-                    
-                    -- Process wildcards if any
-                    new_name = processWildcards(new_name, item)
-                    
-                    r.GetSetMediaItemTakeInfo_String(take, "P_NAME", new_name, true)
-                end
-            end
-            
-            nameDialog.result = nil  -- Clear the result
-        elseif type(value) == "string" then
-            -- Direct name setting
-            for i, item in ipairs(selected_items) do
-                local take = r.GetActiveTake(item)
-                if take then
-                    r.GetSetMediaItemTakeInfo_String(take, "P_NAME", value, true)
-                end
-            end
+        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_TakeRenamer.lua"
+        if r.file_exists(script_path) then
+            dofile(script_path)
         end
     else
-        -- Handle all other parameters (non-name)
         for i, item in ipairs(selected_items) do
             local take = r.GetActiveTake(item)
             if take then
-                -- Apply the same exact value to all items (no offset calculation)
                 if param_name == "volume" then 
                     r.SetMediaItemInfo_Value(item, "D_VOL", value)
                 elseif param_name == "takevol" then 
@@ -1117,272 +993,7 @@ function updateItemValue(item_data, param_name, value)
         end
     end
     
-    r.Undo_EndBlock("Update media items", -1)
     r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
-end
-
--- Initialize and run the name dialog
-function openNameDialog(current_name, selected_items)
-    -- Store the selected items for later use
-    nameDialog.selected_items = selected_items or {}
-    
-    -- Initialize dialog data
-    local prefs = loadNamingPreferences()
-    nameDialog.name = current_name or ""
-    nameDialog.prefix = prefs.prefix or ""
-    nameDialog.suffix = prefs.suffix or ""
-    nameDialog.numberFormat = prefs.number_format or ""
-    nameDialog.use_prefix = prefs.use_prefix
-    nameDialog.use_suffix = prefs.use_suffix
-    nameDialog.use_numbering = prefs.use_numbering
-    
-    -- Calculate base name if needed
-    local base_name, wwise_prefix = extractBaseName(current_name)
-    nameDialog.base_name = base_name
-    nameDialog.wwise_prefix = wwise_prefix
-    nameDialog.need_focus = true -- Flag to set focus on first input
-    
-    -- Open the dialog
-    nameDialog.isOpen = true
-    
-    -- Start the dialog loop
-    nameDialogLoop()
-end
-
--- Main loop for the name dialog
-function nameDialogLoop()
-    if not nameDialog.isOpen then
-        return
-    end
-    
-    -- Apply the global styles if available
-    local pushed_dialog_colors = 0
-    local pushed_dialog_vars = 0
-    if style_loader then
-        local success, colors, vars = style_loader.applyToContext(nameDialog.ctx)
-        if success then
-            pushed_dialog_colors, pushed_dialog_vars = colors, vars
-        end
-    end
-    
-    -- Set up window position
-    if not nameDialog.window_position_set then
-        -- Center the dialog
-        local main_x, main_y, main_w, main_h = 0, 0, 0, 0
-        if r.JS_Window_Find then
-            local main_hwnd = r.GetMainHwnd()
-            local ret, left, top, right, bottom = r.JS_Window_GetRect(main_hwnd)
-            if ret then
-                main_x, main_y = left, top
-                main_w, main_h = right - left, bottom - top
-            end
-        end
-        
-        local x = main_x + (main_w - nameDialog.window_width) / 2
-        local y = main_y + (main_h - nameDialog.window_height) / 2
-        
-        r.ImGui_SetNextWindowPos(nameDialog.ctx, x, y, r.ImGui_Cond_FirstUseEver())
-        r.ImGui_SetNextWindowSize(nameDialog.ctx, nameDialog.window_width, nameDialog.window_height, r.ImGui_Cond_FirstUseEver())
-        nameDialog.window_position_set = true
-    end
-    
-    -- Begin window
-    local visible, open = r.ImGui_Begin(nameDialog.ctx, "Item Name Editor", true, r.ImGui_WindowFlags_NoCollapse())
-    
-    if visible then
-        -- Main name input
-        r.ImGui_Text(nameDialog.ctx, "Base Name (without prefix/suffix/numbers):")
-        
-        -- Auto-focus the base name input field the first time
-        if nameDialog.need_focus then
-            r.ImGui_SetKeyboardFocusHere(nameDialog.ctx)
-            nameDialog.need_focus = false
-        end
-        
-        local rv, new_base_name = r.ImGui_InputText(nameDialog.ctx, "##basename", nameDialog.base_name, r.ImGui_InputTextFlags_EnterReturnsTrue())
-        if rv then
-            nameDialog.base_name = new_base_name
-            -- Apply when Enter is pressed
-            local new_prefs = {
-                prefix = nameDialog.prefix,
-                suffix = nameDialog.suffix,
-                number_format = nameDialog.numberFormat,
-                use_prefix = nameDialog.use_prefix,
-                use_suffix = nameDialog.use_suffix,
-                use_numbering = nameDialog.use_numbering,
-                base_name = nameDialog.base_name
-            }
-            
-            saveNamingPreferences(new_prefs)
-            nameDialog.result = new_prefs
-            nameDialog.isOpen = false
-            open = false
-            
-            -- Trigger the update in the main function
-            updateItemValue(nil, "name", nil)
-        end
-        
-        r.ImGui_Spacing(nameDialog.ctx)
-        r.ImGui_Separator(nameDialog.ctx)
-        r.ImGui_Spacing(nameDialog.ctx)
-        
-        -- Prefix options
-        rv, nameDialog.use_prefix = r.ImGui_Checkbox(nameDialog.ctx, "Use Prefix", nameDialog.use_prefix)
-        if nameDialog.use_prefix then
-            r.ImGui_SameLine(nameDialog.ctx)
-            r.ImGui_SetNextItemWidth(nameDialog.ctx, 200)
-            rv, nameDialog.prefix = r.ImGui_InputText(nameDialog.ctx, "##prefix", nameDialog.prefix)
-        end
-        
-        r.ImGui_Spacing(nameDialog.ctx)
-        
-        -- Suffix options
-        rv, nameDialog.use_suffix = r.ImGui_Checkbox(nameDialog.ctx, "Use Suffix", nameDialog.use_suffix)
-        if nameDialog.use_suffix then
-            r.ImGui_SameLine(nameDialog.ctx)
-            r.ImGui_SetNextItemWidth(nameDialog.ctx, 200)
-            rv, nameDialog.suffix = r.ImGui_InputText(nameDialog.ctx, "##suffix", nameDialog.suffix)
-        end
-        
-        r.ImGui_Spacing(nameDialog.ctx)
-        
-        -- Numbering options (only for multiple items)
-        local multiple_items = #nameDialog.selected_items > 1
-        rv, nameDialog.use_numbering = r.ImGui_Checkbox(nameDialog.ctx, "Use Numbering" .. (multiple_items and "" or " (multiple items only)"), 
-                                                       nameDialog.use_numbering)
-        
-        if nameDialog.use_numbering then
-            r.ImGui_Text(nameDialog.ctx, "Number Format:")
-            
-            local formats = {
-                { label = "1", value = " %d" },
-                { label = "01", value = "%02d" },
-                { label = "001", value = "%03d" },
-                { label = "(1)", value = "(%d)" },
-                { label = ".1", value = ".%d" }
-            }
-            
-            for i, format in ipairs(formats) do
-                if i > 1 then r.ImGui_SameLine(nameDialog.ctx) end
-                
-                local is_selected = nameDialog.numberFormat == format.value
-                if r.ImGui_RadioButton(nameDialog.ctx, format.label, is_selected) and not is_selected then
-                    nameDialog.numberFormat = format.value
-                end
-            end
-        end
-        
-        r.ImGui_Spacing(nameDialog.ctx)
-        r.ImGui_Separator(nameDialog.ctx)
-        r.ImGui_Spacing(nameDialog.ctx)
-        
-        -- Preview section
-        r.ImGui_Text(nameDialog.ctx, "Preview:")
-        
-        local preview_name
-        if multiple_items then
-            -- Show first two examples
-            local example1 = buildFinalName(
-                nameDialog.base_name,
-                nameDialog.prefix,
-                nameDialog.suffix,
-                nameDialog.use_numbering and nameDialog.numberFormat or nil,
-                1,
-                nameDialog.wwise_prefix,
-                nameDialog.use_prefix,
-                nameDialog.use_suffix,
-                nameDialog.use_numbering
-            )
-            
-            local example2 = buildFinalName(
-                nameDialog.base_name,
-                nameDialog.prefix,
-                nameDialog.suffix,
-                nameDialog.use_numbering and nameDialog.numberFormat or nil,
-                2,
-                nameDialog.wwise_prefix,
-                nameDialog.use_prefix,
-                nameDialog.use_suffix,
-                nameDialog.use_numbering
-            )
-            
-            preview_name = example1 .. "\n" .. example2 .. "\n..."
-        else
-            -- Show single example
-            preview_name = buildFinalName(
-                nameDialog.base_name,
-                nameDialog.prefix,
-                nameDialog.suffix,
-                nil, -- No numbering for single items
-                nil,
-                nameDialog.wwise_prefix,
-                nameDialog.use_prefix,
-                nameDialog.use_suffix,
-                false
-            )
-        end
-        
-        r.ImGui_PushStyleColor(nameDialog.ctx, r.ImGui_Col_Text(), 0xAAFFAAFF)
-        r.ImGui_TextWrapped(nameDialog.ctx, preview_name)
-        r.ImGui_PopStyleColor(nameDialog.ctx)
-        
-        r.ImGui_Spacing(nameDialog.ctx)
-        r.ImGui_Separator(nameDialog.ctx)
-        r.ImGui_Spacing(nameDialog.ctx)
-        
-        -- Wildcards info
-        r.ImGui_Text(nameDialog.ctx, "Available wildcards:")
-        r.ImGui_Text(nameDialog.ctx, "$track $parent $region $marker $project $folders")
-        
-        r.ImGui_Spacing(nameDialog.ctx)
-        
-        -- Bottom buttons
-        local button_width = (r.ImGui_GetWindowWidth(nameDialog.ctx) - 20) / 2
-        
-        if r.ImGui_Button(nameDialog.ctx, "Apply", button_width) then
-            -- Save the preferences
-            local new_prefs = {
-                prefix = nameDialog.prefix,
-                suffix = nameDialog.suffix,
-                number_format = nameDialog.numberFormat,
-                use_prefix = nameDialog.use_prefix,
-                use_suffix = nameDialog.use_suffix,
-                use_numbering = nameDialog.use_numbering,
-                base_name = nameDialog.base_name
-            }
-            
-            saveNamingPreferences(new_prefs)
-            
-            -- Set the result and close the dialog
-            nameDialog.result = new_prefs
-            nameDialog.isOpen = false
-            open = false
-            
-            -- Trigger the update in the main function
-            updateItemValue(nil, "name", nil)
-        end
-        
-        r.ImGui_SameLine(nameDialog.ctx)
-        
-        if r.ImGui_Button(nameDialog.ctx, "Cancel", button_width) then
-            nameDialog.isOpen = false
-            open = false
-        end
-        
-        r.ImGui_End(nameDialog.ctx)
-    end
-    
-    -- Clean up styles
-    if style_loader then
-        style_loader.clearStyles(nameDialog.ctx, pushed_dialog_colors, pushed_dialog_vars)
-    end
-    
-    -- Continue or close
-    if open and nameDialog.isOpen then
-        r.defer(nameDialogLoop)
-    else
-        nameDialog.isOpen = false
-    end
 end
 
 function handleMouseInput(item_data, mx, my, controls, header_cells)
@@ -1392,9 +1003,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
     
     local current_time = r.time_precise()
     
-    -- Vérifier si nous sommes en période de refroidissement après un double-clic
     if state.double_click_cooldown > 0 and current_time - state.double_click_cooldown < 0.3 then
-        -- Ignorer les entrées de souris pendant le refroidissement
         state.last_mouse_cap = mouse_cap
         return
     else
@@ -1402,8 +1011,13 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
     end
 
     if mouse_cap == 0 then
-        -- Réinitialiser le flag de traitement des doubles clics lorsque le bouton est relâché
         state.double_click_handled = false
+        
+        if state.drag_active then
+            endUndo()
+            state.drag_active = false
+            state.active_control = nil
+        end
         
         for id, ctrl in pairs(controls) do
             if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
@@ -1415,67 +1029,58 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
         end
     end
 
-    -- Handle click/double-click
     if mouse_cap == 1 and state.last_mouse_cap == 0 then
         local is_double_click = (current_time - state.last_click_time) < 0.3
         state.last_click_time = current_time
     
         if is_double_click and not state.double_click_handled then
             state.double_click_handled = true
-            state.double_click_cooldown = current_time  -- Marquer le début du refroidissement
+            state.double_click_cooldown = current_time  
             
-            -- Vérifier d'abord les clics sur les en-têtes
             for _, header in ipairs(header_cells or {}) do
                 if mx >= header.x and mx < header.x + header.w and
                    my >= header.y and my < header.y + header.h then
-                    -- Traitement spécial pour le header PresPitch
                     if header.text == "PresPitch" then
-                        -- Lancer le script CP_PitchMode.lua avec l'ID de commande correct
-                        local script_id = r.NamedCommandLookup("_RSbd553d355efb97c0e350e52672b0784f6b9b72e9")
-                        if script_id ~= 0 then
-                            r.Main_OnCommand(script_id, 0)
+                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_PitchShiftSelector.lua"
+                        if r.file_exists(script_path) then
+                            dofile(script_path)
                         end
+                    elseif header.text == "Rate" then
+                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_StretchMarkersControl.lua"
+                        if r.file_exists(script_path) then
+                            dofile(script_path)
+                        end
+                    elseif header.text == "TakeVol" then
+                        r.Main_OnCommand(42460, 0)
                         state.last_mouse_cap = mouse_cap
-                        return -- Sortir de la fonction après avoir traité le clic sur l'en-tête
+                        return
                     end
                     break
                 end
             end
             
-            -- Vérifier ensuite les contrôles normaux (comme avant)
             for id, ctrl in pairs(controls) do
                 if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
                    my >= ctrl.y and my < ctrl.y + ctrl.h then
                     if id == "source" then
-                        -- Méthode 1: Essayer le NamedCommandLookup (méthode la plus fiable)
-                        local script_id = r.NamedCommandLookup("_RSbd325b208f4aef794a3a327ffce0d38473c64c52")
-                        
-                        if script_id ~= 0 then
-                            -- Le script est enregistré comme action, l'exécuter directement
-                            r.Main_OnCommand(script_id, 0)
+                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_SourceManager.lua"
+                        if r.file_exists(script_path) then
+                            dofile(script_path)
                         end
-                        
-                        return -- Sortir de la fonction pour éviter d'autres traitements
                     elseif id == "name" then
-                        -- Open the ImGui name dialog
-                        local selected_items = {}
-                        local selected_count = r.CountSelectedMediaItems(0)
-                        for i = 0, selected_count - 1 do
-                            table.insert(selected_items, r.GetSelectedMediaItem(0, i))
-                        end
-                        openNameDialog(ctrl.value, selected_items)
+                        updateItemValue(item_data, id, nil)
                     else
-                        -- For non-name parameters
                         local new_value = handleValueInput(id, ctrl.value)
                         if new_value then
+                            beginUndo(getUndoDescription(id))
                             updateItemValue(item_data, id, new_value)
+                            endUndo()
                         end
                     end
                     break
                 end
             end
         else
-            -- Clic simple - ne pas traiter les en-têtes ici, uniquement les contrôles
             for id, ctrl in pairs(controls) do
                 if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
                    my >= ctrl.y and my < ctrl.y + ctrl.h then
@@ -1497,21 +1102,115 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                             state.active_control = id
                         end
                         state.drag_active = true
+                        state.drag_start_time = current_time
+                        beginUndo(getUndoDescription(id))
                     else
+                        beginUndo(getUndoDescription(id))
                         updateItemValue(item_data, id, not ctrl.value)
+                        endUndo()
                         r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                    end
+                    break
+                end
+            end
+            for button_name, button in pairs(state.header_buttons) do
+                if mx >= button.x and mx < button.x + button.w and
+                my >= button.y and my < button.y + button.h then
+                    if button_name == "pan_dropdown" then
+                        showPanDropdownMenu(button.x, button.y, button.h)
+                    elseif button_name == "loop_toggle" then
+                        toggleLoopSource()
                     end
                     break
                 end
             end
         end
     end
-    
-    -- Handle wheel - apply offset to all selected items
-    if mouse_wheel ~= 0 then
+
+    if mouse_cap == 2 and state.last_mouse_cap == 0 then
+        for _, header in ipairs(header_cells or {}) do
+            if mx >= header.x and mx < header.x + header.w and
+               my >= header.y and my < header.y + header.h then
+                
+                local param_map = {
+                    TakeVol = "takevol", 
+                    Pan = "pan",
+                    Pitch = "pitch",
+                    Mute = "mute"
+                }
+                
+                local param = param_map[header.text]
+                if param then
+                    showEnvelope(param)
+                end
+                
+                state.last_mouse_cap = mouse_cap
+                return
+            end
+        end
+        
         for id, ctrl in pairs(controls) do
             if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
                my >= ctrl.y and my < ctrl.y + ctrl.h then
+                local reset_value = nil
+                if id == "volume" then reset_value = 1.0
+                elseif id == "takevol" then reset_value = 1.0
+                elseif id == "pitch" then reset_value = 0
+                elseif id == "pan" then reset_value = 0
+                elseif id == "rate" then reset_value = 1.0
+                elseif id == "fadein" then reset_value = 0
+                elseif id == "fadeout" then reset_value = 0
+                elseif id == "snap" then reset_value = 0
+                elseif id == "preserve_pitch" then reset_value = false
+                elseif id == "mute" then reset_value = false
+                elseif id == "length" then
+                    beginUndo(getResetDescription("length"))
+                    for i = 0, r.CountSelectedMediaItems(0) - 1 do
+                        local item = r.GetSelectedMediaItem(0, i)
+                        if item then
+                            local take = r.GetActiveTake(item)
+                            if take then
+                                local is_midi = r.TakeIsMIDI(take)
+                                
+                                if not is_midi then
+                                    local source = r.GetMediaItemTake_Source(take)
+                                    local source_length = r.GetMediaSourceLength(source)
+                                    local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+                                    local original_length = source_length / playrate
+                                    r.SetMediaItemInfo_Value(item, "D_LENGTH", original_length)
+                                    r.UpdateItemInProject(item)
+                                end
+                            end
+                        end
+                    end
+                    endUndo()
+                    return 
+                end
+                    
+                if reset_value ~= nil then
+                    beginUndo(getResetDescription(id))
+                    updateItemValue(item_data, id, reset_value)
+                    endUndo()
+                end
+                break
+            end
+        end
+    end
+    
+    if mouse_wheel ~= 0 then
+        local current_time = r.time_precise()
+        
+        for id, ctrl in pairs(controls) do
+            if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
+               my >= ctrl.y and my < ctrl.y + ctrl.h then
+                
+                if not state.wheel_undo_active then
+                    beginUndo(getUndoDescription(id))
+                    state.wheel_undo_active = true
+                    state.last_wheel_time = current_time
+                end
+                
+                state.last_wheel_time = current_time
                 
                 if id == "volume" or id == "takevol" then
                     local db_change = mouse_wheel > 0 and config.volume.step_db or -config.volume.step_db
@@ -1533,21 +1232,21 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                     if ctrl.text_metrics then
                         local increment
                         if mx <= ctrl.text_metrics.min_end then
-                            increment = 60  -- Minutes
+                            increment = 60  
                         elseif mx <= ctrl.text_metrics.sec_end then
-                            increment = 1   -- Seconds
+                            increment = 1   
                         else
-                            increment = 0.001  -- Milliseconds
+                            increment = 0.001  
                         end
                         local delta = mouse_wheel > 0 and increment or -increment
                         updateItemsWithOffset(item_data, id, delta)
                     end
                 end
+                break
             end
         end
     end
     
-    -- Handle drag
     if state.drag_active and state.active_control then
         local base_id = state.active_control:match("^([^_]+)")
         local ctrl = controls[base_id]
@@ -1588,80 +1287,20 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
         end
     end
 
-    -- Handle right-click reset for all selected items
-    if mouse_cap == 2 and state.last_mouse_cap == 0 then
-        for id, ctrl in pairs(controls) do
-            if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
-               my >= ctrl.y and my < ctrl.y + ctrl.h then
-                local reset_value = nil
-                if id == "volume" then reset_value = 1.0
-                elseif id == "takevol" then reset_value = 1.0
-                elseif id == "pitch" then reset_value = 0
-                elseif id == "pan" then reset_value = 0
-                elseif id == "rate" then reset_value = 1.0
-                elseif id == "fadein" then reset_value = 0
-                elseif id == "fadeout" then reset_value = 0
-                elseif id == "snap" then reset_value = 0
-                elseif id == "preserve_pitch" then reset_value = false
-                elseif id == "mute" then reset_value = false
-                elseif id == "length" then
-                    -- Réinitialiser la longueur à la longueur d'origine de la source
-                    r.Undo_BeginBlock()
-                    for i = 0, r.CountSelectedMediaItems(0) - 1 do
-                        local item = r.GetSelectedMediaItem(0, i)
-                        if item then
-                            local take = r.GetActiveTake(item)
-                            if take then
-                                -- Ajouter cette vérification
-                                local is_midi = r.TakeIsMIDI(take)
-                                
-                                if not is_midi then
-                                    local source = r.GetMediaItemTake_Source(take)
-                                    local source_length = r.GetMediaSourceLength(source)
-                                    local playrate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
-                                    local original_length = source_length / playrate
-                                    r.SetMediaItemInfo_Value(item, "D_LENGTH", original_length)
-                                    r.UpdateItemInProject(item)
-                                end
-                                -- Pour les items MIDI, ne rien faire
-                            end
-                        end
-                    end
-                    r.Undo_EndBlock("Reset item length to source", -1)
-                    return -- Sortir après avoir traité tous les items_count    
-                end
-                    
-                if reset_value ~= nil then
-                    updateItemValue(item_data, id, reset_value)
-                end
-                break
-            end
-        end
-    end
-
-    if mouse_cap == 0 then
-        state.drag_active = false
-        state.active_control = nil
-    end
-    
     state.last_mouse_cap = mouse_cap
     state.last_mouse_x = mx
     state.last_mouse_y = my
 end
 
--- Function to determine visible widgets based on available space
 function calculateWidgetWidths(available_width)
     local widget_widths = {}
     local visible_widgets = {}
     
-    -- Initialiser les largeurs avec les valeurs de configuration
     widget_widths.name = config.name_width
     widget_widths.source = config.source_width
     
-    -- Commencer par déterminer quels widgets sont visibles
     local total_space_needed = widget_widths.name + widget_widths.source
     
-    -- Si pas assez d'espace pour les deux, prioriser le nom
     if available_width < total_space_needed then
         if available_width >= config.min_widget_width then
             visible_widgets.name = true
@@ -1670,15 +1309,12 @@ function calculateWidgetWidths(available_width)
         return visible_widgets, widget_widths
     end
     
-    -- Assez d'espace pour nom et source
     visible_widgets.name = true
     visible_widgets.source = true
     
-    -- Espace restant pour les autres widgets
     local remaining_width = available_width - total_space_needed
     local other_widgets_count = 0
     
-    -- Compter combien d'autres widgets peuvent tenir
     for i = 3, #config.widget_priority do 
         if remaining_width >= config.min_widget_width then
             other_widgets_count = other_widgets_count + 1
@@ -1688,8 +1324,7 @@ function calculateWidgetWidths(available_width)
         end
     end
     
-    -- Ajouter les autres widgets par ordre de priorité
-    remaining_width = available_width - total_space_needed  -- réinitialiser
+    remaining_width = available_width - total_space_needed  
     if other_widgets_count > 0 then
         local width_per_widget = remaining_width / other_widgets_count
         
@@ -1705,23 +1340,18 @@ function calculateWidgetWidths(available_width)
     return visible_widgets, widget_widths
 end
 
--- Modifie la fonction drawInterface pour appliquer correctement la disparition des widgets
 function drawInterface()
     local total_width = gfx.w
     
-    -- Calculer quels widgets sont visibles et leurs largeurs
     local visible_widgets, widget_widths = calculateWidgetWidths(total_width)
     
-    -- Stocker les largeurs dans state pour d'autres fonctions
     state.visible_widgets = visible_widgets
     state.widget_widths = widget_widths
     
-    -- Préparer la liste des headers et paramètres de valeurs
     local headers = {}
     local value_params = {}
-    local header_cells = {} -- Stocker les cellules de headers pour la détection de clic
+    local header_cells = {} 
     
-    -- Fonction helper pour ajouter un paramètre
     local function addParam(key, name, type)
         if visible_widgets[key] then
             table.insert(headers, {name = name, width = widget_widths[key], type = type, key = key})
@@ -1729,7 +1359,6 @@ function drawInterface()
         end
     end
     
-    -- Ajouter les paramètres dans l'ordre de priorité
     for _, key in ipairs(config.widget_priority) do
         if key == "name" then
             addParam("name", "Name", "name")
@@ -1738,7 +1367,7 @@ function drawInterface()
         elseif key == "position" then
             addParam("position", "Position", "time")
         elseif key == "length" then
-            addParam("length", "Length", "time") -- Changé de "text" à "time"
+            addParam("length", "Length", "time") 
         elseif key == "snap" then
             addParam("snap", "Snap", "time")
         elseif key == "fadein" then
@@ -1762,7 +1391,6 @@ function drawInterface()
         end
     end
     
-    -- Dessiner les headers
     local x = 0
     for _, header in ipairs(headers) do
         local cell = drawHeaderCell(header.name, x, 0, header.width)
@@ -1771,17 +1399,14 @@ function drawInterface()
         x = x + header.width
     end
     
-    -- Obtenir les données de l'item sélectionné
     local item = r.GetSelectedMediaItem(0, 0)
     if not item then return end
     
-    -- Stocker l'item courant pour les calculs de couleur
     state.last_item = item
     
     local take = r.GetActiveTake(item)
     if not take then return end
     
-    -- Obtenir toutes les données
     local data = {
         name = take and ({r.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)})[2] or "",
         source = r.GetMediaSourceFileName(r.GetMediaItemTake_Source(take), ""),
@@ -1799,17 +1424,14 @@ function drawInterface()
         mute = r.GetMediaItemInfo_Value(item, "B_MUTE") == 1
     }
     
-    -- Dessiner les valeurs
     local controls = {}
     x = 0
     
     for _, param in ipairs(value_params) do
         if param.key == "source" then
-            -- Traitement spécial pour la source
             local source_name = data.source
             local filename = source_name ~= "" and source_name:match("([^/\\]+)$") or "[No source]"
             
-            -- Ajouter une marge de 8 pixels pour éviter l'overlap
             local cell = drawValueCell(
                 truncateString(filename, param.width - 8),
                 x, config.entry_height, 
@@ -1829,7 +1451,6 @@ function drawInterface()
                 param_type = "source"
             }
         elseif param.key == "name" then
-            -- Traitement spécial pour le nom
             local cell = drawValueCell(
                 truncateString(data[param.key], param.width - 8),
                 x, config.entry_height,
@@ -1848,7 +1469,6 @@ function drawInterface()
                 param_type = "name"
             }
         else
-            -- Traitement standard pour les autres valeurs
             local cell = drawValueCell(
                 data[param.key],
                 x, config.entry_height,
@@ -1871,8 +1491,13 @@ function drawInterface()
         
         x = x + param.width
     end
-    
-    -- Traiter les interactions de la souris
+        state.header_buttons = {}
+    for _, header in ipairs(header_cells) do
+        local buttons = drawExtraHeaderButtons(header, data)
+        for button_name, button_data in pairs(buttons) do
+            state.header_buttons[button_name] = button_data
+        end
+    end
     handleMouseInput(data, gfx.mouse_x, gfx.mouse_y, controls, header_cells)
 end
 
@@ -1884,14 +1509,12 @@ function checkForRestart()
         state.last_restart_check = restart_flag
         r.SetExtState("MediaPropertiesToolbar", "need_restart", "0", false)
         
-        -- Force complete restart
         gfx.quit()
         
-        -- Use defer to reopen after a short delay
         r.defer(function()
-            loadSettings() -- Reload settings first
-            init() -- Reinitialize completely
-            r.defer(loop) -- Restart main loop
+            loadSettings() 
+            init() 
+            r.defer(loop) 
         end)
         
         return true
@@ -1900,26 +1523,26 @@ function checkForRestart()
 end
 
 function loop()
+    if r.GetToggleCommandState(sid,cid)==0 then
+        gfx.quit()
+        return
+    end
     if checkForRestart() then
-        return -- Skip rest of frame if we're restarting
+        return 
     end
-    -- Apply global style if available
-    if style_loader then
-        local success, colors, vars = style_loader.applyToContext(nameDialog.ctx)
-        if success then
-            pushed_colors, pushed_vars = colors, vars
-        end
+    
+    local current_time = r.time_precise()
+    if state.wheel_undo_active and current_time - state.last_wheel_time > config.undo.wheel_timeout then
+        endUndo()
+        state.wheel_undo_active = false
     end
-
-    -- Clear background
+    
     gfx.set(table.unpack(config.background_color))
     gfx.rect(0, 0, gfx.w, gfx.h, 1)
     
-    -- Draw interface
     checkForSettingsUpdates()
     drawInterface()
     
-    -- Check dock state
     local dock_state = gfx.dock(-1)
     if dock_state ~= state.dock_id or 
        (dock_state > 0) ~= state.is_docked then
@@ -1928,19 +1551,18 @@ function loop()
         saveDockState()
     end
     
-    -- Handle window state
     local char = gfx.getchar()
     if char >= 0 then
         r.defer(loop)
     end
     
-    -- Clean up styles
-    if style_loader then
-        style_loader.clearStyles(nameDialog.ctx, pushed_colors, pushed_vars)
-    end
-    
     gfx.update()
 end
+
+r.atexit(function()
+  r.SetToggleCommandState(sid,cid,0)
+  r.RefreshToolbar2(sid,cid)
+end)
 
 init()
 loop()
