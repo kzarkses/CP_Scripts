@@ -613,7 +613,7 @@ local function collapse_all_by_level()
 end
 
 local function open_settings()
-    local settings_script = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_TrackNavigator_Settings_GFX.lua"
+    local settings_script = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_TrackNavigator_Settings.lua"
     if reaper.file_exists(settings_script) then 
         dofile(settings_script) 
     end 

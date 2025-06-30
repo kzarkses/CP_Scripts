@@ -22,7 +22,7 @@ local WINDOW_FOLLOW_MOUSE = false
 local WINDOW_X_OFFSET = 35
 local WINDOW_Y_OFFSET = 35
 local WINDOW_WIDTH = 220
-local WINDOW_HEIGHT = 292
+local WINDOW_HEIGHT = 278
 
 local time_selection_extension = 0.0
 local sync_edit_cursor = false
@@ -444,7 +444,7 @@ function MainLoop()
         automation_changed, sync_automation = r.ImGui_Checkbox(ctx, "Sync Automation", sync_automation)
         r.ImGui_Spacing(ctx)
         
-        play_changed, auto_play = r.ImGui_Checkbox(ctx, "Auto-Play", auto_play)
+        -- play_changed, auto_play = r.ImGui_Checkbox(ctx, "Auto-Play", auto_play)
 
         if sync_time_selection then
             r.ImGui_Spacing(ctx)

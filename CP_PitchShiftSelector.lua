@@ -5,10 +5,18 @@ if not r.APIExists("ImGui_CreateContext") then
     return
 end
 
+
 local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
 local style_loader = nil
 local pushed_colors = 0
 local pushed_vars = 0
+
+local script_id = "CP_PitchShiftSelector_Instance"
+if _G[script_id] then
+    _G[script_id] = false
+    return
+end
+_G[script_id] = true
 
 local file = io.open(style_loader_path, "r")
 if file then
@@ -19,7 +27,7 @@ if file then
   end
 end
 
-local ctx = r.ImGui_CreateContext('¨Pitch Shift Selector')
+local ctx = r.ImGui_CreateContext('Pitch Shift Selector')
 
 if style_loader then
   style_loader.applyFontsToContext(ctx)
@@ -790,6 +798,7 @@ GetCurrentModeFromSelection()
 GetStretchMarkerSettings()
 
 local function loop()
+    if not _G[script_id] then return end
     if not window_open then return end
     
     r.defer(loop)
@@ -806,7 +815,7 @@ local function loop()
     local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse()
     
     r.ImGui_SetNextWindowSize(ctx, 500, 408, r.ImGui_Cond_Always())
-    local visible, open = r.ImGui_Begin(ctx, 'Advanced Pitch Shift Selector', true, window_flags)
+    local visible, open = r.ImGui_Begin(ctx, 'Pitch Shift Selector', true, window_flags)
     window_open = open
     
     if visible then
@@ -814,7 +823,7 @@ local function loop()
         local main_font = getStyleFont("main")
         
         if header_font then r.ImGui_PushFont(ctx, header_font) end
-        r.ImGui_Text(ctx, "Advanced Pitch Shift Selector")
+        r.ImGui_Text(ctx, "Pitch Shift Selector")
         if header_font then r.ImGui_PopFont(ctx) end
         if main_font then r.ImGui_PushFont(ctx, main_font) end
         
@@ -933,6 +942,13 @@ local function loop()
     if style_loader then
         style_loader.clearStyles(ctx, pushed_colors, pushed_vars)
     end
+
+    -- if not open then
+    --     _G[script_id] = false
+    --     return
+    -- end
+    
+    -- r.defer(loop)
 end
 
 loop()

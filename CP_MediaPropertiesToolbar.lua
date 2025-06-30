@@ -50,7 +50,7 @@ local config = {
         "snap",
         "fadein", 
         "fadeout", 
-        "volume", 
+        "itemvol", 
         "takevol", 
         "pitch", 
         "preserve_pitch",
@@ -65,14 +65,14 @@ local config = {
     },
 
     mouse = {
-        volume_sensitivity = 0.05,
+        itemvol_sensitivity = 0.05,
         pitch_sensitivity = 0.1,
         pan_sensitivity = 0.01,
         rate_sensitivity = 0.01,
         time_sensitivity = 0.01
     },
 
-    volume = {
+    itemvol = {
         min_db = -120,
         max_db = 120,
         step_db = 1,
@@ -270,7 +270,7 @@ end
 
 function getUndoDescription(param_name)
     local descriptions = {
-        volume = "Adjust item volume",
+        itemvol = "Adjust item volume",
         takevol = "Adjust take volume", 
         pitch = "Adjust item pitch",
         pan = "Adjust item pan",
@@ -288,7 +288,7 @@ end
 
 function getResetDescription(param_name)
     local descriptions = {
-        volume = "Reset item volume",
+        itemvol = "Reset item volume",
         takevol = "Reset take volume", 
         pitch = "Reset item pitch",
         pan = "Reset item pan",
@@ -584,7 +584,7 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     local is_negative = false
     local is_modified = false
     
-    if param_type == "volume" or param_type == "takevol" then
+    if param_type == "itemvol" or param_type == "takevol" then
         local db = 20 * math.log(value, 10)
         is_negative = db < 0
     elseif param_type == "pitch" or param_type == "pan" then
@@ -614,7 +614,7 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     end
     
     local is_modified = false
-    if param_type == "volume" or param_type == "takevol" then
+    if param_type == "itemvol" or param_type == "takevol" then
         is_modified = math.abs(value - 1.0) > 0.001
     elseif param_type == "pitch" or param_type == "pan" then 
         is_modified = math.abs(value) > 0.001
@@ -667,7 +667,7 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         local seconds = math.floor(value % 60)
         local ms = math.floor((value % 1) * 1000)
         display_value = string.format("%d:%02d.%03d", minutes, seconds, ms)
-    elseif param_type == "volume" or param_type == "takevol" then
+    elseif param_type == "itemvol" or param_type == "takevol" then
         local db = 20 * math.log(value, 10)
         if db == math.abs(0) then db = 0 end
         display_value = string.format("%+.1f dB", db)
@@ -770,7 +770,7 @@ function updateItemsWithOffset(item_data, param_name, change)
         local take = r.GetActiveTake(item)
         local current_value
         
-        if param_name == "volume" then
+        if param_name == "itemvol" then
             current_value = r.GetMediaItemInfo_Value(item, "D_VOL")
         elseif param_name == "takevol" then
             current_value = r.GetMediaItemTakeInfo_Value(take, "D_VOL")
@@ -806,7 +806,7 @@ function updateItemsWithOffset(item_data, param_name, change)
         local current_value = selected_values[i]
         local new_value
         
-        if param_name == "volume" or param_name == "takevol" then
+        if param_name == "itemvol" or param_name == "takevol" then
             local current_db = config.linear_to_db(current_value)
             local new_db = current_db + change
             
@@ -814,7 +814,7 @@ function updateItemsWithOffset(item_data, param_name, change)
             
             new_value = config.db_to_linear(new_db)
             
-            if param_name == "volume" then
+            if param_name == "itemvol" then
                 r.SetMediaItemInfo_Value(item, "D_VOL", new_value)
             else
                 r.SetMediaItemTakeInfo_Value(take, "D_VOL", new_value)
@@ -888,10 +888,10 @@ function handleValueInput(param_name, current_value)
         end
         return current_value
 
-    elseif param_name == "volume" or param_name == "takevol" then
+    elseif param_name == "itemvol" or param_name == "takevol" then
         local current_db = 20 * math.log(current_value, 10)
         local retval, user_input = r.GetUserInputs(param_name, 1, 
-            param_name == "volume" and "Item volume (dB):" or "Take volume (dB):", 
+            param_name == "itemvol" and "Item Volume (dB):" or "Take Volume (dB):", 
             string.format("%.1f", current_db))
         if not retval then return current_value end
         
@@ -962,7 +962,7 @@ function updateItemValue(item_data, param_name, value)
         for i, item in ipairs(selected_items) do
             local take = r.GetActiveTake(item)
             if take then
-                if param_name == "volume" then 
+                if param_name == "itemvol" then 
                     r.SetMediaItemInfo_Value(item, "D_VOL", value)
                 elseif param_name == "takevol" then 
                     r.SetMediaItemTakeInfo_Value(take, "D_VOL", value)
@@ -1040,7 +1040,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
             for _, header in ipairs(header_cells or {}) do
                 if mx >= header.x and mx < header.x + header.w and
                    my >= header.y and my < header.y + header.h then
-                    if header.text == "PresPitch" then
+                    if header.text == "Pres Pitch" then
                         local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_PitchShiftSelector.lua"
                         if r.file_exists(script_path) then
                             dofile(script_path)
@@ -1153,7 +1153,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
             if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
                my >= ctrl.y and my < ctrl.y + ctrl.h then
                 local reset_value = nil
-                if id == "volume" then reset_value = 1.0
+                if id == "itemvol" then reset_value = 1.0
                 elseif id == "takevol" then reset_value = 1.0
                 elseif id == "pitch" then reset_value = 0
                 elseif id == "pan" then reset_value = 0
@@ -1212,8 +1212,8 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 
                 state.last_wheel_time = current_time
                 
-                if id == "volume" or id == "takevol" then
-                    local db_change = mouse_wheel > 0 and config.volume.step_db or -config.volume.step_db
+                if id == "itemvol" or id == "takevol" then
+                    local db_change = mouse_wheel > 0 and config.itemvol.step_db or -config.itemvol.step_db
                     updateItemsWithOffset(item_data, id, db_change)
                 
                 elseif id == "pitch" then
@@ -1251,8 +1251,8 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
         local base_id = state.active_control:match("^([^_]+)")
         local ctrl = controls[base_id]
         if ctrl then
-            if base_id == "volume" or base_id == "takevol" then
-                local db_change = (mx - state.last_mouse_x) * config.mouse.volume_sensitivity
+            if base_id == "itemvol" or base_id == "takevol" then
+                local db_change = (mx - state.last_mouse_x) * config.mouse.itemvol_sensitivity
                 updateItemsWithOffset(item_data, base_id, db_change)
                 r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
     
@@ -1361,7 +1361,7 @@ function drawInterface()
     
     for _, key in ipairs(config.widget_priority) do
         if key == "name" then
-            addParam("name", "Name", "name")
+            addParam("name", "TakeName", "name")
         elseif key == "source" then
             addParam("source", "Source", "source")
         elseif key == "position" then
@@ -1374,14 +1374,14 @@ function drawInterface()
             addParam("fadein", "FadeIn", "time")
         elseif key == "fadeout" then
             addParam("fadeout", "FadeOut", "time")
-        elseif key == "volume" then
-            addParam("volume", "Volume", "volume")
+        elseif key == "itemvol" then
+            addParam("itemvol", "ItemVol", "itemvol")
         elseif key == "takevol" then
             addParam("takevol", "TakeVol", "takevol")
         elseif key == "pitch" then
             addParam("pitch", "Pitch", "pitch")
         elseif key == "preserve_pitch" then
-            addParam("preserve_pitch", "PresPitch", "bool")
+            addParam("preserve_pitch", "Pres Pitch", "bool")
         elseif key == "pan" then
             addParam("pan", "Pan", "pan")
         elseif key == "rate" then
@@ -1415,7 +1415,7 @@ function drawInterface()
         snap = r.GetMediaItemInfo_Value(item, "D_SNAPOFFSET"),
         fadein = r.GetMediaItemInfo_Value(item, "D_FADEINLEN"),
         fadeout = r.GetMediaItemInfo_Value(item, "D_FADEOUTLEN"),
-        volume = r.GetMediaItemInfo_Value(item, "D_VOL"),
+        itemvol = r.GetMediaItemInfo_Value(item, "D_VOL"),
         takevol = r.GetMediaItemTakeInfo_Value(take, "D_VOL"),
         pitch = r.GetMediaItemTakeInfo_Value(take, "D_PITCH"),
         pan = r.GetMediaItemTakeInfo_Value(take, "D_PAN"),

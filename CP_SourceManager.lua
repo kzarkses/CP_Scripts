@@ -4,6 +4,13 @@ local sl = nil
 local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
 if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
+local script_id = "CP_SourceManager_Instance"
+if _G[script_id] then
+    _G[script_id] = false
+    return
+end
+_G[script_id] = true
+
 local ctx = r.ImGui_CreateContext('Source Manager')
 local pc, pv = 0, 0
 
@@ -689,6 +696,7 @@ function renameSourceFiles()
 end
 
 function MainLoop()
+    if not _G[script_id] then return end
     if sl then
         local success, colors, vars = sl.applyToContext(ctx)
         if success then pc, pv = colors, vars end

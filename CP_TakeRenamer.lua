@@ -4,6 +4,13 @@ local sl = nil
 local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
 if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
+local script_id = "CP_TakeRenamer_Instance"
+if _G[script_id] then
+    _G[script_id] = false
+    return
+end
+_G[script_id] = true
+
 local ctx = r.ImGui_CreateContext('Take Renamer')
 if sl then sl.applyFontsToContext(ctx) end
 
@@ -17,7 +24,6 @@ function getStyleFont(font_name, context)
 end
 
 local renamer = {
-    ctx = ctx,
     isOpen = true,
     name = "",
     base_name = "",
@@ -307,13 +313,14 @@ function applyRenaming()
     r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
 end
 
-function renamerLoop()
+function MainLoop()
+    if not _G[script_id] then return end
     if not renamer.isOpen then
         return
     end
     
     if sl then
-        local success, colors, vars = sl.applyToContext(renamer.ctx)
+        local success, colors, vars = sl.applyToContext(ctx)
         if success then
             pc, pv = colors, vars
         end
@@ -333,90 +340,90 @@ function renamerLoop()
         local x = main_x + (main_w - renamer.window_width) / 2
         local y = main_y + (main_h - renamer.window_height) / 2
         
-        r.ImGui_SetNextWindowPos(renamer.ctx, x, y, r.ImGui_Cond_FirstUseEver())
-        r.ImGui_SetNextWindowSize(renamer.ctx, renamer.window_width, renamer.window_height, r.ImGui_Cond_FirstUseEver())
+        r.ImGui_SetNextWindowPos(ctx, x, y, r.ImGui_Cond_FirstUseEver())
+        r.ImGui_SetNextWindowSize(ctx, renamer.window_width, renamer.window_height, r.ImGui_Cond_FirstUseEver())
         renamer.window_position_set = true
     end
     
     -- local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse()
     local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
-    local visible, open = r.ImGui_Begin(renamer.ctx, "Take Renamer", true, window_flags)
+    local visible, open = r.ImGui_Begin(ctx, "Take Renamer", true, window_flags)
     
     if visible then
-        local main_font = getStyleFont("main", renamer.ctx)
+        local main_font = getStyleFont("main", ctx)
         if main_font then
-            r.ImGui_PushFont(renamer.ctx, main_font)
+            r.ImGui_PushFont(ctx, main_font)
         end
         
-        local header_font = getStyleFont("header", renamer.ctx)
+        local header_font = getStyleFont("header", ctx)
         if header_font then
-            r.ImGui_PushFont(renamer.ctx, header_font)
-            r.ImGui_Text(renamer.ctx, "Take Renamer")
-            r.ImGui_PopFont(renamer.ctx)
+            r.ImGui_PushFont(ctx, header_font)
+            r.ImGui_Text(ctx, "Take Renamer")
+            r.ImGui_PopFont(ctx)
         else
-            r.ImGui_Text(renamer.ctx, "Take Renamer")
+            r.ImGui_Text(ctx, "Take Renamer")
         end
         
-        r.ImGui_SameLine(renamer.ctx)
-        local close_x = r.ImGui_GetWindowWidth(renamer.ctx) - 30
-        r.ImGui_SetCursorPosX(renamer.ctx, close_x)
-        if r.ImGui_Button(renamer.ctx, "X", 22, 22) then
+        r.ImGui_SameLine(ctx)
+        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
+        r.ImGui_SetCursorPosX(ctx, close_x)
+        if r.ImGui_Button(ctx, "X", 22, 22) then
             open = false
         end
         
         if r.ImGui_BeginChild(ctx, "ScrollableContent", -1, -1) then
 
-            r.ImGui_Separator(renamer.ctx)
-            r.ImGui_Spacing(renamer.ctx)
+            r.ImGui_Separator(ctx)
+            r.ImGui_Spacing(ctx)
             
-            r.ImGui_Text(renamer.ctx, "Base Name (without prefix/suffix/numbers):")
+            r.ImGui_Text(ctx, "Base Name (without prefix/suffix/numbers):")
             
             if renamer.need_focus then
-                r.ImGui_SetKeyboardFocusHere(renamer.ctx)
+                r.ImGui_SetKeyboardFocusHere(ctx)
                 renamer.need_focus = false
             end
             
-            local rv, new_base_name = r.ImGui_InputText(renamer.ctx, "##basename", renamer.base_name)
+            local rv, new_base_name = r.ImGui_InputText(ctx, "##basename", renamer.base_name)
             if rv then
                 renamer.base_name = new_base_name
             end
 
-            if r.ImGui_IsItemFocused(renamer.ctx) and 
-            (r.ImGui_IsKeyPressed(renamer.ctx, r.ImGui_Key_Enter()) or 
-                r.ImGui_IsKeyPressed(renamer.ctx, r.ImGui_Key_KeypadEnter())) then
+            if r.ImGui_IsItemFocused(ctx) and 
+            (r.ImGui_IsKeyPressed(ctx, r.ImGui_Key_Enter()) or 
+                r.ImGui_IsKeyPressed(ctx, r.ImGui_Key_KeypadEnter())) then
                 applyRenaming()
                 renamer.isOpen = false
                 open = false
             end
             
-            r.ImGui_Spacing(renamer.ctx)
-            r.ImGui_Separator(renamer.ctx)
-            r.ImGui_Spacing(renamer.ctx)
+            r.ImGui_Spacing(ctx)
+            r.ImGui_Separator(ctx)
+            r.ImGui_Spacing(ctx)
             
-            rv, renamer.use_prefix = r.ImGui_Checkbox(renamer.ctx, "Use Prefix", renamer.use_prefix)
+            rv, renamer.use_prefix = r.ImGui_Checkbox(ctx, "Use Prefix", renamer.use_prefix)
             if renamer.use_prefix then
-                r.ImGui_SameLine(renamer.ctx)
-                r.ImGui_SetNextItemWidth(renamer.ctx, 200)
-                rv, renamer.prefix = r.ImGui_InputText(renamer.ctx, "##prefix", renamer.prefix)
+                r.ImGui_SameLine(ctx)
+                r.ImGui_SetNextItemWidth(ctx, 200)
+                rv, renamer.prefix = r.ImGui_InputText(ctx, "##prefix", renamer.prefix)
             end
             
-            r.ImGui_Spacing(renamer.ctx)
+            r.ImGui_Spacing(ctx)
             
-            rv, renamer.use_suffix = r.ImGui_Checkbox(renamer.ctx, "Use Suffix", renamer.use_suffix)
+            rv, renamer.use_suffix = r.ImGui_Checkbox(ctx, "Use Suffix", renamer.use_suffix)
             if renamer.use_suffix then
-                r.ImGui_SameLine(renamer.ctx)
-                r.ImGui_SetNextItemWidth(renamer.ctx, 200)
-                rv, renamer.suffix = r.ImGui_InputText(renamer.ctx, "##suffix", renamer.suffix)
+                r.ImGui_SameLine(ctx)
+                r.ImGui_SetNextItemWidth(ctx, 200)
+                rv, renamer.suffix = r.ImGui_InputText(ctx, "##suffix", renamer.suffix)
             end
             
-            r.ImGui_Spacing(renamer.ctx)
+            r.ImGui_Spacing(ctx)
             
             local multiple_items = #renamer.selected_items > 1
-            rv, renamer.use_numbering = r.ImGui_Checkbox(renamer.ctx, "Use Numbering" .. (multiple_items and "" or " (multiple items only)"), 
+            rv, renamer.use_numbering = r.ImGui_Checkbox(ctx, "Use Numbering" .. (multiple_items and "" or " (multiple items only)"), 
                                                         renamer.use_numbering)
             
             if renamer.use_numbering then
-                r.ImGui_Text(renamer.ctx, "Number Format:")
+                r.ImGui_Text(ctx, "Number Format:")
                 
                 local formats = {
                     { label = "1", value = " %d" },
@@ -427,20 +434,20 @@ function renamerLoop()
                 }
                 
                 for i, format in ipairs(formats) do
-                    if i > 1 then r.ImGui_SameLine(renamer.ctx) end
+                    if i > 1 then r.ImGui_SameLine(ctx) end
                     
                     local is_selected = renamer.numberFormat == format.value
-                    if r.ImGui_RadioButton(renamer.ctx, format.label, is_selected) and not is_selected then
+                    if r.ImGui_RadioButton(ctx, format.label, is_selected) and not is_selected then
                         renamer.numberFormat = format.value
                     end
                 end
             end
             
-            r.ImGui_Spacing(renamer.ctx)
-            r.ImGui_Separator(renamer.ctx)
-            r.ImGui_Spacing(renamer.ctx)
+            r.ImGui_Spacing(ctx)
+            r.ImGui_Separator(ctx)
+            r.ImGui_Spacing(ctx)
             
-            r.ImGui_Text(renamer.ctx, "Preview:")
+            r.ImGui_Text(ctx, "Preview:")
             
             local preview_name
             if multiple_items then
@@ -483,51 +490,58 @@ function renamerLoop()
                 )
             end
             
-            r.ImGui_PushStyleColor(renamer.ctx, r.ImGui_Col_Text(), 0xAAFFAAFF)
-            r.ImGui_TextWrapped(renamer.ctx, preview_name)
-            r.ImGui_PopStyleColor(renamer.ctx)
+            r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Text(), 0xAAFFAAFF)
+            r.ImGui_TextWrapped(ctx, preview_name)
+            r.ImGui_PopStyleColor(ctx)
             
-            r.ImGui_Spacing(renamer.ctx)
-            r.ImGui_Separator(renamer.ctx)
-            r.ImGui_Spacing(renamer.ctx)
+            r.ImGui_Spacing(ctx)
+            r.ImGui_Separator(ctx)
+            r.ImGui_Spacing(ctx)
             
-            r.ImGui_Text(renamer.ctx, "Available wildcards:")
-            r.ImGui_Text(renamer.ctx, "$track $parent $region $marker $project $folders")
+            r.ImGui_Text(ctx, "Available wildcards:")
+            r.ImGui_Text(ctx, "$track $parent $region $marker $project $folders")
             
-            r.ImGui_Spacing(renamer.ctx)
+            r.ImGui_Spacing(ctx)
             
-            local button_width = (r.ImGui_GetWindowWidth(renamer.ctx) - 20) / 2
+            local button_width = (r.ImGui_GetWindowWidth(ctx) - 20) / 2
             
-            if r.ImGui_Button(renamer.ctx, "Apply", button_width) then
+            if r.ImGui_Button(ctx, "Apply", button_width) then
                 applyRenaming()
                 renamer.isOpen = false
                 open = false
             end
             
-            r.ImGui_SameLine(renamer.ctx)
+            r.ImGui_SameLine(ctx)
             
-            if r.ImGui_Button(renamer.ctx, "Cancel", button_width) then
+            if r.ImGui_Button(ctx, "Cancel", button_width) then
                 renamer.isOpen = false
                 open = false
             end
             
-            if main_font then
-                r.ImGui_PopFont(renamer.ctx)
-            end
-            r.ImGui_EndChild(renamer.ctx)
+            r.ImGui_EndChild(ctx)
         end
-        r.ImGui_End(renamer.ctx)
+        if main_font then
+                r.ImGui_PopFont(ctx)
+        end
+        r.ImGui_End(ctx)
     end
     
     if sl then
-        sl.clearStyles(renamer.ctx, pc, pv)
+        sl.clearStyles(ctx, pc, pv)
     end
     
-    if open and renamer.isOpen then
-        r.defer(renamerLoop)
-    else
-        renamer.isOpen = false
+    if not open then
+        _G[script_id] = false
+        return
     end
+    
+    r.defer(MainLoop)
+
+    -- if open and renamer.isOpen then
+    --     r.defer(MainLoop)
+    -- else
+    --     renamer.isOpen = false
+    -- end
 end
 
 local selected_count = r.CountSelectedMediaItems(0)
@@ -559,4 +573,4 @@ if #renamer.selected_items > 0 then
     end
 end
 
-renamerLoop()
+MainLoop()
