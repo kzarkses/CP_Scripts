@@ -1,8 +1,6 @@
--- @description Auto arm for selected instrument plugin tracks
--- @author mrtnz (modifié par l'assistant)
--- @version 1.0
--- @about
---   Automatically arms/disarms VSTi tracks based on selection
+--[[
+	Noindex: true
+]]  
 local retval, filename, section_id, command_id = reaper.get_action_context()
 
 -- Configuration

@@ -1,4 +1,6 @@
--- Configuration
+--[[
+	Noindex: true
+]]  
 local CONFIG = {
     BACKGROUND_MODE = true,   
     REFRESH_INTERVAL = 1.0,    

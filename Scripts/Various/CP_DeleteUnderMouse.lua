@@ -1,3 +1,7 @@
+--[[
+	Noindex: true
+]]  
+
 function nothing() end
 
 -- Fonctions utilitaires pour la gestion des chunks (tirées du script fourni)

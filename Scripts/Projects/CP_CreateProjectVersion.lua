@@ -1,4 +1,6 @@
--- Function to find the next available version number in a directory
+--[[
+	Noindex: true
+]]  
 function findNextVersionNumber(directory, baseName)
     local highestVersion = 0
     

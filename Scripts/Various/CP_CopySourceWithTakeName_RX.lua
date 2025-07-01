@@ -1,8 +1,6 @@
--- @description Copy Source With Take Name + RX Suffix (New Take)
--- @version 1.2
--- @author Claude
--- @about
---   Creates a new take with a copy of the source file using the take name with "_RX" suffix and opens in external editor
+--[[
+	Noindex: true
+]]  
 
 local r = reaper
 

@@ -1,3 +1,6 @@
+--[[
+	Noindex: true
+]]  
 local r = reaper
 local sl = nil
 local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"

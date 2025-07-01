@@ -1,16 +1,6 @@
 --[[
-@description CP_CustomToolbars
-@author Cedric Pamallo
-@version 1.0
-@changelog Release
-@donation https://gumroad.com/votre-page
-@about
-  # CP Scripts
-  Scripts premium pour REAPER par Cedric Pamallo
-  
-  Pour plus d'informations : https://github.com/kzarkses/CP_Scripts
-@provides [main] CP_NomDuScript.lua
---]]
+	Noindex: true
+]]  
 
 local r = reaper
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")

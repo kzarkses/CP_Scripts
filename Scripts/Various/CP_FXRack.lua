@@ -1,3 +1,7 @@
+--[[
+	Noindex: true
+]]  
+
 local r = reaper
 local extstate_id = "CP_FXRack"
 local ctx = r.ImGui_CreateContext("FX Rack")

@@ -1,8 +1,6 @@
--- @description Rename Media Source Files Based on Item Names
--- @version 1.2
--- @author Claude
--- @about
---   This script renames source files of selected media items to match their take names
+--[[
+	Noindex: true
+]]  
 
 local r = reaper
 

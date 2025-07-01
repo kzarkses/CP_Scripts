@@ -1,9 +1,6 @@
 --[[
- * ReaScript Name: CP_ImGuiStyleLoader
- * Description: Loader for global ImGui styles
- * Author: Claude
- * Version: 1.3
---]]
+	Noindex: true
+]]  
 
 local module = {}
 local extstate_id = "CP_ImGuiStyles"

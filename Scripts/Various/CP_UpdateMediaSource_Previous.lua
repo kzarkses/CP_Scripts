@@ -1,8 +1,6 @@
--- @description Update Media Source to Previous Version
--- @version 1.0
--- @author Claude
--- @about
---   This script updates selected media items to the previous version of their source files
+--[[
+	Noindex: true
+]]  
 
 local r = reaper
 

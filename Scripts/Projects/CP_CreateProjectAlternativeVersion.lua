@@ -1,4 +1,6 @@
--- Function to create alternative version of a project
+--[[
+	Noindex: true
+]]  
 function createAlternativeVersion()
     -- Get current project filename
     local proj = 0

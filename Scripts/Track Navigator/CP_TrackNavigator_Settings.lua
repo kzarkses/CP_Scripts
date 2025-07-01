@@ -1,3 +1,6 @@
+--[[
+	Noindex: true
+]]  
 local reaper = reaper
 local script_id = "CP_TrackNavigator"
 

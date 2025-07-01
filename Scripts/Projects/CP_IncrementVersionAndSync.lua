@@ -1,4 +1,6 @@
--- Function to get project version
+--[[
+	Noindex: true
+]]  
 function getProjectVersion()
     local _, projectPath = reaper.EnumProjects(-1)
     if not projectPath then return nil end

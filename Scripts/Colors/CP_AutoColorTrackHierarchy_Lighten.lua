@@ -1,4 +1,6 @@
--- Configuration
+--[[
+	Noindex: true
+]]  
 local CONFIG = {
     LIGHTEN_AMOUNT = 0.10,    -- Pourcentage d'éclaircissement par niveau (0.25 = 25% plus clair)
     DESATURATE_AMOUNT = 0.15,   -- Pourcentage de désaturation par niveau 

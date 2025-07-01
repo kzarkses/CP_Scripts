@@ -1,8 +1,6 @@
--- @description Copy Source With Take Name
--- @version 1.0
--- @author Claude
--- @about
---   Creates a copy of the source file using the take name
+--[[
+	Noindex: true
+]]  
 
 local r = reaper
 

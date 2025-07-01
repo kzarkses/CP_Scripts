@@ -1,4 +1,6 @@
--- Function to extract project version information
+--[[
+	Noindex: true
+]]  
 function getProjectVersionInfo(projectPath)
     if not projectPath then return nil end
     

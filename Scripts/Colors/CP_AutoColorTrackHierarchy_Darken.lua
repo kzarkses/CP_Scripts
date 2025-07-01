@@ -1,4 +1,6 @@
--- Configuration
+--[[
+	Noindex: true
+]]  
 local CONFIG = {
     DARKEN_AMOUNT = 0.10,    -- Pourcentage d'assombrissement par niveau (0.85 = 15% plus sombre)
     DESATURATE_AMOUNT = 0.20,

@@ -1,3 +1,6 @@
+--[[
+	Noindex: true
+]]  
 local r = reaper
 
 if not r.APIExists("ImGui_CreateContext") then

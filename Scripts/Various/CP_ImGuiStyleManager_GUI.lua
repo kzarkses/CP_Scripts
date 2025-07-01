@@ -1,10 +1,6 @@
 --[[
- * ReaScript Name: CP_ImGuiStyleManager
- * Description: Global style manager for ReaImGui interfaces
- * Author: Claude
- * Version: 1.3
- * Provides: [main=main,imgui_v18,extension] .
---]]
+	Noindex: true
+]]  
 
 local r = reaper
 local extstate_id = "CP_ImGuiStyles"

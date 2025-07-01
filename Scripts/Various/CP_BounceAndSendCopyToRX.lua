@@ -1,8 +1,6 @@
--- @description Bounce Selected Items as Take Name + RX Copy
--- @version 1.0
--- @author Claude
--- @about
---   Bounces selected items to new audio files named after their takes, creates _RX copies, and can send them to RX
+--[[
+	Noindex: true
+]]  
 
 local r = reaper
 

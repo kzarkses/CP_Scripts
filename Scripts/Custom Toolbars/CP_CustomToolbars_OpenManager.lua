@@ -1,3 +1,6 @@
+--[[
+	Noindex: true
+]]  
 local r = reaper
 
 r.SetExtState("CP_CustomToolbars", "open_manager", "1", false)

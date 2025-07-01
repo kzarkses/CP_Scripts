@@ -1,3 +1,7 @@
+--[[
+	Noindex: true
+]]  
+
 local r = reaper
 
 -- Create context at script start

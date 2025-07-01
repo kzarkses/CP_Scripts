@@ -1,6 +1,6 @@
--- CP_ProjectSoundboard.lua
--- Description: Enhanced Soundboard for REAPER with folder structure and improved UI
--- Version: 2.2 (avec intégration du style manager)
+--[[
+	Noindex: true
+]]  
 
 local r = reaper
 
