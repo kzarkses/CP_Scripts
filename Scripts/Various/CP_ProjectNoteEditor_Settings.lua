@@ -1,7 +1,7 @@
 local r = reaper
 
 local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
 if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
 if not r.serialize then
@@ -240,9 +240,9 @@ function ApplyPreset(name)
 end
 
 function ColorToImGui(color)
-    local r = (color >> 24) & 0xFF
-    local g = (color >> 16) & 0xFF
-    local b = (color >> 8) & 0xFF
+    local r = (color >> 16) & 0xFF
+    local g = (color >> 8) & 0xFF
+    local b = color & 0xFF
     return (r << 16) | (g << 8) | b
 end
 
@@ -250,7 +250,7 @@ function ImGuiToColor(color)
     local r = (color >> 16) & 0xFF
     local g = (color >> 8) & 0xFF
     local b = color & 0xFF
-    return (r << 24) | (g << 16) | (b << 8) | 0xFF
+    return (r << 16) | (g << 8) | b | 0xFF000000
 end
 
 function loop()

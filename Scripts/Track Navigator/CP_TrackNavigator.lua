@@ -1,7 +1,7 @@
 local reaper = reaper
 local script_id = "CP_TrackNavigator"
 local style_loader = nil
-local style_path = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local style_path = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
 
 if reaper.file_exists(style_path) then 
     local loader_func = dofile(style_path)
@@ -613,7 +613,7 @@ local function collapse_all_by_level()
 end
 
 local function open_settings()
-    local settings_script = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_TrackNavigator_Settings.lua"
+    local settings_script = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Track Navigator/CP_TrackNavigator_Settings.lua"
     if reaper.file_exists(settings_script) then 
         dofile(settings_script) 
     end 

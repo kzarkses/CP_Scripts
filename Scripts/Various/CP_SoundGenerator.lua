@@ -1,7 +1,7 @@
 local r = reaper
 
 local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
 if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
 local ctx = r.ImGui_CreateContext('Tone Generator')
@@ -17,7 +17,7 @@ function getStyleFont(font_name)
 end
 
 function dbToAmplitude(db)
-    return 10 ^ (db / 20)  -- Utilisation de ^ au lieu de math.pow
+    return 10 ^ (db / 20)
 end
 
 function amplitudeToDb(amplitude)
@@ -248,11 +248,10 @@ function Loop()
             r.ImGui_EndCombo(ctx)
         end
         
-        -- Tone amplitude slider with fine tuning
         local tone_amp_flags = r.ImGui_SliderFlags_AlwaysClamp()
         local tone_amp_changed
         tone_amp_changed, config.tone_amplitude_db = r.ImGui_SliderDouble(ctx, 'Tone Amplitude (dB)', config.tone_amplitude_db, -60, 0, "%.1f dB", tone_amp_flags)
-        if r.ImGui_IsItemClicked(ctx, 1) then -- Right click to reset
+        if r.ImGui_IsItemClicked(ctx, 1) then
             config.tone_amplitude_db = defaults.tone_amplitude_db
         end
         if r.ImGui_IsItemHovered(ctx) then

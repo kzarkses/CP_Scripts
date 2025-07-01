@@ -4,7 +4,7 @@ local r = reaper
 local ctx = r.ImGui_CreateContext('Track Duplication')
 
 -- Style loader integration
-local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
 local style_loader = nil
 local pushed_colors = 0
 local pushed_vars = 0

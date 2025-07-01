@@ -2,7 +2,7 @@ local r = reaper
 local extstate_id = "CP_FXRack"
 local ctx = r.ImGui_CreateContext("FX Rack")
 local style_loader = nil
-local style_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local style_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
 if r.file_exists(style_path) then
     local loader_func = dofile(style_path)
     if loader_func then

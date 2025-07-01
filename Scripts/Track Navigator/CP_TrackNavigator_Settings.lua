@@ -2,7 +2,7 @@ local reaper = reaper
 local script_id = "CP_TrackNavigator"
 
 local sl = nil
-local sp = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local sp = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
 if reaper.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
 local ctx = reaper.ImGui_CreateContext('Track Navigator Settings')

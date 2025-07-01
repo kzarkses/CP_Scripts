@@ -1,3 +1,17 @@
+--[[
+@description CP_CustomToolbars
+@author Cedric Pamallo
+@version 1.0
+@changelog Release
+@donation https://gumroad.com/votre-page
+@about
+  # CP Scripts
+  Scripts premium pour REAPER par Cedric Pamallo
+  
+  Pour plus d'informations : https://github.com/kzarkses/CP_Scripts
+@provides [main] CP_NomDuScript.lua
+--]]
+
 local r = reaper
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
 local extname_base = "CP_CustomToolbars"
@@ -14,7 +28,7 @@ local cache_time = 0
 local CACHE_INTERVAL = 1
 
 local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
 if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
 local function shallow_copy(orig)
@@ -236,7 +250,7 @@ function CreateToolbarAction(toolbar)
     local action_name_off = "CP_CustomToolbars_" .. toolbar.name .. "_Off"
     local action_id_on = r.NamedCommandLookup("_" .. action_name_on)
     local action_id_off = r.NamedCommandLookup("_" .. action_name_off)
-    local action_path_on = r.GetResourcePath() .. "/Scripts/" .. action_name_on .. ".lua"
+    local action_path_on = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars" .. action_name_on .. ".lua"
     local script_content_on = [[local r=reaper
 function EnableToolbar()
 r.SetExtState("CP_MULTI_TOOLBAR","]] .. toolbar.id .. [[_state","1",false)
