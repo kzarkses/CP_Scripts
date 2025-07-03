@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_IncrementVersionAndSync
-@version 1.0
-@author Cedric Pamallo
+Description: CP_IncrementVersionAndSync
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 function getProjectVersion()
     local _, projectPath = reaper.EnumProjects(-1)
@@ -126,6 +126,7 @@ end
 
 -- Launch script
 incrementAllProjectVersions()
+
 
 
 

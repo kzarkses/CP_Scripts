@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_AutoColorTrackHierarchy_Lighten
-@version 1.0
-@author Cedric Pamallo
+Description: CP_AutoColorTrackHierarchy_Lighten
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local CONFIG = {
     LIGHTEN_AMOUNT = 0.10,    -- Pourcentage d'Ã©claircissement par niveau (0.25 = 25% plus clair)
@@ -243,6 +243,7 @@ end
 
 reaper.atexit(Exit)
 ToggleScript()
+
 
 
 

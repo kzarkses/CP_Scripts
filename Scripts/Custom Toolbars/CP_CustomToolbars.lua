@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_CustomToolbars
-@version 1.0
-@author Cedric Pamallo
+Description: CP_CustomToolbars
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local r = reaper
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
@@ -1745,6 +1745,7 @@ end
 
 r.atexit(Exit)
 Init()
+
 
 
 

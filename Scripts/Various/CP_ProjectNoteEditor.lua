@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_ProjectNoteEditor
-@version 1.0
-@author Cedric Pamallo
+Description: CP_ProjectNoteEditor
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local r = reaper
 local config = {
@@ -1187,6 +1187,7 @@ end
 
 r.atexit(Exit)
 ToggleScript()
+
 
 
 

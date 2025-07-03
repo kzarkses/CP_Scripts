@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_ProjectSoundboard
-@version 1.0
-@author Cedric Pamallo
+Description: CP_ProjectSoundboard
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local r = reaper
 
@@ -1627,5 +1627,6 @@ end
 if safeInit() then
   loop()
 end
+
 
 

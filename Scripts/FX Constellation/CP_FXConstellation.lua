@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_FXConstellation
-@version 1.0
-@author Cedric Pamallo
+Description: CP_FXConstellation
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local r = reaper
 local sl = nil
@@ -2527,6 +2527,7 @@ local function loop()
 end
 r.atexit(saveSettings)
 loop()
+
 
 
 

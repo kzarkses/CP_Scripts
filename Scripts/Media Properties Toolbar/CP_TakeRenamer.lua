@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_TakeRenamer
-@version 1.0
-@author Cedric Pamallo
+Description: CP_TakeRenamer
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local r = reaper
 
@@ -579,5 +579,6 @@ if #renamer.selected_items > 0 then
 end
 
 MainLoop()
+
 
 

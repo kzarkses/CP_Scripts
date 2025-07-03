@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_TrackNavigator
-@version 1.0
-@author Cedric Pamallo
+Description: CP_TrackNavigator
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local reaper = reaper
 local script_id = "CP_TrackNavigator"
@@ -1117,5 +1117,6 @@ end)
 
 initialize()
 main_loop()
+
 
 

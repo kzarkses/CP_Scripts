@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_MediaPropertiesToolbar
-@version 1.0
-@author Cedric Pamallo
+Description: CP_MediaPropertiesToolbar
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local r = reaper
 
@@ -1571,5 +1571,6 @@ end)
 
 init()
 loop()
+
 
 

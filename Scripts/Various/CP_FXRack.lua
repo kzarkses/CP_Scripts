@@ -1,7 +1,7 @@
 ﻿--[[
-@description CP_FXRack
-@version 1.0
-@author Cedric Pamallo
+Description: CP_FXRack
+Version: 1.0
+Author: Cedric Pamallo
 --]]
 local r = reaper
 local extstate_id = "CP_FXRack"
@@ -800,6 +800,7 @@ function Main()
 end
 LoadSettings()
 Main()
+
 
 
 
