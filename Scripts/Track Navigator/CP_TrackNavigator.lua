@@ -1,4 +1,4 @@
-﻿-- @description TrackNavigator
+-- @description TrackNavigator
 -- @version 1.0
 -- @author Cedric Pamalio
 

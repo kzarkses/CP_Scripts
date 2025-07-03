@@ -1,4 +1,4 @@
-﻿-- @description DuplicateTrackRearrange
+-- @description DuplicateTrackRearrange
 -- @version 1.0
 -- @author Cedric Pamalio
 

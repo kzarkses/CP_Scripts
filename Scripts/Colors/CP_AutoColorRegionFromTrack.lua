@@ -1,4 +1,4 @@
-﻿-- @description AutoColorRegionFromTrack
+-- @description AutoColorRegionFromTrack
 -- @version 1.0
 -- @author Cedric Pamalio
 

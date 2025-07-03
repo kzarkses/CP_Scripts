@@ -1,4 +1,4 @@
-﻿-- @description ImGuiStyleManager - GUI
+-- @description ImGuiStyleManager - GUI
 -- @version 1.0
 -- @author Cedric Pamalio
 

@@ -1,4 +1,4 @@
-﻿-- @description UpdateMediaSource Next
+-- @description UpdateMediaSource Next
 -- @version 1.0
 -- @author Cedric Pamalio
 

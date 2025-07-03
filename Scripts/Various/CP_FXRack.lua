@@ -1,4 +1,4 @@
-﻿-- @description FXRack
+-- @description FXRack
 -- @version 1.0
 -- @author Cedric Pamalio
 

@@ -1,4 +1,4 @@
-﻿-- @description IncrementVersionAndSync
+-- @description IncrementVersionAndSync
 -- @version 1.0
 -- @author Cedric Pamalio
 

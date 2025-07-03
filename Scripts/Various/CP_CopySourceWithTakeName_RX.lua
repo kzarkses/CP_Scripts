@@ -1,4 +1,4 @@
-﻿-- @description CopySourceWithTakeName RX
+-- @description CopySourceWithTakeName RX
 -- @version 1.0
 -- @author Cedric Pamalio
 

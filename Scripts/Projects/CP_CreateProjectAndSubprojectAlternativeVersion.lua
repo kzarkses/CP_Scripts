@@ -1,4 +1,4 @@
-﻿-- @description CreateProjectAndSubprojectAlternativeVersion
+-- @description CreateProjectAndSubprojectAlternativeVersion
 -- @version 1.0
 -- @author Cedric Pamalio
 

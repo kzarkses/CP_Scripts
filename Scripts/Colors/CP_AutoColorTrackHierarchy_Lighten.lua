@@ -1,4 +1,4 @@
-﻿-- @description AutoColorTrackHierarchy - Lighten
+-- @description AutoColorTrackHierarchy - Lighten
 -- @version 1.0
 -- @author Cedric Pamalio
 

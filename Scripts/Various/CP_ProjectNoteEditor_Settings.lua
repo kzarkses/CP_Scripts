@@ -1,4 +1,4 @@
-﻿-- @description ProjectNoteEditor - Settings
+-- @description ProjectNoteEditor - Settings
 -- @version 1.0
 -- @author Cedric Pamalio
 

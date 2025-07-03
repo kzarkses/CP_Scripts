@@ -1,4 +1,4 @@
-﻿-- @description StretchMarkersControl
+-- @description StretchMarkersControl
 -- @version 1.0
 -- @author Cedric Pamalio
 

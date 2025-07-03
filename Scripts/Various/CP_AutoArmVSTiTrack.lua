@@ -1,4 +1,4 @@
-﻿-- @description AutoArmVSTiTrack
+-- @description AutoArmVSTiTrack
 -- @version 1.0
 -- @author Cedric Pamalio
 

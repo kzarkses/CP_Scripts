@@ -1,4 +1,4 @@
-﻿-- @description BounceAndSendCopyToRX
+-- @description BounceAndSendCopyToRX
 -- @version 1.0
 -- @author Cedric Pamalio
 

@@ -1,4 +1,4 @@
-﻿-- @description CustomToolbars
+-- @description CustomToolbars
 -- @version 1.0
 -- @author Cedric Pamalio
 

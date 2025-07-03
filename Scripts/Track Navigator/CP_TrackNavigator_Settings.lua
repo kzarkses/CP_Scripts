@@ -1,4 +1,4 @@
-﻿-- @description TrackNavigator - Settings
+-- @description TrackNavigator - Settings
 -- @version 1.0
 -- @author Cedric Pamalio
 

@@ -1,4 +1,4 @@
-﻿-- @description CustomToolbars OpenManager
+-- @description CustomToolbars OpenManager
 -- @version 1.0
 -- @author Cedric Pamalio
 

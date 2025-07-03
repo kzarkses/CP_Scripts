@@ -1,4 +1,4 @@
-﻿-- @description SourceManager
+-- @description SourceManager
 -- @version 1.0
 -- @author Cedric Pamalio
 

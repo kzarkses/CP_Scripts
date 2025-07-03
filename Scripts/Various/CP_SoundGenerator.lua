@@ -1,4 +1,4 @@
-﻿-- @description SoundGenerator
+-- @description SoundGenerator
 -- @version 1.0
 -- @author Cedric Pamalio
 

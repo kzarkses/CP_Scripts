@@ -1,4 +1,4 @@
-﻿-- @description FXConstellation
+-- @description FXConstellation
 -- @version 1.0
 -- @author Cedric Pamalio
 

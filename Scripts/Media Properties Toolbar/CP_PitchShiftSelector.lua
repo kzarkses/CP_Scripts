@@ -1,4 +1,4 @@
-﻿-- @description PitchShiftSelector
+-- @description PitchShiftSelector
 -- @version 1.0
 -- @author Cedric Pamalio
 

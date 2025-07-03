@@ -1,4 +1,4 @@
-﻿-- @description CopySourceWithTakeName
+-- @description CopySourceWithTakeName
 -- @version 1.0
 -- @author Cedric Pamalio
 

@@ -1,4 +1,4 @@
-﻿-- @description UpdateMediaSource Rename
+-- @description UpdateMediaSource Rename
 -- @version 1.0
 -- @author Cedric Pamalio
 

@@ -1,4 +1,4 @@
-﻿-- @description TakeRenamer
+-- @description TakeRenamer
 -- @version 1.0
 -- @author Cedric Pamalio
 

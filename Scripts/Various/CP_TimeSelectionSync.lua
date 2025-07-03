@@ -1,4 +1,4 @@
-﻿-- @description TimeSelectionSync
+-- @description TimeSelectionSync
 -- @version 1.0
 -- @author Cedric Pamalio
 

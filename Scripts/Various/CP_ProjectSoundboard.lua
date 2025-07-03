@@ -1,4 +1,4 @@
-﻿-- @description ProjectSoundboard
+-- @description ProjectSoundboard
 -- @version 1.0
 -- @author Cedric Pamalio
 

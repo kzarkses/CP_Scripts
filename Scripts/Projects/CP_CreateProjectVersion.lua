@@ -1,4 +1,4 @@
-﻿-- @description CreateProjectVersion
+-- @description CreateProjectVersion
 -- @version 1.0
 -- @author Cedric Pamalio
 

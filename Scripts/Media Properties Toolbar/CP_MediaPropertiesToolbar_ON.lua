@@ -1,4 +1,4 @@
-﻿-- @description MediaPropertiesToolbar - ON
+-- @description MediaPropertiesToolbar - ON
 -- @version 1.0
 -- @author Cedric Pamalio
 
