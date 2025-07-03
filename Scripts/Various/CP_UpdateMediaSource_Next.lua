@@ -1,6 +1,8 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_UpdateMediaSource_Next
+Version: 1.0
+Author: Cedric Pamallo
+--]]
 
 local r = reaper
 
@@ -211,3 +213,4 @@ end
 
 -- Run the script
 updateItemsToNextVersion()
+

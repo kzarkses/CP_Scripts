@@ -1,6 +1,9 @@
 --[[
-	Noindex: true
-]]  
+Description: CP_SourceManager
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 local r = reaper
 
 local sl = nil

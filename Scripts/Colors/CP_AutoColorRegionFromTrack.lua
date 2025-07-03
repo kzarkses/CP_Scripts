@@ -1,6 +1,8 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_AutoColorRegionFromTrack
+Version: 1.0
+Author: Cedric Pamallo
+--]]
 local CONFIG = {
     BACKGROUND_MODE = true,   
     REFRESH_INTERVAL = 1.0,    
@@ -15,7 +17,7 @@ local lastTrackParents = {}
 local lastRegionStates = {}
 local lastRegionNames = {}
 
--- Fonction pour obtenir toutes les régions dans l'ordre
+-- Fonction pour obtenir toutes les rÃ©gions dans l'ordre
 function getAllRegions()
     local regions = {}
     local _, num_markers, num_regions = reaper.CountProjectMarkers(0)
@@ -34,7 +36,7 @@ function getAllRegions()
         end
     end
     
-    -- Trier les régions par position de début
+    -- Trier les rÃ©gions par position de dÃ©but
     table.sort(regions, function(a, b) 
         if a.start == b.start then
             return (a.ending - a.start) > (b.ending - b.start)
@@ -45,23 +47,23 @@ function getAllRegions()
     return regions
 end
 
--- Fonction pour vérifier si une région en contient une autre
+-- Fonction pour vÃ©rifier si une rÃ©gion en contient une autre
 function containsRegion(parent, child)
-    -- Une région en contient une autre si elle commence avant (ou en même temps)
-    -- et finit après
+    -- Une rÃ©gion en contient une autre si elle commence avant (ou en mÃªme temps)
+    -- et finit aprÃ¨s
     return parent.start <= child.start and parent.ending >= child.ending
 end
 
--- Fonction pour construire l'arborescence des régions
+-- Fonction pour construire l'arborescence des rÃ©gions
 function buildRegionHierarchy(regions)
     local hierarchy = {}
     
-    -- Pour chaque région, trouver son parent le plus immédiat
+    -- Pour chaque rÃ©gion, trouver son parent le plus immÃ©diat
     for i, region in ipairs(regions) do
         local path = {region.name}
         local currentRegion = region
         
-        -- Rechercher en arrière pour trouver les parents
+        -- Rechercher en arriÃ¨re pour trouver les parents
         for j = i - 1, 1, -1 do
             local potentialParent = regions[j]
             if containsRegion(potentialParent, currentRegion) then
@@ -95,21 +97,21 @@ function getTrackFullPath(track)
     return path
 end
 
--- Fonction auxiliaire pour vérifier la correspondance partielle entre noms
+-- Fonction auxiliaire pour vÃ©rifier la correspondance partielle entre noms
 function partialNameMatch(regionName, trackName)
     if not regionName or not trackName or regionName == "" or trackName == "" then
         return false
     end
     
-    -- Supprimer les tags de type [xx] au début des noms
+    -- Supprimer les tags de type [xx] au dÃ©but des noms
     local cleanRegionName = regionName:gsub("^%[%w+%]%s*", ""):lower()
     local cleanTrackName = trackName:gsub("^%[%w+%]%s*", ""):lower()
     
-    -- Vérifier si l'un contient l'autre
+    -- VÃ©rifier si l'un contient l'autre
     return cleanRegionName:find(cleanTrackName, 1, true) or cleanTrackName:find(cleanRegionName, 1, true)
 end
 
--- Fonction pour trouver la piste correspondante à une région
+-- Fonction pour trouver la piste correspondante Ã  une rÃ©gion
 function findMatchingTrack(regionPath)
     if not regionPath or #regionPath == 0 then return nil end
     
@@ -121,7 +123,7 @@ function findMatchingTrack(regionPath)
         if track then
             local trackPath = getTrackFullPath(track)
             
-            -- Vérifier si les chemins correspondent (correspondance exacte)
+            -- VÃ©rifier si les chemins correspondent (correspondance exacte)
             local exactMatch = true
             if #regionPath <= #trackPath then
                 for j = 1, #regionPath do
@@ -136,22 +138,22 @@ function findMatchingTrack(regionPath)
                 end
             end
             
-            -- Si pas de correspondance exacte, vérifier la correspondance partielle
+            -- Si pas de correspondance exacte, vÃ©rifier la correspondance partielle
             if not exactMatch and not partialMatchTrack then
                 local _, trackName = reaper.GetTrackName(track)
                 if partialNameMatch(regionPath[#regionPath], trackName) then
                     partialMatchTrack = track
-                    -- Continuer à chercher au cas où il y aurait une correspondance exacte
+                    -- Continuer Ã  chercher au cas oÃ¹ il y aurait une correspondance exacte
                 end
             end
         end
     end
     
-    -- Retourner la piste avec correspondance partielle si trouvée
+    -- Retourner la piste avec correspondance partielle si trouvÃ©e
     return partialMatchTrack
 end
 
--- Fonction pour mettre à jour les noms et couleurs des régions
+-- Fonction pour mettre Ã  jour les noms et couleurs des rÃ©gions
 function updateRegions()
     reaper.PreventUIRefresh(1)
     reaper.Undo_BeginBlock()
@@ -178,23 +180,23 @@ function updateRegions()
     reaper.UpdateArrange()
 end
 
--- Initialize lastRegionStates au démarrage
+-- Initialize lastRegionStates au dÃ©marrage
 if not lastRegionStates then
     lastRegionStates = {}
 end
 
--- Fonction pour détecter les changements
+-- Fonction pour dÃ©tecter les changements
 function detectChanges()
     local changes_detected = false
     
-    -- Vérifier les changements de structure de pistes
+    -- VÃ©rifier les changements de structure de pistes
     local current_track_count = reaper.CountTracks(0)
     if current_track_count ~= last_track_count then
         last_track_count = current_track_count
         changes_detected = true
     end
     
-    -- Vérifier les changements des pistes
+    -- VÃ©rifier les changements des pistes
     for i = 0, current_track_count - 1 do
         local track = reaper.GetTrack(0, i)
         if track then
@@ -206,7 +208,7 @@ function detectChanges()
                 lastTrackColors[guid] = currentColor
             end
             
-            -- Vérifier les changements de parenting
+            -- VÃ©rifier les changements de parenting
             local parent = reaper.GetParentTrack(track)
             local parent_guid = parent and reaper.GetTrackGUID(parent) or "none"
             if lastTrackParents[guid] ~= parent_guid then
@@ -216,7 +218,7 @@ function detectChanges()
         end
     end
     
-    -- Vérifier les changements des régions
+    -- VÃ©rifier les changements des rÃ©gions
     local _, num_markers, num_regions = reaper.CountProjectMarkers(0)
     local total = num_markers + num_regions
     
@@ -253,7 +255,7 @@ function detectChanges()
         end
     end
     
-    -- Nettoyer les régions supprimées
+    -- Nettoyer les rÃ©gions supprimÃ©es
     local currentRegions = {}
     for i = 0, total - 1 do
         local _, isrgn, _, _, _, markrgnindexnumber = reaper.EnumProjectMarkers3(0, i)
@@ -272,19 +274,19 @@ function detectChanges()
     return changes_detected
 end
 
--- Fonction principale de vérification
+-- Fonction principale de vÃ©rification
 function checkAndUpdateRegions()
     local current_time = reaper.time_precise()
     local should_update = false
     
     if CONFIG.FORCE_REFRESH then
-        -- Mode refresh forcé par intervalle
+        -- Mode refresh forcÃ© par intervalle
         if current_time - last_refresh_time >= CONFIG.REFRESH_INTERVAL then
             should_update = true
             last_refresh_time = current_time
         end
     else
-        -- Mode détection des changements
+        -- Mode dÃ©tection des changements
         should_update = detectChanges()
     end
     
@@ -297,7 +299,7 @@ function checkAndUpdateRegions()
     end
 end
 
--- Fonction pour réinitialiser tous les états
+-- Fonction pour rÃ©initialiser tous les Ã©tats
 function resetAllStates()
     lastTrackColors = {}
     lastTrackParents = {}
@@ -326,7 +328,7 @@ function InitializeTracking()
         end
     end
     
-    -- Initialiser le suivi des régions
+    -- Initialiser le suivi des rÃ©gions
     local regions = getAllRegions()
     for _, region in ipairs(regions) do
         lastRegionStates[region.index] = {
@@ -339,7 +341,7 @@ function InitializeTracking()
     end
 end
 
--- Point d'entrée du script
+-- Point d'entrÃ©e du script
 function main()
     InitializeTracking()
     if CONFIG.BACKGROUND_MODE then
@@ -372,3 +374,4 @@ end
 
 reaper.atexit(Exit)
 ToggleScript()
+

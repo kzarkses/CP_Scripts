@@ -1,10 +1,13 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_AutoColorTrackHierarchy_Lighten
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 local CONFIG = {
-    LIGHTEN_AMOUNT = 0.10,    -- Pourcentage d'éclaircissement par niveau (0.25 = 25% plus clair)
-    DESATURATE_AMOUNT = 0.15,   -- Pourcentage de désaturation par niveau 
-    BACKGROUND_MODE = true    -- true pour mode tâche de fond, false pour mode manuel
+    LIGHTEN_AMOUNT = 0.10,    -- Pourcentage d'Ã©claircissement par niveau (0.25 = 25% plus clair)
+    DESATURATE_AMOUNT = 0.15,   -- Pourcentage de dÃ©saturation par niveau 
+    BACKGROUND_MODE = true    -- true pour mode tÃ¢che de fond, false pour mode manuel
 }
 
 -- Variables globales
@@ -67,7 +70,7 @@ function hsvToRgb(h, s, v)
     return math.floor(r * 255), math.floor(g * 255), math.floor(b * 255)
 end
 
--- Fonction pour éclaircir une couleur
+-- Fonction pour Ã©claircir une couleur
 function lightenColor(r, g, b, lightenAmount, desaturateAmount)
     if r == 0 and g == 0 and b == 0 then
         local base = 144
@@ -99,17 +102,17 @@ function rgbToNative(r, g, b)
     return (r << 16) | (g << 8) | b
 end
 
--- Fonction pour vérifier les changements de structure
+-- Fonction pour vÃ©rifier les changements de structure
 function detectStructureChanges()
     local current_track_count = reaper.CountTracks(0)
     
-    -- Vérifier si le nombre de pistes a changé
+    -- VÃ©rifier si le nombre de pistes a changÃ©
     if current_track_count ~= last_track_count then
         last_track_count = current_track_count
         return true
     end
     
-    -- Vérifier les changements de hiérarchie
+    -- VÃ©rifier les changements de hiÃ©rarchie
     for i = 0, current_track_count - 1 do
         local track = reaper.GetTrack(0, i)
         local guid = reaper.GetTrackGUID(track)
@@ -125,7 +128,7 @@ function detectStructureChanges()
     return false
 end
 
--- Fonction pour vérifier les changements de couleur
+-- Fonction pour vÃ©rifier les changements de couleur
 function detectColorChanges()
     local changes_detected = false
     for i = 0, reaper.CountTracks(0) - 1 do
@@ -141,7 +144,7 @@ function detectColorChanges()
     return changes_detected
 end
 
--- Fonction pour mettre à jour toutes les couleurs
+-- Fonction pour mettre Ã  jour toutes les couleurs
 function updateAllColors()
     reaper.PreventUIRefresh(1)
     
@@ -179,7 +182,7 @@ function colorChildTracks(parentTrack, depth)
     end
  end
 
--- Fonction principale de vérification
+-- Fonction principale de vÃ©rification
 function checkAndUpdateColors()
     local should_update = detectStructureChanges() or detectColorChanges()
     
@@ -241,3 +244,5 @@ end
 
 reaper.atexit(Exit)
 ToggleScript()
+
+

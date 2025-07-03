@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_IncrementVersionAndSync
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 function getProjectVersion()
     local _, projectPath = reaper.EnumProjects(-1)
     if not projectPath then return nil end
@@ -12,7 +15,7 @@ function getProjectVersion()
     local base, version = filename:match("(.+)_(%d+)$")
     if not base or not version then return nil end
     
-    -- Vérifie que ce n'est pas une version alternative (Project_1_1)
+    -- VÃ©rifie que ce n'est pas une version alternative (Project_1_1)
     if base:match("_%d+$") then return nil end
     
     return tonumber(version)
@@ -124,3 +127,5 @@ end
 
 -- Launch script
 incrementAllProjectVersions()
+
+

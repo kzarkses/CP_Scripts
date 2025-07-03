@@ -1,10 +1,13 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_AutoArmVSTiTrack
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 local retval, filename, section_id, command_id = reaper.get_action_context()
 
 -- Configuration
-local force_refresh = false -- Si false, vérifie uniquement lors des changements
+local force_refresh = false -- Si false, vÃ©rifie uniquement lors des changements
 
 -- Variables pour tracker les changements
 local last_track_count = 0
@@ -19,13 +22,13 @@ end
 function HasStateChanged()
   local current_track_count = reaper.CountTracks(0)
   
-  -- Vérifier si le nombre de pistes a changé
+  -- VÃ©rifier si le nombre de pistes a changÃ©
   if current_track_count ~= last_track_count then
     last_track_count = current_track_count
     return true
   end
   
-  -- Vérifier les changements de sélection et de VSTi pour chaque piste
+  -- VÃ©rifier les changements de sÃ©lection et de VSTi pour chaque piste
   local changes = false
   for i = 1, current_track_count do
     local tr = reaper.GetTrack(0, i-1)
@@ -34,13 +37,13 @@ function HasStateChanged()
       local is_selected = reaper.IsTrackSelected(tr)
       local has_vsti = reaper.TrackFX_GetInstrument(tr) ~= -1
       
-      -- Vérifier si l'état a changé pour cette piste
+      -- VÃ©rifier si l'Ã©tat a changÃ© pour cette piste
       if last_track_selection_state[track_guid] ~= is_selected or
          last_track_vsti_state[track_guid] ~= has_vsti then
         changes = true
       end
       
-      -- Mettre à jour les états
+      -- Mettre Ã  jour les Ã©tats
       last_track_selection_state[track_guid] = is_selected
       last_track_vsti_state[track_guid] = has_vsti
     end
@@ -64,16 +67,16 @@ function CheckInstrumentTracks()
       if tr ~= nil then
         local id = reaper.TrackFX_GetInstrument(tr)
         if id ~= -1 then
-          -- Gérer l'armement automatique basé sur la sélection
+          -- GÃ©rer l'armement automatique basÃ© sur la sÃ©lection
           local is_selected = reaper.IsTrackSelected(tr)
           local is_armed = reaper.GetMediaTrackInfo_Value(tr, 'I_RECARM')
           
           if is_selected and is_armed == 0 then
-            -- Armer la piste si elle est sélectionnée et non armée
+            -- Armer la piste si elle est sÃ©lectionnÃ©e et non armÃ©e
             reaper.SetMediaTrackInfo_Value(tr, 'I_RECARM', 1)
             changes = true
           elseif not is_selected and is_armed == 1 then
-            -- Désarmer la piste si elle n'est pas sélectionnée mais armée
+            -- DÃ©sarmer la piste si elle n'est pas sÃ©lectionnÃ©e mais armÃ©e
             reaper.SetMediaTrackInfo_Value(tr, 'I_RECARM', 0)
             changes = true
           end
@@ -94,7 +97,7 @@ function Exit()
 end
 
 function Init()
-  -- Initialiser l'état des pistes
+  -- Initialiser l'Ã©tat des pistes
   last_track_count = reaper.CountTracks(0)
   for i = 1, last_track_count do
     local tr = reaper.GetTrack(0, i-1)
@@ -114,3 +117,5 @@ if reaper.GetToggleCommandStateEx(section_id, command_id) == 0 then
 else
   ToolbarButton(0)
 end
+
+

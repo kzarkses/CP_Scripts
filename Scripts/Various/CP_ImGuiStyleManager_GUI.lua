@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_ImGuiStyleManager_GUI
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 
 local r = reaper
 local extstate_id = "CP_ImGuiStyles"
@@ -1806,3 +1809,5 @@ end
 
 init()
 loop()
+
+

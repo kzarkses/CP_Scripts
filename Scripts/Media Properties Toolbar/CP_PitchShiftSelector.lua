@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_PitchShiftSelector
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 local r = reaper
 
 if not r.APIExists("ImGui_CreateContext") then
@@ -955,3 +958,4 @@ local function loop()
 end
 
 loop()
+

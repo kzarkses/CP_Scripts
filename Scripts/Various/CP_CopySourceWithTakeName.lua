@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_CopySourceWithTakeName
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 
 local r = reaper
 
@@ -95,3 +98,4 @@ end
 
 -- Run the script
 CopySourcesWithTakeName()
+

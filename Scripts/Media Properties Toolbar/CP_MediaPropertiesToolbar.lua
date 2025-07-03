@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_MediaPropertiesToolbar
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 local r = reaper
 
 local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
@@ -307,22 +310,22 @@ function getResetDescription(param_name)
 end
 
 -- function drawExtraHeaderButtons(header, data)
---     -- Debug : vérifier si la fonction est appelée
+--     -- Debug : vÃ©rifier si la fonction est appelÃ©e
 --     r.ShowConsoleMsg("drawExtraHeaderButtons called for: " .. header.text .. "\n")
     
 --     local buttons = {}
     
---     -- Force dessiner quelque chose de très visible n'importe où
+--     -- Force dessiner quelque chose de trÃ¨s visible n'importe oÃ¹
 --     gfx.set(1, 0, 0, 1)  -- Rouge vif
---     gfx.rect(0, 0, 50, 50, 1)  -- Coin supérieur gauche
+--     gfx.rect(0, 0, 50, 50, 1)  -- Coin supÃ©rieur gauche
     
 --     if header.text == "Pan" then
 --         local button_w = 30  -- Plus gros
 --         local button_h = 15  -- Plus haut
---         local button_x = 100  -- Position fixe complètement différente
---         local button_y = 25   -- Position fixe complètement différente
+--         local button_x = 100  -- Position fixe complÃ¨tement diffÃ©rente
+--         local button_y = 25   -- Position fixe complÃ¨tement diffÃ©rente
         
---         -- Force une couleur très visible
+--         -- Force une couleur trÃ¨s visible
 --         gfx.set(1, 0, 1, 1)  -- Magenta vif
 --         gfx.rect(button_x, button_y, button_w, button_h, 1)
         
@@ -341,10 +344,10 @@ end
 --     elseif header.text == "Length" then
 --         local button_w = 30  -- Plus gros  
 --         local button_h = 15  -- Plus haut
---         local button_x = 200  -- Position fixe complètement différente
---         local button_y = 25   -- Position fixe complètement différente
+--         local button_x = 200  -- Position fixe complÃ¨tement diffÃ©rente
+--         local button_y = 25   -- Position fixe complÃ¨tement diffÃ©rente
         
---         -- Force une couleur très visible
+--         -- Force une couleur trÃ¨s visible
 --         gfx.set(0, 1, 1, 1)  -- Cyan vif
 --         gfx.rect(button_x, button_y, button_w, button_h, 1)
         
@@ -539,7 +542,7 @@ function drawExtraHeaderButtons(header, data)
 
         gfx.x = button_x
         gfx.y = button_y
-        gfx.drawstr("▼")
+        gfx.drawstr("â–¼")
         
         buttons.pan_dropdown = {
             x = button_x,
@@ -1569,3 +1572,4 @@ end)
 
 init()
 loop()
+

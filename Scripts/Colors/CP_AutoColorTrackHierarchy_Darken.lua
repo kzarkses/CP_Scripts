@@ -1,10 +1,13 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_AutoColorTrackHierarchy_Darken
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 local CONFIG = {
     DARKEN_AMOUNT = 0.10,    -- Pourcentage d'assombrissement par niveau (0.85 = 15% plus sombre)
     DESATURATE_AMOUNT = 0.20,
-    BACKGROUND_MODE = true   -- true pour mode tâche de fond, false pour mode manuel
+    BACKGROUND_MODE = true   -- true pour mode tÃ¢che de fond, false pour mode manuel
 }
 
 -- Variables globales
@@ -101,17 +104,17 @@ function rgbToNative(r, g, b)
     return (r << 16) | (g << 8) | b
 end
 
--- Fonction pour vérifier les changements de structure
+-- Fonction pour vÃ©rifier les changements de structure
 function detectStructureChanges()
     local current_track_count = reaper.CountTracks(0)
     
-    -- Vérifier si le nombre de pistes a changé
+    -- VÃ©rifier si le nombre de pistes a changÃ©
     if current_track_count ~= last_track_count then
         last_track_count = current_track_count
         return true
     end
     
-    -- Vérifier les changements de hiérarchie
+    -- VÃ©rifier les changements de hiÃ©rarchie
     for i = 0, current_track_count - 1 do
         local track = reaper.GetTrack(0, i)
         local guid = reaper.GetTrackGUID(track)
@@ -127,7 +130,7 @@ function detectStructureChanges()
     return false
 end
 
--- Fonction pour vérifier les changements de couleur
+-- Fonction pour vÃ©rifier les changements de couleur
 function detectColorChanges()
     local changes_detected = false
     for i = 0, reaper.CountTracks(0) - 1 do
@@ -143,7 +146,7 @@ function detectColorChanges()
     return changes_detected
 end
 
--- Fonction pour mettre à jour toutes les couleurs
+-- Fonction pour mettre Ã  jour toutes les couleurs
 function updateAllColors()
     reaper.PreventUIRefresh(1)
     
@@ -167,11 +170,11 @@ function colorChildTracks(parentTrack, depth)
         local parent = reaper.GetParentTrack(track)
         
         if parent == parentTrack then
-            -- Si le parent est par défaut, on reset la profondeur
+            -- Si le parent est par dÃ©faut, on reset la profondeur
             if r == 0 and g == 0 and b == 0 then
                 colorChildTracks(track, 1)
             else
-                -- Appliquer l'assombrissement et la désaturation
+                -- Appliquer l'assombrissement et la dÃ©saturation
                 local darkenAmount = CONFIG.DARKEN_AMOUNT * depth
                 local desaturateAmount = CONFIG.DESATURATE_AMOUNT * depth
                 local newR, newG, newB = darkenColor(r, g, b, darkenAmount, desaturateAmount)
@@ -183,7 +186,7 @@ function colorChildTracks(parentTrack, depth)
     end
  end
 
--- Fonction principale de vérification
+-- Fonction principale de vÃ©rification
 function checkAndUpdateColors()
     local current_time = reaper.time_precise()
     local should_update = false
@@ -195,7 +198,7 @@ function checkAndUpdateColors()
             last_refresh_time = current_time
         end
     else
-        -- Mode réactif : vérifier les changements
+        -- Mode rÃ©actif : vÃ©rifier les changements
         should_update = detectStructureChanges() or detectColorChanges()
     end
     
@@ -222,7 +225,7 @@ function initializeTracking()
     end
 end
 
--- Point d'entrée du script
+-- Point d'entrÃ©e du script
 function main()
     if CONFIG.BACKGROUND_MODE then
         last_refresh_time = reaper.time_precise()
@@ -238,7 +241,7 @@ function main()
             end
         end
         
-        reaper.Undo_EndBlock("Colorer hiérarchiquement les pistes", -1)
+        reaper.Undo_EndBlock("Colorer hiÃ©rarchiquement les pistes", -1)
         reaper.UpdateArrange()
     end
 end
@@ -280,3 +283,5 @@ end
 reaper.atexit(Exit)
 
 ToggleScript()
+
+

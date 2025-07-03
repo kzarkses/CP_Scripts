@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_BounceAndSendCopyToRX
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 
 local r = reaper
 
@@ -241,3 +244,5 @@ end
 
 -- Run the script
 main()
+
+

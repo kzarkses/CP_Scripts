@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_CreateProjectAlternativeVersion
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 function createAlternativeVersion()
     -- Get current project filename
     local proj = 0
@@ -46,3 +49,5 @@ function createAlternativeVersion()
 end
 
 createAlternativeVersion()
+
+

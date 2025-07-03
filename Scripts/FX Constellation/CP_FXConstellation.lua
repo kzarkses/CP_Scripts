@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_FXConstellation
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 local r = reaper
 local sl = nil
 local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
@@ -2525,3 +2528,5 @@ local function loop()
 end
 r.atexit(saveSettings)
 loop()
+
+

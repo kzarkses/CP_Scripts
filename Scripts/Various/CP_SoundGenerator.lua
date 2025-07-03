@@ -1,6 +1,8 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_SoundGenerator
+Version: 1.0
+Author: Cedric Pamallo
+--]]
 
 local r = reaper
 
@@ -66,7 +68,7 @@ local config = {
     auto_close = false
 }
 
--- Valeurs par défaut pour reset
+-- Valeurs par dÃ©faut pour reset
 local defaults = {
     tone_frequency = 440,
     tone_amplitude_db = -6,
@@ -198,14 +200,14 @@ function Loop()
         r.ImGui_SameLine(ctx)
         local auto_x = r.ImGui_GetWindowWidth(ctx) - 60
         r.ImGui_SetCursorPosX(ctx, auto_x)
-        local was_auto_close = config.auto_close  -- Sauvegarder l'état avant le bouton
+        local was_auto_close = config.auto_close  -- Sauvegarder l'Ã©tat avant le bouton
         if config.auto_close then
             r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Button(), r.ImGui_GetStyleColor(ctx, r.ImGui_Col_ButtonActive()))
         end
         if r.ImGui_Button(ctx, "A", 22, 22) then
             config.auto_close = not config.auto_close
         end
-        if was_auto_close then  -- Utiliser l'ancien état pour le pop
+        if was_auto_close then  -- Utiliser l'ancien Ã©tat pour le pop
             r.ImGui_PopStyleColor(ctx)
         end
         if r.ImGui_IsItemHovered(ctx) then
@@ -344,3 +346,4 @@ end
 
 r.atexit(Exit)
 ToggleScript()
+

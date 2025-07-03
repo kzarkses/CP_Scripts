@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_CreateProjectAndSubprojectAlternativeVersion
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 function getProjectVersionInfo(projectPath)
     if not projectPath then return nil end
     
@@ -156,3 +159,5 @@ end
 
 -- Launch script
 incrementAllProjectAlternativeVersions()
+
+

@@ -1,10 +1,13 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_DeleteUnderMouse
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 
 function nothing() end
 
--- Fonctions utilitaires pour la gestion des chunks (tirées du script fourni)
+-- Fonctions utilitaires pour la gestion des chunks (tirÃ©es du script fourni)
 function GetTrackChunk(track)
   if not track then return end
   local fast_str, track_chunk
@@ -55,7 +58,7 @@ function CollectFolderTracks(parent_track)
     local track = reaper.GetTrack(0, i)
     local track_depth = reaper.GetTrackDepth(track)
     
-    -- Si on revient au niveau du parent ou moins, on s'arrête
+    -- Si on revient au niveau du parent ou moins, on s'arrÃªte
     if track_depth <= parent_depth then
       break
     end
@@ -67,7 +70,7 @@ function CollectFolderTracks(parent_track)
   return tracks_to_delete
 end
 
--- Fonction pour ajuster la structure de dossier après suppression d'une track
+-- Fonction pour ajuster la structure de dossier aprÃ¨s suppression d'une track
 function FixFolderStructureAfterDeletion(track_to_delete)
   local track_index = reaper.GetMediaTrackInfo_Value(track_to_delete, "IP_TRACKNUMBER") - 1
   local track_folder_depth = reaper.GetMediaTrackInfo_Value(track_to_delete, "I_FOLDERDEPTH")
@@ -75,7 +78,7 @@ function FixFolderStructureAfterDeletion(track_to_delete)
   
   -- Si cette track ferme un dossier (I_FOLDERDEPTH < 0)
   if track_folder_depth < 0 then
-    -- Chercher la track suivante qui n'est pas dans le même dossier
+    -- Chercher la track suivante qui n'est pas dans le mÃªme dossier
     local next_track_index = track_index + 1
     while next_track_index < total_tracks do
       local next_track = reaper.GetTrack(0, next_track_index)
@@ -83,7 +86,7 @@ function FixFolderStructureAfterDeletion(track_to_delete)
         local next_depth = reaper.GetTrackDepth(next_track)
         local current_depth = reaper.GetTrackDepth(track_to_delete)
         
-        -- Si la track suivante est au même niveau ou moins profonde, transférer la fermeture
+        -- Si la track suivante est au mÃªme niveau ou moins profonde, transfÃ©rer la fermeture
         if next_depth <= current_depth then
           local next_folder_depth = reaper.GetMediaTrackInfo_Value(next_track, "I_FOLDERDEPTH")
           local new_folder_depth = next_folder_depth + track_folder_depth
@@ -96,7 +99,7 @@ function FixFolderStructureAfterDeletion(track_to_delete)
   end
 end
 
--- Fonction pour parser les razor edits d'une chaîne
+-- Fonction pour parser les razor edits d'une chaÃ®ne
 function ParseRazorEdits(razor_string)
   local razors = {}
   if not razor_string or razor_string == "" then return razors end
@@ -117,7 +120,7 @@ function ParseRazorEdits(razor_string)
   return razors
 end
 
--- Fonction pour vérifier si une position est dans une zone razor
+-- Fonction pour vÃ©rifier si une position est dans une zone razor
 function IsInRazorEdit(track, mouse_time)
   local _, razor_string = reaper.GetSetMediaTrackInfo_String(track, "P_RAZOREDITS", "", false)
   if not razor_string or razor_string == "" then return false, nil end
@@ -132,7 +135,7 @@ function IsInRazorEdit(track, mouse_time)
   return false, nil
 end
 
--- Fonction pour supprimer des points d'automation dans une zone spécifique
+-- Fonction pour supprimer des points d'automation dans une zone spÃ©cifique
 function DeleteAutomationPointsInZone(env, start_time, end_time)
   if not env then return false end
   
@@ -149,14 +152,14 @@ function ClearEnvelope(env)
   local point_count = reaper.CountEnvelopePoints(env)
   if point_count == 0 then return false end
   
-  -- Obtenir la plage temporelle complète de l'enveloppe
+  -- Obtenir la plage temporelle complÃ¨te de l'enveloppe
   local retval, min_time = reaper.GetEnvelopePoint(env, 0)
   if not retval then return false end
   
   local retval2, max_time = reaper.GetEnvelopePoint(env, point_count - 1)
   if not retval2 then return false end
   
-  -- Supprimer tous les points en utilisant une plage très large pour être sûr
+  -- Supprimer tous les points en utilisant une plage trÃ¨s large pour Ãªtre sÃ»r
   local deleted_points = reaper.DeleteEnvelopePointRange(env, min_time - 1000, max_time + 1000)
   
   return deleted_points
@@ -190,21 +193,21 @@ function DeleteRazorEditZone(track, razor_zone)
     local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
     local item_end = item_start + item_length
     
-    -- Vérifier si l'item chevauche avec la zone razor
+    -- VÃ©rifier si l'item chevauche avec la zone razor
     if item_start < razor_zone.ending and item_end > razor_zone.start then
       -- Calculer la zone d'intersection
       local cut_start = math.max(item_start, razor_zone.start)
       local cut_end = math.min(item_end, razor_zone.ending)
       
       if cut_start < cut_end then
-        -- Si l'item est entièrement dans la zone razor, le supprimer
+        -- Si l'item est entiÃ¨rement dans la zone razor, le supprimer
         if cut_start <= item_start and cut_end >= item_end then
           reaper.DeleteTrackMediaItem(track, item)
           deleted_something = true
         else
-          -- Sinon, utiliser la fonction de split/trim pour découper la partie
+          -- Sinon, utiliser la fonction de split/trim pour dÃ©couper la partie
           if cut_start > item_start and cut_end < item_end then
-            -- Découper au milieu - créer deux items
+            -- DÃ©couper au milieu - crÃ©er deux items
             local new_item = reaper.SplitMediaItem(item, cut_start)
             if new_item then
               reaper.SplitMediaItem(new_item, cut_end)
@@ -212,12 +215,12 @@ function DeleteRazorEditZone(track, razor_zone)
               deleted_something = true
             end
           elseif cut_start <= item_start then
-            -- Découper au début
+            -- DÃ©couper au dÃ©but
             reaper.SetMediaItemInfo_Value(item, "D_POSITION", cut_end)
             reaper.SetMediaItemInfo_Value(item, "D_LENGTH", item_end - cut_end)
             deleted_something = true
           else
-            -- Découper à la fin
+            -- DÃ©couper Ã  la fin
             reaper.SetMediaItemInfo_Value(item, "D_LENGTH", cut_start - item_start)
             deleted_something = true
           end
@@ -229,7 +232,7 @@ function DeleteRazorEditZone(track, razor_zone)
   -- 3. Nettoyer les razor edits de la track (supprimer cette zone)
   local _, razor_string = reaper.GetSetMediaTrackInfo_String(track, "P_RAZOREDITS", "", false)
   if razor_string and razor_string ~= "" then
-    -- Reconstruire la chaîne razor sans cette zone
+    -- Reconstruire la chaÃ®ne razor sans cette zone
     local razors = ParseRazorEdits(razor_string)
     local new_razor_parts = {}
     
@@ -247,7 +250,7 @@ function DeleteRazorEditZone(track, razor_zone)
   if deleted_something then
     reaper.Undo_EndBlock('Supprimer la zone razor edit sous la souris', -1)
   else
-    reaper.Undo_EndBlock('Aucune zone razor edit à supprimer', -1)
+    reaper.Undo_EndBlock('Aucune zone razor edit Ã  supprimer', -1)
   end
   
   reaper.PreventUIRefresh(-1)
@@ -268,12 +271,12 @@ end
 -- Obtenir la position temporelle du curseur de souris
 local mouse_time = reaper.BR_GetMouseCursorContext_Position()
 
--- Essayer de récupérer la piste sous le curseur avec le contexte
+-- Essayer de rÃ©cupÃ©rer la piste sous le curseur avec le contexte
 local track, context, position = reaper.BR_TrackAtMouseCursor()
 
--- Vérifier si nous sommes dans le TCP (0 = TCP)
+-- VÃ©rifier si nous sommes dans le TCP (0 = TCP)
 if track and context == 0 then
-  -- D'abord, vérifier s'il y a une zone razor edit active sur cette track
+  -- D'abord, vÃ©rifier s'il y a une zone razor edit active sur cette track
   local in_razor, razor_zone = IsInRazorEdit(track, mouse_time)
   if in_razor and razor_zone then
     if DeleteRazorEditZone(track, razor_zone) then
@@ -284,14 +287,14 @@ if track and context == 0 then
   reaper.PreventUIRefresh(1)
   reaper.Undo_BeginBlock()
   
-  -- Vérifier si c'est un dossier (I_FOLDERDEPTH > 0)
+  -- VÃ©rifier si c'est un dossier (I_FOLDERDEPTH > 0)
   local folder_depth = reaper.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH")
   
   if folder_depth > 0 then
     -- C'est un dossier, collecter toutes les tracks enfants
     local tracks_to_delete = CollectFolderTracks(track)
     
-    -- Supprimer toutes les tracks en commençant par la fin pour éviter les problèmes d'index
+    -- Supprimer toutes les tracks en commenÃ§ant par la fin pour Ã©viter les problÃ¨mes d'index
     for i = #tracks_to_delete, 1, -1 do
       reaper.DeleteTrack(tracks_to_delete[i])
     end
@@ -309,7 +312,7 @@ if track and context == 0 then
     reaper.Undo_EndBlock('Supprimer la piste sous la souris dans le TCP', -1)
   end
   
-  -- Actualiser l'interface de façon plus complète
+  -- Actualiser l'interface de faÃ§on plus complÃ¨te
   reaper.PreventUIRefresh(-1)
   reaper.UpdateArrange()
   reaper.TrackList_AdjustWindows(true)
@@ -320,14 +323,14 @@ end
 -- Obtenir le contexte du curseur de souris
 local window, segment, details = reaper.BR_GetMouseCursorContext()
 
--- Vérifier le contexte pour voir si on est sur une enveloppe
+-- VÃ©rifier le contexte pour voir si on est sur une enveloppe
 if segment == "envelope" or details == "env_point" or details == "env_segment" then
   -- Obtenir l'enveloppe sous le curseur
   local env, takeEnv = reaper.BR_GetMouseCursorContext_Envelope()
   
-  -- Ne gérer que les enveloppes de piste (pas les enveloppes de take)
+  -- Ne gÃ©rer que les enveloppes de piste (pas les enveloppes de take)
   if env and not takeEnv then
-    -- Vérifier s'il y a une zone razor edit sur cette enveloppe
+    -- VÃ©rifier s'il y a une zone razor edit sur cette enveloppe
     local parent_track = reaper.Envelope_GetParentTrack(env)
     if parent_track then
       local in_razor, razor_zone = IsInRazorEdit(parent_track, mouse_time)
@@ -341,7 +344,7 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
         if deleted_points then
           reaper.Undo_EndBlock('Supprimer les points d\'enveloppe dans la zone razor', -1)
         else
-          reaper.Undo_EndBlock('Aucun point d\'enveloppe à supprimer dans la zone', -1)
+          reaper.Undo_EndBlock('Aucun point d\'enveloppe Ã  supprimer dans la zone', -1)
         end
         
         reaper.PreventUIRefresh(-1)
@@ -351,14 +354,14 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
       end
     end
     
-    -- Pas de razor edit - supprimer tous les points et l'enveloppe elle-même
+    -- Pas de razor edit - supprimer tous les points et l'enveloppe elle-mÃªme
     reaper.PreventUIRefresh(1)
     reaper.Undo_BeginBlock()
     
     -- D'abord, clear l'enveloppe (supprimer tous les points)
     local cleared_points = ClearEnvelope(env)
     
-    -- Ensuite, supprimer l'enveloppe track elle-même
+    -- Ensuite, supprimer l'enveloppe track elle-mÃªme
     local tr = reaper.Envelope_GetParentTrack(env)
     local deleted_envelope = false
     
@@ -374,7 +377,7 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
     end
     
     if num ~= nil then
-      -- Récupérer le chunk de la piste
+      -- RÃ©cupÃ©rer le chunk de la piste
       local chunk = GetTrackChunk(tr)
       
       -- Trouver et supprimer l'enveloppe du chunk
@@ -388,7 +391,7 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
         end
       end
       
-      -- Appliquer le chunk modifié
+      -- Appliquer le chunk modifiÃ©
       if deleted_envelope then
         SetTrackChunk(tr, chunk)
       end
@@ -400,7 +403,7 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
       reaper.Undo_EndBlock('Aucune modification d\'enveloppe', -1)
     end
     
-    -- Actualiser l'interface de façon plus complète
+    -- Actualiser l'interface de faÃ§on plus complÃ¨te
     reaper.PreventUIRefresh(-1)
     reaper.UpdateArrange()
     reaper.TrackList_AdjustWindows(true)
@@ -408,10 +411,10 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
   end
 end
 
--- Si nous ne sommes pas dans le TCP, essayer de récupérer un item sous le curseur
+-- Si nous ne sommes pas dans le TCP, essayer de rÃ©cupÃ©rer un item sous le curseur
 local item, item_pos = reaper.BR_ItemAtMouseCursor()
 if item then
-  -- Vérifier d'abord s'il y a une zone razor edit sur la track de cet item
+  -- VÃ©rifier d'abord s'il y a une zone razor edit sur la track de cet item
   local item_track = reaper.GetMediaItem_Track(item)
   if item_track then
     local in_razor, razor_zone = IsInRazorEdit(item_track, mouse_time)
@@ -426,12 +429,13 @@ if item then
   reaper.Undo_BeginBlock()
   reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(item), item)
   reaper.Undo_EndBlock('Supprimer l\'item sous la souris', -1)
-  -- Actualiser l'interface de façon plus complète
+  -- Actualiser l'interface de faÃ§on plus complÃ¨te
   reaper.PreventUIRefresh(-1)
   reaper.UpdateArrange()
   reaper.TrackList_AdjustWindows(true)
   return
 end
 
--- Si aucune action n'a été effectuée
+-- Si aucune action n'a Ã©tÃ© effectuÃ©e
 reaper.defer(nothing)
+

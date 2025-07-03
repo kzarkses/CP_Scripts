@@ -1,6 +1,9 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_DuplicateTrackRearrange
+Version: 1.0
+Author: Cedric Pamallo
+--]]
+
 
 local r = reaper
 
@@ -271,3 +274,4 @@ end
 
 LoadLastSettings()
 r.defer(Loop)
+

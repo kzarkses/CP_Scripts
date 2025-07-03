@@ -1,6 +1,8 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_UpdateMediaSource_Rename
+Version: 1.0
+Author: Cedric Pamallo
+--]]
 
 local r = reaper
 
@@ -385,3 +387,4 @@ end
 
 -- Start the GUI
 MainLoop()
+

@@ -1,6 +1,8 @@
---[[
-	Noindex: true
-]]  
+﻿--[[
+Description: CP_ProjectNoteEditor_Settings
+Version: 1.0
+Author: Cedric Pamallo
+--]]
 
 local r = reaper
 
@@ -419,3 +421,4 @@ function init()
 end
 
 init()
+
