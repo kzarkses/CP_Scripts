@@ -231,7 +231,7 @@ function CreateNewToolbar(name)
     new_toolbar.force_position_update = true
     new_toolbar.first_position_set = false
     table.insert(toolbars, new_toolbar)
-    CreateToolbarAction(new_toolbar)
+    -- CreateToolbarAction(new_toolbar)
     return #toolbars
 end
 
@@ -240,14 +240,14 @@ function CreateToolbarAction(toolbar)
     local action_name_off = "CP_CustomToolbars_" .. toolbar.name .. "_Off"
     local action_id_on = r.NamedCommandLookup("_" .. action_name_on)
     local action_id_off = r.NamedCommandLookup("_" .. action_name_off)
-    local action_path_on = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/" .. action_name_on .. ".lua"
+    local action_path_on = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/Actions/" .. action_name_on .. ".lua"
     local script_content_on = [[local r=reaper
 function EnableToolbar()
 r.SetExtState("CP_MULTI_TOOLBAR","]] .. toolbar.id .. [[_state","1",false)
 r.SetExtState("CP_MULTI_TOOLBAR","refresh_toolbars","1",false)
 end
 EnableToolbar()]]
-    local action_path_off = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/" .. action_name_off .. ".lua"
+    local action_path_off = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/Actions/" .. action_name_off .. ".lua"
     local script_content_off = [[local r=reaper
 function DisableToolbar()
 r.SetExtState("CP_MULTI_TOOLBAR","]] .. toolbar.id .. [[_state","0",false)
@@ -962,7 +962,7 @@ function LoadPreset(name)
             new_tb.last_window_check = 0
             new_tb.cached_target_rect = nil
             table.insert(toolbars, new_tb)
-            CreateToolbarAction(new_tb)
+            -- CreateToolbarAction(new_tb)
         end
     end
     current_preset = name
@@ -1208,7 +1208,7 @@ function ShowToolbarManager()
             local retval, name = r.GetUserInputs("Rename Toolbar", 1, "Toolbar Name:,extrawidth=100", tb.name)
             if retval and name ~= "" then
                 tb.name = name
-                CreateToolbarAction(tb)
+                -- CreateToolbarAction(tb)
             end
         end
         r.ImGui_SameLine(main_ctx)
@@ -1244,7 +1244,7 @@ function ShowToolbarManager()
             new_tb.cached_target_rect = nil
             table.insert(toolbars, new_tb)
             current_toolbar_index = #toolbars
-            CreateToolbarAction(new_tb)
+            -- CreateToolbarAction(new_tb)
         end
         r.ImGui_SameLine(main_ctx)
         if r.ImGui_Button(main_ctx, "Create Actions", 100, 24) and current_toolbar_index <= #toolbars then
@@ -1258,7 +1258,7 @@ function ShowToolbarManager()
                 if result.on_id ~= 0 and result.off_id ~= 0 then
                     r.ShowMessageBox("Actions exist but there was an issue with creation process.", "Partial Success", 0)
                 else
-                    r.ShowMessageBox("Failed to create one or both actions.", "Error", 0)
+                    -- r.ShowMessageBox("Failed to create one or both actions.", "Error", 0)
                 end
             end
         end
