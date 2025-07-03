@@ -970,7 +970,7 @@ function Loop()
 
 	if DrawButton(110 + text_width, y_pos - 2, 80, 20, "Settings", false) then
 		r.SetExtState("CP_ProjectNoteEditor", "open_settings", "1", false)
-		local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ProjectNoteEditor_Settings.lua"
+		local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ProjectNoteEditor_Settings.lua"
 		if r.file_exists(script_path) then
 			r.Main_OnCommand(r.AddRemoveReaScript(true, 0, script_path, true), 0)
 		else

@@ -10,7 +10,7 @@ if not r.APIExists("ImGui_CreateContext") then
 end
 
 
-local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
 local style_loader = nil
 local pushed_colors = 0
 local pushed_vars = 0

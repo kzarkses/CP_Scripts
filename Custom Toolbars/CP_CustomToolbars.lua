@@ -18,7 +18,7 @@ local cache_time = 0
 local CACHE_INTERVAL = 1
 
 local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
 if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
 
 local function shallow_copy(orig)
@@ -106,7 +106,7 @@ local default_toolbar_template = {
     cached_target_rect = nil
 }
 
-local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
 local style_loader = nil
 local file = io.open(style_loader_path, "r")
 if file then

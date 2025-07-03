@@ -4,7 +4,7 @@
 
 local r = reaper
 local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_ImGuiStyleLoader.lua"
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
 if r.file_exists(sp) then
   local lf = dofile(sp)
   if lf then sl = lf() end

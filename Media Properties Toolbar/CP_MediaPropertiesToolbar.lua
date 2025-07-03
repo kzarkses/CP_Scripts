@@ -4,7 +4,7 @@
 
 local r = reaper
 
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
+local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
 local sl = nil
 local pc = 0
 local pv = 0
@@ -18,7 +18,7 @@ if file then
   end
 end
 
-local settings_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Media Properties Toolbar/MediaPropertiesToolbar_settings.ini"
+local settings_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/MediaPropertiesToolbar_settings.ini"
 
 local config = {
     font_name = "Verdana",
@@ -958,7 +958,7 @@ function updateItemValue(item_data, param_name, value)
     if #selected_items == 0 then return end
     
     if param_name == "name" then
-        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Media Properties Toolbar/CP_TakeRenamer.lua"
+        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_TakeRenamer.lua"
         if r.file_exists(script_path) then
             dofile(script_path)
         end
@@ -1045,12 +1045,12 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 if mx >= header.x and mx < header.x + header.w and
                    my >= header.y and my < header.y + header.h then
                     if header.text == "Pres Pitch" then
-                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Media Properties Toolbar/CP_PitchShiftSelector.lua"
+                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_PitchShiftSelector.lua"
                         if r.file_exists(script_path) then
                             dofile(script_path)
                         end
                     elseif header.text == "Rate" then
-                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Media Properties Toolbar/CP_StretchMarkersControl.lua"
+                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_StretchMarkersControl.lua"
                         if r.file_exists(script_path) then
                             dofile(script_path)
                         end
@@ -1067,7 +1067,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
                    my >= ctrl.y and my < ctrl.y + ctrl.h then
                     if id == "source" then
-                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Media Properties Toolbar/CP_SourceManager.lua"
+                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_SourceManager.lua"
                         if r.file_exists(script_path) then
                             dofile(script_path)
                         end
