@@ -1,10 +1,8 @@
 ﻿--[[
-Description: CP_ImGuiStyleManager_GUI
-Version: 1.0
-Author: Cedric Pamallo
+@description CP_ImGuiStyleManager_GUI
+@version 1.0
+@author Cedric Pamallo
 --]]
-
-
 local r = reaper
 local extstate_id = "CP_ImGuiStyles"
 local ctx = r.ImGui_CreateContext('ImGui Style Manager')
@@ -1809,5 +1807,6 @@ end
 
 init()
 loop()
+
 
 

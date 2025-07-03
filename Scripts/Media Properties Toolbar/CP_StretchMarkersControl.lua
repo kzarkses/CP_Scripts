@@ -1,9 +1,8 @@
 ﻿--[[
-Description: CP_StretchMarkersControl
-Version: 1.0
-Author: Cedric Pamallo
+@description CP_StretchMarkersControl
+@version 1.0
+@author Cedric Pamallo
 --]]
-
 local r = reaper
 
 local sl = nil
@@ -225,4 +224,5 @@ end
 
 r.atexit(Exit)
 ToggleScript()
+
 

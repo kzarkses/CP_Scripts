@@ -1,9 +1,8 @@
 ﻿--[[
-Description: CP_ProjectNoteEditor_Settings
-Version: 1.0
-Author: Cedric Pamallo
+@description CP_ProjectNoteEditor_Settings
+@version 1.0
+@author Cedric Pamallo
 --]]
-
 local r = reaper
 
 local sl = nil
@@ -421,4 +420,5 @@ function init()
 end
 
 init()
+
 

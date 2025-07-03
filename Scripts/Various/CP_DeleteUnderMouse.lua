@@ -1,10 +1,8 @@
 ﻿--[[
-Description: CP_DeleteUnderMouse
-Version: 1.0
-Author: Cedric Pamallo
+@description CP_DeleteUnderMouse
+@version 1.0
+@author Cedric Pamallo
 --]]
-
-
 function nothing() end
 
 -- Fonctions utilitaires pour la gestion des chunks (tirÃ©es du script fourni)
@@ -438,4 +436,5 @@ end
 
 -- Si aucune action n'a Ã©tÃ© effectuÃ©e
 reaper.defer(nothing)
+
 
