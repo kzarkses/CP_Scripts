@@ -33,7 +33,7 @@ jobs:
       run: |
         reapack-index --name "CP Scripts - Cedric Pamallo Premium Collection"
         reapack-index --about README.md
-        reapack-index --commit
+        reapack-index --commit #
         
     - name: Push changes
       run: git push
