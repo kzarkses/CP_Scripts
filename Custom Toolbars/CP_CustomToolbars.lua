@@ -240,14 +240,14 @@ function CreateToolbarAction(toolbar)
     local action_name_off = "CP_CustomToolbars_" .. toolbar.name .. "_Off"
     local action_id_on = r.NamedCommandLookup("_" .. action_name_on)
     local action_id_off = r.NamedCommandLookup("_" .. action_name_off)
-    local action_path_on = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars" .. action_name_on .. ".lua"
+    local action_path_on = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/" .. action_name_on .. ".lua"
     local script_content_on = [[local r=reaper
 function EnableToolbar()
 r.SetExtState("CP_MULTI_TOOLBAR","]] .. toolbar.id .. [[_state","1",false)
 r.SetExtState("CP_MULTI_TOOLBAR","refresh_toolbars","1",false)
 end
 EnableToolbar()]]
-    local action_path_off = r.GetResourcePath() .. "/Scripts/" .. action_name_off .. ".lua"
+    local action_path_off = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/" .. action_name_off .. ".lua"
     local script_content_off = [[local r=reaper
 function DisableToolbar()
 r.SetExtState("CP_MULTI_TOOLBAR","]] .. toolbar.id .. [[_state","0",false)
