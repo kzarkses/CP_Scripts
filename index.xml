@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="CP Scripts" commit="d05c444b01fa9112d63427b78fa06b209f985ed9">
+<index version="1" name="CP_Scripts" commit="d05c444b01fa9112d63427b78fa06b209f985ed9">
   <category name="Colors">
     <reapack name="CP_AutoColorRegionFromTrack.lua" type="script" desc="AutoColorRegionFromTrack">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
