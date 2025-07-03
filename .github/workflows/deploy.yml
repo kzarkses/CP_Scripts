@@ -25,8 +25,6 @@ jobs:
       run:  gem install reapack-index
     - name: Update index.xml
       run: |-
-        reapack-index --name "CP Scripts - Cedric Pamalio Premium Collection"
-        reapack-index --about README.md
-        echo "y" | reapack-index --commit
+        reapack-index --commit
     - name: Push changes
       run:  git push
