@@ -1,8 +1,7 @@
 name: deploy
 on:
   push:
-    branches: [master, main]
-  workflow_dispatch:
+    branches: [master]
 jobs:
   reapack-index:
     runs-on: ubuntu-latest
@@ -13,8 +12,8 @@ jobs:
         fetch-depth: 0
     - name: Configure git
       run: |-
-        git config user.name  'CP Scripts Bot'
-        git config user.email 'cp-scripts-bot@noreply.github.com'
+        git config user.name  'ReaTeam Bot'
+        git config user.email 'reateam-bot@cfillion.ca'
     - name: Install Pandoc
       run:  sudo apt-get install -yy pandoc
     - name: Set up Ruby
@@ -24,7 +23,6 @@ jobs:
     - name: Install reapack-index
       run:  gem install reapack-index
     - name: Update index.xml
-      run: |-
-        reapack-index --commit
+      run:  reapack-index --commit
     - name: Push changes
       run:  git push

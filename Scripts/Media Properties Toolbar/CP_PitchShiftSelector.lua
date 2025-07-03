@@ -1,6 +1,7 @@
-﻿-- @description CP_PitchShiftSelector
+﻿-- @description PitchShiftSelector
 -- @version 1.0
 -- @author Cedric Pamalio
+
 local r = reaper
 
 if not r.APIExists("ImGui_CreateContext") then
@@ -955,6 +956,10 @@ local function loop()
 end
 
 loop()
+
+
+
+
 
 
 

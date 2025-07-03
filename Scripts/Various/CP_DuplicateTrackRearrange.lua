@@ -1,6 +1,7 @@
-﻿-- @description CP_DuplicateTrackRearrange
+﻿-- @description DuplicateTrackRearrange
 -- @version 1.0
 -- @author Cedric Pamalio
+
 local r = reaper
 
 -- Create context at script start
@@ -270,6 +271,10 @@ end
 
 LoadLastSettings()
 r.defer(Loop)
+
+
+
+
 
 
 

@@ -1,4 +1,4 @@
-﻿-- @description CP_AutoColorTrackHierarchy_Lighten
+﻿-- @description AutoColorTrackHierarchy - Lighten
 -- @version 1.0
 -- @author Cedric Pamalio
 
@@ -242,6 +242,10 @@ end
 
 reaper.atexit(Exit)
 ToggleScript()
+
+
+
+
 
 
 

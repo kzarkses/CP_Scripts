@@ -1,6 +1,7 @@
-﻿-- @description CP_TrackNavigator
+﻿-- @description TrackNavigator
 -- @version 1.0
 -- @author Cedric Pamalio
+
 local reaper = reaper
 local script_id = "CP_TrackNavigator"
 local style_loader = nil
@@ -1115,6 +1116,10 @@ end)
 
 initialize()
 main_loop()
+
+
+
+
 
 
 

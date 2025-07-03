@@ -1,6 +1,7 @@
-﻿-- @description CP_SourceManager
+﻿-- @description SourceManager
 -- @version 1.0
 -- @author Cedric Pamalio
+
 local r = reaper
 
 local sl = nil
@@ -964,6 +965,10 @@ end
 
 r.atexit(Exit)
 ToggleScript()
+
+
+
+
 
 
 

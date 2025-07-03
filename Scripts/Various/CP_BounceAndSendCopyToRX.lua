@@ -1,6 +1,7 @@
-﻿-- @description CP_BounceAndSendCopyToRX
+﻿-- @description BounceAndSendCopyToRX
 -- @version 1.0
 -- @author Cedric Pamalio
+
 local r = reaper
 
 -- Function to sanitize filename (remove invalid characters)
@@ -240,6 +241,10 @@ end
 
 -- Run the script
 main()
+
+
+
+
 
 
 

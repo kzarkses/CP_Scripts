@@ -1,6 +1,7 @@
-﻿-- @description CP_MediaPropertiesToolbar
+﻿-- @description MediaPropertiesToolbar
 -- @version 1.0
 -- @author Cedric Pamalio
+
 local r = reaper
 
 local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Scripts/Various/CP_ImGuiStyleLoader.lua"
@@ -1569,6 +1570,10 @@ end)
 
 init()
 loop()
+
+
+
+
 
 
 

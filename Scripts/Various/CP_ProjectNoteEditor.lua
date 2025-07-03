@@ -1,6 +1,7 @@
-﻿-- @description CP_ProjectNoteEditor
+﻿-- @description ProjectNoteEditor
 -- @version 1.0
 -- @author Cedric Pamalio
+
 local r = reaper
 local config = {
 	current_font = "Verdana",
@@ -1185,6 +1186,10 @@ end
 
 r.atexit(Exit)
 ToggleScript()
+
+
+
+
 
 
 

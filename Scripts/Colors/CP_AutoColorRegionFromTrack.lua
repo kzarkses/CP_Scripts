@@ -1,4 +1,4 @@
-﻿-- @description CP_AutoColorRegionFromTrack
+﻿-- @description AutoColorRegionFromTrack
 -- @version 1.0
 -- @author Cedric Pamalio
 
@@ -373,6 +373,10 @@ end
 
 reaper.atexit(Exit)
 ToggleScript()
+
+
+
+
 
 
 

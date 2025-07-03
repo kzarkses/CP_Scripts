@@ -1,6 +1,7 @@
-﻿-- @description CP_CreateProjectAlternativeVersion
+﻿-- @description CreateProjectAlternativeVersion
 -- @version 1.0
 -- @author Cedric Pamalio
+
 function createAlternativeVersion()
     -- Get current project filename
     local proj = 0
@@ -46,6 +47,10 @@ function createAlternativeVersion()
 end
 
 createAlternativeVersion()
+
+
+
+
 
 
 

@@ -1,6 +1,7 @@
-﻿-- @description CP_CreateProjectVersion
+﻿-- @description CreateProjectVersion
 -- @version 1.0
 -- @author Cedric Pamalio
+
 function findNextVersionNumber(directory, baseName)
     local highestVersion = 0
     
@@ -86,6 +87,10 @@ function createNextVersion()
 end
 
 createNextVersion()
+
+
+
+
 
 
 
