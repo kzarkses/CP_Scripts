@@ -31,9 +31,9 @@ jobs:
       
     - name: Update index.xml
       run: |
-        reapack-index --name "CP Scripts - Cedric Pamallo Premium Collection"
+        reapack-index --name "CP Scripts - Cedric Pamalio Collection"
         reapack-index --about README.md
-        reapack-index --commit #
+        reapack-index --commit --force
         
     - name: Push changes
       run: git push
