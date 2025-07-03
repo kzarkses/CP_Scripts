@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_AutoColorRegionFromTrack
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_AutoColorRegionFromTrack
+-- @version 1.0
+-- @author Cedric Pamalio
 local CONFIG = {
     BACKGROUND_MODE = true,   
     REFRESH_INTERVAL = 1.0,    
@@ -374,6 +372,8 @@ end
 
 reaper.atexit(Exit)
 ToggleScript()
+
+
 
 
 

@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_CopySourceWithTakeName_RX
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_CopySourceWithTakeName_RX
+-- @version 1.0
+-- @author Cedric Pamalio
 local r = reaper
 
 -- Function to sanitize filename (remove invalid characters)
@@ -146,6 +144,8 @@ end
 
 -- Run the script
 CopySourcesWithTakeNameRX()
+
+
 
 
 

@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_UpdateMediaSource_Rename
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_UpdateMediaSource_Rename
+-- @version 1.0
+-- @author Cedric Pamalio
 local r = reaper
 
 -- Create ImGui context for dialog
@@ -386,6 +384,8 @@ end
 
 -- Start the GUI
 MainLoop()
+
+
 
 
 

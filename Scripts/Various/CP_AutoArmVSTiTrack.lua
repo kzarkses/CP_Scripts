@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_AutoArmVSTiTrack
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_AutoArmVSTiTrack
+-- @version 1.0
+-- @author Cedric Pamalio
 local retval, filename, section_id, command_id = reaper.get_action_context()
 
 -- Configuration
@@ -116,6 +114,8 @@ if reaper.GetToggleCommandStateEx(section_id, command_id) == 0 then
 else
   ToolbarButton(0)
 end
+
+
 
 
 

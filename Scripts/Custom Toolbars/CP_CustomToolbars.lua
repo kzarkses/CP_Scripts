@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_CustomToolbars
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_CustomToolbars
+-- @version 1.0
+-- @author Cedric Pamalio
 local r = reaper
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
 local extname_base = "CP_CustomToolbars"
@@ -1745,6 +1743,8 @@ end
 
 r.atexit(Exit)
 Init()
+
+
 
 
 

@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_MediaPropertiesToolbar_Settings
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_MediaPropertiesToolbar_Settings
+-- @version 1.0
+-- @author Cedric Pamalio
 local r = reaper
 
 local sl = nil
@@ -420,6 +418,8 @@ function init()
 end
 
 init()
+
+
 
 
 

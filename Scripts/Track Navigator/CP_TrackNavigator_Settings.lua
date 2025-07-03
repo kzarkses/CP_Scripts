@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_TrackNavigator_Settings
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_TrackNavigator_Settings
+-- @version 1.0
+-- @author Cedric Pamalio
 local reaper = reaper
 local script_id = "CP_TrackNavigator"
 
@@ -489,6 +487,8 @@ local function main_loop()
 end
 
 main_loop()
+
+
 
 
 

@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_FXRack
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_FXRack
+-- @version 1.0
+-- @author Cedric Pamalio
 local r = reaper
 local extstate_id = "CP_FXRack"
 local ctx = r.ImGui_CreateContext("FX Rack")
@@ -800,6 +798,8 @@ function Main()
 end
 LoadSettings()
 Main()
+
+
 
 
 

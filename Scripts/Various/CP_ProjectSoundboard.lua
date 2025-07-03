@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_ProjectSoundboard
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_ProjectSoundboard
+-- @version 1.0
+-- @author Cedric Pamalio
 local r = reaper
 
 -- Ultraschall API initialization
@@ -1627,6 +1625,8 @@ end
 if safeInit() then
   loop()
 end
+
+
 
 
 

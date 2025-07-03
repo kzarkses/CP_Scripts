@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_ImGuiStyleLoader
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_ImGuiStyleLoader
+-- @version 1.0
+-- @author Cedric Pamalio
 local module = {}
 local extstate_id = "CP_ImGuiStyles"
 
@@ -384,6 +382,8 @@ end
 return function()
 	return module
 end
+
+
 
 
 

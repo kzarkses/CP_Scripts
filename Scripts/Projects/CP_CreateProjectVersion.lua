@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_CreateProjectVersion
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_CreateProjectVersion
+-- @version 1.0
+-- @author Cedric Pamalio
 function findNextVersionNumber(directory, baseName)
     local highestVersion = 0
     
@@ -88,6 +86,8 @@ function createNextVersion()
 end
 
 createNextVersion()
+
+
 
 
 

@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_UpdateMediaSource_Previous
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_UpdateMediaSource_Previous
+-- @version 1.0
+-- @author Cedric Pamalio
 local r = reaper
 
 -- Source tracking table to release PCM sources properly
@@ -192,6 +190,8 @@ end
 
 -- Run the script
 updateItemsToPreviousVersion()
+
+
 
 
 

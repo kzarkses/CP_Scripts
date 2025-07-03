@@ -1,8 +1,6 @@
-﻿--[[
-Description: CP_AutoColorTrackHierarchy_Darken
-Version: 1.0
-Author: Cedric Pamallo
---]]
+﻿-- @description CP_AutoColorTrackHierarchy_Darken
+-- @version 1.0
+-- @author Cedric Pamalio
 local CONFIG = {
     DARKEN_AMOUNT = 0.10,    -- Pourcentage d'assombrissement par niveau (0.85 = 15% plus sombre)
     DESATURATE_AMOUNT = 0.20,
@@ -282,6 +280,8 @@ end
 reaper.atexit(Exit)
 
 ToggleScript()
+
+
 
 
 
