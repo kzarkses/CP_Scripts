@@ -25,7 +25,7 @@ function getFont(font_name)
     return nil
 end
 
-local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse() 
+local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse() 
 
 local config = {
     selected_items = {},

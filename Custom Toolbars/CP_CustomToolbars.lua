@@ -1,5 +1,5 @@
 -- @description CustomToolbars
--- @version 1.0
+-- @version 1.0.1
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -240,20 +240,26 @@ function CreateToolbarAction(toolbar)
     local action_name_off = "CP_CustomToolbars_" .. toolbar.name .. "_Off"
     local action_id_on = r.NamedCommandLookup("_" .. action_name_on)
     local action_id_off = r.NamedCommandLookup("_" .. action_name_off)
-    local action_path_on = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/Actions/" .. action_name_on .. ".lua"
+    
+    local actions_dir = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/Actions/"
+    os.execute('mkdir "' .. actions_dir .. '"')
+    
+    local action_path_on = actions_dir .. action_name_on .. ".lua"
     local script_content_on = [[local r=reaper
 function EnableToolbar()
-r.SetExtState("CP_MULTI_TOOLBAR","]] .. toolbar.id .. [[_state","1",false)
-r.SetExtState("CP_MULTI_TOOLBAR","refresh_toolbars","1",false)
+    r.SetExtState("]] .. extname_base .. [[","]] .. toolbar.id .. [[_state","1",false)
+    r.SetExtState("]] .. extname_base .. [[","refresh_toolbars","1",false)
 end
 EnableToolbar()]]
-    local action_path_off = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/Actions/" .. action_name_off .. ".lua"
+
+    local action_path_off = actions_dir .. action_name_off .. ".lua"
     local script_content_off = [[local r=reaper
 function DisableToolbar()
-r.SetExtState("CP_MULTI_TOOLBAR","]] .. toolbar.id .. [[_state","0",false)
-r.SetExtState("CP_MULTI_TOOLBAR","refresh_toolbars","1",false)
+    r.SetExtState("]] .. extname_base .. [[","]] .. toolbar.id .. [[_state","0",false)
+    r.SetExtState("]] .. extname_base .. [[","refresh_toolbars","1",false)
 end
 DisableToolbar()]]
+
     local success_on = false
     local file_on = io.open(action_path_on, "w")
     if file_on then
@@ -265,6 +271,7 @@ DisableToolbar()]]
         end
         success_on = (action_id_on ~= 0)
     end
+
     local success_off = false
     local file_off = io.open(action_path_off, "w")
     if file_off then
@@ -276,11 +283,73 @@ DisableToolbar()]]
         end
         success_off = (action_id_off ~= 0)
     end
+
     return { success = success_on and success_off, on_id = action_id_on, off_id = action_id_off }
+end
+
+function CreatePresetActions()
+    if not presets or #presets == 0 then return false end
+    
+    local actions_dir = r.GetResourcePath() .. "/Scripts/CP_Scripts/Custom Toolbars/Actions/"
+    os.execute('mkdir "' .. actions_dir .. '"')
+    
+    local success_count = 0
+    
+    for preset_name, _ in pairs(presets) do
+        if preset_name ~= "default" then
+            local safe_name = preset_name:gsub("[^%w%s-_]", ""):gsub("%s+", "_")
+            local action_name_on = "CP_CustomToolbars_Preset_" .. safe_name .. "_On"
+            local action_name_off = "CP_CustomToolbars_Preset_" .. safe_name .. "_Off"
+            
+            local action_id_on = r.NamedCommandLookup("_" .. action_name_on)
+            local action_id_off = r.NamedCommandLookup("_" .. action_name_off)
+            
+            local action_path_on = actions_dir .. action_name_on .. ".lua"
+            local script_content_on = [[local r=reaper
+function EnablePreset()
+    r.SetExtState("]] .. extname_base .. [[","current_preset","]] .. preset_name .. [[",true)
+    r.SetExtState("]] .. extname_base .. [[","refresh_toolbars","1",false)
+    r.SetExtState("]] .. extname_base .. [[","preset_changed","1",false)
+end
+EnablePreset()]]
+
+            local action_path_off = actions_dir .. action_name_off .. ".lua"
+            local script_content_off = [[local r=reaper
+function DisablePreset()
+    r.SetExtState("]] .. extname_base .. [[","current_preset","default",true)
+    r.SetExtState("]] .. extname_base .. [[","refresh_toolbars","1",false)
+    r.SetExtState("]] .. extname_base .. [[","preset_changed","1",false)
+end
+DisablePreset()]]
+
+            local file_on = io.open(action_path_on, "w")
+            if file_on then
+                file_on:write(script_content_on)
+                file_on:close()
+                if action_id_on == 0 then
+                    r.AddRemoveReaScript(true, 0, action_path_on, true)
+                end
+                success_count = success_count + 1
+            end
+
+            local file_off = io.open(action_path_off, "w")
+            if file_off then
+                file_off:write(script_content_off)
+                file_off:close()
+                if action_id_off == 0 then
+                    r.AddRemoveReaScript(true, 0, action_path_off, true)
+                end
+                success_count = success_count + 1
+            end
+        end
+    end
+    
+    return success_count > 0
 end
 
 function CheckToolbarToggleState()
     local refresh_needed = false
+    
     for _, tb in ipairs(toolbars) do
         local toggle_state = r.GetExtState(extname_base, tb.id .. "_state")
         if toggle_state ~= "" then
@@ -292,12 +361,24 @@ function CheckToolbarToggleState()
             r.DeleteExtState(extname_base, tb.id .. "_state", false)
         end
     end
+    
+    local preset_changed = r.GetExtState(extname_base, "preset_changed")
+    if preset_changed == "1" then
+        LoadPresets()
+        refresh_needed = true
+        r.DeleteExtState(extname_base, "preset_changed", false)
+    end
+    
     local refresh_flag = r.GetExtState(extname_base, "refresh_toolbars")
     if refresh_flag == "1" then
         refresh_needed = true
         r.DeleteExtState(extname_base, "refresh_toolbars", false)
     end
-    if refresh_needed then SaveToolbars() end
+    
+    if refresh_needed then 
+        SaveToolbars() 
+    end
+    
     return refresh_needed
 end
 
@@ -1262,6 +1343,7 @@ function ShowToolbarManager()
                 end
             end
         end
+        r.ImGui_SameLine(main_ctx)
         r.ImGui_EndGroup(main_ctx)
         r.ImGui_Separator(main_ctx)
         if current_toolbar_index <= #toolbars then

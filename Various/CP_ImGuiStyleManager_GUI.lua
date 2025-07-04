@@ -1,5 +1,5 @@
 -- @description ImGuiStyleManager - GUI
--- @version 1.0
+-- @version 1.0.1
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -76,51 +76,51 @@ if not r.serialize then
 end
 
 local default_colors = {
-	window_bg = 0x252525FF,
-	text = 0xDCDCDCFF,
-	text_disabled = 0x888888FF,
-	border = 0x333333FF,
+	window_bg = 0x202020FF,
+	text = 0xFFFFFFFF,
+	text_disabled = 0x666666FF,
+	border = 0x4C4C4CFF,
 	border_shadow = 0x000000FF,
 
-	button = 0x3D3D3DFF,
-	button_hovered = 0x4B4B4BFF,
-	button_active = 0x666666FF,
+	button = 0x4C4C4CFF,
+	button_hovered = 0x707070FF,
+	button_active = 0x606060FF,
 
-	header = 0x333333FF,
-	header_hovered = 0x444444FF,
-	header_active = 0x555555FF,
+	header = 0x4C4C4CFF,
+	header_hovered = 0x707070FF,
+	header_active = 0x606060FF,
 
 	frame_bg = 0x262626FF,
-	frame_bg_hovered = 0x333333FF,
-	frame_bg_active = 0x444444FF,
+	frame_bg_hovered = 0x4C4C4CFF,
+	frame_bg_active = 0x707070FF,
 
-	tab = 0x333333FF,
-	tab_hovered = 0x444444FF,
-	tab_active = 0x555555FF,
+	tab = 0x4C4C4CFF,
+	tab_hovered = 0x707070FF,
+	tab_active = 0x606060FF,
 	tab_unfocused = 0x222222FF,
-	tab_unfocused_active = 0x333333FF,
+	tab_unfocused_active = 0x4C4C4CFF,
 
 	title_bg = 0x222222FF,
-	title_bg_active = 0x333333FF,
+	title_bg_active = 0x4C4C4CFF,
 	title_bg_collapsed = 0x111111FF,
 
-	menu_bar_bg = 0x333333FF,
+	menu_bar_bg = 0x4C4C4CFF,
 
 	child_bg = 0x1A1A1AFF,
 	popup_bg = 0x232323FF,
 
-	table_header_bg = 0x333333FF,
+	table_header_bg = 0x4C4C4CFF,
 	table_row_bg = 0x262626FF,
 	table_row_bg_alt = 0x303030FF,
-	table_border_strong = 0x555555FF,
-	table_border_light = 0x333333FF,
+	table_border_strong = 0x606060FF,
+	table_border_light = 0x4C4C4CFF,
 
 	scrollbar_bg = 0x151515FF,
-	scrollbar_grab = 0x555555FF,
+	scrollbar_grab = 0x606060FF,
 	scrollbar_grab_hovered = 0x777777FF,
 	scrollbar_grab_active = 0x999999FF,
 
-	modal_window_dim_bg = 0x33333377,
+	modal_window_dim_bg = 0x4C4C4C77,
 
 	accent_color = 0x1E90FFFF,
 	accent_color_hovered = 0x3AA0FFFF,
@@ -137,20 +137,20 @@ local default_colors = {
 	plot_histogram = 0xE0E0E0FF,
 	plot_histogram_hovered = 0xF0F0F0FF,
 
-	separator = 0x444444FF,
-	separator_hovered = 0x555555FF,
+	separator = 0x707070FF,
+	separator_hovered = 0x606060FF,
 	separator_active = 0x666666FF,
 
-	slider_grab = 0x1E90FFFF,
-	slider_grab_active = 0x5BAAFDFF,
+	slider_grab = 0xC5AD67FF,
+	slider_grab_active = 0xA18D52FF,
 
-	checkmark = 0x1E90FFFF,
+	checkmark = 0xC5AD67FF,
 
 	resize_grip = 0x666666FF,
 	resize_grip_hovered = 0x777777FF,
 	resize_grip_active = 0x888888FF,
 
-	text_selected_bg = 0x3875D7FF
+	text_selected_bg = 0x8A7946FF
 }
 
 local styles = {
@@ -271,10 +271,10 @@ local themes = {
 				nav_windowing_highlight = 0x7373DAFF,
 				nav_windowing_dim_bg = 0x20202066,
 				drag_drop_target = 0xFFAA00FF,
-				plot_lines = 0x444444FF,
-				plot_lines_hovered = 0x555555FF,
-				plot_histogram = 0x333333FF,
-				plot_histogram_hovered = 0x444444FF,
+				plot_lines = 0x707070FF,
+				plot_lines_hovered = 0x606060FF,
+				plot_histogram = 0x4C4C4CFF,
+				plot_histogram_hovered = 0x707070FF,
 				separator = 0xDDDDDDFF,
 				separator_hovered = 0xCCCCCCFF,
 				separator_active = 0xBBBBBBFF,
@@ -301,20 +301,20 @@ local themes = {
 				window_bg = 0x1A1A1AFF,
 				text = 0xEAEAEAFF,
 				text_disabled = 0x666666FF,
-				border = 0x444444FF,
+				border = 0x707070FF,
 				border_shadow = 0x000000FF,
 				button = 0x2A2A2AFF,
 				button_hovered = 0x3A3A3AFF,
 				button_active = 0x4A4A4AFF,
 				header = 0x222222FF,
-				header_hovered = 0x333333FF,
-				header_active = 0x444444FF,
+				header_hovered = 0x4C4C4CFF,
+				header_active = 0x707070FF,
 				frame_bg = 0x2A2A2AFF,
 				frame_bg_hovered = 0x3A3A3AFF,
 				frame_bg_active = 0x4A4A4AFF,
 				tab = 0x222222FF,
-				tab_hovered = 0x333333FF,
-				tab_active = 0x444444FF,
+				tab_hovered = 0x4C4C4CFF,
+				tab_active = 0x707070FF,
 				tab_unfocused = 0x1D1D1DFF,
 				tab_unfocused_active = 0x222222FF,
 				title_bg = 0x111111FF,
@@ -326,11 +326,11 @@ local themes = {
 				table_header_bg = 0x222222FF,
 				table_row_bg = 0x1A1A1AFF,
 				table_row_bg_alt = 0x232323FF,
-				table_border_strong = 0x444444FF,
-				table_border_light = 0x333333FF,
+				table_border_strong = 0x707070FF,
+				table_border_light = 0x4C4C4CFF,
 				scrollbar_bg = 0x0F0F0FFF,
-				scrollbar_grab = 0x444444FF,
-				scrollbar_grab_hovered = 0x555555FF,
+				scrollbar_grab = 0x707070FF,
+				scrollbar_grab_hovered = 0x606060FF,
 				scrollbar_grab_active = 0x666666FF,
 				modal_window_dim_bg = 0x22222277,
 				accent_color = 0x6A64F4FF,
@@ -344,14 +344,14 @@ local themes = {
 				plot_lines_hovered = 0xD0D0D0FF,
 				plot_histogram = 0xE0E0E0FF,
 				plot_histogram_hovered = 0xF0F0F0FF,
-				separator = 0x444444FF,
-				separator_hovered = 0x555555FF,
+				separator = 0x707070FF,
+				separator_hovered = 0x606060FF,
 				separator_active = 0x666666FF,
 				slider_grab = 0x6A64F4FF,
 				slider_grab_active = 0xAA9CFFFF,
 				check_mark = 0x6A64F4FF,
-				resize_grip = 0x444444FF,
-				resize_grip_hovered = 0x555555FF,
+				resize_grip = 0x707070FF,
+				resize_grip_hovered = 0x606060FF,
 				resize_grip_active = 0x666666FF,
 				text_selected_bg = 0x3875D7FF
 			},
@@ -1223,8 +1223,9 @@ function loop()
 
 	local pushed_colors, pushed_vars = applyStylesInteractive()
 
-	local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() |
+	local window_flags = r.ImGui_WindowFlags_NoTitleBar() |
 	r.ImGui_WindowFlags_NoCollapse()
+	r.ImGui_SetNextWindowSize(ctx, 400, 800)
 	local visible, open = r.ImGui_Begin(ctx, 'ImGui Style Manager', true, window_flags)
 
 	pcall(function()

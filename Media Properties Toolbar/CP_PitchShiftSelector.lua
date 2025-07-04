@@ -816,7 +816,7 @@ local function loop()
         end
     end
     
-    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse()
+    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
     
     r.ImGui_SetNextWindowSize(ctx, 500, 408, r.ImGui_Cond_Always())
     local visible, open = r.ImGui_Begin(ctx, 'Pitch Shift Selector', true, window_flags)

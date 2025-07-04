@@ -268,7 +268,7 @@ function loop()
     local main_font = sl and sl.getFont(ctx, "main")
     local header_font = sl and sl.getFont(ctx, "header")
     
-    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse()
+    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
     local visible, open = r.ImGui_Begin(ctx, 'Project Notes Editor - Settings', true, window_flags)
     
     if visible then

@@ -20,7 +20,7 @@ end
 
 if sl then sl.applyFontsToContext(ctx) end
 
-local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse()
+local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
 
 local WINDOW_FOLLOW_MOUSE = false
 local WINDOW_X_OFFSET = 35
