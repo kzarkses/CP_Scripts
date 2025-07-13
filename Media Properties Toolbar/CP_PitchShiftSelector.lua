@@ -818,25 +818,37 @@ local function loop()
     
     local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
     
-    r.ImGui_SetNextWindowSize(ctx, 500, 408, r.ImGui_Cond_Always())
+    r.ImGui_SetNextWindowSize(ctx, 500, 408, r.ImGui_Cond_FirstUseEver())
     local visible, open = r.ImGui_Begin(ctx, 'Pitch Shift Selector', true, window_flags)
+    local header_font = getStyleFont("header")
+    local main_font = getStyleFont("main")
+    local button_size = 22
     window_open = open
+
     
     if visible then
-        local header_font = getStyleFont("header")
-        local main_font = getStyleFont("main")
-        
-        if header_font then r.ImGui_PushFont(ctx, header_font) end
-        r.ImGui_Text(ctx, "Pitch Shift Selector")
-        if header_font then r.ImGui_PopFont(ctx) end
-        if main_font then r.ImGui_PushFont(ctx, main_font) end
+        if header_font then
+            r.ImGui_PushFont(ctx, header_font)
+            r.ImGui_Text(ctx, "Pitch Shifh Selector")
+            
+            local text_width, text_height = r.ImGui_CalcTextSize(ctx, "X")
+            button_size = math.max(text_height - 2, 22)
+            
+            r.ImGui_PopFont(ctx)
+        else
+            r.ImGui_Text(ctx, "Pitch Shifh Selector")
+            button_size = 22
+        end
         
         r.ImGui_SameLine(ctx)
-        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
+        local close_x = r.ImGui_GetWindowWidth(ctx) - (button_size + 8)
         r.ImGui_SetCursorPosX(ctx, close_x)
-        if r.ImGui_Button(ctx, "X", 22, 22) then
-            window_open = false
+        
+        if r.ImGui_Button(ctx, "X", button_size, button_size) then
+            open = false
         end
+
+        if main_font then r.ImGui_PushFont(ctx, main_font) end
         
         r.ImGui_Separator(ctx)
         
@@ -916,7 +928,7 @@ local function loop()
                     r.ImGui_EndChild(ctx)
                 end
                 
-                r.ImGui_Text(ctx, "Stretch Markers:")
+                r.ImGui_Text(ctx, "Pitch Shifh Selectors:")
                 r.ImGui_Separator(ctx)
                 
                 GetStretchMarkerSettings()

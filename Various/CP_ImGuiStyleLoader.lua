@@ -1,5 +1,5 @@
 -- @description ImGuiStyleLoader
--- @version 1.0
+-- @version 1.0.2
 -- @author Cedric Pamalio
 
 local module = {}
@@ -197,6 +197,24 @@ function module.applyToContext(ctx)
 		pcall(function()
 			if r.ImGui_Col_SeparatorActive then
 				r.ImGui_PushStyleColor(ctx, r.ImGui_Col_SeparatorActive(), styles.colors.separator_active)
+				pushed_colors = pushed_colors + 1
+			end
+		end)
+		pcall(function()
+			if r.ImGui_Col_ResizeGrip and styles.colors.resize_grip then
+				r.ImGui_PushStyleColor(ctx, r.ImGui_Col_ResizeGrip(), styles.colors.resize_grip)
+				pushed_colors = pushed_colors + 1
+			end
+		end)
+				pcall(function()
+			if r.ImGui_Col_ResizeGripHovered and styles.colors.resize_grip_hovered then
+				r.ImGui_PushStyleColor(ctx, r.ImGui_Col_ResizeGripHovered(), styles.colors.resize_grip_hovered)
+				pushed_colors = pushed_colors + 1
+			end
+		end)
+		pcall(function()
+			if r.ImGui_Col_ResizeGripActive and styles.colors.resize_grip_active then
+				r.ImGui_PushStyleColor(ctx, r.ImGui_Col_ResizeGripActive(), styles.colors.resize_grip_active)
 				pushed_colors = pushed_colors + 1
 			end
 		end)

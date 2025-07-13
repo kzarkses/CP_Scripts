@@ -1,5 +1,5 @@
 -- @description TimeSelectionSync
--- @version 1.0
+-- @version 1.0.2
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -25,7 +25,7 @@ local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCo
 local WINDOW_FOLLOW_MOUSE = false
 local WINDOW_X_OFFSET = 35
 local WINDOW_Y_OFFSET = 35
-local WINDOW_WIDTH = 220
+local WINDOW_WIDTH = 250
 local WINDOW_HEIGHT = 278
 
 local time_selection_extension = 0.0
@@ -405,7 +405,7 @@ function MainLoop()
             local mouse_x, mouse_y = r.GetMousePosition()
             r.ImGui_SetNextWindowPos(ctx, mouse_x + WINDOW_X_OFFSET, mouse_y + WINDOW_Y_OFFSET)
         end
-        r.ImGui_SetNextWindowSize(ctx, WINDOW_WIDTH, WINDOW_HEIGHT)
+        r.ImGui_SetNextWindowSize(ctx, WINDOW_WIDTH, WINDOW_HEIGHT, r.ImGui_Cond_FirstUseEver())
         window_position_set = true
     end
 
@@ -422,14 +422,15 @@ function MainLoop()
         if header_font then r.ImGui_PushFont(ctx, header_font) end
         r.ImGui_Text(ctx, "Time Selection Config")
         if header_font then r.ImGui_PopFont(ctx) end
-        if main_font then r.ImGui_PushFont(ctx, main_font) end
-        
+
         r.ImGui_SameLine(ctx)
         local close_x = r.ImGui_GetWindowWidth(ctx) - 30
         r.ImGui_SetCursorPosX(ctx, close_x)
         if r.ImGui_Button(ctx, "X", 22, 22) then
             open = false
         end
+
+        if main_font then r.ImGui_PushFont(ctx, main_font) end
         
         r.ImGui_Separator(ctx)
         r.ImGui_Spacing(ctx)

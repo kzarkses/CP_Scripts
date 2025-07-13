@@ -1,5 +1,5 @@
 -- @description ImGuiStyleManager - GUI
--- @version 1.0.1
+-- @version 1.0.2
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -281,9 +281,9 @@ local themes = {
 				slider_grab = 0x3F85CDFF,
 				slider_grab_active = 0x77A3E0FF,
 				check_mark = 0x3F85CDFF,
-				resize_grip = 0xCCCCCCFF,
-				resize_grip_hovered = 0xBBBBBBFF,
-				resize_grip_active = 0xAAAAAAFF,
+				resize_grip = 0xCCCCCC00,
+				resize_grip_hovered = 0xBBBBBB00,
+				resize_grip_active = 0xAAAAAA00,
 				text_selected_bg = 0x3875D7FF
 			},
 			fonts = deepcopy(styles.fonts),
@@ -469,23 +469,12 @@ local font_update_pending = false
 local theme_name_input = "My Custom Theme"
 local debug_info = ""
 
+
 function ShowColorEditor(label, color_var, color_path)
-	local r_val = (color_var >> 24) & 0xFF
-	local g_val = (color_var >> 16) & 0xFF
-	local b_val = (color_var >> 8) & 0xFF
-	local a_val = color_var & 0xFF
-
-	local rgb_val = (r_val << 16) | (g_val << 8) | b_val
-
-	local changed, new_rgb = r.ImGui_ColorEdit3(ctx, label, rgb_val)
+	local flags = r.ImGui_ColorEditFlags_AlphaBar() | r.ImGui_ColorEditFlags_AlphaPreview()
+	local changed, new_color = r.ImGui_ColorEdit4(ctx, label, color_var, flags)
 
 	if changed then
-		local new_r_val = (new_rgb >> 16) & 0xFF
-		local new_g_val = (new_rgb >> 8) & 0xFF
-		local new_b_val = new_rgb & 0xFF
-
-		local new_color = (new_r_val << 24) | (new_g_val << 16) | (new_b_val << 8) | a_val
-
 		local path_parts = {}
 		for part in color_path:gmatch("[^%.]+") do
 			table.insert(path_parts, part)
@@ -499,7 +488,6 @@ function ShowColorEditor(label, color_var, color_path)
 
 		return new_color
 	end
-
 	return color_var
 end
 
@@ -1223,9 +1211,8 @@ function loop()
 
 	local pushed_colors, pushed_vars = applyStylesInteractive()
 
-	local window_flags = r.ImGui_WindowFlags_NoTitleBar() |
-	r.ImGui_WindowFlags_NoCollapse()
-	r.ImGui_SetNextWindowSize(ctx, 400, 800)
+	local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
+	r.ImGui_SetNextWindowSize(ctx, 400, 800, r.ImGui_Cond_FirstUseEver())
 	local visible, open = r.ImGui_Begin(ctx, 'ImGui Style Manager', true, window_flags)
 
 	pcall(function()
@@ -1423,21 +1410,21 @@ function loop()
 						"colors.tab_hovered")
 					styles.colors.tab_active = ShowColorEditor("Tab Active", styles.colors.tab_active,
 						"colors.tab_active")
-					styles.colors.tab_unfocused = ShowColorEditor("Tab Unfocused", styles.colors.tab_unfocused,
-						"colors.tab_unfocused")
-					styles.colors.tab_unfocused_active = ShowColorEditor("Tab Unfocused Active",
-						styles.colors.tab_unfocused_active, "colors.tab_unfocused_active")
+					-- styles.colors.tab_unfocused = ShowColorEditor("Tab Unfocused", styles.colors.tab_unfocused,
+					-- 	"colors.tab_unfocused")
+					-- styles.colors.tab_unfocused_active = ShowColorEditor("Tab Unfocused Active",
+					-- 	styles.colors.tab_unfocused_active, "colors.tab_unfocused_active")
 
-					r.ImGui_Spacing(ctx)
-					r.ImGui_Text(ctx, "Title Bars")
-					r.ImGui_Separator(ctx)
+					-- r.ImGui_Spacing(ctx)
+					-- r.ImGui_Text(ctx, "Title Bars")
+					-- r.ImGui_Separator(ctx)
 
-					styles.colors.title_bg = ShowColorEditor("Title Background", styles.colors.title_bg,
-						"colors.title_bg")
-					styles.colors.title_bg_active = ShowColorEditor("Title BG Active", styles.colors.title_bg_active,
-						"colors.title_bg_active")
-					styles.colors.title_bg_collapsed = ShowColorEditor("Title BG Collapsed",
-						styles.colors.title_bg_collapsed, "colors.title_bg_collapsed")
+					-- styles.colors.title_bg = ShowColorEditor("Title Background", styles.colors.title_bg,
+					-- 	"colors.title_bg")
+					-- styles.colors.title_bg_active = ShowColorEditor("Title BG Active", styles.colors.title_bg_active,
+					-- 	"colors.title_bg_active")
+					-- styles.colors.title_bg_collapsed = ShowColorEditor("Title BG Collapsed",
+					-- 	styles.colors.title_bg_collapsed, "colors.title_bg_collapsed")
 
 					r.ImGui_Spacing(ctx)
 					r.ImGui_Text(ctx, "Tables")
@@ -1507,16 +1494,16 @@ function loop()
 					styles.colors.nav_windowing_dim_bg = ShowColorEditor("Nav Windowing Dim BG",
 						styles.colors.nav_windowing_dim_bg, "colors.nav_windowing_dim_bg")
 
-					r.ImGui_Spacing(ctx)
-					r.ImGui_Text(ctx, "Resize Grips")
-					r.ImGui_Separator(ctx)
+					-- r.ImGui_Spacing(ctx)
+					-- r.ImGui_Text(ctx, "Resize Grips")
+					-- r.ImGui_Separator(ctx)
 
-					styles.colors.resize_grip = ShowColorEditor("Resize Grip", styles.colors.resize_grip,
-						"colors.resize_grip")
-					styles.colors.resize_grip_hovered = ShowColorEditor("Resize Grip Hovered",
-						styles.colors.resize_grip_hovered, "colors.resize_grip_hovered")
-					styles.colors.resize_grip_active = ShowColorEditor("Resize Grip Active",
-						styles.colors.resize_grip_active, "colors.resize_grip_active")
+					-- styles.colors.resize_grip = ShowColorEditor("Resize Grip", styles.colors.resize_grip,
+					-- 	"colors.resize_grip")
+					-- styles.colors.resize_grip_hovered = ShowColorEditor("Resize Grip Hovered",
+					-- 	styles.colors.resize_grip_hovered, "colors.resize_grip_hovered")
+					-- styles.colors.resize_grip_active = ShowColorEditor("Resize Grip Active",
+					-- 	styles.colors.resize_grip_active, "colors.resize_grip_active")
 
 					r.ImGui_Spacing(ctx)
 					r.ImGui_Text(ctx, "Special")
@@ -1530,29 +1517,29 @@ function loop()
 					styles.colors.drag_drop_target = ShowColorEditor("Drag Drop Target", styles.colors.drag_drop_target,
 						"colors.drag_drop_target")
 
-					r.ImGui_Spacing(ctx)
-					r.ImGui_Text(ctx, "Plots & Graphs")
-					r.ImGui_Separator(ctx)
+					-- r.ImGui_Spacing(ctx)
+					-- r.ImGui_Text(ctx, "Plots & Graphs")
+					-- r.ImGui_Separator(ctx)
 
-					styles.colors.plot_lines = ShowColorEditor("Plot Lines", styles.colors.plot_lines,
-						"colors.plot_lines")
-					styles.colors.plot_lines_hovered = ShowColorEditor("Plot Lines Hovered",
-						styles.colors.plot_lines_hovered, "colors.plot_lines_hovered")
-					styles.colors.plot_histogram = ShowColorEditor("Plot Histogram", styles.colors.plot_histogram,
-						"colors.plot_histogram")
-					styles.colors.plot_histogram_hovered = ShowColorEditor("Plot Histogram Hovered",
-						styles.colors.plot_histogram_hovered, "colors.plot_histogram_hovered")
+					-- styles.colors.plot_lines = ShowColorEditor("Plot Lines", styles.colors.plot_lines,
+					-- 	"colors.plot_lines")
+					-- styles.colors.plot_lines_hovered = ShowColorEditor("Plot Lines Hovered",
+					-- 	styles.colors.plot_lines_hovered, "colors.plot_lines_hovered")
+					-- styles.colors.plot_histogram = ShowColorEditor("Plot Histogram", styles.colors.plot_histogram,
+					-- 	"colors.plot_histogram")
+					-- styles.colors.plot_histogram_hovered = ShowColorEditor("Plot Histogram Hovered",
+					-- 	styles.colors.plot_histogram_hovered, "colors.plot_histogram_hovered")
 
-					r.ImGui_Spacing(ctx)
-					r.ImGui_Text(ctx, "Accent Colors")
-					r.ImGui_Separator(ctx)
+					-- r.ImGui_Spacing(ctx)
+					-- r.ImGui_Text(ctx, "Accent Colors")
+					-- r.ImGui_Separator(ctx)
 
-					styles.colors.accent_color = ShowColorEditor("Accent Color", styles.colors.accent_color,
-						"colors.accent_color")
-					styles.colors.accent_color_hovered = ShowColorEditor("Accent Hovered",
-						styles.colors.accent_color_hovered, "colors.accent_color_hovered")
-					styles.colors.accent_color_active = ShowColorEditor("Accent Active",
-						styles.colors.accent_color_active, "colors.accent_color_active")
+					-- styles.colors.accent_color = ShowColorEditor("Accent Color", styles.colors.accent_color,
+					-- 	"colors.accent_color")
+					-- styles.colors.accent_color_hovered = ShowColorEditor("Accent Hovered",
+					-- 	styles.colors.accent_color_hovered, "colors.accent_color_hovered")
+					-- styles.colors.accent_color_active = ShowColorEditor("Accent Active",
+					-- 	styles.colors.accent_color_active, "colors.accent_color_active")
 
 					r.ImGui_EndTabItem(ctx)
 				end
@@ -1562,7 +1549,7 @@ function loop()
 
 					r.ImGui_Text(ctx, "Main Font")
 					if r.ImGui_BeginCombo(ctx, "Main Font Family", styles.fonts.main.name) then
-						for _, fontname in ipairs({ "sans-serif", "serif", "monospace", "Arial", "Verdana", "Times New Roman", "Courier New" }) do
+						for _, fontname in ipairs({ "Calibri", "sans-serif", "serif", "monospace", "Arial", "Verdana", "Times New Roman", "Courier New" }) do
 							if r.ImGui_Selectable(ctx, fontname, styles.fonts.main.name == fontname) then
 								styles.fonts.main.name = fontname
 								font_update_pending = true
@@ -1583,7 +1570,7 @@ function loop()
 
 					r.ImGui_Text(ctx, "Header Font")
 					if r.ImGui_BeginCombo(ctx, "Header Font Family", styles.fonts.header.name) then
-						for _, fontname in ipairs({ "sans-serif", "serif", "monospace", "Arial", "Verdana", "Times New Roman", "Courier New" }) do
+						for _, fontname in ipairs({ "Calibri", "sans-serif", "serif", "monospace", "Arial", "Verdana", "Times New Roman", "Courier New" }) do
 							if r.ImGui_Selectable(ctx, fontname, styles.fonts.header.name == fontname) then
 								styles.fonts.header.name = fontname
 								font_update_pending = true

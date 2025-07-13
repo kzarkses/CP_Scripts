@@ -1,5 +1,5 @@
 -- @description StretchMarkersControl
--- @version 1.0
+-- @version 1.0.2
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -96,7 +96,7 @@ function Loop()
             local mouse_x, mouse_y = r.GetMousePosition()
             r.ImGui_SetNextWindowPos(ctx, mouse_x + WINDOW_X_OFFSET, mouse_y + WINDOW_Y_OFFSET)
         end
-        r.ImGui_SetNextWindowSize(ctx, WINDOW_WIDTH, WINDOW_HEIGHT)
+        r.ImGui_SetNextWindowSize(ctx, WINDOW_WIDTH, WINDOW_HEIGHT, r.ImGui_Cond_FirstUseEver())
         window_position_set = true
     end
 
@@ -107,25 +107,35 @@ function Loop()
 
     local header_font = getFont("header")
     local main_font = getFont("main")
-
+    local button_size = 22
     local visible, open = r.ImGui_Begin(ctx, 'Stretch Marker', true, WINDOW_FLAGS)
+
     if visible then
-        if header_font then r.ImGui_PushFont(ctx, header_font) end
-        r.ImGui_Text(ctx, "Stretch Marker")
-        if header_font then r.ImGui_PopFont(ctx) end
-        if main_font then r.ImGui_PushFont(ctx, main_font) end
+        if header_font then
+            r.ImGui_PushFont(ctx, header_font)
+            r.ImGui_Text(ctx, "Stretch Marker")
+            
+            local text_width, text_height = r.ImGui_CalcTextSize(ctx, "X")
+            button_size = math.max(text_height, 22)
+            
+            r.ImGui_PopFont(ctx)
+        else
+            r.ImGui_Text(ctx, "Stretch Marker")
+            button_size = 22
+        end
+        
         r.ImGui_SameLine(ctx)
-
-
-        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
+        local close_x = r.ImGui_GetWindowWidth(ctx) - (button_size + 8)
         r.ImGui_SetCursorPosX(ctx, close_x)
-        if r.ImGui_Button(ctx, "X", 22, 22) then
+        
+        if r.ImGui_Button(ctx, "X", button_size, button_size) then
             open = false
         end
+
+        if main_font then r.ImGui_PushFont(ctx, main_font) end
         
         r.ImGui_Separator(ctx)
         r.ImGui_Spacing(ctx)
-
         
         local slope_changed
         slope_changed, settings.slope = r.ImGui_SliderDouble(ctx, 'Slope', settings.slope, -4, 4, '%.2f')

@@ -1,5 +1,5 @@
 -- @description SourceManager
--- @version 1.0
+-- @version 1.0.2
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -706,23 +706,24 @@ function MainLoop()
         if success then pc, pv = colors, vars end
     end
 
-    local header_font = getFont("header")
-    local main_font = getFont("main")
 
-    if main_font then r.ImGui_PushFont(ctx, main_font) end
+
+    -- if main_font then r.ImGui_PushFont(ctx, main_font) end
 
     if not config.window_position_set then
-        r.ImGui_SetNextWindowSize(ctx, 600, 500)
+        r.ImGui_SetNextWindowSize(ctx, 600, 500, r.ImGui_Cond_FirstUseEver())
         config.window_position_set = true
     end
     
     local visible, open = r.ImGui_Begin(ctx, 'Source Manager', true, WINDOW_FLAGS)
     
     if visible then
+        local header_font = getFont("header")
+        local main_font = getFont("main")
+        
         if header_font then r.ImGui_PushFont(ctx, header_font) end
         r.ImGui_Text(ctx, "Source Manager")
         if header_font then r.ImGui_PopFont(ctx) end
-        -- if main_font then r.ImGui_PushFont(ctx, main_font) end
 
         r.ImGui_SameLine(ctx)
         local close_x = r.ImGui_GetWindowWidth(ctx) - 30
@@ -730,6 +731,9 @@ function MainLoop()
         if r.ImGui_Button(ctx, "X", 22, 22) then
             open = false
         end
+
+        if main_font then r.ImGui_PushFont(ctx, main_font) end
+
         r.ImGui_Separator(ctx)
         local selected_items = {}
         for i = 0, r.CountSelectedMediaItems(0) - 1 do
@@ -922,11 +926,11 @@ function MainLoop()
             r.ImGui_Separator(ctx)
             r.ImGui_TextWrapped(ctx, config.status_message)
         end
-        
+        if main_font then r.ImGui_PopFont(ctx) end
         r.ImGui_End(ctx)
     end
     
-    if main_font then r.ImGui_PopFont(ctx) end
+
     
     if sl then sl.clearStyles(ctx, pc, pv) end
     
