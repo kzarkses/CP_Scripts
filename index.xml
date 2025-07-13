@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="CP_Scripts" commit="9499af53ce530470252a1a067654f7f20c1a9079">
+<index version="1" name="CP_Scripts" commit="d69b15577ce098822e00d85904a8d95333795e4e">
   <category name="Colors">
     <reapack name="CP_AutoColorRegionFromTrack.lua" type="script" desc="AutoColorRegionFromTrack">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -69,15 +69,24 @@
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Media%20Properties%20Toolbar/CP_SourceManager.lua</source>
       </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Media%20Properties%20Toolbar/CP_SourceManager.lua</source>
+      </version>
     </reapack>
     <reapack name="CP_StretchMarkersControl.lua" type="script" desc="StretchMarkersControl">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Media%20Properties%20Toolbar/CP_StretchMarkersControl.lua</source>
       </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Media%20Properties%20Toolbar/CP_StretchMarkersControl.lua</source>
+      </version>
     </reapack>
     <reapack name="CP_TakeRenamer.lua" type="script" desc="TakeRenamer">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Media%20Properties%20Toolbar/CP_TakeRenamer.lua</source>
+      </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Media%20Properties%20Toolbar/CP_TakeRenamer.lua</source>
       </version>
     </reapack>
   </category>
@@ -165,6 +174,9 @@
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_ImGuiStyleLoader.lua</source>
       </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_ImGuiStyleLoader.lua</source>
+      </version>
     </reapack>
     <reapack name="CP_ImGuiStyleManager_GUI.lua" type="script" desc="ImGuiStyleManager - GUI">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -172,6 +184,9 @@
       </version>
       <version name="1.0.1" author="Cedric Pamalio" time="2025-07-04T11:08:51Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/9499af53ce530470252a1a067654f7f20c1a9079/Various/CP_ImGuiStyleManager_GUI.lua</source>
+      </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_ImGuiStyleManager_GUI.lua</source>
       </version>
     </reapack>
     <reapack name="CP_ProjectNoteEditor.lua" type="script" desc="ProjectNoteEditor">
@@ -197,6 +212,9 @@
     <reapack name="CP_TimeSelectionSync.lua" type="script" desc="TimeSelectionSync">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_TimeSelectionSync.lua</source>
+      </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_TimeSelectionSync.lua</source>
       </version>
     </reapack>
     <reapack name="CP_UpdateMediaSource_Next.lua" type="script" desc="UpdateMediaSource Next">
