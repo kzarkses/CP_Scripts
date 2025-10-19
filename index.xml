@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="CP_Scripts" commit="b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6">
+<index version="1" name="CP_Scripts" commit="f1f52525e66358f1e5ad3145beae58c138b7b052">
   <category name="Colors">
     <reapack name="CP_AutoColorRegionFromTrack.lua" type="script" desc="AutoColorRegionFromTrack">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -167,16 +167,6 @@
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_CopySourceWithTakeName_RX.lua</source>
       </version>
     </reapack>
-    <reapack name="CP_CrashDetector.lua" type="script" desc="CrashDetector - Détecte les problèmes potentiels">
-      <version name="1.0.0" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_CrashDetector.lua</source>
-      </version>
-    </reapack>
-    <reapack name="CP_DebugSetup.lua" type="script" desc="DebugSetup - Installation des outils de debug">
-      <version name="1.0.0" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_DebugSetup.lua</source>
-      </version>
-    </reapack>
     <reapack name="CP_DeleteUnderMouse.lua" type="script" desc="DeleteUnderMouse">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_DeleteUnderMouse.lua</source>
@@ -185,21 +175,6 @@
     <reapack name="CP_DuplicateTrackRearrange.lua" type="script" desc="DuplicateTrackRearrange">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_DuplicateTrackRearrange.lua</source>
-      </version>
-    </reapack>
-    <reapack name="CP_ExportDefaultValues.lua" type="script" desc="ExportDefaultValues">
-      <version name="1.0.0" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_ExportDefaultValues.lua</source>
-      </version>
-    </reapack>
-    <reapack name="CP_ExportStyleManagerValues.lua" type="script" desc="ExportStyleManagerValues">
-      <version name="1.0.0" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_ExportStyleManagerValues.lua</source>
-      </version>
-    </reapack>
-    <reapack name="CP_FadeInUnderMouse.lua" type="script" desc="CP_FadeInAllSelected_AtMouseCursor">
-      <version name="1.0" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_FadeInUnderMouse.lua</source>
       </version>
     </reapack>
     <reapack name="CP_FXRack.lua" type="script" desc="FXRack">
@@ -260,11 +235,6 @@
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_TimeSelectionSync.lua</source>
       </version>
     </reapack>
-    <reapack name="CP_TimeSelectionSync_REFACTORED.lua" type="script" desc="TimeSelectionSync">
-      <version name="1.0.2" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_TimeSelectionSync_REFACTORED.lua</source>
-      </version>
-    </reapack>
     <reapack name="CP_UpdateMediaSource_Next.lua" type="script" desc="UpdateMediaSource Next">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_UpdateMediaSource_Next.lua</source>
@@ -278,11 +248,6 @@
     <reapack name="CP_UpdateMediaSource_Rename.lua" type="script" desc="UpdateMediaSource Rename">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_UpdateMediaSource_Rename.lua</source>
-      </version>
-    </reapack>
-    <reapack name="CP_WindowSizeDisplay_GUI.lua" type="script" desc="WindowSizeDisplay">
-      <version name="1.0.0" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_WindowSizeDisplay_GUI.lua</source>
       </version>
     </reapack>
   </category>
