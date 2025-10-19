@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="CP_Scripts" commit="f1f52525e66358f1e5ad3145beae58c138b7b052">
+<index version="1" name="CP_Scripts" commit="fe36bb1060a13a20aa8457dee55f9179b2644582">
   <category name="Colors">
     <reapack name="CP_AutoColorRegionFromTrack.lua" type="script" desc="AutoColorRegionFromTrack">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -43,6 +43,9 @@
       <version name="1.0.1" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/FX%20Constellation/CP_FXConstellation.lua</source>
       </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/FX%20Constellation/CP_FXConstellation.lua</source>
+      </version>
     </reapack>
   </category>
   <category name="Media Properties Toolbar">
@@ -65,6 +68,9 @@
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Media%20Properties%20Toolbar/CP_MediaPropertiesToolbar_Settings.lua</source>
       </version>
+      <version name="1.0.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Media%20Properties%20Toolbar/CP_MediaPropertiesToolbar_Settings.lua</source>
+      </version>
     </reapack>
     <reapack name="CP_PitchShiftSelector.lua" type="script" desc="PitchShiftSelector">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -72,6 +78,9 @@
       </version>
       <version name="1.0.3" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Media%20Properties%20Toolbar/CP_PitchShiftSelector.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Media%20Properties%20Toolbar/CP_PitchShiftSelector.lua</source>
       </version>
     </reapack>
     <reapack name="CP_SourceManager.lua" type="script" desc="SourceManager">
@@ -81,6 +90,9 @@
       <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Media%20Properties%20Toolbar/CP_SourceManager.lua</source>
       </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Media%20Properties%20Toolbar/CP_SourceManager.lua</source>
+      </version>
     </reapack>
     <reapack name="CP_StretchMarkersControl.lua" type="script" desc="StretchMarkersControl">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -88,6 +100,9 @@
       </version>
       <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Media%20Properties%20Toolbar/CP_StretchMarkersControl.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Media%20Properties%20Toolbar/CP_StretchMarkersControl.lua</source>
       </version>
     </reapack>
     <reapack name="CP_TakeRenamer.lua" type="script" desc="TakeRenamer">
@@ -99,6 +114,9 @@
       </version>
       <version name="1.0.3" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Media%20Properties%20Toolbar/CP_TakeRenamer.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Media%20Properties%20Toolbar/CP_TakeRenamer.lua</source>
       </version>
     </reapack>
   </category>
@@ -143,6 +161,9 @@
     <reapack name="CP_TrackNavigator_Settings.lua" type="script" desc="TrackNavigator - Settings">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Track%20Navigator/CP_TrackNavigator_Settings.lua</source>
+      </version>
+      <version name="1.0.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Track%20Navigator/CP_TrackNavigator_Settings.lua</source>
       </version>
     </reapack>
   </category>
@@ -189,6 +210,9 @@
       <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_ImGuiStyleLoader.lua</source>
       </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_ImGuiStyleLoader.lua</source>
+      </version>
     </reapack>
     <reapack name="CP_ImGuiStyleManager_GUI.lua" type="script" desc="ImGuiStyleManager - GUI">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -199,6 +223,9 @@
       </version>
       <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_ImGuiStyleManager_GUI.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_ImGuiStyleManager_GUI.lua</source>
       </version>
     </reapack>
     <reapack name="CP_ProjectNoteEditor.lua" type="script" desc="ProjectNoteEditor">
@@ -223,6 +250,9 @@
       <version name="1.0.3" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_SoundGenerator.lua</source>
       </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_SoundGenerator.lua</source>
+      </version>
     </reapack>
     <reapack name="CP_TimeSelectionSync.lua" type="script" desc="TimeSelectionSync">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -233,6 +263,9 @@
       </version>
       <version name="1.0.3" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_TimeSelectionSync.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_TimeSelectionSync.lua</source>
       </version>
     </reapack>
     <reapack name="CP_UpdateMediaSource_Next.lua" type="script" desc="UpdateMediaSource Next">
