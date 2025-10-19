@@ -67,6 +67,46 @@ function CollectFolderTracks(parent_track)
   return tracks_to_delete
 end
 
+-- Fonction pour forcer le recalcul des Ã©tats de folder
+function ForceUpdateFolderStates()
+  -- MÃ©thode 1 : Forcer une mise Ã  jour complÃ¨te de la track list
+  reaper.TrackList_AdjustWindows(false)
+  reaper.UpdateArrange()
+  
+  -- MÃ©thode 2 : Forcer REAPER Ã  recalculer en triggering une action qui met Ã  jour les folders
+  local total_tracks = reaper.CountTracks(0)
+  for i = 0, total_tracks - 1 do
+    local track = reaper.GetTrack(0, i)
+    local folder_depth = reaper.GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH")
+    
+    -- Si c'est un folder parent potentiel, vÃ©rifier s'il a encore des enfants
+    if folder_depth > 0 then
+      local has_children = false
+      local track_depth = reaper.GetTrackDepth(track)
+      
+      -- VÃ©rifier s'il y a encore des tracks enfants
+      for j = i + 1, total_tracks - 1 do
+        local child_track = reaper.GetTrack(0, j)
+        local child_depth = reaper.GetTrackDepth(child_track)
+        
+        -- Si on revient au niveau du parent ou moins, on s'arrÃªte
+        if child_depth <= track_depth then
+          break
+        end
+        
+        -- Il y a au moins un enfant
+        has_children = true
+        break
+      end
+      
+      -- Si plus d'enfants, remettre I_FOLDERDEPTH Ã  0
+      if not has_children then
+        reaper.SetMediaTrackInfo_Value(track, "I_FOLDERDEPTH", 0)
+      end
+    end
+  end
+end
+
 -- Fonction pour ajuster la structure de dossier aprÃ¨s suppression d'une track
 function FixFolderStructureAfterDeletion(track_to_delete)
   local track_index = reaper.GetMediaTrackInfo_Value(track_to_delete, "IP_TRACKNUMBER") - 1
@@ -252,8 +292,15 @@ function DeleteRazorEditZone(track, razor_zone)
   
   reaper.PreventUIRefresh(-1)
   reaper.UpdateArrange()
-  reaper.TrackList_AdjustWindows(true)
+  reaper.TrackList_AdjustWindows(false)
   reaper.UpdateTimeline()
+  
+  -- Forcer le recalcul des Ã©tats de folder avec un dÃ©lai
+  if deleted_something then
+    reaper.defer(function()
+      ForceUpdateFolderStates()
+    end)
+  end
   
   return deleted_something
 end
@@ -312,8 +359,13 @@ if track and context == 0 then
   -- Actualiser l'interface de faÃ§on plus complÃ¨te
   reaper.PreventUIRefresh(-1)
   reaper.UpdateArrange()
-  reaper.TrackList_AdjustWindows(true)
+  reaper.TrackList_AdjustWindows(false)
   reaper.UpdateTimeline()
+  
+  -- Forcer le recalcul des Ã©tats de folder avec un dÃ©lai
+  reaper.defer(function()
+    ForceUpdateFolderStates()
+  end)
   return
 end
 
@@ -346,7 +398,14 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
         
         reaper.PreventUIRefresh(-1)
         reaper.UpdateArrange()
-        reaper.TrackList_AdjustWindows(true)
+        reaper.TrackList_AdjustWindows(false)
+        reaper.UpdateTimeline()
+        
+        -- Forcer le recalcul des Ã©tats de folder avec un dÃ©lai
+        reaper.defer(function()
+          reaper.TrackList_AdjustWindows(false)
+          reaper.UpdateArrange()
+        end)
         return
       end
     end
@@ -403,7 +462,14 @@ if segment == "envelope" or details == "env_point" or details == "env_segment" t
     -- Actualiser l'interface de faÃ§on plus complÃ¨te
     reaper.PreventUIRefresh(-1)
     reaper.UpdateArrange()
-    reaper.TrackList_AdjustWindows(true)
+    reaper.TrackList_AdjustWindows(false)
+    reaper.UpdateTimeline()
+    
+    -- Forcer le recalcul des Ã©tats de folder avec un dÃ©lai
+    reaper.defer(function()
+      reaper.TrackList_AdjustWindows(false)
+      reaper.UpdateArrange()
+    end)
     return
   end
 end
@@ -429,7 +495,14 @@ if item then
   -- Actualiser l'interface de faÃ§on plus complÃ¨te
   reaper.PreventUIRefresh(-1)
   reaper.UpdateArrange()
-  reaper.TrackList_AdjustWindows(true)
+  reaper.TrackList_AdjustWindows(false)
+  reaper.UpdateTimeline()
+  
+  -- Forcer le recalcul des Ã©tats de folder avec un dÃ©lai
+  reaper.defer(function()
+    reaper.TrackList_AdjustWindows(false)
+    reaper.UpdateArrange()
+  end)
   return
 end
 

@@ -4,19 +4,18 @@
 
 local r = reaper
 
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
-local sl = nil
-local pc = 0
-local pv = 0
-
-local file = io.open(sp, "r")
-if file then
-  file:close()
-  local loader_func = dofile(sp)
-  if loader_func then
-    sl = loader_func()
-  end
+local script_name = "CP_MediaPropertiesToolbar"
+local style_loader = nil
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
+if r.file_exists(style_loader_path) then 
+    local loader_func = dofile(style_loader_path)
+    if loader_func then 
+        style_loader = loader_func() 
+    end 
 end
+
+local pushed_colors = 0
+local pushed_vars = 0
 
 local settings_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/MediaPropertiesToolbar_settings.ini"
 
@@ -27,6 +26,7 @@ local config = {
     entry_width = 60,
     name_width = 220,
     source_width = 220,
+    time_unit = "time",
     text_color = {0.70, 0.70, 0.70, 1},
     background_color = {0.155, 0.155, 0.155, 1},
     frame_color = {0.155, 0.155, 0.155, 1},
@@ -130,7 +130,7 @@ local config = {
     end
 }
 
-state = {
+local state = {
     last_item = nil,
     last_mouse_cap = 0,
     last_mouse_x = 0,
@@ -154,14 +154,51 @@ state = {
     show_pan_dropdown = false,
     pan_dropdown_y = 0,
     header_buttons = {},
-    hover_button = nil
+    hover_button = nil,
+    double_click_threshold = 0.25
 }
 
-local _,_,sid,cid=r.get_action_context()
-r.SetToggleCommandState(sid,cid,1)
-r.RefreshToolbar2(sid,cid)
+local _,_,section_id,command_id = r.get_action_context()
+r.SetToggleCommandState(section_id,command_id,1)
+r.RefreshToolbar2(section_id,command_id)
 
-function loadSettings()
+function GetStyleValue(path, default_value)
+    if style_loader then
+        return style_loader.GetValue(path, default_value)
+    end
+    return default_value
+end
+
+function IsScriptAlreadyRunning(script_path)
+    return false
+end
+
+function SafeOpenScript(script_path)
+    if r.file_exists(script_path) then
+        local command_id = r.NamedCommandLookup("_RS" .. script_path)
+        if command_id == 0 then
+            command_id = r.AddRemoveReaScript(true, 0, script_path, true)
+        end
+        
+        if command_id ~= 0 then
+            r.Main_OnCommand(command_id, 0)
+            return true
+        end
+    end
+    return false
+end
+
+function IsScriptRunning(script_filename)
+    local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/" .. script_filename
+    if not r.file_exists(script_path) then return false end
+    
+    local command_id = r.NamedCommandLookup("_RS" .. string.gsub(script_path, "/", "\\"))
+    if command_id == 0 then return false end
+    
+    return r.GetToggleCommandState(command_id) == 1
+end
+
+function LoadSettings()
     local file = io.open(settings_path, "r")
     if not file then return end
     
@@ -196,6 +233,19 @@ function loadSettings()
                     config.name_width = tonumber(value) or config.name_width
                 elseif key == "source_width" then
                     config.source_width = tonumber(value) or config.source_width
+                elseif key == "time_unit" then
+                    if value == "beats" or value == "time" then
+                        config.time_unit = value
+                    end
+                elseif (key == "text_color" or key == "background_color" or 
+                       key == "frame_color" or key == "frame_color_active") and value:match("^{.+}$") then
+                    local values = {}
+                    for v in value:sub(2, -2):gmatch("[^,]+") do
+                        table.insert(values, tonumber(v) or 0)
+                    end
+                    if #values == 4 then
+                        config[key] = values
+                    end
                 end
             else
                 if key == "font_name" then
@@ -208,7 +258,11 @@ function loadSettings()
                     config.name_width = tonumber(value) or config.name_width
                 elseif key == "source_width" then
                     config.source_width = tonumber(value) or config.source_width
-                elseif (key == "background_color" or key == "text_color" or 
+                elseif key == "time_unit" then
+                    if value == "beats" or value == "time" then
+                        config.time_unit = value
+                    end
+                elseif (key == "text_color" or key == "background_color" or 
                        key == "frame_color" or key == "frame_color_active") and value:match("^{.+}$") then
                     local values = {}
                     for v in value:sub(2, -2):gmatch("[^,]+") do
@@ -225,20 +279,20 @@ function loadSettings()
     file:close()
 end
 
-function checkForSettingsUpdates()
+function CheckForSettingsUpdates()
     local last_change = r.GetExtState("MediaPropertiesToolbar", "settings_changed")
     local layout_changed = r.GetExtState("MediaPropertiesToolbar", "layout_changed") == "1"
     
     if (last_change ~= "" and last_change ~= state.last_settings_update) or layout_changed then
         state.last_settings_update = last_change
-        loadSettings()
+        LoadSettings()
         
         if layout_changed then
             gfx.setfont(1, config.font_name, config.font_size)
             r.SetExtState("MediaPropertiesToolbar", "layout_changed", "0", false)
             
             gfx.quit()
-            init()
+            Init()
         end
         
         return true
@@ -246,17 +300,17 @@ function checkForSettingsUpdates()
     return false
 end
 
-function loadDockState()
+function LoadDockState()
     state.dock_id = tonumber(r.GetExtState("MediaPropertiesToolbar", "dock_id")) or 0
     state.is_docked = r.GetExtState("MediaPropertiesToolbar", "is_docked") == "1"
 end
 
-function saveDockState()
+function SaveDockState()
     r.SetExtState("MediaPropertiesToolbar", "dock_id", tostring(state.dock_id), true)
     r.SetExtState("MediaPropertiesToolbar", "is_docked", state.is_docked and "1" or "0", true)
 end
 
-function beginUndo(description)
+function BeginUndo(description)
     if not state.undo_active then
         r.Undo_BeginBlock()
         state.undo_active = true
@@ -264,7 +318,7 @@ function beginUndo(description)
     end
 end
 
-function endUndo()
+function EndUndo()
     if state.undo_active then
         r.Undo_EndBlock(state.current_undo_desc, -1)
         state.undo_active = false
@@ -272,7 +326,7 @@ function endUndo()
     end
 end
 
-function getUndoDescription(param_name)
+function GetUndoDescription(param_name)
     local descriptions = {
         itemvol = "Adjust item volume",
         takevol = "Adjust take volume", 
@@ -290,7 +344,7 @@ function getUndoDescription(param_name)
     return descriptions[param_name] or "Edit item property"
 end
 
-function getResetDescription(param_name)
+function GetResetDescription(param_name)
     local descriptions = {
         itemvol = "Reset item volume",
         takevol = "Reset take volume", 
@@ -307,65 +361,7 @@ function getResetDescription(param_name)
     return descriptions[param_name] or "Reset item property"
 end
 
--- function drawExtraHeaderButtons(header, data)
---     -- Debug : vÃ©rifier si la fonction est appelÃ©e
---     r.ShowConsoleMsg("drawExtraHeaderButtons called for: " .. header.text .. "\n")
-    
---     local buttons = {}
-    
---     -- Force dessiner quelque chose de trÃ¨s visible n'importe oÃ¹
---     gfx.set(1, 0, 0, 1)  -- Rouge vif
---     gfx.rect(0, 0, 50, 50, 1)  -- Coin supÃ©rieur gauche
-    
---     if header.text == "Pan" then
---         local button_w = 30  -- Plus gros
---         local button_h = 15  -- Plus haut
---         local button_x = 100  -- Position fixe complÃ¨tement diffÃ©rente
---         local button_y = 25   -- Position fixe complÃ¨tement diffÃ©rente
-        
---         -- Force une couleur trÃ¨s visible
---         gfx.set(1, 0, 1, 1)  -- Magenta vif
---         gfx.rect(button_x, button_y, button_w, button_h, 1)
-        
---         gfx.set(1, 1, 1, 1)  -- Blanc
---         gfx.x = button_x + 10
---         gfx.y = button_y + 5
---         gfx.drawstr("PAN")
-        
---         buttons.pan_dropdown = {
---             x = button_x,
---             y = button_y,
---             w = button_w,
---             h = button_h
---         }
-        
---     elseif header.text == "Length" then
---         local button_w = 30  -- Plus gros  
---         local button_h = 15  -- Plus haut
---         local button_x = 200  -- Position fixe complÃ¨tement diffÃ©rente
---         local button_y = 25   -- Position fixe complÃ¨tement diffÃ©rente
-        
---         -- Force une couleur trÃ¨s visible
---         gfx.set(0, 1, 1, 1)  -- Cyan vif
---         gfx.rect(button_x, button_y, button_w, button_h, 1)
-        
---         gfx.set(0, 0, 0, 1)  -- Noir
---         gfx.x = button_x + 8
---         gfx.y = button_y + 5
---         gfx.drawstr("LOOP")
-        
---         buttons.loop_toggle = {
---             x = button_x,
---             y = button_y,
---             w = button_w,
---             h = button_h
---         }
---     end
-    
---     return buttons
--- end
-
-function showPanDropdownMenu(button_x, button_y, button_h)
+function ShowPanDropdownMenu(button_x, button_y, button_h)
     local screen_x = button_x + 5
     local screen_y = button_y + 20
     
@@ -404,15 +400,15 @@ function showPanDropdownMenu(button_x, button_y, button_h)
     end
 end
 
-function drawPanDropdown(x, y)
+function DrawPanDropdown(x, y)
     return {x = x, y = y, w = 0, h = 0}
 end
 
-function toggleLoopSource()
+function ToggleLoopSource()
     local selected_count = r.CountSelectedMediaItems(0)
     if selected_count == 0 then return end
     
-    beginUndo("Toggle loop source")
+    BeginUndo("Toggle loop source")
     
     for i = 0, selected_count - 1 do
         local item = r.GetSelectedMediaItem(0, i)
@@ -424,11 +420,11 @@ function toggleLoopSource()
         end
     end
     
-    endUndo()
+    EndUndo()
     r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
 end
 
-function showEnvelope(param_name)
+function ShowEnvelope(param_name)
     local commands = {
         takevol = 40693,
         pan = 40694,
@@ -442,9 +438,9 @@ function showEnvelope(param_name)
     end
 end
 
-function init()
-    loadSettings()
-    loadDockState()
+function Init()
+    LoadSettings()
+    LoadDockState()
     
     local title = 'Media Properties Toolbar'
     local docked = state.is_docked and state.dock_id or 0
@@ -458,7 +454,7 @@ function init()
     r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
 end
 
-function truncateString(str, maxWidth)
+function TruncateString(str, maxWidth)
     local str_w = gfx.measurestr(str)
     if str_w <= maxWidth then return str end
     
@@ -480,7 +476,7 @@ function truncateString(str, maxWidth)
     end
 end
 
-function drawTooltip(text, x, y)
+function DrawTooltip(text, x, y)
     local padding = 4
     local text_w, text_h = gfx.measurestr(text)
     
@@ -493,7 +489,7 @@ function drawTooltip(text, x, y)
     gfx.drawstr(text)
 end
 
-function drawHeaderCell(text, x, y, w)
+function DrawHeaderCell(text, x, y, w)
     gfx.set(table.unpack(config.frame_color))
     gfx.rect(x, y, w, config.entry_height)
     
@@ -512,25 +508,18 @@ function drawHeaderCell(text, x, y, w)
     }
 end
 
-function drawExtraHeaderButtons(header, data)
+function DrawExtraHeaderButtons(header, data)
     local buttons = {}
     
     if header.text == "Pan" then
         local button_w = 12
         local button_h = 12
         local button_x = header.x + header.w - button_w - 10
-        local button_y = header.y + 4
+        local button_y = header.y
         
         local mx, my = gfx.mouse_x, gfx.mouse_y
         local is_hovered = mx >= button_x and mx < button_x + button_w and
                           my >= button_y and my < button_y + button_h
-        
-        -- if is_hovered then
-        --     gfx.set(0.5, 0.5, 0.5, 1.0)
-        -- else
-        --     gfx.set(0.3, 0.3, 0.3, 1.0)
-        -- end
-        -- gfx.rect(button_x, button_y, button_w, button_h, 1)
         
         if is_hovered then
             gfx.set(table.unpack(config.colors.text_hovered))
@@ -538,9 +527,9 @@ function drawExtraHeaderButtons(header, data)
             gfx.set(table.unpack(config.colors.text_normal))
         end
 
-        gfx.x = button_x
-        gfx.y = button_y
-        gfx.drawstr("â–¼")
+        gfx.x = button_x + 2
+        gfx.y = button_y + 2
+        gfx.drawstr("▼")
         
         buttons.pan_dropdown = {
             x = button_x,
@@ -584,7 +573,7 @@ function drawExtraHeaderButtons(header, data)
     return buttons
 end
 
-function drawValueCell(value, x, y, w, is_active, param_type, param_name)
+function DrawValueCell(value, x, y, w, is_active, param_type, param_name)
     local is_negative = false
     local is_modified = false
     
@@ -667,10 +656,7 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     local display_value
 
     if param_type == "time" or param_name == "position" or param_name == "length" then
-        local minutes = math.floor(value / 60)
-        local seconds = math.floor(value % 60)
-        local ms = math.floor((value % 1) * 1000)
-        display_value = string.format("%d:%02d.%03d", minutes, seconds, ms)
+        display_value = FormatTimeString(value)
     elseif param_type == "itemvol" or param_type == "takevol" then
         local db = 20 * math.log(value, 10)
         if db == math.abs(0) then db = 0 end
@@ -699,7 +685,7 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     
     if param_type == "name" then
         local margin = 4
-        display_value = truncateString(display_value, w - margin)
+        display_value = TruncateString(display_value, w - margin)
     end
 
     if param_type == "time" then
@@ -708,7 +694,7 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
         gfx.x = text_x
         gfx.y = y + (config.entry_height - select(2, gfx.measurestr(display_value))) / 2
         gfx.drawstr(display_value)
-        metrics = getTimeStringMetrics(display_value, text_x)
+        metrics = GetTimeStringMetrics(display_value, text_x)
     else
         local str_w, str_h = gfx.measurestr(display_value)
         gfx.x = x + (w - str_w) / 2
@@ -727,33 +713,67 @@ function drawValueCell(value, x, y, w, is_active, param_type, param_name)
     }
 end
 
-function formatTimeString(time)
-    local minutes = math.floor(time / 60)
-    local seconds = math.floor(time % 60)
-    local ms = math.floor((time % 1) * 1000)
-    return string.format("%d:%02d.%03d", minutes, seconds, ms)
+function FormatTimeString(time)
+    if config.time_unit == "beats" then
+        return FormatBeatString(time)
+    else
+        local minutes = math.floor(time / 60)
+        local seconds = math.floor(time % 60)
+        local ms = math.floor((time % 1) * 1000)
+        return string.format("%d:%02d.%03d", minutes, seconds, ms)
+    end
 end
 
-function getTimeStringMetrics(str, x)
+function FormatBeatString(time)
+    local bpm, bpi = r.GetProjectTimeSignature2(0)
+    local beat_length = 60.0 / bpm
+    local total_beats = time / beat_length
+    local bars = math.floor(total_beats / bpi)
+    local beats = math.floor(total_beats % bpi)
+    local ticks = math.floor((total_beats % 1) * 960)
+    return string.format("%d.%02d.%03d", bars + 1, beats + 1, ticks)
+end
+
+function GetTimeStringMetrics(str, x)
     local parts = {}
-    local minutes = str:match("^(%d+):")
-    local seconds = str:match(":(%d+)%.")
-    local ms = str:match("%.(%d+)$")
     
-    local min_width = gfx.measurestr(minutes)
-    local colon_width = gfx.measurestr(":")
-    local sec_width = gfx.measurestr(seconds)
-    local dot_width = gfx.measurestr(".")
-    
-    parts.min_end = x + min_width
-    parts.sec_start = parts.min_end + colon_width
-    parts.sec_end = parts.sec_start + sec_width
-    parts.ms_start = parts.sec_end + dot_width
+    if config.time_unit == "beats" then
+        local bars = str:match("^(%d+)%.")
+        local beats = str:match("%.(%d+)%.")
+        local ticks = str:match("%.(%d+)$")
+        
+        if bars and beats and ticks then
+            local bars_width = gfx.measurestr(bars)
+            local dot_width = gfx.measurestr(".")
+            local beats_width = gfx.measurestr(beats)
+            
+            parts.min_end = x + bars_width
+            parts.sec_start = parts.min_end + dot_width
+            parts.sec_end = parts.sec_start + beats_width
+            parts.ms_start = parts.sec_end + dot_width
+        end
+    else
+        local minutes = str:match("^(%d+):")
+        local seconds = str:match(":(%d+)%.")
+        local ms = str:match("%.(%d+)$")
+        
+        if minutes and seconds then
+            local min_width = gfx.measurestr(minutes)
+            local colon_width = gfx.measurestr(":")
+            local sec_width = gfx.measurestr(seconds)
+            local dot_width = gfx.measurestr(".")
+            
+            parts.min_end = x + min_width
+            parts.sec_start = parts.min_end + colon_width
+            parts.sec_end = parts.sec_start + sec_width
+            parts.ms_start = parts.sec_end + dot_width
+        end
+    end
     
     return parts
 end
 
-function updateItemRate(item, take, rate)
+function UpdateItemRate(item, take, rate)
     local original_length = r.GetMediaItemInfo_Value(item, "D_LENGTH")
     local original_rate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
     
@@ -765,7 +785,7 @@ function updateItemRate(item, take, rate)
     r.UpdateItemInProject(item)
 end
 
-function updateItemsWithOffset(item_data, param_name, change)
+function UpdateItemsWithOffset(item_data, param_name, change)
     local selected_items = {}
     local selected_values = {}
     
@@ -854,7 +874,7 @@ function updateItemsWithOffset(item_data, param_name, change)
             elseif param_name == "pan" then
                 r.SetMediaItemTakeInfo_Value(take, "D_PAN", new_value)
             elseif param_name == "rate" then
-                updateItemRate(item, take, new_value)
+                UpdateItemRate(item, take, new_value)
             end
         end
         
@@ -862,35 +882,72 @@ function updateItemsWithOffset(item_data, param_name, change)
     end
 end
 
-function handleValueInput(param_name, current_value)
+function HandleValueInput(param_name, current_value)
     if param_name == "position" or param_name == "length" or 
        param_name == "fadein" or param_name == "fadeout" or
        param_name == "snap" then
        
-        local min = math.floor(current_value / 60)
-        local sec = math.floor(current_value % 60)
-        local ms = math.floor((current_value % 1) * 1000)
-        
-        local retval, user_input = r.GetUserInputs(param_name, 3, 
-            "Minutes,Seconds,Milliseconds", 
-            string.format("%d,%d,%d", min, sec, ms))
+        if config.time_unit == "beats" then
+            local bpm, bpi = r.GetProjectTimeSignature2(0)
+            local beat_length = 60.0 / bpm
+            local total_beats = current_value / beat_length
+            local bars = math.floor(total_beats / bpi)
+            local beats = math.floor(total_beats % bpi)
+            local ticks = math.floor((total_beats % 1) * 960)
+            
+            local retval, user_input = r.GetUserInputs(param_name, 3, 
+                "Bars,Beats,Ticks", 
+                string.format("%d,%d,%d", bars + 1, beats + 1, ticks))
 
-        if not retval then return nil end
-        
-        local new_min, new_sec, new_ms = user_input:match("([^,]+),([^,]+),([^,]+)")
-        if new_min and new_sec and new_ms then
-            new_min = tonumber(new_min) or 0
-            new_sec = tonumber(new_sec) or 0
-            new_ms = tonumber(new_ms) or 0
-            local new_value = new_min * 60 + new_sec + new_ms/1000
+            if not retval then return nil end
             
-            if (param_name == "snap" or param_name == "fadein" or param_name == "fadeout") and new_value < 0 then
-                new_value = 0
+            local new_bars, new_beats, new_ticks = user_input:match("([^,]+),([^,]+),([^,]+)")
+            if new_bars and new_beats and new_ticks then
+                new_bars = (tonumber(new_bars) or 1) - 1
+                new_beats = (tonumber(new_beats) or 1) - 1
+                new_ticks = tonumber(new_ticks) or 0
+                
+                if new_bars < 0 then new_bars = 0 end
+                if new_beats < 0 then new_beats = 0 end
+                if new_ticks < 0 then new_ticks = 0 end
+                if new_ticks >= 960 then new_ticks = 959 end
+                
+                local total_beats_new = new_bars * bpi + new_beats + new_ticks / 960.0
+                local new_value = total_beats_new * beat_length
+                
+                if (param_name == "snap" or param_name == "fadein" or param_name == "fadeout") and new_value < 0 then
+                    new_value = 0
+                end
+                
+                return new_value
             end
+            return current_value
+        else
+            local min = math.floor(current_value / 60)
+            local sec = math.floor(current_value % 60)
+            local ms = math.floor((current_value % 1) * 1000)
             
-            return new_value
+            local retval, user_input = r.GetUserInputs(param_name, 3, 
+                "Minutes,Seconds,Milliseconds", 
+                string.format("%d,%d,%d", min, sec, ms))
+
+            if not retval then return nil end
+            
+            local new_min, new_sec, new_ms = user_input:match("([^,]+),([^,]+),([^,]+)")
+            if new_min and new_sec and new_ms then
+                new_min = tonumber(new_min) or 0
+                new_sec = tonumber(new_sec) or 0
+                new_ms = tonumber(new_ms) or 0
+                local new_value = new_min * 60 + new_sec + new_ms/1000
+                
+                if (param_name == "snap" or param_name == "fadein" or param_name == "fadeout") and new_value < 0 then
+                    new_value = 0
+                end
+                
+                return new_value
+            end
+            return current_value
         end
-        return current_value
 
     elseif param_name == "itemvol" or param_name == "takevol" then
         local current_db = 20 * math.log(current_value, 10)
@@ -949,7 +1006,7 @@ function handleValueInput(param_name, current_value)
     return current_value
 end
 
-function updateItemValue(item_data, param_name, value)
+function UpdateItemValue(item_data, param_name, value)
     local selected_items = {}
     for i = 0, r.CountSelectedMediaItems(0) - 1 do
         table.insert(selected_items, r.GetSelectedMediaItem(0, i))
@@ -959,9 +1016,7 @@ function updateItemValue(item_data, param_name, value)
     
     if param_name == "name" then
         local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_TakeRenamer.lua"
-        if r.file_exists(script_path) then
-            dofile(script_path)
-        end
+        SafeOpenScript(script_path)
     else
         for i, item in ipairs(selected_items) do
             local take = r.GetActiveTake(item)
@@ -985,7 +1040,7 @@ function updateItemValue(item_data, param_name, value)
                 elseif param_name == "pan" then 
                     r.SetMediaItemTakeInfo_Value(take, "D_PAN", value)
                 elseif param_name == "rate" then 
-                    updateItemRate(item, take, value)
+                    UpdateItemRate(item, take, value)
                 elseif param_name == "preserve_pitch" then 
                     r.SetMediaItemTakeInfo_Value(take, "B_PPITCH", value and 1 or 0)
                 elseif param_name == "mute" then 
@@ -1000,17 +1055,17 @@ function updateItemValue(item_data, param_name, value)
     r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
 end
 
-function handleMouseInput(item_data, mx, my, controls, header_cells)
+function HandleMouseInput(item_data, mx, my, controls, header_cells)
     local mouse_cap = gfx.mouse_cap
     local mouse_wheel = gfx.mouse_wheel
     gfx.mouse_wheel = 0
     
     local current_time = r.time_precise()
     
-    if state.double_click_cooldown > 0 and current_time - state.double_click_cooldown < 0.3 then
+    if state.double_click_cooldown > 0 and (current_time - state.double_click_cooldown) < 0.1 then
         state.last_mouse_cap = mouse_cap
         return
-    else
+    elseif (current_time - state.double_click_cooldown) > 0.5 then
         state.double_click_cooldown = 0
     end
 
@@ -1018,7 +1073,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
         state.double_click_handled = false
         
         if state.drag_active then
-            endUndo()
+            EndUndo()
             state.drag_active = false
             state.active_control = nil
         end
@@ -1027,14 +1082,14 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
             if mx >= ctrl.x and mx < ctrl.x + ctrl.w and
                my >= ctrl.y and my < ctrl.y + ctrl.h then
                 if id == "source" then
-                    drawTooltip(ctrl.full_source, mx + 10, my)
+                    DrawTooltip(ctrl.full_source, mx + 10, my)
                 end
             end
         end
     end
 
     if mouse_cap == 1 and state.last_mouse_cap == 0 then
-        local is_double_click = (current_time - state.last_click_time) < 0.3
+        local is_double_click = (current_time - state.last_click_time) < state.double_click_threshold
         state.last_click_time = current_time
     
         if is_double_click and not state.double_click_handled then
@@ -1046,14 +1101,12 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                    my >= header.y and my < header.y + header.h then
                     if header.text == "Pres Pitch" then
                         local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_PitchShiftSelector.lua"
-                        if r.file_exists(script_path) then
-                            dofile(script_path)
-                        end
+                        SafeOpenScript(script_path)
+                        return
                     elseif header.text == "Rate" then
                         local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_StretchMarkersControl.lua"
-                        if r.file_exists(script_path) then
-                            dofile(script_path)
-                        end
+                        SafeOpenScript(script_path)
+                        return
                     elseif header.text == "TakeVol" then
                         r.Main_OnCommand(42460, 0)
                         state.last_mouse_cap = mouse_cap
@@ -1068,20 +1121,21 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                    my >= ctrl.y and my < ctrl.y + ctrl.h then
                     if id == "source" then
                         local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_SourceManager.lua"
-                        if r.file_exists(script_path) then
-                            dofile(script_path)
-                        end
+                        SafeOpenScript(script_path)
+                        return
                     elseif id == "name" then
-                        updateItemValue(item_data, id, nil)
+                        local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/CP_TakeRenamer.lua"
+                        SafeOpenScript(script_path)
+                        return
                     else
-                        local new_value = handleValueInput(id, ctrl.value)
+                        local new_value = HandleValueInput(id, ctrl.value)
                         if new_value then
-                            beginUndo(getUndoDescription(id))
-                            updateItemValue(item_data, id, new_value)
-                            endUndo()
+                            BeginUndo(GetUndoDescription(id))
+                            UpdateItemValue(item_data, id, new_value)
+                            EndUndo()
                         end
+                        return
                     end
-                    break
                 end
             end
         else
@@ -1091,15 +1145,28 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                     if ctrl.param_type ~= "bool" then
                         if ctrl.param_type == "time" and ctrl.text_metrics then
                             local drag_zone
-                            if mx <= ctrl.text_metrics.min_end then
-                                drag_zone = "minutes"
-                                r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
-                            elseif mx <= ctrl.text_metrics.sec_end then
-                                drag_zone = "seconds"
-                                r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                            if config.time_unit == "beats" then
+                                if mx <= ctrl.text_metrics.min_end then
+                                    drag_zone = "bars"
+                                    r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                                elseif mx <= ctrl.text_metrics.sec_end then
+                                    drag_zone = "beats"
+                                    r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                                else
+                                    drag_zone = "ticks"
+                                    r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                                end
                             else
-                                drag_zone = "milliseconds"
-                                r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                                if mx <= ctrl.text_metrics.min_end then
+                                    drag_zone = "minutes"
+                                    r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                                elseif mx <= ctrl.text_metrics.sec_end then
+                                    drag_zone = "seconds"
+                                    r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                                else
+                                    drag_zone = "milliseconds"
+                                    r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
+                                end
                             end
                             state.active_control = id .. "_" .. drag_zone
                         else
@@ -1107,11 +1174,11 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                         end
                         state.drag_active = true
                         state.drag_start_time = current_time
-                        beginUndo(getUndoDescription(id))
+                        BeginUndo(GetUndoDescription(id))
                     else
-                        beginUndo(getUndoDescription(id))
-                        updateItemValue(item_data, id, not ctrl.value)
-                        endUndo()
+                        BeginUndo(GetUndoDescription(id))
+                        UpdateItemValue(item_data, id, not ctrl.value)
+                        EndUndo()
                         r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
                     end
                     break
@@ -1121,9 +1188,9 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 if mx >= button.x and mx < button.x + button.w and
                 my >= button.y and my < button.y + button.h then
                     if button_name == "pan_dropdown" then
-                        showPanDropdownMenu(button.x, button.y, button.h)
+                        ShowPanDropdownMenu(button.x, button.y, button.h)
                     elseif button_name == "loop_toggle" then
-                        toggleLoopSource()
+                        ToggleLoopSource()
                     end
                     break
                 end
@@ -1145,7 +1212,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 
                 local param = param_map[header.text]
                 if param then
-                    showEnvelope(param)
+                    ShowEnvelope(param)
                 end
                 
                 state.last_mouse_cap = mouse_cap
@@ -1168,7 +1235,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 elseif id == "preserve_pitch" then reset_value = false
                 elseif id == "mute" then reset_value = false
                 elseif id == "length" then
-                    beginUndo(getResetDescription("length"))
+                    BeginUndo(GetResetDescription("length"))
                     for i = 0, r.CountSelectedMediaItems(0) - 1 do
                         local item = r.GetSelectedMediaItem(0, i)
                         if item then
@@ -1187,14 +1254,14 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                             end
                         end
                     end
-                    endUndo()
+                    EndUndo()
                     return 
                 end
                     
                 if reset_value ~= nil then
-                    beginUndo(getResetDescription(id))
-                    updateItemValue(item_data, id, reset_value)
-                    endUndo()
+                    BeginUndo(GetResetDescription(id))
+                    UpdateItemValue(item_data, id, reset_value)
+                    EndUndo()
                 end
                 break
             end
@@ -1209,7 +1276,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                my >= ctrl.y and my < ctrl.y + ctrl.h then
                 
                 if not state.wheel_undo_active then
-                    beginUndo(getUndoDescription(id))
+                    BeginUndo(GetUndoDescription(id))
                     state.wheel_undo_active = true
                     state.last_wheel_time = current_time
                 end
@@ -1218,32 +1285,44 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
                 
                 if id == "itemvol" or id == "takevol" then
                     local db_change = mouse_wheel > 0 and config.itemvol.step_db or -config.itemvol.step_db
-                    updateItemsWithOffset(item_data, id, db_change)
+                    UpdateItemsWithOffset(item_data, id, db_change)
                 
                 elseif id == "pitch" then
                     local change = mouse_wheel > 0 and config.pitch.step or -config.pitch.step
-                    updateItemsWithOffset(item_data, id, change)
+                    UpdateItemsWithOffset(item_data, id, change)
  
                 elseif id == "pan" then
                     local change = mouse_wheel > 0 and config.pan.step or -config.pan.step
-                    updateItemsWithOffset(item_data, id, change)
+                    UpdateItemsWithOffset(item_data, id, change)
  
                 elseif id == "rate" then
                     local change = mouse_wheel > 0 and config.rate.step or -config.rate.step
-                    updateItemsWithOffset(item_data, id, change)
+                    UpdateItemsWithOffset(item_data, id, change)
  
                 elseif ctrl.param_type == "time" then
                     if ctrl.text_metrics then
                         local increment
-                        if mx <= ctrl.text_metrics.min_end then
-                            increment = 60  
-                        elseif mx <= ctrl.text_metrics.sec_end then
-                            increment = 1   
+                        if config.time_unit == "beats" then
+                            local bpm, bpi = r.GetProjectTimeSignature2(0)
+                            local beat_length = 60.0 / bpm
+                            if mx <= ctrl.text_metrics.min_end then
+                                increment = bpi * beat_length
+                            elseif mx <= ctrl.text_metrics.sec_end then
+                                increment = beat_length
+                            else
+                                increment = beat_length / 960.0
+                            end
                         else
-                            increment = 0.001  
+                            if mx <= ctrl.text_metrics.min_end then
+                                increment = 60  
+                            elseif mx <= ctrl.text_metrics.sec_end then
+                                increment = 1   
+                            else
+                                increment = 0.001  
+                            end
                         end
                         local delta = mouse_wheel > 0 and increment or -increment
-                        updateItemsWithOffset(item_data, id, delta)
+                        UpdateItemsWithOffset(item_data, id, delta)
                     end
                 end
                 break
@@ -1257,35 +1336,46 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
         if ctrl then
             if base_id == "itemvol" or base_id == "takevol" then
                 local db_change = (mx - state.last_mouse_x) * config.mouse.itemvol_sensitivity
-                updateItemsWithOffset(item_data, base_id, db_change)
+                UpdateItemsWithOffset(item_data, base_id, db_change)
                 r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
     
             elseif base_id == "pitch" then
                 local change = (mx - state.last_mouse_x) * config.mouse.pitch_sensitivity
-                updateItemsWithOffset(item_data, base_id, change)
+                UpdateItemsWithOffset(item_data, base_id, change)
                 r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
             elseif base_id == "pan" then
                 local change = (mx - state.last_mouse_x) * config.mouse.pan_sensitivity
-                updateItemsWithOffset(item_data, base_id, change)
+                UpdateItemsWithOffset(item_data, base_id, change)
                 r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)
             elseif base_id == "rate" then
                 local change = (mx - state.last_mouse_x) * config.mouse.rate_sensitivity
-                updateItemsWithOffset(item_data, base_id, change)
+                UpdateItemsWithOffset(item_data, base_id, change)
                 r.Main_OnCommand(r.NamedCommandLookup("_BR_FOCUS_ARRANGE_WND"), 0)      
             elseif ctrl.param_type == "time" then
                 if ctrl.text_metrics then
                     local drag_zone = state.active_control:match("_(%w+)$")
                     local drag_sensitivity
-                    if drag_zone == "minutes" then
-                        drag_sensitivity = config.time.drag_minutes
-                    elseif drag_zone == "seconds" then
-                        drag_sensitivity = config.time.drag_seconds
+                    
+                    if config.time_unit == "beats" then
+                        if drag_zone == "bars" then
+                            drag_sensitivity = 0.1
+                        elseif drag_zone == "beats" then
+                            drag_sensitivity = 0.02
+                        elseif drag_zone == "ticks" then
+                            drag_sensitivity = 0.002
+                        end
                     else
-                        drag_sensitivity = config.time.drag_milliseconds
+                        if drag_zone == "minutes" then
+                            drag_sensitivity = config.time.drag_minutes
+                        elseif drag_zone == "seconds" then
+                            drag_sensitivity = config.time.drag_seconds
+                        else
+                            drag_sensitivity = config.time.drag_milliseconds
+                        end
                     end
                     
                     local change = (mx - state.last_mouse_x) * drag_sensitivity
-                    updateItemsWithOffset(item_data, base_id, change)
+                    UpdateItemsWithOffset(item_data, base_id, change)
                 end
             end
         end
@@ -1296,7 +1386,7 @@ function handleMouseInput(item_data, mx, my, controls, header_cells)
     state.last_mouse_y = my
 end
 
-function calculateWidgetWidths(available_width)
+function CalculateWidgetWidths(available_width)
     local widget_widths = {}
     local visible_widgets = {}
     
@@ -1344,10 +1434,10 @@ function calculateWidgetWidths(available_width)
     return visible_widgets, widget_widths
 end
 
-function drawInterface()
+function DrawInterface()
     local total_width = gfx.w
     
-    local visible_widgets, widget_widths = calculateWidgetWidths(total_width)
+    local visible_widgets, widget_widths = CalculateWidgetWidths(total_width)
     
     state.visible_widgets = visible_widgets
     state.widget_widths = widget_widths
@@ -1397,7 +1487,7 @@ function drawInterface()
     
     local x = 0
     for _, header in ipairs(headers) do
-        local cell = drawHeaderCell(header.name, x, 0, header.width)
+        local cell = DrawHeaderCell(header.name, x, 0, header.width)
         cell.param_key = header.key
         table.insert(header_cells, cell)
         x = x + header.width
@@ -1436,8 +1526,8 @@ function drawInterface()
             local source_name = data.source
             local filename = source_name ~= "" and source_name:match("([^/\\]+)$") or "[No source]"
             
-            local cell = drawValueCell(
-                truncateString(filename, param.width - 8),
+            local cell = DrawValueCell(
+                TruncateString(filename, param.width - 8),
                 x, config.entry_height, 
                 param.width,
                 state.active_control == param.key,
@@ -1455,8 +1545,8 @@ function drawInterface()
                 param_type = "source"
             }
         elseif param.key == "name" then
-            local cell = drawValueCell(
-                truncateString(data[param.key], param.width - 8),
+            local cell = DrawValueCell(
+                TruncateString(data[param.key], param.width - 8),
                 x, config.entry_height,
                 param.width,
                 state.active_control == param.key,
@@ -1473,7 +1563,7 @@ function drawInterface()
                 param_type = "name"
             }
         else
-            local cell = drawValueCell(
+            local cell = DrawValueCell(
                 data[param.key],
                 x, config.entry_height,
                 param.width,
@@ -1497,15 +1587,15 @@ function drawInterface()
     end
         state.header_buttons = {}
     for _, header in ipairs(header_cells) do
-        local buttons = drawExtraHeaderButtons(header, data)
+        local buttons = DrawExtraHeaderButtons(header, data)
         for button_name, button_data in pairs(buttons) do
             state.header_buttons[button_name] = button_data
         end
     end
-    handleMouseInput(data, gfx.mouse_x, gfx.mouse_y, controls, header_cells)
+    HandleMouseInput(data, gfx.mouse_x, gfx.mouse_y, controls, header_cells)
 end
 
-function checkForRestart()
+function CheckForRestart()
     local restart_flag = r.GetExtState("MediaPropertiesToolbar", "force_restart")
     local need_restart = r.GetExtState("MediaPropertiesToolbar", "need_restart") == "1"
     
@@ -1516,9 +1606,9 @@ function checkForRestart()
         gfx.quit()
         
         r.defer(function()
-            loadSettings() 
-            init() 
-            r.defer(loop) 
+            LoadSettings() 
+            Init() 
+            r.defer(MainLoop) 
         end)
         
         return true
@@ -1526,56 +1616,49 @@ function checkForRestart()
     return false
 end
 
-function loop()
-    if r.GetToggleCommandState(sid,cid)==0 then
+function MainLoop()
+    if r.GetToggleCommandState(section_id,command_id)==0 then
         gfx.quit()
         return
     end
-    if checkForRestart() then
+    if CheckForRestart() then
         return 
     end
     
     local current_time = r.time_precise()
     if state.wheel_undo_active and current_time - state.last_wheel_time > config.undo.wheel_timeout then
-        endUndo()
+        EndUndo()
         state.wheel_undo_active = false
     end
     
     gfx.set(table.unpack(config.background_color))
     gfx.rect(0, 0, gfx.w, gfx.h, 1)
     
-    checkForSettingsUpdates()
-    drawInterface()
+    CheckForSettingsUpdates()
+    DrawInterface()
     
     local dock_state = gfx.dock(-1)
     if dock_state ~= state.dock_id or 
        (dock_state > 0) ~= state.is_docked then
         state.dock_id = dock_state
         state.is_docked = dock_state > 0
-        saveDockState()
+        SaveDockState()
     end
     
     local char = gfx.getchar()
     if char >= 0 then
-        r.defer(loop)
+        r.defer(MainLoop)
     end
     
     gfx.update()
 end
 
-r.atexit(function()
-  r.SetToggleCommandState(sid,cid,0)
-  r.RefreshToolbar2(sid,cid)
-end)
+function Cleanup()
+    r.SetToggleCommandState(section_id,command_id,0)
+    r.RefreshToolbar2(section_id,command_id)
+end
 
-init()
-loop()
+r.atexit(Cleanup)
 
-
-
-
-
-
-
-
-
+Init()
+MainLoop()

@@ -4,9 +4,15 @@
 
 local r = reaper
 
-local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
-if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
+local script_name = "CP_SourceManager"
+local style_loader = nil
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
+if r.file_exists(style_loader_path) then 
+    local loader_func = dofile(style_loader_path)
+    if loader_func then 
+        style_loader = loader_func() 
+    end 
+end
 
 local script_id = "CP_SourceManager_Instance"
 if _G[script_id] then
@@ -16,35 +22,97 @@ end
 _G[script_id] = true
 
 local ctx = r.ImGui_CreateContext('Source Manager')
-local pc, pv = 0, 0
+local pushed_colors = 0
+local pushed_vars = 0
 
-if sl then sl.applyFontsToContext(ctx) end
+if style_loader then 
+    style_loader.ApplyFontsToContext(ctx) 
+end
 
-function getFont(font_name)
-    if sl then return sl.getFont(ctx, font_name) end
+function GetStyleValue(path, default_value)
+    if style_loader then
+        return style_loader.GetValue(path, default_value)
+    end
+    return default_value
+end
+
+function GetFont(font_name)
+    if style_loader then
+        return style_loader.GetFont(ctx, font_name)
+    end
     return nil
 end
 
-local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse() 
+local header_font_size = GetStyleValue("fonts.header.size", 16)
+local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 6)
+local item_spacing_y = GetStyleValue("spacing.item_spacing_y", 6)
+local window_padding_x = GetStyleValue("spacing.window_padding_x", 6)
+local window_padding_y = GetStyleValue("spacing.window_padding_y", 6)
 
 local config = {
+    window_position_set = false,
+    adjust_item_size = true,
+    search_query = ""
+}
+
+local state = {
     selected_items = {},
     common_directory = "",
     reference_files = {},
     available_media = {},
     current_project_version = nil,
-    window_position_set = false,
     status_message = "",
     multiple_directories = false,
-    search_query = "",
     filtered_media = {},
-    adjust_item_size = true,
     rename_buffer = ""
 }
 
 local temp_sources = {}
 
-function safelyDestroySource(source)
+function ApplyStyle()
+    if style_loader then
+        local success, colors, vars = style_loader.ApplyToContext(ctx)
+        if success then 
+            pushed_colors = colors
+            pushed_vars = vars
+            return true
+        end
+    end
+    return false
+end
+
+function ClearStyle()
+    if style_loader then 
+        style_loader.ClearStyles(ctx, pushed_colors, pushed_vars)
+    end
+end
+
+function SaveSettings()
+    for key, value in pairs(config) do
+        local value_str = tostring(value)
+        if type(value) == "boolean" then
+            value_str = value and "1" or "0"
+        end
+        r.SetExtState(script_name, "config_" .. key, value_str, true)
+    end
+end
+
+function LoadSettings()
+    for key, default_value in pairs(config) do
+        local saved_value = r.GetExtState(script_name, "config_" .. key)
+        if saved_value ~= "" then
+            if type(default_value) == "number" then
+                config[key] = tonumber(saved_value) or default_value
+            elseif type(default_value) == "boolean" then
+                config[key] = saved_value == "1"
+            else
+                config[key] = saved_value
+            end
+        end
+    end
+end
+
+function SafelyDestroySource(source)
     if source then
         if r.PCM_Source_Destroy then
             r.PCM_Source_Destroy(source)
@@ -52,14 +120,14 @@ function safelyDestroySource(source)
     end
 end
 
-function cleanupTempSources()
+function CleanupTempSources()
     for i, source in ipairs(temp_sources) do
-        safelyDestroySource(source)
+        SafelyDestroySource(source)
     end
     temp_sources = {}
 end
 
-function findNextFile(currentFile)
+function FindNextFile(currentFile)
     local directory = currentFile:match("(.+)[/\\]")
     local baseName = currentFile:match("^.+[/\\](.+)$")
     
@@ -128,7 +196,7 @@ function findNextFile(currentFile)
     return nil
 end
 
-function findPreviousFile(currentFile)
+function FindPreviousFile(currentFile)
     local directory = currentFile:match("(.+)[/\\]")
     local baseName = currentFile:match("^.+[/\\](.+)$")
     
@@ -179,7 +247,7 @@ function findPreviousFile(currentFile)
     return nil
 end
 
-function getProjectVersion()
+function GetProjectVersion()
     local _, projectPath = r.EnumProjects(-1)
     if not projectPath then return nil end
     
@@ -190,7 +258,7 @@ function getProjectVersion()
     return tonumber(version)
 end
 
-function constructVersionedFile(currentFile, targetVersion)
+function ConstructVersionedFile(currentFile, targetVersion)
     local directory = currentFile:match("(.+)[/\\]")
     local baseName = currentFile:match("^.+[/\\](.+)$")
     if not directory or not baseName then return nil end
@@ -216,13 +284,13 @@ function constructVersionedFile(currentFile, targetVersion)
     end
 end
 
-function getCommonDirectoryAndReferenceFiles()
-    if #config.selected_items == 0 then return nil, {}, false end
+function GetCommonDirectoryAndReferenceFiles()
+    if #state.selected_items == 0 then return nil, {}, false end
     
     local directories = {}
     local reference_files = {}
     
-    for _, item in ipairs(config.selected_items) do
+    for _, item in ipairs(state.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local source = r.GetMediaItemTake_Source(take)
@@ -254,7 +322,7 @@ function getCommonDirectoryAndReferenceFiles()
     return common_dir, reference_files, multiple_dirs
 end
 
-function filterMedia(media_list, query)
+function FilterMedia(media_list, query)
     if not query or query == "" then
         return media_list
     end
@@ -271,7 +339,7 @@ function filterMedia(media_list, query)
     return filtered
 end
 
-function scanAvailableMedia(directory)
+function ScanAvailableMedia(directory)
     if not directory then return {} end
     
     local media_files = {}
@@ -308,12 +376,12 @@ function scanAvailableMedia(directory)
     return media_files
 end
 
-function getFilenameFromPath(path)
+function GetFilenameFromPath(path)
     if not path then return "" end
     return path:match("([^/\\]+)$") or path
 end
 
-function getSafeSourceLength(filePath)
+function GetSafeSourceLength(filePath)
     if not filePath then return 0, false end
     
     local source_length = 0
@@ -332,27 +400,27 @@ function getSafeSourceLength(filePath)
     return source_length, lengthIsQN
 end
 
-function updateItemsToPreviousVersion()
-    if #config.selected_items == 0 then return 0, 0 end
+function UpdateItemsToPreviousVersion()
+    if #state.selected_items == 0 then return 0, 0 end
     
     local updatedCount = 0
     local errorCount = 0
     
     r.Undo_BeginBlock()
     
-    cleanupTempSources()
+    CleanupTempSources()
     
-    for _, item in ipairs(config.selected_items) do
+    for _, item in ipairs(state.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local source = r.GetMediaItemTake_Source(take)
             local currentFile = r.GetMediaSourceFileName(source)
             
-            local prevFile = findPreviousFile(currentFile)
+            local prevFile = FindPreviousFile(currentFile)
             if prevFile then
                 local source_length = 0
                 if config.adjust_item_size then
-                    source_length = getSafeSourceLength(prevFile)
+                    source_length = GetSafeSourceLength(prevFile)
                 end
                 
                 local oldSource = r.GetMediaItemTake_Source(take)
@@ -386,34 +454,34 @@ function updateItemsToPreviousVersion()
         r.Main_OnCommand(40441, 0)
     end
     
-    cleanupTempSources()
+    CleanupTempSources()
     
     r.Undo_EndBlock("Update media sources to previous version", -1)
     
     return updatedCount, errorCount
 end
 
-function updateItemsToNextVersion()
-    if #config.selected_items == 0 then return 0, 0 end
+function UpdateItemsToNextVersion()
+    if #state.selected_items == 0 then return 0, 0 end
     
     local updatedCount = 0
     local errorCount = 0
     
     r.Undo_BeginBlock()
     
-    cleanupTempSources()
+    CleanupTempSources()
     
-    for _, item in ipairs(config.selected_items) do
+    for _, item in ipairs(state.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local source = r.GetMediaItemTake_Source(take)
             local currentFile = r.GetMediaSourceFileName(source)
             
-            local nextFile = findNextFile(currentFile)
+            local nextFile = FindNextFile(currentFile)
             if nextFile then
                 local source_length = 0
                 if config.adjust_item_size then
-                    source_length = getSafeSourceLength(nextFile)
+                    source_length = GetSafeSourceLength(nextFile)
                 end
                 
                 local oldSource = r.GetMediaItemTake_Source(take)
@@ -447,33 +515,33 @@ function updateItemsToNextVersion()
         r.Main_OnCommand(40441, 0)
     end
     
-    cleanupTempSources()
+    CleanupTempSources()
     
     r.Undo_EndBlock("Update media sources to next version", -1)
     
     return updatedCount, errorCount
 end
 
-function syncWithProjectVersion()
-    local version = getProjectVersion()
+function SyncWithProjectVersion()
+    local version = GetProjectVersion()
     if not version then return 0, 0 end
     
-    if #config.selected_items == 0 then return 0, 0 end
+    if #state.selected_items == 0 then return 0, 0 end
     
     local updatedCount = 0
     local errorCount = 0
     
     r.Undo_BeginBlock()
     
-    cleanupTempSources()
+    CleanupTempSources()
     
-    for _, item in ipairs(config.selected_items) do
+    for _, item in ipairs(state.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local source = r.GetMediaItemTake_Source(take)
             local currentFile = r.GetMediaSourceFileName(source)
             
-            local versionedFile = constructVersionedFile(currentFile, version)
+            local versionedFile = ConstructVersionedFile(currentFile, version)
             if versionedFile then
                 local file = io.open(versionedFile, "r")
                 if file then
@@ -481,7 +549,7 @@ function syncWithProjectVersion()
                     
                     local source_length = 0
                     if config.adjust_item_size then
-                        source_length = getSafeSourceLength(versionedFile)
+                        source_length = GetSafeSourceLength(versionedFile)
                     end
                     
                     local oldSource = r.GetMediaItemTake_Source(take)
@@ -518,29 +586,29 @@ function syncWithProjectVersion()
         r.Main_OnCommand(40441, 0)
     end
     
-    cleanupTempSources()
+    CleanupTempSources()
     
     r.Undo_EndBlock("Sync media sources to project version", -1)
     
     return updatedCount, errorCount
 end
 
-function updateToMediaFile(mediaPath)
-    if not mediaPath or #config.selected_items == 0 then return 0, 0 end
+function UpdateToMediaFile(mediaPath)
+    if not mediaPath or #state.selected_items == 0 then return 0, 0 end
     
     local updatedCount = 0
     local errorCount = 0
     
     r.Undo_BeginBlock()
     
-    cleanupTempSources()
+    CleanupTempSources()
     
     local source_length = 0
     if config.adjust_item_size then
-        source_length = getSafeSourceLength(mediaPath)
+        source_length = GetSafeSourceLength(mediaPath)
     end
     
-    for _, item in ipairs(config.selected_items) do
+    for _, item in ipairs(state.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local oldSource = r.GetMediaItemTake_Source(take)
@@ -573,20 +641,20 @@ function updateToMediaFile(mediaPath)
         r.Main_OnCommand(40441, 0)
     end
     
-    cleanupTempSources()
+    CleanupTempSources()
     
-    r.Undo_EndBlock("Update media sources to " .. getFilenameFromPath(mediaPath), -1)
+    r.Undo_EndBlock("Update media sources to " .. GetFilenameFromPath(mediaPath), -1)
     
     return updatedCount, errorCount
 end
 
-function sanitizeFilename(name)
+function SanitizeFilename(name)
     local sanitized = name:gsub("[\\/:*?\"<>|]", "_")
     sanitized = sanitized:match("^%s*(.-)%s*$")
     return sanitized
 end
 
-function copyFile(sourcePath, destPath)
+function CopyFile(sourcePath, destPath)
     local sourceFile = io.open(sourcePath, "rb")
     if not sourceFile then
         return false, "Could not open source file"
@@ -607,17 +675,17 @@ function copyFile(sourcePath, destPath)
     return true, ""
 end
 
-function renameSourceFiles()
-    if #config.selected_items == 0 then return 0, 0 end
+function RenameSourceFiles()
+    if #state.selected_items == 0 then return 0, 0 end
     
     local updatedCount = 0
     local errorCount = 0
     
     r.Undo_BeginBlock()
     
-    cleanupTempSources()
+    CleanupTempSources()
     
-    for _, item in ipairs(config.selected_items) do
+    for _, item in ipairs(state.selected_items) do
         local take = r.GetActiveTake(item)
         if take then
             local source = r.GetMediaItemTake_Source(take)
@@ -628,7 +696,7 @@ function renameSourceFiles()
             if directory and extension then
                 local takeName = r.GetTakeName(take)
                 
-                local sanitizedName = sanitizeFilename(takeName)
+                local sanitizedName = SanitizeFilename(takeName)
                 
                 local newFilename = sanitizedName .. "." .. extension
                 local newFilePath = directory .. "/" .. newFilename
@@ -644,12 +712,12 @@ function renameSourceFiles()
                     until not fileExists
                 end
                 
-                local success, errorMsg = copyFile(currentFile, newFilePath)
+                local success, errorMsg = CopyFile(currentFile, newFilePath)
                 
                 if success then
                     local source_length = 0
                     if config.adjust_item_size then
-                        source_length = getSafeSourceLength(newFilePath)
+                        source_length = GetSafeSourceLength(newFilePath)
                     end
                     
                     local oldSource = r.GetMediaItemTake_Source(take)
@@ -685,14 +753,14 @@ function renameSourceFiles()
     if updatedCount > 0 then
         r.Main_OnCommand(40441, 0)
         
-        config.common_directory, config.reference_files, config.multiple_directories = getCommonDirectoryAndReferenceFiles()
-        if config.common_directory then
-            config.available_media = scanAvailableMedia(config.common_directory)
-            config.filtered_media = filterMedia(config.available_media, config.search_query)
+        state.common_directory, state.reference_files, state.multiple_directories = GetCommonDirectoryAndReferenceFiles()
+        if state.common_directory then
+            state.available_media = ScanAvailableMedia(state.common_directory)
+            state.filtered_media = FilterMedia(state.available_media, config.search_query)
         end
     end
     
-    cleanupTempSources()
+    CleanupTempSources()
     
     r.Undo_EndBlock("Rename media sources to take names", -1)
     
@@ -701,38 +769,37 @@ end
 
 function MainLoop()
     if not _G[script_id] then return end
-    if sl then
-        local success, colors, vars = sl.applyToContext(ctx)
-        if success then pc, pv = colors, vars end
-    end
-
-
-
-    -- if main_font then r.ImGui_PushFont(ctx, main_font) end
-
+    
+    ApplyStyle()
+    
+    local header_font = GetFont("header")
+    local main_font = GetFont("main")
+    
     if not config.window_position_set then
         r.ImGui_SetNextWindowSize(ctx, 600, 500, r.ImGui_Cond_FirstUseEver())
         config.window_position_set = true
     end
     
-    local visible, open = r.ImGui_Begin(ctx, 'Source Manager', true, WINDOW_FLAGS)
+    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
+    local visible, open = r.ImGui_Begin(ctx, 'Source Manager', true, window_flags)
     
     if visible then
-        local header_font = getFont("header")
-        local main_font = getFont("main")
-        
-        if header_font then r.ImGui_PushFont(ctx, header_font) end
-        r.ImGui_Text(ctx, "Source Manager")
-        if header_font then r.ImGui_PopFont(ctx) end
+        if style_loader and style_loader.PushFont(ctx, "header") then
+            r.ImGui_Text(ctx, "Source Manager")
+            style_loader.PopFont(ctx)
+        else
+            r.ImGui_Text(ctx, "Source Manager")
+        end
 
         r.ImGui_SameLine(ctx)
-        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
+        local close_button_size = header_font_size + 6
+        local close_x = r.ImGui_GetWindowWidth(ctx) - close_button_size - window_padding_x
         r.ImGui_SetCursorPosX(ctx, close_x)
-        if r.ImGui_Button(ctx, "X", 22, 22) then
+        if r.ImGui_Button(ctx, "X", close_button_size, close_button_size) then
             open = false
         end
 
-        if main_font then r.ImGui_PushFont(ctx, main_font) end
+        if style_loader and style_loader.PushFont(ctx, "main") then
 
         r.ImGui_Separator(ctx)
         local selected_items = {}
@@ -741,11 +808,11 @@ function MainLoop()
         end
         
         local selection_changed = false
-        if #selected_items ~= #config.selected_items then
+        if #selected_items ~= #state.selected_items then
             selection_changed = true
         else
             for i, item in ipairs(selected_items) do
-                if item ~= config.selected_items[i] then
+                if item ~= state.selected_items[i] then
                     selection_changed = true
                     break
                 end
@@ -753,41 +820,40 @@ function MainLoop()
         end
         
         if selection_changed then
-            config.selected_items = selected_items
-            config.common_directory, config.reference_files, config.multiple_directories = getCommonDirectoryAndReferenceFiles()
-            if config.common_directory then
-                config.available_media = scanAvailableMedia(config.common_directory)
-                config.filtered_media = filterMedia(config.available_media, config.search_query)
+            state.selected_items = selected_items
+            state.common_directory, state.reference_files, state.multiple_directories = GetCommonDirectoryAndReferenceFiles()
+            if state.common_directory then
+                state.available_media = ScanAvailableMedia(state.common_directory)
+                state.filtered_media = FilterMedia(state.available_media, config.search_query)
             else
-                config.available_media = {}
-                config.filtered_media = {}
+                state.available_media = {}
+                state.filtered_media = {}
             end
         end
         
-        r.ImGui_Text(ctx, string.format("Selected items: %d", #config.selected_items))
-        if config.multiple_directories then
+        r.ImGui_Text(ctx, string.format("Selected items: %d", #state.selected_items))
+        if state.multiple_directories then
             r.ImGui_Text(ctx, "Directory: <multiple directories>")
-        elseif config.common_directory then
-            r.ImGui_Text(ctx, "Directory: " .. config.common_directory)
+        elseif state.common_directory then
+            r.ImGui_Text(ctx, "Directory: " .. state.common_directory)
         else
             r.ImGui_Text(ctx, "No directory found")
         end
-        r.ImGui_Dummy(ctx, 0, 0)
-        if #config.selected_items > 0 then
+        if #state.selected_items > 0 then
             r.ImGui_Separator(ctx)
             r.ImGui_Text(ctx, "Selected media sources:")
             
-            local list_height = math.min(100, #config.selected_items * 25)
-            if #config.selected_items > 1 then
+            local list_height = math.min(100, #state.selected_items * 25)
+            if #state.selected_items > 1 then
                 r.ImGui_BeginChild(ctx, "ItemsList", -1, list_height, 1)
             end
             
-            for i, item in ipairs(config.selected_items) do
+            for i, item in ipairs(state.selected_items) do
                 local take = r.GetActiveTake(item)
                 if take then
                     local source = r.GetMediaItemTake_Source(take)
                     local filePath = r.GetMediaSourceFileName(source)
-                    local filename = getFilenameFromPath(filePath)
+                    local filename = GetFilenameFromPath(filePath)
                     
                     local takeName = r.GetTakeName(take)
                     r.ImGui_Text(ctx, string.format("%d: %s (%s)", i, takeName, filename))
@@ -800,32 +866,34 @@ function MainLoop()
                 end
             end
             
-            if #config.selected_items > 1 then
+            if #state.selected_items > 1 then
                 r.ImGui_EndChild(ctx)
             end
         end
         
         r.ImGui_Separator(ctx)
         
-        r.ImGui_BeginDisabled(ctx, #config.selected_items == 0)
+        r.ImGui_BeginDisabled(ctx, #state.selected_items == 0)
         
-        if r.ImGui_Button(ctx, "Previous Version", 150, 30) then
-            local updated, errors = updateItemsToPreviousVersion()
-            config.status_message = string.format("Updated %d items to previous version, %d errors", updated, errors)
+        local content_width = r.ImGui_GetContentRegionAvail(ctx)
+        local button_width = (content_width - item_spacing_x * 2) / 3
+        if r.ImGui_Button(ctx, "Previous Version", button_width) then
+            local updated, errors = UpdateItemsToPreviousVersion()
+            state.status_message = string.format("Updated %d items to previous version, %d errors", updated, errors)
         end
         
         r.ImGui_SameLine(ctx)
         
-        if r.ImGui_Button(ctx, "Next Version", 150, 30) then
-            local updated, errors = updateItemsToNextVersion()
-            config.status_message = string.format("Updated %d items to next version, %d errors", updated, errors)
+        if r.ImGui_Button(ctx, "Next Version", button_width) then
+            local updated, errors = UpdateItemsToNextVersion()
+            state.status_message = string.format("Updated %d items to next version, %d errors", updated, errors)
         end
         
         r.ImGui_SameLine(ctx)
         
-        if r.ImGui_Button(ctx, "Rename Source(s)", 150, 30) then
-            local updated, errors = renameSourceFiles()
-            config.status_message = string.format("Renamed %d source files based on item names, %d errors", updated, errors)
+        if r.ImGui_Button(ctx, "Rename Source(s)", button_width) then
+            local updated, errors = RenameSourceFiles()
+            state.status_message = string.format("Renamed %d source files based on item names, %d errors", updated, errors)
         end
         
         if r.ImGui_IsItemHovered(ctx) then
@@ -841,29 +909,12 @@ function MainLoop()
         local adjust_changed
         adjust_changed, config.adjust_item_size = r.ImGui_Checkbox(ctx, "Adjust item size to match source", config.adjust_item_size)
         
-        -- r.ImGui_SameLine(ctx)
-        
         if r.ImGui_IsItemHovered(ctx) then
             r.ImGui_BeginTooltip(ctx)
             r.ImGui_Text(ctx, "When enabled, item length will be adjusted to match the source media length")
             r.ImGui_EndTooltip(ctx)
         end
 
-        -- local project_version = getProjectVersion()
-        -- if project_version then
-        --     r.ImGui_Text(ctx, string.format("Current project version: %d", project_version))
-            
-        --     r.ImGui_BeginDisabled(ctx, #config.selected_items == 0)
-        --     if r.ImGui_Button(ctx, "Sync with Project Version", 200, 30) then
-        --         local updated, errors = syncWithProjectVersion()
-        --         config.status_message = string.format("Synced %d items with project version %d, %d errors", 
-        --                        updated, project_version, errors)
-        --     end
-        --     r.ImGui_EndDisabled(ctx)
-        -- else
-        --     r.ImGui_Text(ctx, "No project version detected")
-        -- end
-        
         r.ImGui_Separator(ctx)
 
         r.ImGui_Text(ctx, "Search media files:")
@@ -872,20 +923,30 @@ function MainLoop()
         search_changed, config.search_query = r.ImGui_InputText(ctx, "##search", config.search_query)
         
         if search_changed then
-            config.filtered_media = filterMedia(config.available_media, config.search_query)
+            state.filtered_media = FilterMedia(state.available_media, config.search_query)
         elseif selection_changed then
-            config.filtered_media = filterMedia(config.available_media, config.search_query)
+            state.filtered_media = FilterMedia(state.available_media, config.search_query)
         end
         
         r.ImGui_Text(ctx, "Available media in directory:")
-        
-        if not config.multiple_directories and #config.available_media > 0 then
-            local display_media = config.search_query ~= "" and config.filtered_media or config.available_media
+        if not state.multiple_directories and #state.available_media > 0 then
+            local display_media = config.search_query ~= "" and state.filtered_media or state.available_media
             
-            if r.ImGui_BeginChild(ctx, "MediaList", -1, 240, 1) then
+            local window_height = r.ImGui_GetWindowHeight(ctx)
+            local cursor_y = r.ImGui_GetCursorPosY(ctx)
+            
+            local status_space = 0
+            if state.status_message ~= "" then
+                local line_height = r.ImGui_GetTextLineHeight(ctx)
+                status_space = line_height + 15
+            end
+            
+            local child_height = window_height - cursor_y - window_padding_y - status_space
+            
+            if r.ImGui_BeginChild(ctx, "MediaList", -1, child_height, 1) then
                 for i, media in ipairs(display_media) do
                     local is_current = false
-                    for _, refFile in ipairs(config.reference_files) do
+                    for _, refFile in ipairs(state.reference_files) do
                         if refFile == media.path then
                             is_current = true
                             break
@@ -897,11 +958,11 @@ function MainLoop()
                     end
                     
                     if r.ImGui_Selectable(ctx, media.name, false) then
-                        local updated, errors = updateToMediaFile(media.path)
-                        config.status_message = string.format("Updated %d items to %s, %d errors", 
+                        local updated, errors = UpdateToMediaFile(media.path)
+                        state.status_message = string.format("Updated %d items to %s, %d errors", 
                                        updated, media.name, errors)
                         
-                        config.common_directory, config.reference_files, config.multiple_directories = getCommonDirectoryAndReferenceFiles()
+                        state.common_directory, state.reference_files, state.multiple_directories = GetCommonDirectoryAndReferenceFiles()
                     end
                     
                     if is_current then
@@ -916,63 +977,70 @@ function MainLoop()
                 end
                 r.ImGui_EndChild(ctx)
             end
-        elseif config.multiple_directories then
+        elseif state.multiple_directories then
             r.ImGui_Text(ctx, "Items from multiple directories selected")
         else
             r.ImGui_Text(ctx, "No media files found")
         end
         
-        if config.status_message ~= "" then
-            r.ImGui_Separator(ctx)
-            r.ImGui_TextWrapped(ctx, config.status_message)
+        if state.status_message ~= "" then
+            r.ImGui_TextWrapped(ctx, state.status_message)
         end
-        if main_font then r.ImGui_PopFont(ctx) end
+        
+        style_loader.PopFont(ctx)
+        end
+        
         r.ImGui_End(ctx)
     end
     
-
+    ClearStyle()
     
-    if sl then sl.clearStyles(ctx, pc, pv) end
+    r.PreventUIRefresh(-1)
     
     if open then
         r.defer(MainLoop)
     else
-        cleanupTempSources()
+        CleanupTempSources()
+        SaveSettings()
+    end
+end
+
+function ToggleScript()
+    local _, _, section_id, command_id = r.get_action_context()
+    local script_state = r.GetToggleCommandState(command_id)
+    
+    if script_state == -1 or script_state == 0 then
+        r.SetToggleCommandState(section_id, command_id, 1)
+        r.RefreshToolbar2(section_id, command_id)
+        Start()
+    else
+        r.SetToggleCommandState(section_id, command_id, 0)
+        r.RefreshToolbar2(section_id, command_id)
+        Stop()
     end
 end
 
 function Start()
+    LoadSettings()
     MainLoop()
 end
 
-function ToggleScript()
-    local _, _, sectionID, cmdID = r.get_action_context()
-    local state = r.GetToggleCommandState(cmdID)
-    
-    if state == -1 or state == 0 then
-        r.SetToggleCommandState(sectionID, cmdID, 1)
-        r.RefreshToolbar2(sectionID, cmdID)
-        Start()
-    else
-        r.SetToggleCommandState(sectionID, cmdID, 0)
-        r.RefreshToolbar2(sectionID, cmdID)
-    end
+function Stop()
+    SaveSettings()
+    Cleanup()
+end
+
+function Cleanup()
+    CleanupTempSources()
+    local _, _, section_id, command_id = r.get_action_context()
+    r.SetToggleCommandState(section_id, command_id, 0)
+    r.RefreshToolbar2(section_id, command_id)
 end
 
 function Exit()
-    cleanupTempSources()
-    
-    local _, _, sectionID, cmdID = r.get_action_context()
-    r.SetToggleCommandState(sectionID, cmdID, 0)
-    r.RefreshToolbar2(sectionID, cmdID)
+    SaveSettings()
+    Cleanup()
 end
 
 r.atexit(Exit)
 ToggleScript()
-
-
-
-
-
-
-

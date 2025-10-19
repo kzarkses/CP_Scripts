@@ -4,427 +4,557 @@
 
 local r = reaper
 
-local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
-if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
+local script_name = "CP_MediaPropertiesToolbar_Settings"
+local style_loader = nil
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
+if r.file_exists(style_loader_path) then 
+    local loader_func = dofile(style_loader_path)
+    if loader_func then 
+        style_loader = loader_func() 
+    end 
+end
 
-if not r.serialize then
-    function r.serialize(tbl)
-        local function serialize_value(value)
-            local vtype = type(value)
-            if vtype == "string" then
-                return string.format("%q", value)
-            elseif vtype == "number" or vtype == "boolean" then
-                return tostring(value)
-            elseif vtype == "table" then
-                return r.serialize(value)
+local ctx = r.ImGui_CreateContext('Media Properties Toolbar Settings')
+local pushed_colors = 0
+local pushed_vars = 0
+
+if style_loader then 
+    style_loader.ApplyFontsToContext(ctx) 
+end
+
+function GetStyleValue(path, default_value)
+    if style_loader then
+        return style_loader.GetValue(path, default_value)
+    end
+    return default_value
+end
+
+function GetFont(font_name)
+    if style_loader then
+        return style_loader.GetFont(ctx, font_name)
+    end
+    return nil
+end
+
+local header_font_size = GetStyleValue("fonts.header.size", 16)
+local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 6)
+local item_spacing_y = GetStyleValue("spacing.item_spacing_y", 6)
+local window_padding_x = GetStyleValue("spacing.window_padding_x", 6)
+local window_padding_y = GetStyleValue("spacing.window_padding_y", 6)
+
+local config = {
+    font_name = "FiraSans-Regular",
+    font_size = 14,
+    entry_height = 20,
+    name_width = 220,
+    source_width = 220,
+    time_unit = "time",
+    text_color_r = 0.70,
+    text_color_g = 0.70,
+    text_color_b = 0.70,
+    text_color_a = 1.0,
+    background_color_r = 0.155,
+    background_color_g = 0.155,
+    background_color_b = 0.155,
+    background_color_a = 1.0,
+    frame_color_r = 0.155,
+    frame_color_g = 0.155,
+    frame_color_b = 0.155,
+    frame_color_a = 1.0,
+    frame_color_active_r = 0.21,
+    frame_color_active_g = 0.7,
+    frame_color_active_b = 0.63,
+    frame_color_active_a = 0.4,
+    text_normal_r = 0.75,
+    text_normal_g = 0.75,
+    text_normal_b = 0.75,
+    text_normal_a = 1.0,
+    text_modified_r = 0.0,
+    text_modified_g = 0.8,
+    text_modified_b = 0.6,
+    text_modified_a = 1.0,
+    text_negative_r = 0.8,
+    text_negative_g = 0.4,
+    text_negative_b = 0.6,
+    text_negative_a = 1.0
+}
+
+local state = {
+    is_open = true,
+    window_position_set = false,
+    debug_info = "",
+    settings_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Media Properties Toolbar/MediaPropertiesToolbar_settings.ini"
+}
+
+function ApplyStyle()
+    if style_loader then
+        local success, colors, vars = style_loader.ApplyToContext(ctx)
+        if success then 
+            pushed_colors = colors
+            pushed_vars = vars
+            return true
+        end
+    end
+    return false
+end
+
+function ClearStyle()
+    if style_loader then 
+        style_loader.ClearStyles(ctx, pushed_colors, pushed_vars)
+    end
+end
+
+function SaveSettings()
+    for key, value in pairs(config) do
+        local value_str = tostring(value)
+        if type(value) == "boolean" then
+            value_str = value and "1" or "0"
+        end
+        r.SetExtState(script_name, "config_" .. key, value_str, true)
+    end
+    SaveToIniFile()
+end
+
+function LoadSettings()
+    for key, default_value in pairs(config) do
+        local saved_value = r.GetExtState(script_name, "config_" .. key)
+        if saved_value ~= "" then
+            if type(default_value) == "number" then
+                config[key] = tonumber(saved_value) or default_value
+            elseif type(default_value) == "boolean" then
+                config[key] = saved_value == "1"
             else
-                return "nil"
+                config[key] = saved_value
             end
         end
-        
-        local result = "{"
-        local comma = false
-        
-        local isArray = true
-        local maxIndex = 0
-        for k, v in pairs(tbl) do
-            if type(k) ~= "number" or k <= 0 or math.floor(k) ~= k then
-                isArray = false
-                break
-            end
-            maxIndex = math.max(maxIndex, k)
-        end
-        
-        if isArray and maxIndex > 0 then
-            for i = 1, maxIndex do
-                if comma then result = result .. "," end
-                result = result .. serialize_value(tbl[i])
-                comma = true
-            end
-        else
-            for k, v in pairs(tbl) do
-                if comma then result = result .. "," end
-                
-                if type(k) == "string" and k:match("^[%a_][%w_]*$") then
-                    result = result .. k .. "="
-                else
-                    result = result .. "[" .. serialize_value(k) .. "]="
+    end
+    LoadFromIniFile()
+end
+
+function SaveToIniFile()
+    local file = io.open(state.settings_path, "w")
+    
+    if not file then
+        r.ShowMessageBox("Unable to save settings to file: " .. state.settings_path, "Error", 0)
+        return
+    end
+    
+    file:write("; Media Properties Toolbar Settings\n")
+    file:write("; Generated by CP_MediaPropertiesToolbar_Settings.lua\n\n")
+    
+    file:write("[font]\n")
+    file:write("name = " .. config.font_name .. "\n")
+    file:write("size = " .. config.font_size .. "\n\n")
+    
+    file:write("[layout]\n")
+    file:write("entry_height = " .. config.entry_height .. "\n")
+    file:write("name_width = " .. config.name_width .. "\n")
+    file:write("source_width = " .. config.source_width .. "\n")
+    file:write("time_unit = " .. config.time_unit .. "\n")
+    file:write("text_color = {" .. config.text_color_r .. "," .. config.text_color_g .. "," .. config.text_color_b .. "," .. config.text_color_a .. "}\n")
+    file:write("background_color = {" .. config.background_color_r .. "," .. config.background_color_g .. "," .. config.background_color_b .. "," .. config.background_color_a .. "}\n")
+    file:write("frame_color = {" .. config.frame_color_r .. "," .. config.frame_color_g .. "," .. config.frame_color_b .. "," .. config.frame_color_a .. "}\n")
+    file:write("frame_color_active = {" .. config.frame_color_active_r .. "," .. config.frame_color_active_g .. "," .. config.frame_color_active_b .. "," .. config.frame_color_active_a .. "}\n\n")
+    
+    file:write("[colors]\n")
+    file:write("text_normal = {" .. config.text_normal_r .. "," .. config.text_normal_g .. "," .. config.text_normal_b .. "," .. config.text_normal_a .. "}\n")
+    file:write("text_modified = {" .. config.text_modified_r .. "," .. config.text_modified_g .. "," .. config.text_modified_b .. "," .. config.text_modified_a .. "}\n")
+    file:write("text_negative = {" .. config.text_negative_r .. "," .. config.text_negative_g .. "," .. config.text_negative_b .. "," .. config.text_negative_a .. "}\n")
+    
+    file:close()
+    r.SetExtState("MediaPropertiesToolbar", "settings_changed", tostring(r.time_precise()), false)
+end
+
+function LoadFromIniFile()
+    local file = io.open(state.settings_path, "r")
+    if not file then
+        return
+    end
+    
+    local section = nil
+    for line in file:lines() do
+        if line:match("^%s*$") or line:match("^%s*;") then
+        elseif line:match("^%[(.+)%]$") then
+            section = line:match("^%[(.+)%]$")
+        elseif line:match("^%s*(.-)%s*=%s*(.-)%s*$") then
+            local key, value = line:match("^%s*(.-)%s*=%s*(.-)%s*$")
+            
+            if section and section == "colors" then
+                if value:match("^{.+}$") then
+                    local values = {}
+                    for v in value:sub(2, -2):gmatch("[^,]+") do
+                        table.insert(values, tonumber(v) or 0)
+                    end
+                    if #values == 4 then
+                        if key == "text_normal" then
+                            config.text_normal_r, config.text_normal_g, config.text_normal_b, config.text_normal_a = values[1], values[2], values[3], values[4]
+                        elseif key == "text_modified" then
+                            config.text_modified_r, config.text_modified_g, config.text_modified_b, config.text_modified_a = values[1], values[2], values[3], values[4]
+                        elseif key == "text_negative" then
+                            config.text_negative_r, config.text_negative_g, config.text_negative_b, config.text_negative_a = values[1], values[2], values[3], values[4]
+                        end
+                    end
                 end
-                
-                result = result .. serialize_value(v)
-                comma = true
+            elseif section and section == "font" then
+                if key == "name" then
+                    config.font_name = value
+                elseif key == "size" then
+                    config.font_size = tonumber(value) or config.font_size
+                end
+            elseif section and section == "layout" then
+                if key == "entry_height" then
+                    config.entry_height = tonumber(value) or config.entry_height
+                elseif key == "name_width" then
+                    config.name_width = tonumber(value) or config.name_width
+                elseif key == "source_width" then
+                    config.source_width = tonumber(value) or config.source_width
+                elseif key == "time_unit" then
+                    if value == "beats" or value == "time" then
+                        config.time_unit = value
+                    end
+                elseif value:match("^{.+}$") then
+                    local values = {}
+                    for v in value:sub(2, -2):gmatch("[^,]+") do
+                        table.insert(values, tonumber(v) or 0)
+                    end
+                    if #values == 4 then
+                        if key == "text_color" then
+                            config.text_color_r, config.text_color_g, config.text_color_b, config.text_color_a = values[1], values[2], values[3], values[4]
+                        elseif key == "background_color" then
+                            config.background_color_r, config.background_color_g, config.background_color_b, config.background_color_a = values[1], values[2], values[3], values[4]
+                        elseif key == "frame_color" then
+                            config.frame_color_r, config.frame_color_g, config.frame_color_b, config.frame_color_a = values[1], values[2], values[3], values[4]
+                        elseif key == "frame_color_active" then
+                            config.frame_color_active_r, config.frame_color_active_g, config.frame_color_active_b, config.frame_color_active_a = values[1], values[2], values[3], values[4]
+                        end
+                    end
+                end
+            else
+                if key == "font_name" then
+                    config.font_name = value
+                elseif key == "font_size" then
+                    config.font_size = tonumber(value) or config.font_size
+                elseif key == "entry_height" then
+                    config.entry_height = tonumber(value) or config.entry_height
+                elseif key == "name_width" then
+                    config.name_width = tonumber(value) or config.name_width
+                elseif key == "source_width" then
+                    config.source_width = tonumber(value) or config.source_width
+                elseif key == "time_unit" then
+                    if value == "beats" or value == "time" then
+                        config.time_unit = value
+                    end
+                elseif value:match("^{.+}$") then
+                    local values = {}
+                    for v in value:sub(2, -2):gmatch("[^,]+") do
+                        table.insert(values, tonumber(v) or 0)
+                    end
+                    if #values == 4 then
+                        if key == "text_color" then
+                            config.text_color_r, config.text_color_g, config.text_color_b, config.text_color_a = values[1], values[2], values[3], values[4]
+                        elseif key == "background_color" then
+                            config.background_color_r, config.background_color_g, config.background_color_b, config.background_color_a = values[1], values[2], values[3], values[4]
+                        elseif key == "frame_color" then
+                            config.frame_color_r, config.frame_color_g, config.frame_color_b, config.frame_color_a = values[1], values[2], values[3], values[4]
+                        elseif key == "frame_color_active" then
+                            config.frame_color_active_r, config.frame_color_active_g, config.frame_color_active_b, config.frame_color_active_a = values[1], values[2], values[3], values[4]
+                        end
+                    end
+                end
             end
         end
-        
-        return result .. "}"
-    end
-end
-
-local ctx = r.ImGui_CreateContext('Project Notes Editor - Settings')
-local pc, pv = 0, 0
-
-if sl then sl.applyFontsToContext(ctx) end
-
-local colors = {
-    bg_color = 0x1a1a1a,
-    text_color = 0xe6e6e6,
-    button_color = 0x333333,
-    button_hover_color = 0x4d4d4d,
-    button_active_color = 0x666666,
-    editor_bg_color = 0x1a1a1a,
-    editor_border_color = 0x808080,
-    selection_color = 0x3874cb,
-}
-
-local color_labels = {
-    {key="bg_color", name="Background"},
-    {key="text_color", name="Text"},
-    {key="button_color", name="Button"},
-    {key="button_hover_color", name="Button Hover"},
-    {key="button_active_color", name="Button Active"},
-    {key="editor_bg_color", name="Editor Background"},
-    {key="editor_border_color", name="Editor Border"},
-    {key="selection_color", name="Text Selection"},
-}
-
-local default_presets = {
-    {
-        name = "Dark",
-        colors = {
-            bg_color = 0x282828,
-            text_color = 0xe6e6e6,
-            button_color = 0x333333,
-            button_hover_color = 0x4d4d4d,
-            button_active_color = 0x666666,
-            editor_bg_color = 0x282828,
-            editor_border_color = 0x808080,
-            selection_color = 0x3874cb
-        }
-    },
-    {
-        name = "Light",
-        colors = {
-            bg_color = 0xf0f0f0,
-            text_color = 0x333333,
-            button_color = 0xdddddd,
-            button_hover_color = 0xcccccc,
-            button_active_color = 0xbbbbbb,
-            editor_bg_color = 0xffffff,
-            editor_border_color = 0x999999,
-            selection_color = 0x0078d4
-        }
-    },
-    {
-        name = "Blue",
-        colors = {
-            bg_color = 0x1e2428,
-            text_color = 0xddeeff,
-            button_color = 0x2d3e50,
-            button_hover_color = 0x34495e,
-            button_active_color = 0x3b526b,
-            editor_bg_color = 0x1e2428,
-            editor_border_color = 0x5a6c7d,
-            selection_color = 0x3498db
-        }
-    },
-    {
-        name = "Green",
-        colors = {
-            bg_color = 0x1a2b1a,
-            text_color = 0xddffdd,
-            button_color = 0x2e4a2e,
-            button_hover_color = 0x3a5a3a,
-            button_active_color = 0x466a46,
-            editor_bg_color = 0x1a2b1a,
-            editor_border_color = 0x5a7a5a,
-            selection_color = 0x27ae60
-        }
-    }
-}
-
-local presets = {}
-local current_preset = "Dark"
-local selected_preset = ""
-local show_preset_rename = false
-local rename_preset_name = ""
-local preset_name_input = "My Custom Preset"
-
-function deepcopy(orig)
-    local orig_type = type(orig)
-    local copy
-    if orig_type == 'table' then
-        copy = {}
-        for orig_key, orig_value in next, orig, nil do
-            copy[deepcopy(orig_key)] = deepcopy(orig_value)
-        end
-        setmetatable(copy, deepcopy(getmetatable(orig)))
-    else
-        copy = orig
-    end
-    return copy
-end
-
-function LoadColors()
-    for _, info in ipairs(color_labels) do
-        local saved = tonumber(r.GetExtState("CP_ProjectNoteEditor", info.key))
-        if saved then colors[info.key] = saved end
     end
     
-    local saved_preset = r.GetExtState("CP_ProjectNoteEditor", "current_preset")
-    if saved_preset ~= "" then current_preset = saved_preset end
+    file:close()
+end
+
+function ArrayToImGuiColor(r, g, b)
+    local r_int = math.floor(r * 255)
+    local g_int = math.floor(g * 255)
+    local b_int = math.floor(b * 255)
+    return (r_int << 16) | (g_int << 8) | b_int
+end
+
+function ImGuiColorToArray(color)
+    local r = ((color >> 16) & 0xFF) / 255
+    local g = ((color >> 8) & 0xFF) / 255
+    local b = (color & 0xFF) / 255
+    return r, g, b
+end
+
+function EditColor(label, r_key, g_key, b_key, a_key)
+    local color_value = ArrayToImGuiColor(config[r_key], config[g_key], config[b_key])
+    local rv, new_color = r.ImGui_ColorEdit3(ctx, label, color_value)
     
-    local saved_presets = r.GetExtState("CP_ProjectNoteEditor", "presets")
-    if saved_presets ~= "" then
-        local success, loaded_presets = pcall(function() return load("return " .. saved_presets)() end)
-        if success and loaded_presets then
-            presets = loaded_presets
-        end
-    end
-    
-    if not presets["Dark"] then
-        for _, preset in ipairs(default_presets) do
-            presets[preset.name] = deepcopy(preset.colors)
-        end
-    end
-end
-
-function SaveColors()
-    for _, info in ipairs(color_labels) do
-        r.SetExtState("CP_ProjectNoteEditor", info.key, tostring(colors[info.key]), true)
-    end
-    
-    r.SetExtState("CP_ProjectNoteEditor", "current_preset", current_preset, true)
-    
-    local serialized_presets = r.serialize(presets)
-    r.SetExtState("CP_ProjectNoteEditor", "presets", serialized_presets, true)
-end
-
-function SavePreset(name)
-    if name == "" then return end
-    presets[name] = deepcopy(colors)
-    SaveColors()
-end
-
-function LoadPreset(name)
-    if presets[name] then
-        colors = deepcopy(presets[name])
-        current_preset = name
-        SaveColors()
-    end
-end
-
-function DeletePreset(name)
-    if presets[name] and name ~= "Dark" then
-        presets[name] = nil
-        if current_preset == name then
-            current_preset = "Dark"
-        end
-        SaveColors()
-    end
-end
-
-function RenamePreset(old_name, new_name)
-    if presets[old_name] and new_name ~= "" and old_name ~= new_name and old_name ~= "Dark" then
-        presets[new_name] = presets[old_name]
-        presets[old_name] = nil
-        if current_preset == old_name then
-            current_preset = new_name
-        end
-        SaveColors()
-    end
-end
-
-function ApplyPreset(name)
-    if presets[name] then
-        colors = deepcopy(presets[name])
-        current_preset = name
-        SaveColors()
-    end
-end
-
-function ColorToImGui(color)
-    local r = (color >> 24) & 0xFF
-    local g = (color >> 16) & 0xFF
-    local b = (color >> 8) & 0xFF
-    return (r << 16) | (g << 8) | b
-end
-
-function ImGuiToColor(color)
-    local r = (color >> 16) & 0xFF
-    local g = (color >> 8) & 0xFF
-    local b = color & 0xFF
-    return (r << 24) | (g << 16) | (b << 8) | 0xFF
-end
-
-function loop()
-    LoadColors()
-    
-    if sl then
-        local success, color_count, var_count = sl.applyToContext(ctx)
-        if success then pc, pv = color_count, var_count end
+    if rv then
+        config[r_key], config[g_key], config[b_key] = ImGuiColorToArray(new_color)
+        return true
     end
     
-    local main_font = sl and sl.getFont(ctx, "main")
-    local header_font = sl and sl.getFont(ctx, "header")
+    return false
+end
+
+function ResetToDefaults()
+    config.font_name = "FiraSans-Regular"
+    config.font_size = 14
+    config.entry_height = 20
+    config.name_width = 220
+    config.source_width = 220
+    config.time_unit = "time"
+    config.text_color_r = 0.70
+    config.text_color_g = 0.70
+    config.text_color_b = 0.70
+    config.text_color_a = 1.0
+    config.background_color_r = 0.155
+    config.background_color_g = 0.155
+    config.background_color_b = 0.155
+    config.background_color_a = 1.0
+    config.frame_color_r = 0.155
+    config.frame_color_g = 0.155
+    config.frame_color_b = 0.155
+    config.frame_color_a = 1.0
+    config.frame_color_active_r = 0.21
+    config.frame_color_active_g = 0.7
+    config.frame_color_active_b = 0.63
+    config.frame_color_active_a = 0.4
+    config.text_normal_r = 0.75
+    config.text_normal_g = 0.75
+    config.text_normal_b = 0.75
+    config.text_normal_a = 1.0
+    config.text_modified_r = 0.0
+    config.text_modified_g = 0.8
+    config.text_modified_b = 0.6
+    config.text_modified_a = 1.0
+    config.text_negative_r = 0.8
+    config.text_negative_g = 0.4
+    config.text_negative_b = 0.6
+    config.text_negative_a = 1.0
+end
+
+function MainLoop()
+    ApplyStyle()
     
     local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
-    local visible, open = r.ImGui_Begin(ctx, 'Project Notes Editor - Settings', true, window_flags)
-    
+    local visible, open = r.ImGui_Begin(ctx, 'Media Properties Toolbar Settings', true, window_flags)
     if visible then
-        if header_font then r.ImGui_PushFont(ctx, header_font) end
-        r.ImGui_Text(ctx, "Project Notes Editor - Settings")
-        if header_font then r.ImGui_PopFont(ctx) end
-        if main_font then r.ImGui_PushFont(ctx, main_font) end
-        
+        if style_loader and style_loader.PushFont(ctx, "header") then
+            r.ImGui_Text(ctx, "Media Properties Toolbar Settings")
+            style_loader.PopFont(ctx)
+        else
+            r.ImGui_Text(ctx, "Media Properties Toolbar Settings")
+        end
+
         r.ImGui_SameLine(ctx)
-        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
-        r.ImGui_SetCursorPosX(ctx, close_x)
-        if r.ImGui_Button(ctx, "X", 22, 22) then
+        
+        local close_button_size = header_font_size + 6
+        local save_button_width = 60
+        local buttons_width = save_button_width + close_button_size + item_spacing_x
+        local save_x = r.ImGui_GetWindowWidth(ctx) - buttons_width - window_padding_x
+
+        r.ImGui_SetCursorPosX(ctx, save_x)
+        if r.ImGui_Button(ctx, "Save", save_button_width, close_button_size) then
+            SaveSettings()
+            state.debug_info = "Settings saved"
+        end
+
+        r.ImGui_SameLine(ctx)
+        if r.ImGui_Button(ctx, "X", close_button_size, close_button_size) then
             open = false
+        end
+
+        if style_loader and style_loader.PushFont(ctx, "main") then
+            r.ImGui_Separator(ctx)
+        
+        r.ImGui_TextWrapped(ctx, "Main Colors")
+        
+        local changed = false
+        changed = EditColor("Background Color", "background_color_r", "background_color_g", "background_color_b", "background_color_a") or changed
+        changed = EditColor("Frame Color", "frame_color_r", "frame_color_g", "frame_color_b", "frame_color_a") or changed
+        changed = EditColor("Text Color", "text_color_r", "text_color_g", "text_color_b", "text_color_a") or changed
+        
+        if changed then
+            SaveSettings()
         end
         
         r.ImGui_Separator(ctx)
-        r.ImGui_Spacing(ctx)
         
-        if r.ImGui_BeginTabBar(ctx, "SettingsTabs") then
-            if r.ImGui_BeginTabItem(ctx, "Themes") then
-                r.ImGui_Spacing(ctx)
-                r.ImGui_Text(ctx, "Choose a preset theme:")
-                r.ImGui_Spacing(ctx)
-                
-                for name, preset_colors in pairs(presets) do
-                    if r.ImGui_Button(ctx, name, 120, 25) then
-                        ApplyPreset(name)
-                        selected_preset = name
-                    end
-                    r.ImGui_SameLine(ctx)
-                end
-                r.ImGui_NewLine(ctx)
-                
-                r.ImGui_Spacing(ctx)
-                r.ImGui_Separator(ctx)
-                r.ImGui_Spacing(ctx)
-                
-                r.ImGui_Text(ctx, "Current Preset: " .. current_preset)
-                r.ImGui_Spacing(ctx)
-                
-                r.ImGui_Text(ctx, "Custom Presets:")
-                r.ImGui_Spacing(ctx)
-                
-                if r.ImGui_Button(ctx, "Save", 80) then
-                    SavePreset(current_preset)
-                end
-                
-                r.ImGui_SameLine(ctx)
-                r.ImGui_SetNextItemWidth(ctx, 200)
-                local rv, new_name = r.ImGui_InputText(ctx, "Preset Name", preset_name_input)
-                if rv then preset_name_input = new_name end
-                
-                r.ImGui_SameLine(ctx)
-                if r.ImGui_Button(ctx, "Save As", 80) then
-                    if preset_name_input and preset_name_input ~= "" then
-                        SavePreset(preset_name_input)
-                        current_preset = preset_name_input
-                        preset_name_input = ""
-                    end
-                end
-                
-                r.ImGui_Spacing(ctx)
-                
-                if r.ImGui_BeginChild(ctx, "PresetList", -1, 120) then
-                    for name, _ in pairs(presets) do
-                        r.ImGui_PushID(ctx, name)
-                        if r.ImGui_Button(ctx, name, 150, 25) then
-                            LoadPreset(name)
-                            selected_preset = name
-                        end
-                        r.ImGui_SameLine(ctx)
-                        if name ~= "Dark" then
-                            if r.ImGui_Button(ctx, "R", 25, 25) then
-                                show_preset_rename = true
-                                rename_preset_name = name
-                                selected_preset = name
-                            end
-                            r.ImGui_SameLine(ctx)
-                            if r.ImGui_Button(ctx, "X", 25, 25) then
-                                DeletePreset(name)
-                            end
-                        end
-                        r.ImGui_PopID(ctx)
-                    end
-                    r.ImGui_EndChild(ctx)
-                end
-                
-                if show_preset_rename then
-                    r.ImGui_OpenPopup(ctx, "Rename Preset")
-                end
-                
-                if r.ImGui_BeginPopupModal(ctx, "Rename Preset", nil, r.ImGui_WindowFlags_AlwaysAutoResize()) then
-                    local changed, new_name = r.ImGui_InputText(ctx, "New Name", rename_preset_name)
-                    if changed then rename_preset_name = new_name end
-                    
-                    if r.ImGui_Button(ctx, "OK", 120, 0) then
-                        RenamePreset(selected_preset, rename_preset_name)
-                        show_preset_rename = false
-                        r.ImGui_CloseCurrentPopup(ctx)
-                    end
-                    r.ImGui_SameLine(ctx)
-                    if r.ImGui_Button(ctx, "Cancel", 120, 0) then
-                        show_preset_rename = false
-                        r.ImGui_CloseCurrentPopup(ctx)
-                    end
-                    r.ImGui_EndPopup(ctx)
-                end
-                
-                r.ImGui_EndTabItem(ctx)
-            end
-            
-            if r.ImGui_BeginTabItem(ctx, "Colors") then
-                r.ImGui_Spacing(ctx)
-                
-                for _, info in ipairs(color_labels) do
-                    local imgui_color = ColorToImGui(colors[info.key])
-                    local changed, new_color = r.ImGui_ColorEdit3(ctx, info.name, imgui_color)
-                    if changed then
-                        colors[info.key] = ImGuiToColor(new_color)
-                        SaveColors()
-                    end
-                end
-                
-                r.ImGui_EndTabItem(ctx)
-            end
-            
-            r.ImGui_EndTabBar(ctx)
+        r.ImGui_TextWrapped(ctx, "Value Colors")
+        
+        local color_changed = false
+        color_changed = EditColor("Normal Values", "text_normal_r", "text_normal_g", "text_normal_b", "text_normal_a") or color_changed
+        color_changed = EditColor("Modified Values", "text_modified_r", "text_modified_g", "text_modified_b", "text_modified_a") or color_changed
+        color_changed = EditColor("Negative Values", "text_negative_r", "text_negative_g", "text_negative_b", "text_negative_a") or color_changed
+        
+        if color_changed then
+            SaveSettings()
+            r.SetExtState("MediaPropertiesToolbar", "settings_changed", tostring(r.time_precise()), false)
         end
         
-        if main_font then r.ImGui_PopFont(ctx) end
+        r.ImGui_Separator(ctx)
+
+        r.ImGui_TextWrapped(ctx, "Font and Layout (requires restart)")
+        
+        local layout_changed = false
+        
+        local combo_width = GetStyleValue("controls.combo_width", 200)
+        r.ImGui_SetNextItemWidth(ctx, combo_width)
+        if r.ImGui_BeginCombo(ctx, "Font Name", config.font_name) then
+            local fonts = {
+                "Arial", "Verdana", "Tahoma", "Segoe UI", 
+                "FiraSans-Regular", "Consolas", "Courier New",
+                "Roboto", "sans-serif", "serif", "monospace"
+            }
+            
+            for _, font_name in ipairs(fonts) do
+                local is_selected = (config.font_name == font_name)
+                if r.ImGui_Selectable(ctx, font_name, is_selected) then
+                    config.font_name = font_name
+                    layout_changed = true
+                end
+                
+                if is_selected then
+                    r.ImGui_SetItemDefaultFocus(ctx)
+                end
+            end
+            
+            r.ImGui_EndCombo(ctx)
+        end
+        local content_width = r.ImGui_GetContentRegionAvail(ctx)
+        local slider_width = content_width - 100
+        r.ImGui_SetNextItemWidth(ctx, slider_width)
+        local rv, new_size = r.ImGui_SliderInt(ctx, "Font Size", config.font_size, 8, 24)
+        if rv then
+            config.font_size = new_size
+            layout_changed = true
+        end
+        
+        r.ImGui_SetNextItemWidth(ctx, slider_width)
+        local rv, new_height = r.ImGui_SliderInt(ctx, "Row Height", config.entry_height, 16, 40)
+        if rv then
+            config.entry_height = new_height
+            layout_changed = true
+        end
+        
+        r.ImGui_SetNextItemWidth(ctx, slider_width)
+        local rv, new_width = r.ImGui_SliderInt(ctx, "Name Width", config.name_width, 120, 400)
+        if rv then
+            config.name_width = new_width
+            layout_changed = true
+        end
+        
+        r.ImGui_SetNextItemWidth(ctx, slider_width)
+        local rv, new_width = r.ImGui_SliderInt(ctx, "Source Width", config.source_width, 120, 400)
+        if rv then
+            config.source_width = new_width
+            layout_changed = true
+        end
+        
+        r.ImGui_SetNextItemWidth(ctx, combo_width)
+        if r.ImGui_BeginCombo(ctx, "Time Display", config.time_unit == "beats" and "Beats (Bars.Beats.Ticks)" or "Time (Min:Sec.Ms)") then
+            local time_options = {
+                {value = "time", label = "Time (Min:Sec.Ms)"},
+                {value = "beats", label = "Beats (Bars.Beats.Ticks)"}
+            }
+            
+            for _, option in ipairs(time_options) do
+                local is_selected = (config.time_unit == option.value)
+                if r.ImGui_Selectable(ctx, option.label, is_selected) then
+                    config.time_unit = option.value
+                    layout_changed = true
+                end
+                
+                if is_selected then
+                    r.ImGui_SetItemDefaultFocus(ctx)
+                end
+            end
+            
+            r.ImGui_EndCombo(ctx)
+        end
+        
+        if layout_changed then
+            SaveSettings()
+            r.SetExtState("MediaPropertiesToolbar", "layout_changed", "1", false)
+        end
+        
+        
+
+        r.ImGui_Separator(ctx)
+        
+        local item_spacing_x = GetStyleValue("item_spacing_x", 6)
+        local button_width = (content_width - item_spacing_x) / 2
+
+        if r.ImGui_Button(ctx, "Reset to Defaults", button_width) then
+            ResetToDefaults()
+            SaveSettings()
+            r.SetExtState("MediaPropertiesToolbar", "settings_changed", tostring(r.time_precise()), false)
+            r.ShowMessageBox("Settings reset to defaults. Value colors will update immediately, other changes require restarting the toolbar.", "Settings Reset", 0)
+        end
+        
+        r.ImGui_SameLine(ctx)
+        
+        if r.ImGui_Button(ctx, "Apply All & Restart Toolbar", button_width) then
+            SaveSettings()
+            r.SetExtState("MediaPropertiesToolbar", "layout_changed", "1", false)
+            r.ShowMessageBox("Settings applied! The toolbar will attempt to restart itself.", "Settings Applied", 0)
+        end
+        
+        -- if state.debug_info ~= "" then
+        --     r.ImGui_Dummy(ctx, 0, item_spacing_y)
+        --     r.ImGui_Text(ctx, state.debug_info)
+        -- end
+        
+        style_loader.PopFont(ctx)
+        end
+        
         r.ImGui_End(ctx)
     end
     
-    if sl then sl.clearStyles(ctx, pc, pv) end
+    ClearStyle()
+    
+    r.PreventUIRefresh(-1)
     
     if open then
-        r.defer(loop)
+        r.defer(MainLoop)
     else
-        SaveColors()
+        SaveSettings()
     end
 end
 
-function init()
-    LoadColors()
-    r.ImGui_SetNextWindowPos(ctx, 200, 200, r.ImGui_Cond_FirstUseEver())
-    r.ImGui_SetNextWindowSize(ctx, 400, 500, r.ImGui_Cond_FirstUseEver())
-    loop()
+function ToggleScript()
+    local _, _, section_id, command_id = r.get_action_context()
+    local script_state = r.GetToggleCommandState(command_id)
+    
+    if script_state == -1 or script_state == 0 then
+        r.SetToggleCommandState(section_id, command_id, 1)
+        r.RefreshToolbar2(section_id, command_id)
+        Start()
+    else
+        r.SetToggleCommandState(section_id, command_id, 0)
+        r.RefreshToolbar2(section_id, command_id)
+        Stop()
+    end
 end
 
-init()
+function Start()
+    LoadSettings()
+    MainLoop()
+end
 
+function Stop()
+    SaveSettings()
+    Cleanup()
+end
 
+function Cleanup()
+    local _, _, section_id, command_id = r.get_action_context()
+    r.SetToggleCommandState(section_id, command_id, 0)
+    r.RefreshToolbar2(section_id, command_id)
+end
 
+function Exit()
+    SaveSettings()
+    Cleanup()
+end
 
-
-
-
-
-
+r.atexit(Exit)
+ToggleScript()

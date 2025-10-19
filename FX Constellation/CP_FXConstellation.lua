@@ -1,38 +1,61 @@
 -- @description FXConstellation
--- @version 1.0
+-- @version 1.0.1
 -- @author Cedric Pamalio
 
 local r = reaper
-local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
-if r.file_exists(sp) then
-  local lf = dofile(sp)
-  if lf then sl = lf() end
+
+local script_name = "CP_FXConstellation"
+local style_loader = nil
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
+if r.file_exists(style_loader_path) then 
+    local loader_func = dofile(style_loader_path)
+    if loader_func then 
+        style_loader = loader_func() 
+    end 
 end
+
 local ctx = r.ImGui_CreateContext('FX Constellation')
-
-if sl then
-  sl.applyFontsToContext(ctx)
-end
-
 local filters_ctx = nil
 local presets_ctx = nil
-local pc, pv = 0, 0
-local filters_pc, filters_pv = 0, 0
-local presets_pc, presets_pv = 0, 0
+
+local pushed_colors = 0
+local filters_pushed_colors = 0
+local presets_pushed_colors = 0
+
+local pushed_vars = 0
+local filters_pushed_vars = 0
+local presets_pushed_vars = 0
+
+if style_loader then
+  style_loader.ApplyFontsToContext(ctx)
+end
+
+function GetStyleValue(path, default_value)
+  if style_loader then
+    return style_loader.GetValue(path, default_value)
+  end
+  return default_value
+end
 
 function getStyleFont(font_name, context)
-  if sl then
-    return sl.getFont(context or ctx, font_name)
+  if style_loader then
+    return style_loader.getFont(context or ctx, font_name)
   end
   return nil
 end
+
+local header_font_size = GetStyleValue("fonts.header.size", 16)
+local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 6)
+local item_spacing_y = GetStyleValue("spacing.item_spacing_y", 6)
+local window_padding_x = GetStyleValue("spacing.window_padding_x", 6)
+local window_padding_y = GetStyleValue("spacing.window_padding_y", 6)
 
 local save_flags = {
   settings = false,
   track_selections = false,
   presets = false,
-  granular_sets = false
+  granular_sets = false,
+  snapshots = false
 }
 
 local state = {
@@ -69,7 +92,7 @@ local state = {
   param_xy_assign = {},
   param_invert = {},
   gesture_active = false,
-  gesture_range = 0.5,
+  gesture_range = 1.0,
   exclusive_xy = false,
   last_random_seed = os.time(),
   needs_save = false,
@@ -105,6 +128,9 @@ local state = {
   granular_grains = {},
   granular_sets = {},
   granular_set_name = "GrainSet1",
+  snapshots = {},
+  snapshot_name = "Snapshot1",
+  show_snapshots = false,
   random_bypass_percentage = 0.3,
   layout_mode = 0,
   fx_collapsed = {},
@@ -120,11 +146,41 @@ local state = {
   figures_speed = 1.0,
   figures_size = 0.5,
   figures_time = 0,
-  figures_active = false
+  figures_active = false,
+  click_offset_x = 0,
+  click_offset_y = 0,
+  track_locked = false,
+  locked_track = nil,
+  current_loaded_preset = ""
 }
 
 local navigation_modes = { "Manual", "Random Walk", "Figures" }
-local figures_modes = { "Circle", "Z" }
+local figures_modes = { "Circle", "Square", "Triangle", "Diamond", "Z", "Infinity" }
+
+function getParamKey(fx_id, param_id, suffix)
+  local guid = getTrackGUID()
+  if not guid or not state.fx_data[fx_id] or not state.fx_data[fx_id].params[param_id] then 
+    return nil 
+  end
+  local fx_name = state.fx_data[fx_id].full_name
+  local param_name = state.fx_data[fx_id].params[param_id].name
+  local key = guid .. "_" .. fx_name .. "||" .. param_name
+  if suffix then
+    key = key .. "_" .. suffix
+  end
+  return key
+end
+
+function getFXKey(fx_id, suffix)
+  local guid = getTrackGUID()
+  if not guid or not state.fx_data[fx_id] then return nil end
+  local fx_name = state.fx_data[fx_id].full_name
+  local key = guid .. "_" .. fx_name
+  if suffix then
+    key = key .. "_" .. suffix
+  end
+  return key
+end
 
 function isTrackValid()
   if not state.track then return false end
@@ -209,7 +265,8 @@ function applyGranularGesture(gx, gy)
           if grain.param_values and grain.param_values[fx_id] then
             for param_id, value in pairs(grain.param_values[fx_id]) do
               if value and weighted_param_values[fx_id][param_id] then
-                weighted_param_values[fx_id][param_id] = weighted_param_values[fx_id][param_id] + (value * influence)
+                weighted_param_values[fx_id][param_id] = weighted_param_values[fx_id][param_id] +
+                (value * influence)
               end
             end
           end
@@ -223,8 +280,14 @@ function applyGranularGesture(gx, gy)
       for param_id, param_data in pairs(fx_data.params) do
         if param_data.selected and weighted_param_values[fx_id][param_id] then
           local final_value = weighted_param_values[fx_id][param_id] / total_weights[fx_id]
-          r.TrackFX_SetParam(state.track, fx_id, param_id, final_value)
+          local actual_fx_id = fx_data.actual_fx_id or fx_id
+          r.TrackFX_SetParam(state.track, actual_fx_id, param_id, final_value)
           param_data.current_value = final_value
+          param_data.base_value = final_value
+          local key = getParamKey(fx_id, param_id)
+          if key then
+            state.param_base_values[key] = final_value
+          end
         end
       end
     end
@@ -277,6 +340,139 @@ function deleteGranularSet(name)
   if state.granular_sets[name] then
     state.granular_sets[name] = nil
     scheduleSave()
+  end
+end
+
+function saveSnapshot(name)
+  if name == "" or not isTrackValid() then return end
+  
+  local fx_sig = getCurrentFXChainSignature()
+  if not fx_sig then return end
+  
+  if not state.snapshots[fx_sig] then
+    state.snapshots[fx_sig] = {}
+  end
+  
+  local snapshot = {
+    gesture_x = state.gesture_x,
+    gesture_y = state.gesture_y,
+    gesture_base_x = state.gesture_base_x,
+    gesture_base_y = state.gesture_base_y,
+    fx_list = {},
+    param_data = {}
+  }
+  
+  for fx_id, fx_data in pairs(state.fx_data) do
+    table.insert(snapshot.fx_list, fx_data.full_name)
+    
+    for param_id, param_data in pairs(fx_data.params) do
+      if param_data.selected then
+        local key = fx_data.full_name .. "||" .. param_data.name
+        local x_assign, y_assign = getParamXYAssign(fx_id, param_id)
+        snapshot.param_data[key] = {
+          base_value = param_data.base_value,
+          range = getParamRange(fx_id, param_id),
+          x_assign = x_assign,
+          y_assign = y_assign,
+          invert = getParamInvert(fx_id, param_id),
+          selected = true
+        }
+      end
+    end
+  end
+  
+  state.snapshots[fx_sig][name] = snapshot
+  scheduleSnapshotSave()
+end
+
+function loadSnapshot(name)
+  if not isTrackValid() then return end
+  
+  local fx_sig = getCurrentFXChainSignature()
+  if not fx_sig or not state.snapshots[fx_sig] or not state.snapshots[fx_sig][name] then return end
+  
+  local snapshot = state.snapshots[fx_sig][name]
+  local current_fx_list = {}
+  
+  for fx_id, fx_data in pairs(state.fx_data) do
+    table.insert(current_fx_list, fx_data.full_name)
+  end
+  
+  local fx_match = true
+  if #current_fx_list ~= #snapshot.fx_list then
+    fx_match = false
+  else
+    for i, fx_name in ipairs(snapshot.fx_list) do
+      if current_fx_list[i] ~= fx_name then
+        fx_match = false
+        break
+      end
+    end
+  end
+  
+  if not fx_match then
+    local msg = "FX Constellation - Snapshot Warning:\n\n"
+    msg = msg .. "The current FX chain does not match the saved snapshot.\n\n"
+    msg = msg .. "Expected FX:\n"
+    for i, fx_name in ipairs(snapshot.fx_list) do
+      msg = msg .. "  " .. i .. ". " .. fx_name .. "\n"
+    end
+    msg = msg .. "\nCurrent FX:\n"
+    for i, fx_name in ipairs(current_fx_list) do
+      msg = msg .. "  " .. i .. ". " .. fx_name .. "\n"
+    end
+    msg = msg .. "\nDo you want to load the snapshot anyway?\n"
+    msg = msg .. "(Parameters will be matched by FX and parameter names)"
+    
+    local result = r.ShowMessageBox(msg, "FX Constellation - Snapshot Mismatch", 4)
+    if result == 7 then
+      return
+    end
+  end
+  
+  r.Undo_BeginBlock()
+  
+  state.gesture_x = snapshot.gesture_x or 0.5
+  state.gesture_y = snapshot.gesture_y or 0.5
+  state.gesture_base_x = snapshot.gesture_base_x or 0.5
+  state.gesture_base_y = snapshot.gesture_base_y or 0.5
+  updateJSFXFromGesture()
+  
+  for fx_id, fx_data in pairs(state.fx_data) do
+    for param_id, param_data in pairs(fx_data.params) do
+      local key = fx_data.full_name .. "||" .. param_data.name
+      local saved_param = snapshot.param_data[key]
+      
+      if saved_param then
+        param_data.selected = saved_param.selected or false
+        param_data.base_value = saved_param.base_value or param_data.current_value
+        
+        local actual_fx_id = fx_data.actual_fx_id or fx_id
+        r.TrackFX_SetParam(state.track, actual_fx_id, param_id, param_data.base_value)
+        param_data.current_value = param_data.base_value
+        
+        setParamRange(fx_id, param_id, saved_param.range or 1.0)
+        setParamXYAssign(fx_id, param_id, "x", saved_param.x_assign)
+        setParamXYAssign(fx_id, param_id, "y", saved_param.y_assign)
+        setParamInvert(fx_id, param_id, saved_param.invert or false)
+      end
+    end
+  end
+  
+  r.Undo_EndBlock("Load FX Constellation snapshot: " .. name, -1)
+  updateSelectedCount()
+  captureBaseValues()
+  saveTrackSelection()
+end
+
+function deleteSnapshot(name)
+  local fx_sig = getCurrentFXChainSignature()
+  if fx_sig and state.snapshots[fx_sig] and state.snapshots[fx_sig][name] then
+    state.snapshots[fx_sig][name] = nil
+    if not next(state.snapshots[fx_sig]) then
+      state.snapshots[fx_sig] = nil
+    end
+    scheduleSnapshotSave()
   end
 end
 
@@ -369,6 +565,11 @@ function loadSettings()
     state.granular_sets = deserialize(saved_granular_sets) or {}
   end
 
+  local saved_snapshots = r.GetExtState("CP_FXConstellation", "snapshots")
+  if saved_snapshots ~= "" then
+    state.snapshots = deserialize(saved_snapshots) or {}
+  end
+
   local saved_presets = r.GetExtState("CP_FXConstellation", "presets")
   if saved_presets ~= "" then
     state.presets = deserialize(saved_presets) or {}
@@ -395,6 +596,10 @@ function scheduleGranularSave()
   save_flags.granular_sets = true
 end
 
+function scheduleSnapshotSave()
+  save_flags.snapshots = true
+end
+
 function calculateFiguresPosition(time)
   local angle = time * state.figures_speed * 2 * math.pi
   local size = state.figures_size
@@ -405,16 +610,93 @@ function calculateFiguresPosition(time)
     return x, y
   elseif state.figures_mode == 1 then
     local progress = (angle / (2 * math.pi)) % 1
+    local half_size = size * 0.5
     local x, y
-    if progress < 0.5 then
-      local t = progress * 2
-      x = 0.5 - (size * 0.5) + t * size
-      y = 0.5 + (size * 0.5) - t * size
+    if progress < 0.25 then
+      local t = progress * 4
+      x = 0.5 - half_size + t * size
+      y = 0.5 - half_size
+    elseif progress < 0.5 then
+      local t = (progress - 0.25) * 4
+      x = 0.5 + half_size
+      y = 0.5 - half_size + t * size
+    elseif progress < 0.75 then
+      local t = (progress - 0.5) * 4
+      x = 0.5 + half_size - t * size
+      y = 0.5 + half_size
     else
-      local t = (progress - 0.5) * 2
-      x = 0.5 + (size * 0.5) - t * size
-      y = 0.5 - (size * 0.5) + t * size
+      local t = (progress - 0.75) * 4
+      x = 0.5 - half_size
+      y = 0.5 + half_size - t * size
     end
+    return math.max(0, math.min(1, x)), math.max(0, math.min(1, y))
+  elseif state.figures_mode == 2 then
+    local progress = (angle / (2 * math.pi)) % 1
+    local half_size = size * 0.5
+    local x, y
+    if progress < 0.33 then
+      local t = progress * 3
+      x = 0.5
+      y = 0.5 - half_size + t * half_size
+    elseif progress < 0.66 then
+      local t = (progress - 0.33) * 3
+      x = 0.5 - t * size
+      y = 0.5 + half_size
+    else
+      local t = (progress - 0.66) * 3
+      x = 0.5 - half_size + t * size
+      y = 0.5 + half_size - t * half_size
+    end
+    return math.max(0, math.min(1, x)), math.max(0, math.min(1, y))
+  elseif state.figures_mode == 3 then
+    local progress = (angle / (2 * math.pi)) % 1
+    local half_size = size * 0.5
+    local x, y
+    if progress < 0.25 then
+      local t = progress * 4
+      x = 0.5 - half_size + t * half_size
+      y = 0.5 + t * half_size
+    elseif progress < 0.5 then
+      local t = (progress - 0.25) * 4
+      x = 0.5 + t * half_size
+      y = 0.5 + half_size - t * half_size
+    elseif progress < 0.75 then
+      local t = (progress - 0.5) * 4
+      x = 0.5 + half_size - t * half_size
+      y = 0.5 - t * half_size
+    else
+      local t = (progress - 0.75) * 4
+      x = 0.5 - t * half_size
+      y = 0.5 - half_size + t * half_size
+    end
+    return math.max(0, math.min(1, x)), math.max(0, math.min(1, y))
+  elseif state.figures_mode == 4 then
+    local progress = (angle / (2 * math.pi)) % 1
+    local half_size = size * 0.5
+    local x, y
+    if progress < 0.25 then
+      local t = progress * 4
+      x = 0.5 - half_size + t * size
+      y = 0.5 + half_size
+    elseif progress < 0.5 then
+      local t = (progress - 0.25) * 4
+      x = 0.5 + half_size - t * size
+      y = 0.5 + half_size - t * size
+    elseif progress < 0.75 then
+      local t = (progress - 0.5) * 4
+      x = 0.5 - half_size + t * size
+      y = 0.5 - half_size
+    else
+      local t = (progress - 0.75) * 4
+      x = 0.5 + half_size - t * size
+      y = 0.5 - half_size + t * size
+    end
+    return math.max(0, math.min(1, x)), math.max(0, math.min(1, y))
+  elseif state.figures_mode == 5 then
+    local a = 0.5
+    local scale = size * 0.4
+    local x = 0.5 + scale * math.sin(angle) / (1 + math.cos(angle) * math.cos(angle))
+    local y = 0.5 + scale * math.sin(angle) * math.cos(angle) / (1 + math.cos(angle) * math.cos(angle))
     return math.max(0, math.min(1, x)), math.max(0, math.min(1, y))
   end
 
@@ -599,7 +881,8 @@ function updateGestureMotion()
       local dy = state.target_gesture_y - state.gesture_y
       local distance = math.sqrt(dx * dx + dy * dy)
       if distance > 0.001 then
-        local max_distance = state.max_gesture_speed * (current_time - (state.last_smooth_update or current_time))
+        local max_distance = state.max_gesture_speed *
+        (current_time - (state.last_smooth_update or current_time))
         if distance > max_distance then
           dx = dx / distance * max_distance
           dy = dy / distance * max_distance
@@ -622,12 +905,13 @@ end
 
 function checkSave()
   if r.time_precise() > state.save_timer then
-    if save_flags.settings or save_flags.track_selections or save_flags.presets or save_flags.granular_sets then
+    if save_flags.settings or save_flags.track_selections or save_flags.presets or save_flags.granular_sets or save_flags.snapshots then
       saveSettings()
       save_flags.settings = false
       save_flags.track_selections = false
       save_flags.presets = false
       save_flags.granular_sets = false
+      save_flags.snapshots = false
       state.save_cooldown = r.time_precise()
     end
   end
@@ -667,7 +951,8 @@ function saveSettings()
       figures_speed = state.figures_speed,
       figures_size = state.figures_size,
       save_fx_chain = state.save_fx_chain,
-      jsfx_automation_enabled = state.jsfx_automation_enabled
+      jsfx_automation_enabled = state.jsfx_automation_enabled,
+      current_loaded_preset = state.current_loaded_preset
     }
     r.SetExtState("CP_FXConstellation", "state", serialize(save_data), false)
   end
@@ -687,6 +972,10 @@ function saveSettings()
 
   if save_flags.granular_sets and next(state.granular_sets) then
     r.SetExtState("CP_FXConstellation", "granular_sets", serialize(state.granular_sets), false)
+  end
+
+  if save_flags.snapshots and next(state.snapshots) then
+    r.SetExtState("CP_FXConstellation", "snapshots", serialize(state.snapshots), false)
   end
 
   if save_flags.settings then
@@ -713,42 +1002,51 @@ function saveTrackSelection()
   local fx_rand_max = {}
   local base_values = {}
   for fx_id, fx_data in pairs(state.fx_data) do
-    fx_rand_max[fx_id] = state.fx_random_max[fx_id] or 3
+    local fx_key = guid .. "_" .. fx_data.full_name
+    fx_rand_max[fx_data.full_name] = state.fx_random_max[fx_key] or 3
     for param_id, param_data in pairs(fx_data.params) do
       local key = fx_data.full_name .. "||" .. param_data.name
       if param_data.selected then
         selection[key] = true
       end
-      ranges[key] = state.param_ranges[fx_id .. "_" .. param_id .. "_range"] or 1.0
-      invert_assign[key] = state.param_invert[fx_id .. "_" .. param_id .. "_invert"] or false
+      local range_key = guid .. "_" .. key .. "_range"
+      local invert_key = guid .. "_" .. key .. "_invert"
+      local x_key = guid .. "_" .. key .. "_x"
+      local y_key = guid .. "_" .. key .. "_y"
+      ranges[key] = state.param_ranges[range_key] or 1.0
+      invert_assign[key] = state.param_invert[invert_key] or false
       xy_assign[key] = {
-        x = state.param_xy_assign[fx_id .. "_" .. param_id .. "_x"] ~= false,
-        y = state.param_xy_assign[fx_id .. "_" .. param_id .. "_y"] ~= false
+        x = state.param_xy_assign[x_key] ~= false,
+        y = state.param_xy_assign[y_key] ~= false
       }
       base_values[key] = param_data.base_value
     end
   end
   state.track_selections[guid] = {
-    selection = selection,
-    ranges = ranges,
-    xy_assign = xy_assign,
-    invert_assign = invert_assign,
-    fx_random_max = fx_rand_max,
-    base_values = base_values,
-    gesture_base_x = state.gesture_base_x,
-    gesture_base_y = state.gesture_base_y
-  }
+  selection = selection,
+  ranges = ranges,
+  xy_assign = xy_assign,
+  invert_assign = invert_assign,
+  fx_random_max = fx_rand_max,
+  base_values = base_values,
+  gesture_base_x = state.gesture_base_x,
+  gesture_base_y = state.gesture_base_y,
+  gesture_x = state.gesture_x,
+  gesture_y = state.gesture_y,
+   current_preset = state.current_loaded_preset
+	}
   scheduleTrackSave()
 end
 
 function loadTrackSelection()
-  local guid = getTrackGUID()
-  if not guid then return end
-  local track_data = state.track_selections[guid]
-  if not track_data then
-    captureBaseValues()
-    return
-  end
+local guid = getTrackGUID()
+if not guid then return end
+local track_data = state.track_selections[guid]
+if not track_data then
+state.current_loaded_preset = ""
+captureBaseValues()
+ return
+	end
   local selection = track_data.selection or {}
   local ranges = track_data.ranges or {}
   local xy_assign = track_data.xy_assign or {}
@@ -757,19 +1055,35 @@ function loadTrackSelection()
   local base_values = track_data.base_values or {}
   state.gesture_base_x = track_data.gesture_base_x or 0.5
   state.gesture_base_y = track_data.gesture_base_y or 0.5
+  state.gesture_x = track_data.gesture_x or 0.5
+  state.gesture_y = track_data.gesture_y or 0.5
+  state.current_loaded_preset = track_data.current_preset or ""
+	updateJSFXFromGesture()
   for fx_id, fx_data in pairs(state.fx_data) do
-    if fx_rand_max[fx_id] then
-      state.fx_random_max[fx_id] = fx_rand_max[fx_id]
+    local fx_key = guid .. "_" .. fx_data.full_name
+    if fx_rand_max[fx_data.full_name] then
+      state.fx_random_max[fx_key] = fx_rand_max[fx_data.full_name]
     end
     for param_id, param_data in pairs(fx_data.params) do
       local key = fx_data.full_name .. "||" .. param_data.name
       param_data.selected = selection[key] or false
       param_data.base_value = base_values[key] or param_data.current_value
-      state.param_ranges[fx_id .. "_" .. param_id .. "_range"] = ranges[key] or 1.0
-      state.param_invert[fx_id .. "_" .. param_id .. "_invert"] = invert_assign[key] or false
-      local xy = xy_assign[key] or { x = true, y = true }
-      state.param_xy_assign[fx_id .. "_" .. param_id .. "_x"] = xy.x
-      state.param_xy_assign[fx_id .. "_" .. param_id .. "_y"] = xy.y
+      local range_key = guid .. "_" .. key .. "_range"
+      state.param_ranges[range_key] = ranges[key] or 1.0
+      local invert_key = guid .. "_" .. key .. "_invert"
+      state.param_invert[invert_key] = invert_assign[key] or false
+      local xy = xy_assign[key]
+      if xy then
+        local x_key = guid .. "_" .. key .. "_x"
+        local y_key = guid .. "_" .. key .. "_y"
+        state.param_xy_assign[x_key] = xy.x
+        state.param_xy_assign[y_key] = xy.y
+      else
+        local x_key = guid .. "_" .. key .. "_x"
+        local y_key = guid .. "_" .. key .. "_y"
+        state.param_xy_assign[x_key] = true
+        state.param_xy_assign[y_key] = true
+      end
     end
   end
   updateSelectedCount()
@@ -784,6 +1098,12 @@ function createFXSignature()
     sig = sig .. fx_name .. ":" .. r.TrackFX_GetNumParams(state.track, fx) .. ";"
   end
   return sig
+end
+
+function getCurrentFXChainSignature()
+  local guid = getTrackGUID()
+  if not guid then return nil end
+  return guid .. "_" .. createFXSignature()
 end
 
 function shouldFilterParam(param_name)
@@ -825,13 +1145,15 @@ function scanTrackFX()
         actual_fx_id = fx,
         params = {}
       }
-      if state.fx_random_max[visible_fx_id] == nil then
-        state.fx_random_max[visible_fx_id] = 3
+      local fx_key = getFXKey(visible_fx_id)
+      if fx_key and state.fx_random_max[fx_key] == nil then
+        state.fx_random_max[fx_key] = 3
       end
       for param = 0, param_count - 1 do
         local _, param_name = r.TrackFX_GetParamName(state.track, fx, param, "")
         if not shouldFilterParam(param_name) then
           local value = r.TrackFX_GetParam(state.track, fx, param)
+          local step_count = detectParamSteps(visible_fx_id, param)
           state.fx_data[visible_fx_id].params[param] = {
             name = param_name,
             current_value = value,
@@ -841,7 +1163,8 @@ function scanTrackFX()
             selected = false,
             fx_id = visible_fx_id,
             param_id = param,
-            actual_fx_id = fx
+            actual_fx_id = fx,
+            step_count = step_count
           }
         end
       end
@@ -901,6 +1224,16 @@ function updateSelectedCount()
   end
 end
 
+function selectAllContinuousParams(params, selected)
+  for _, param in pairs(params) do
+    if not param.step_count or param.step_count == 0 then
+      param.selected = selected
+    end
+  end
+  updateSelectedCount()
+  saveTrackSelection()
+end
+
 function selectAllParams(params, selected)
   for _, param in pairs(params) do
     param.selected = selected
@@ -910,40 +1243,48 @@ function selectAllParams(params, selected)
 end
 
 function getParamRange(fx_id, param_id)
-  local key = fx_id .. "_" .. param_id .. "_range"
+  local key = getParamKey(fx_id, param_id, "range")
+  if not key then return 1.0 end
   return state.param_ranges[key] or 1.0
 end
 
 function setParamRange(fx_id, param_id, range)
-  local key = fx_id .. "_" .. param_id .. "_range"
+  local key = getParamKey(fx_id, param_id, "range")
+  if not key then return end
   state.param_ranges[key] = range
   saveTrackSelection()
 end
 
 function getParamInvert(fx_id, param_id)
-  local key = fx_id .. "_" .. param_id .. "_invert"
+  local key = getParamKey(fx_id, param_id, "invert")
+  if not key then return false end
   return state.param_invert[key] or false
 end
 
 function setParamInvert(fx_id, param_id, invert)
-  local key = fx_id .. "_" .. param_id .. "_invert"
+  local key = getParamKey(fx_id, param_id, "invert")
+  if not key then return end
   state.param_invert[key] = invert
   saveTrackSelection()
 end
 
 function getParamXYAssign(fx_id, param_id)
-  local x_key = fx_id .. "_" .. param_id .. "_x"
-  local y_key = fx_id .. "_" .. param_id .. "_y"
+  local x_key = getParamKey(fx_id, param_id, "x")
+  local y_key = getParamKey(fx_id, param_id, "y")
+  if not x_key or not y_key then return true, true end
   return state.param_xy_assign[x_key] ~= false, state.param_xy_assign[y_key] ~= false
 end
 
 function setParamXYAssign(fx_id, param_id, axis, value)
-  local key = fx_id .. "_" .. param_id .. "_" .. axis
+  local key = getParamKey(fx_id, param_id, axis)
+  if not key then return end
   state.param_xy_assign[key] = value
   if state.exclusive_xy and value then
     local other_axis = axis == "x" and "y" or "x"
-    local other_key = fx_id .. "_" .. param_id .. "_" .. other_axis
-    state.param_xy_assign[other_key] = false
+    local other_key = getParamKey(fx_id, param_id, other_axis)
+    if other_key then
+      state.param_xy_assign[other_key] = false
+    end
   end
   saveTrackSelection()
 end
@@ -955,7 +1296,8 @@ function randomSelectParams(params, fx_id)
     table.insert(param_list, param)
   end
   if #param_list == 0 then return end
-  local max_count = state.fx_random_max[fx_id] or 3
+  local fx_key = getFXKey(fx_id)
+  local max_count = (fx_key and state.fx_random_max[fx_key]) or 3
   local count = math.random(1, math.min(max_count, #param_list))
   for i = 1, count do
     local idx = math.random(1, #param_list)
@@ -974,7 +1316,10 @@ function randomizeBaseValues(params, fx_id)
     if param_data.selected then
       local new_base = math.random()
       param_data.base_value = new_base
-      state.param_base_values[fx_id .. "_" .. param_id] = new_base
+      local key = getParamKey(fx_id, param_id)
+      if key then
+        state.param_base_values[key] = new_base
+      end
       r.TrackFX_SetParam(state.track, actual_fx_id, param_id, new_base)
       param_data.current_value = new_base
     end
@@ -994,7 +1339,10 @@ function randomizeAllBases()
         local new_base = center_val + rand_offset
         new_base = math.max(state.randomize_min, math.min(state.randomize_max, new_base))
         param_data.base_value = new_base
-        state.param_base_values[fx_id .. "_" .. param_id] = new_base
+        local key = getParamKey(fx_id, param_id)
+        if key then
+          state.param_base_values[key] = new_base
+        end
         r.TrackFX_SetParam(state.track, fx_id, param_id, new_base)
         param_data.current_value = new_base
       end
@@ -1109,6 +1457,7 @@ function randomizeFXOrder()
   if not isTrackValid() then return end
   local fx_count = r.TrackFX_GetCount(state.track)
   if fx_count < 2 then return end
+  saveTrackSelection()
   r.Undo_BeginBlock()
 
   local jsfx_index = findAutomationJSFX()
@@ -1147,7 +1496,10 @@ function captureBaseValues()
     for param_id, param_data in pairs(fx_data.params) do
       if param_data.selected then
         param_data.base_value = param_data.current_value
-        state.param_base_values[fx_id .. "_" .. param_id] = param_data.current_value
+        local key = getParamKey(fx_id, param_id)
+        if key then
+          state.param_base_values[key] = param_data.current_value
+        end
       end
     end
   end
@@ -1158,7 +1510,10 @@ function updateParamBaseValue(fx_id, param_id, new_value)
   local param_data = state.fx_data[fx_id].params[param_id]
   if param_data then
     param_data.base_value = new_value
-    state.param_base_values[fx_id .. "_" .. param_id] = new_value
+    local key = getParamKey(fx_id, param_id)
+    if key then
+      state.param_base_values[key] = new_value
+    end
     local actual_fx_id = state.fx_data[fx_id].actual_fx_id or fx_id
     r.TrackFX_SetParam(state.track, actual_fx_id, param_id, new_value)
     param_data.current_value = new_value
@@ -1182,6 +1537,41 @@ function calculateAsymmetricRange(base, range, intensity, min_limit, max_limit)
   return up_range, down_range
 end
 
+function snapToDiscreteValue(value, step_count)
+  if step_count <= 1 then return value end
+  local step = 1.0 / (step_count - 1)
+  local closest_step = math.floor((value / step) + 0.5)
+  return closest_step * step
+end
+
+function detectParamSteps(fx_id, param_id)
+  if not isTrackValid() then return 0 end
+  local actual_fx_id = state.fx_data[fx_id].actual_fx_id or fx_id
+  local original_value = r.TrackFX_GetParam(state.track, actual_fx_id, param_id)
+  local samples = {}
+  for i = 0, 20 do
+    local test_val = i / 20
+    r.TrackFX_SetParam(state.track, actual_fx_id, param_id, test_val)
+    local result = r.TrackFX_GetParam(state.track, actual_fx_id, param_id)
+    local found = false
+    for _, s in ipairs(samples) do
+      if math.abs(s - result) < 0.001 then
+        found = true
+        break
+      end
+    end
+    if not found then
+      table.insert(samples, result)
+    end
+  end
+  r.TrackFX_SetParam(state.track, actual_fx_id, param_id, original_value)
+  table.sort(samples)
+  if #samples <= 10 then
+    return #samples
+  end
+  return 0
+end
+
 function applyGestureToSelection(gx, gy)
   if not isTrackValid() then return end
   local offset_x = (gx - state.gesture_base_x) * 2
@@ -1192,8 +1582,8 @@ function applyGestureToSelection(gx, gy)
         local param_range = getParamRange(fx_id, param_id)
         local x_assign, y_assign = getParamXYAssign(fx_id, param_id)
         local param_invert = getParamInvert(fx_id, param_id)
-        local base_key = fx_id .. "_" .. param_id
-        local base_value = state.param_base_values[base_key] or param_data.base_value
+        local base_key = getParamKey(fx_id, param_id)
+        local base_value = (base_key and state.param_base_values[base_key]) or param_data.base_value
         local up_range, down_range = calculateAsymmetricRange(base_value, param_range, state.gesture_range,
           state.gesture_min, state.gesture_max)
         local new_value = base_value
@@ -1217,9 +1607,13 @@ function applyGestureToSelection(gx, gy)
           new_value = base_value + y_contribution
         end
         new_value = math.max(state.gesture_min, math.min(state.gesture_max, new_value))
+        if param_data.step_count and param_data.step_count > 0 then
+          new_value = snapToDiscreteValue(new_value, param_data.step_count)
+        end
         local actual_fx_id = fx_data.actual_fx_id or fx_id
         r.TrackFX_SetParam(state.track, actual_fx_id, param_id, new_value)
         param_data.current_value = new_value
+        param_data.base_value = new_value
       end
     end
   end
@@ -1307,130 +1701,101 @@ function captureCompleteState()
     local _, fx_name = r.TrackFX_GetFXName(state.track, fx_id, "")
     local enabled = r.TrackFX_GetEnabled(state.track, fx_id)
     local retval, preset = r.TrackFX_GetPreset(state.track, fx_id, "")
+    local param_count = r.TrackFX_GetNumParams(state.track, fx_id)
 
     complete_state.fx_chain[fx_id] = {
       name = fx_name,
       enabled = enabled,
       preset = retval and preset or "",
+      param_count = param_count,
       params = {}
     }
 
     if state.fx_data[fx_id] then
-      for param_id, param_data in pairs(state.fx_data[fx_id].params) do
-        complete_state.fx_chain[fx_id].params[param_id] = {
-          name = param_data.name,
-          current_value = param_data.current_value,
-          base_value = param_data.base_value,
-          selected = param_data.selected,
-          range = getParamRange(fx_id, param_id),
-          x_assign = state.param_xy_assign[fx_id .. "_" .. param_id .. "_x"] ~= false,
-          y_assign = state.param_xy_assign[fx_id .. "_" .. param_id .. "_y"] ~= false,
-          invert = getParamInvert(fx_id, param_id)
-        }
+    for param_id, param_data in pairs(state.fx_data[fx_id].params) do
+    local x_assign, y_assign = getParamXYAssign(fx_id, param_id)
+    complete_state.fx_chain[fx_id].params[param_id] = {
+    name = param_data.name,
+    current_value = param_data.current_value,
+    base_value = param_data.base_value,
+    selected = param_data.selected,
+    range = getParamRange(fx_id, param_id),
+    x_assign = x_assign,
+    y_assign = y_assign,
+     invert = getParamInvert(fx_id, param_id)
+     }
+     end
       end
-    end
   end
 
   return complete_state
 end
 
-function getFXChainSignature()
-  if not isTrackValid() then return "" end
-  local signature = ""
+function savePreset(name)
+if name == "" then return end
+local preset_data = captureCompleteState()
+state.presets[name] = preset_data
+schedulePresetSave()
+end
+
+function loadPreset(name)
+if not isTrackValid() then return end
+local preset = state.presets[name]
+if not preset then return end
+
+local missing_fx = {}
+local param_count_warnings = {}
+
+local original_fxfloat = r.SNM_GetIntConfigVar("fxfloat_focus", -1)
+	if original_fxfloat >= 0 then
+		r.SNM_SetIntConfigVar("fxfloat_focus", 0)
+	end
+
+	r.Undo_BeginBlock()
+
   local fx_count = r.TrackFX_GetCount(state.track)
-  for fx_id = 0, fx_count - 1 do
+  for fx_id = fx_count - 1, 0, -1 do
     local _, fx_name = r.TrackFX_GetFXName(state.track, fx_id, "")
     if not fx_name:find("FX Constellation Bridge") then
-      signature = signature .. fx_name .. ";"
+      r.TrackFX_Delete(state.track, fx_id)
     end
   end
-  return signature
-end
 
-function findMatchingFXChain(target_signature)
-  for chain_name, chain_data in pairs(state.presets) do
-    if chain_data.is_fx_chain and chain_data.fx_signature == target_signature then
-      return chain_name
-    end
+  local fx_order = {}
+  for fx_id, fx_preset in pairs(preset.fx_chain or {}) do
+    table.insert(fx_order, {id = fx_id, preset = fx_preset})
   end
-  return nil
-end
+  table.sort(fx_order, function(a, b) return a.id < b.id end)
 
-function savePreset(name)
-  if name == "" then return end
-
-  if state.save_fx_chain then
-    local preset_data = captureCompleteState()
-    preset_data.is_fx_chain = true
-    preset_data.fx_signature = getFXChainSignature()
-    preset_data.variations = {}
-    state.presets[name] = preset_data
-  else
-    local current_signature = getFXChainSignature()
-    local matching_chain = findMatchingFXChain(current_signature)
-
-    if matching_chain then
-      if not state.presets[matching_chain].variations then
-        state.presets[matching_chain].variations = {}
-      end
-      state.presets[matching_chain].variations[name] = captureCompleteState()
-      state.presets[matching_chain].variations[name].is_fx_chain = false
-    else
-      local chain_preset = captureCompleteState()
-      chain_preset.is_fx_chain = true
-      chain_preset.fx_signature = current_signature
-      chain_preset.variations = {}
-      chain_preset.variations[name] = captureCompleteState()
-      chain_preset.variations[name].is_fx_chain = false
-      state.presets[name .. "_Chain"] = chain_preset
-    end
-  end
-  schedulePresetSave()
-end
-
-function loadPreset(name, variation_name)
-  if not isTrackValid() then return end
-  local preset
-
-  if variation_name then
-    preset = state.presets[name] and state.presets[name].variations and state.presets[name].variations[variation_name]
-    local current_signature = getFXChainSignature()
-    local target_signature = state.presets[name] and state.presets[name].fx_signature
-    if current_signature ~= target_signature then
-      loadPreset(name)
-    end
-  else
-    preset = state.presets[name]
-  end
-
-  if not preset then return end
-
-  r.Undo_BeginBlock()
-
-  if preset.is_fx_chain then
-    local fx_count = r.TrackFX_GetCount(state.track)
-    for fx_id = fx_count - 1, 0, -1 do
-      local _, fx_name = r.TrackFX_GetFXName(state.track, fx_id, "")
-      if not fx_name:find("FX Constellation Bridge") then
-        r.TrackFX_Delete(state.track, fx_id)
-      end
-    end
-
-    for fx_id, fx_preset in pairs(preset.fx_chain or {}) do
-      if not fx_preset.name:find("FX Constellation Bridge") then
-        local new_fx_id = r.TrackFX_AddByName(state.track, fx_preset.name, false, -1)
-        if new_fx_id >= 0 then
-          r.TrackFX_SetEnabled(state.track, new_fx_id, fx_preset.enabled)
-          if fx_preset.preset and fx_preset.preset ~= "" then
-            r.TrackFX_SetPreset(state.track, new_fx_id, fx_preset.preset)
+  for _, fx_entry in ipairs(fx_order) do
+    local fx_preset = fx_entry.preset
+    if not fx_preset.name:find("FX Constellation Bridge") then
+      local new_fx_id = r.TrackFX_AddByName(state.track, fx_preset.name, false, -1)
+      if new_fx_id >= 0 then
+        r.TrackFX_SetEnabled(state.track, new_fx_id, fx_preset.enabled)
+        if fx_preset.preset and fx_preset.preset ~= "" then
+          r.TrackFX_SetPreset(state.track, new_fx_id, fx_preset.preset)
+        end
+        if fx_preset.param_count then
+          local current_param_count = r.TrackFX_GetNumParams(state.track, new_fx_id)
+          if current_param_count ~= fx_preset.param_count then
+            table.insert(param_count_warnings, {
+              name = fx_preset.name,
+              expected = fx_preset.param_count,
+              actual = current_param_count
+            })
           end
         end
+      else
+        table.insert(missing_fx, fx_preset.name)
       end
     end
-    scanTrackFX()
-    for fx_id, fx_data in pairs(state.fx_data) do
-      state.fx_collapsed[fx_id] = true
-    end
+  end
+
+  scanTrackFX()
+
+  for fx_id, fx_data in pairs(state.fx_data) do
+    state.fx_collapsed[fx_id] = false
   end
 
   state.gesture_x = preset.gesture_x or 0.5
@@ -1439,35 +1804,60 @@ function loadPreset(name, variation_name)
   state.gesture_base_x = preset.gesture_base_x or 0.5
   state.gesture_base_y = preset.gesture_base_y or 0.5
 
-  for fx_id, fx_preset in pairs(preset.fx_chain or {}) do
-    if state.fx_data[fx_id] and state.fx_data[fx_id].full_name == fx_preset.name then
-      if not preset.is_fx_chain then
-        local actual_fx_id = state.fx_data[fx_id].actual_fx_id or fx_id
-        r.TrackFX_SetEnabled(state.track, actual_fx_id, fx_preset.enabled)
-        state.fx_data[fx_id].enabled = fx_preset.enabled
-      end
+  for saved_fx_id, fx_preset in pairs(preset.fx_chain or {}) do
+    for current_fx_id, fx_data in pairs(state.fx_data) do
+      if fx_data.full_name == fx_preset.name then
+        for saved_param_id, param_preset in pairs(fx_preset.params or {}) do
+          for current_param_id, param_data in pairs(fx_data.params) do
+            if param_data.name == param_preset.name then
+              local actual_fx_id = fx_data.actual_fx_id or current_fx_id
+              r.TrackFX_SetParam(state.track, actual_fx_id, current_param_id, param_preset.current_value)
+              param_data.current_value = param_preset.current_value
+              param_data.base_value = param_preset.base_value
+              param_data.selected = param_preset.selected
 
-      for param_id, param_preset in pairs(fx_preset.params or {}) do
-        if state.fx_data[fx_id].params[param_id] and
-            state.fx_data[fx_id].params[param_id].name == param_preset.name then
-          local actual_fx_id = state.fx_data[fx_id].actual_fx_id or fx_id
-          r.TrackFX_SetParam(state.track, actual_fx_id, param_id, param_preset.current_value)
-          state.fx_data[fx_id].params[param_id].current_value = param_preset.current_value
-          state.fx_data[fx_id].params[param_id].base_value = param_preset.base_value
-          state.fx_data[fx_id].params[param_id].selected = param_preset.selected
-
-          setParamRange(fx_id, param_id, param_preset.range or 1.0)
-          setParamXYAssign(fx_id, param_id, "x", param_preset.x_assign)
-          setParamXYAssign(fx_id, param_id, "y", param_preset.y_assign)
-          setParamInvert(fx_id, param_id, param_preset.invert or false)
+              setParamRange(current_fx_id, current_param_id, param_preset.range or 1.0)
+              setParamXYAssign(current_fx_id, current_param_id, "x", param_preset.x_assign)
+              setParamXYAssign(current_fx_id, current_param_id, "y", param_preset.y_assign)
+              setParamInvert(current_fx_id, current_param_id, param_preset.invert or false)
+              break
+            end
+          end
         end
+        break
       end
     end
   end
 
-  r.Undo_EndBlock("Load FX Constellation preset: " .. name .. (variation_name and ("/" .. variation_name) or ""), -1)
+  r.Undo_EndBlock("Load FX Constellation preset: " .. name, -1)
+  closeAllFloatingFX()
   updateSelectedCount()
   captureBaseValues()
+  state.current_loaded_preset = name
+  saveTrackSelection()
+
+	if original_fxfloat >= 0 then
+		r.SNM_SetIntConfigVar("fxfloat_focus", original_fxfloat)
+	end
+
+  if #missing_fx > 0 or #param_count_warnings > 0 then
+    local msg = "FX Constellation - Preset Load Issues:\n\n"
+    if #missing_fx > 0 then
+      msg = msg .. "MISSING FX (not installed):\n"
+      for i, fx_name in ipairs(missing_fx) do
+        msg = msg .. "  - " .. fx_name .. "\n"
+      end
+      msg = msg .. "\n"
+    end
+    if #param_count_warnings > 0 then
+      msg = msg .. "PARAMETER COUNT MISMATCHES (possible version change):\n"
+      for i, warning in ipairs(param_count_warnings) do
+        msg = msg .. "  - " .. warning.name .. "\n"
+        msg = msg .. "    Expected: " .. warning.expected .. " params, Found: " .. warning.actual .. " params\n"
+      end
+    end
+    r.ShowMessageBox(msg, "FX Constellation - Preset Warnings", 0)
+  end
 end
 
 function deletePreset(name)
@@ -1475,6 +1865,9 @@ function deletePreset(name)
     state.presets[name] = nil
     if state.selected_preset == name then
       state.selected_preset = ""
+    end
+    if state.current_loaded_preset == name then
+      state.current_loaded_preset = ""
     end
     scheduleSave()
   end
@@ -1491,30 +1884,17 @@ function renamePreset(old_name, new_name)
   end
 end
 
-function getStyleSpacing()
-  if sl then
-    local saved = r.GetExtState("CP_ImGuiStyles", "styles")
-    if saved ~= "" then
-      local success, styles = pcall(function() return load("return " .. saved)() end)
-      if success and styles and styles.spacing then
-        return styles.spacing.item_spacing_x or 8
-      end
-    end
-  end
-  return 8
-end
-
 function drawFiltersWindow()
   if not state.show_filters_window then return end
   if not filters_ctx or not r.ImGui_ValidatePtr(filters_ctx, "ImGui_Context*") then
     filters_ctx = r.ImGui_CreateContext('FX Constellation Filters')
-    if sl then
-      sl.applyFontsToContext(filters_ctx)
+    if style_loader then
+      style_loader.ApplyFontsToContext(filters_ctx)
     end
   end
-  if sl then
-    local success, colors, vars = sl.applyToContext(filters_ctx)
-    if success then filters_pc, filters_pv = colors, vars end
+  if style_loader then
+    local success, colors, vars = style_loader.applyToContext(filters_ctx)
+    if success then filters_pushed_colors, filters_pushed_vars = colors, vars end
   end
   r.ImGui_SetNextWindowSize(filters_ctx, 400, 300, r.ImGui_Cond_FirstUseEver())
   local visible, open = r.ImGui_Begin(filters_ctx, 'Filter Keywords', true)
@@ -1522,12 +1902,12 @@ function drawFiltersWindow()
     local main_font = getStyleFont("main", filters_ctx)
     local header_font = getStyleFont("header", filters_ctx)
 
-    if main_font then
-      r.ImGui_PushFont(filters_ctx, main_font)
+    if main_font and r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+      r.ImGui_PushFont(filters_ctx, main_font, 0)
     end
 
-    if header_font then
-      r.ImGui_PushFont(filters_ctx, header_font)
+    if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+      r.ImGui_PushFont(filters_ctx, header_font, 0)
       r.ImGui_Text(filters_ctx, "FILTER KEYWORDS")
       r.ImGui_PopFont(filters_ctx)
     else
@@ -1563,7 +1943,7 @@ function drawFiltersWindow()
       scanTrackFX()
     end
 
-    if main_font then
+    if main_font and r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
       r.ImGui_PopFont(filters_ctx)
     end
     r.ImGui_End(filters_ctx)
@@ -1571,41 +1951,20 @@ function drawFiltersWindow()
   if not open then
     state.show_filters_window = false
   end
-  if sl then sl.clearStyles(filters_ctx, filters_pc, filters_pv) end
+  if style_loader then style_loader.clearStyles(filters_ctx, filters_pushed_colors, filters_pushed_vars) end
 end
 
 function drawPresetsWindow()
   if not state.show_presets_window then return end
   if not presets_ctx or not r.ImGui_ValidatePtr(presets_ctx, "ImGui_Context*") then
     presets_ctx = r.ImGui_CreateContext('FX Constellation Presets')
-    if sl then
-      sl.applyFontsToContext(presets_ctx)
+    if style_loader then
+      style_loader.ApplyFontsToContext(presets_ctx)
     end
   end
-  if sl then
-    local success, colors, vars = sl.applyToContext(presets_ctx)
-    if success then presets_pc, presets_pv = colors, vars end
-  end
-
-  local preset_count = 0
-  local variation_count = 0
-  for name, preset_data in pairs(state.presets) do
-    if preset_data.is_fx_chain then
-      preset_count = preset_count + 1
-      if preset_data.variations then
-        for _ in pairs(preset_data.variations) do
-          variation_count = variation_count + 1
-        end
-      end
-    else
-      preset_count = preset_count + 1
-    end
-  end
-
-  if state.save_fx_chain then
-    state.preset_name = "Chain" .. (preset_count + 1)
-  else
-    state.preset_name = "Variation" .. (variation_count + 1)
+  if style_loader then
+    local success, colors, vars = style_loader.applyToContext(presets_ctx)
+    if success then presets_pushed_colors, presets_pushed_vars = colors, vars end
   end
 
   r.ImGui_SetNextWindowSize(presets_ctx, 400, 500, r.ImGui_Cond_FirstUseEver())
@@ -1616,14 +1975,14 @@ function drawPresetsWindow()
     local main_font = getStyleFont("main", presets_ctx)
     local header_font = getStyleFont("header", presets_ctx)
 
-    if main_font then
-      r.ImGui_PushFont(presets_ctx, main_font)
+    if main_font and r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+      r.ImGui_PushFont(presets_ctx, main_font, 0)
     end
 
     local window_width = r.ImGui_GetWindowWidth(presets_ctx)
 
-    if header_font then
-      r.ImGui_PushFont(presets_ctx, header_font)
+    if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+      r.ImGui_PushFont(presets_ctx, header_font, 0)
       r.ImGui_Text(presets_ctx, "PRESETS")
       r.ImGui_PopFont(presets_ctx)
     else
@@ -1638,16 +1997,10 @@ function drawPresetsWindow()
     r.ImGui_Separator(presets_ctx)
     r.ImGui_Dummy(presets_ctx, 0, 4)
 
-    local changed, save_fx_chain = r.ImGui_Checkbox(presets_ctx, "Save FX Chain", state.save_fx_chain)
-    if changed then state.save_fx_chain = save_fx_chain end
-
-    r.ImGui_SetNextItemWidth(presets_ctx, window_width - 80)
-    local changed, new_name = r.ImGui_InputText(presets_ctx, "##preset_name", state.preset_name)
-    if changed then state.preset_name = new_name end
-    r.ImGui_SameLine(presets_ctx)
-    if r.ImGui_Button(presets_ctx, "Save", 60) then
-      if state.preset_name and state.preset_name ~= "" then
-        savePreset(state.preset_name)
+    if r.ImGui_Button(presets_ctx, "Save Preset", window_width - 20) then
+      local retval, preset_name = r.GetUserInputs("Save FX Chain Preset", 1, "Preset name:", "")
+      if retval and preset_name ~= "" then
+        savePreset(preset_name)
       end
     end
 
@@ -1655,107 +2008,33 @@ function drawPresetsWindow()
 
     if r.ImGui_BeginChild(presets_ctx, "PresetsList", 0, -1) then
       for name, preset_data in pairs(state.presets) do
-        if preset_data.is_fx_chain then
-          r.ImGui_PushID(presets_ctx, name)
+        r.ImGui_PushID(presets_ctx, name)
 
-          local tree_flags = r.ImGui_TreeNodeFlags_OpenOnArrow()
-          local display_name = name:gsub("[^%w%s_%-]", "") .. " (FX Chain)"
-          if r.ImGui_TreeNodeEx(presets_ctx, display_name, tree_flags) then
-            r.ImGui_SameLine(presets_ctx, window_width - 80)
-            if r.ImGui_Button(presets_ctx, "Load", 25, 20) then
-              loadPreset(name)
-            end
-            r.ImGui_SameLine(presets_ctx)
-            if r.ImGui_Button(presets_ctx, "X", 25, 20) then
-              deletePreset(name)
-            end
-
-            if preset_data.variations then
-              for var_name, _ in pairs(preset_data.variations) do
-                r.ImGui_PushID(presets_ctx, var_name)
-                r.ImGui_Indent(presets_ctx)
-
-                local clean_var_name = var_name:gsub("[^%w%s_%-]", "")
-                r.ImGui_Text(presets_ctx, clean_var_name)
-                r.ImGui_SameLine(presets_ctx, window_width - 80)
-                if r.ImGui_Button(presets_ctx, "Load", 25, 20) then
-                  loadPreset(name, var_name)
-                end
-                r.ImGui_SameLine(presets_ctx)
-                if r.ImGui_Button(presets_ctx, "X", 25, 20) then
-                  if preset_data.variations then
-                    preset_data.variations[var_name] = nil
-                  end
-                end
-
-                r.ImGui_Unindent(presets_ctx)
-                r.ImGui_PopID(presets_ctx)
-              end
-            end
-
-            r.ImGui_TreePop(presets_ctx)
-          else
-            r.ImGui_SameLine(presets_ctx, window_width - 80)
-            if r.ImGui_Button(presets_ctx, "Load", 25, 20) then
-              loadPreset(name)
-            end
-            r.ImGui_SameLine(presets_ctx)
-            if r.ImGui_Button(presets_ctx, "X", 25, 20) then
-              deletePreset(name)
-            end
-          end
-
-          r.ImGui_PopID(presets_ctx)
-        else
-          r.ImGui_PushID(presets_ctx, name)
-
-          local btn_width = window_width - 80
-          local clean_name = name:gsub("[^%w%s_%-]", "")
-          if r.ImGui_Button(presets_ctx, clean_name, btn_width, 25) then
-            loadPreset(name)
-            state.selected_preset = name
-          end
-
-          r.ImGui_SameLine(presets_ctx)
-          if r.ImGui_Button(presets_ctx, "R", 25, 25) then
-            state.show_preset_rename = true
-            state.rename_preset_name = name
-            state.selected_preset = name
-          end
-
-          r.ImGui_SameLine(presets_ctx)
-          if r.ImGui_Button(presets_ctx, "X", 25, 25) then
-            deletePreset(name)
-          end
-
-          r.ImGui_PopID(presets_ctx)
+        local btn_width = window_width - 80
+        local clean_name = name:gsub("[^%w%s_%-]", "")
+        if r.ImGui_Button(presets_ctx, clean_name, btn_width, 25) then
+          loadPreset(name)
         end
+
+        r.ImGui_SameLine(presets_ctx)
+        if r.ImGui_Button(presets_ctx, "R", 25, 25) then
+          local retval, new_name = r.GetUserInputs("Rename Preset", 1, "New name:", name)
+          if retval and new_name ~= "" and new_name ~= name then
+            renamePreset(name, new_name)
+          end
+        end
+
+        r.ImGui_SameLine(presets_ctx)
+        if r.ImGui_Button(presets_ctx, "X", 25, 25) then
+          deletePreset(name)
+        end
+
+        r.ImGui_PopID(presets_ctx)
       end
       r.ImGui_EndChild(presets_ctx)
     end
 
-    if state.show_preset_rename then
-      r.ImGui_OpenPopup(presets_ctx, "Rename Preset")
-    end
-
-    if r.ImGui_BeginPopupModal(presets_ctx, "Rename Preset", nil, r.ImGui_WindowFlags_AlwaysAutoResize()) then
-      local changed, new_name = r.ImGui_InputText(presets_ctx, "New Name", state.rename_preset_name)
-      if changed then state.rename_preset_name = new_name end
-
-      if r.ImGui_Button(presets_ctx, "OK", 120, 0) then
-        renamePreset(state.selected_preset, state.rename_preset_name)
-        state.show_preset_rename = false
-        r.ImGui_CloseCurrentPopup(presets_ctx)
-      end
-      r.ImGui_SameLine(presets_ctx)
-      if r.ImGui_Button(presets_ctx, "Cancel", 120, 0) then
-        state.show_preset_rename = false
-        r.ImGui_CloseCurrentPopup(presets_ctx)
-      end
-      r.ImGui_EndPopup(presets_ctx)
-    end
-
-    if main_font then
+    if main_font and r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
       r.ImGui_PopFont(presets_ctx)
     end
     r.ImGui_End(presets_ctx)
@@ -1764,14 +2043,66 @@ function drawPresetsWindow()
   if not open then
     state.show_presets_window = false
   end
-  if sl then sl.clearStyles(presets_ctx, presets_pc, presets_pv) end
+  if style_loader then style_loader.clearStyles(presets_ctx, presets_pushed_colors, presets_pushed_vars) end
+end
+
+function drawPatternIcon(draw_list, x, y, size, pattern_id, is_active)
+  local center_x = x + size / 2
+  local center_y = y + size / 2
+  local radius = size * 0.35
+  local color = is_active and 0xFFFFFFFF or 0x888888FF
+  local thickness = is_active and 2 or 1
+
+  if pattern_id == 0 then
+    r.ImGui_DrawList_AddCircle(draw_list, center_x, center_y, radius, color, 32, thickness)
+  elseif pattern_id == 1 then
+    local offset = radius
+    r.ImGui_DrawList_AddRect(draw_list, center_x - offset, center_y - offset, center_x + offset, center_y + offset,
+      color,
+      0, 0, thickness)
+  elseif pattern_id == 2 then
+    local h = radius * 1.2
+    r.ImGui_DrawList_AddTriangle(draw_list,
+      center_x, center_y - h * 0.7,
+      center_x - h * 0.6, center_y + h * 0.5,
+      center_x + h * 0.6, center_y + h * 0.5,
+      color, thickness)
+  elseif pattern_id == 3 then
+    local offset = radius * 0.8
+    r.ImGui_DrawList_AddQuad(draw_list,
+      center_x, center_y - offset,
+      center_x + offset, center_y,
+      center_x, center_y + offset,
+      center_x - offset, center_y,
+      color, thickness)
+  elseif pattern_id == 4 then
+    local offset = radius * 0.8
+    r.ImGui_DrawList_AddLine(draw_list, center_x - offset, center_y + offset, center_x + offset, center_y - offset,
+      color,
+      thickness)
+    r.ImGui_DrawList_AddLine(draw_list, center_x + offset, center_y + offset, center_x - offset, center_y - offset,
+      color,
+      thickness)
+  elseif pattern_id == 5 then
+    local segments = 64
+    for i = 0, segments - 1 do
+      local t1 = (i / segments) * 2 * math.pi
+      local t2 = ((i + 1) / segments) * 2 * math.pi
+      local scale = radius * 1.3
+      local x1 = center_x + scale * math.sin(t1) / (1 + math.cos(t1) * math.cos(t1))
+      local y1 = center_y + scale * math.sin(t1) * math.cos(t1) / (1 + math.cos(t1) * math.cos(t1))
+      local x2 = center_x + scale * math.sin(t2) / (1 + math.cos(t2) * math.cos(t2))
+      local y2 = center_y + scale * math.sin(t2) * math.cos(t2) / (1 + math.cos(t2) * math.cos(t2))
+      r.ImGui_DrawList_AddLine(draw_list, x1, y1, x2, y2, color, thickness)
+    end
+  end
 end
 
 function drawNavigation()
   local header_font = getStyleFont("header")
-
-  if header_font then
-    r.ImGui_PushFont(ctx, header_font)
+  local content_width = r.ImGui_GetContentRegionAvail(ctx)
+  if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, header_font, 0)
     r.ImGui_Text(ctx, "NAVIGATION")
     r.ImGui_PopFont(ctx)
     r.ImGui_Separator(ctx)
@@ -1802,14 +2133,14 @@ function drawNavigation()
   r.ImGui_Dummy(ctx, 0, 0)
 
   if state.navigation_mode == 0 then
-    r.ImGui_SetNextItemWidth(ctx, 128)
+    r.ImGui_SetNextItemWidth(ctx, content_width)
     local changed, new_smooth = r.ImGui_SliderDouble(ctx, "Smooth", state.smooth_speed, 0.0, 1.0, "%.2f")
     if changed then state.smooth_speed = new_smooth end
-    r.ImGui_SetNextItemWidth(ctx, 128)
+    r.ImGui_SetNextItemWidth(ctx, content_width)
     local changed, new_max_speed = r.ImGui_SliderDouble(ctx, "Speed", state.max_gesture_speed, 0.1, 10.0, "%.1f")
     if changed then state.max_gesture_speed = new_max_speed end
   elseif state.navigation_mode == 1 then
-    r.ImGui_SetNextItemWidth(ctx, 128)
+    r.ImGui_SetNextItemWidth(ctx, content_width)
     local changed, new_speed = r.ImGui_SliderDouble(ctx, "Speed", state.random_walk_speed, 0.1, 10.0, "%.1f Hz")
     if changed then
       state.random_walk_speed = new_speed
@@ -1817,27 +2148,58 @@ function drawNavigation()
         state.random_walk_next_time = r.time_precise() + 1.0 / state.random_walk_speed
       end
     end
-    r.ImGui_SetNextItemWidth(ctx, 128)
+    r.ImGui_SetNextItemWidth(ctx, content_width)
     local changed, new_jitter = r.ImGui_SliderDouble(ctx, "Jitter", state.random_walk_jitter, 0.0, 1.0)
     if changed then state.random_walk_jitter = new_jitter end
   elseif state.navigation_mode == 2 then
-    r.ImGui_SetNextItemWidth(ctx, 128)
-    local figures_items = table.concat(figures_modes, "\0") .. "\0"
-    local changed, new_figures_mode = r.ImGui_Combo(ctx, "##figuresmode", state.figures_mode, figures_items)
-    if changed then
-      state.figures_mode = new_figures_mode
-      state.figures_time = 0
-      scheduleSave()
+    local content_width = r.ImGui_GetContentRegionAvail(ctx)
+    local button_size = (content_width - 16) / 3
+    local draw_list = r.ImGui_GetWindowDrawList(ctx)
+
+    for row = 0, 1 do
+      for col = 0, 2 do
+        local pattern_id = row * 3 + col
+        if pattern_id < 6 then
+          if col > 0 then
+            r.ImGui_SameLine(ctx)
+          end
+
+          local cursor_x, cursor_y = r.ImGui_GetCursorScreenPos(ctx)
+          local is_active = state.figures_mode == pattern_id
+
+          if is_active then
+            r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Button(), 0x444444FF)
+          end
+
+          if r.ImGui_Button(ctx, "##pattern" .. pattern_id, button_size, button_size) then
+            state.figures_mode = pattern_id
+            state.figures_time = 0
+            scheduleSave()
+          end
+
+          if is_active then
+            r.ImGui_PopStyleColor(ctx)
+          end
+
+          drawPatternIcon(draw_list, cursor_x, cursor_y, button_size, pattern_id, is_active)
+
+          if r.ImGui_IsItemHovered(ctx) then
+            r.ImGui_SetTooltip(ctx, figures_modes[pattern_id + 1])
+          end
+        end
+      end
     end
 
-    r.ImGui_SetNextItemWidth(ctx, 128)
+    r.ImGui_Dummy(ctx, 0, 4)
+
+    r.ImGui_SetNextItemWidth(ctx, content_width)
     local changed, new_speed = r.ImGui_SliderDouble(ctx, "Speed", state.figures_speed, 0.01, 10.0, "%.2f Hz")
     if changed then
       state.figures_speed = new_speed
       scheduleSave()
     end
 
-    r.ImGui_SetNextItemWidth(ctx, 128)
+    r.ImGui_SetNextItemWidth(ctx, content_width)
     local changed, new_size = r.ImGui_SliderDouble(ctx, "Size", state.figures_size, 0.1, 1.0, "%.2f")
     if changed then
       state.figures_size = new_size
@@ -1846,17 +2208,17 @@ function drawNavigation()
   end
 
   r.ImGui_Dummy(ctx, 0, 0)
-  r.ImGui_SetNextItemWidth(ctx, 128)
+  r.ImGui_SetNextItemWidth(ctx, content_width)
   local changed, new_range = r.ImGui_SliderDouble(ctx, "Range", state.gesture_range, 0.1, 1.0)
   if changed then state.gesture_range = new_range end
-  r.ImGui_SetNextItemWidth(ctx, 128)
+  r.ImGui_SetNextItemWidth(ctx, content_width)
   local changed, new_min = r.ImGui_SliderDouble(ctx, "Min", state.gesture_min, 0.0, 1.0)
   if changed then
     state.gesture_min = new_min
     if state.gesture_max < new_min then state.gesture_max = new_min end
     scheduleSave()
   end
-  r.ImGui_SetNextItemWidth(ctx, 128)
+  r.ImGui_SetNextItemWidth(ctx, content_width)
   local changed, new_max = r.ImGui_SliderDouble(ctx, "Max", state.gesture_max, 0.0, 1.0)
   if changed then
     state.gesture_max = new_max
@@ -1866,11 +2228,11 @@ function drawNavigation()
 
   r.ImGui_Dummy(ctx, 0, 0)
 
-  if r.ImGui_Button(ctx, "Morph 1", 62) then
+  if r.ImGui_Button(ctx, "Morph 1", (content_width - item_spacing_x) / 2) then
     captureToMorph(1)
   end
   r.ImGui_SameLine(ctx)
-  if r.ImGui_Button(ctx, "Morph 2", 62) then
+  if r.ImGui_Button(ctx, "Morph 2", (content_width - item_spacing_x) / 2) then
     captureToMorph(2)
   end
   r.ImGui_SameLine(ctx)
@@ -1887,7 +2249,7 @@ function drawNavigation()
   end
   r.ImGui_Dummy(ctx, 0, 0)
 
-  if r.ImGui_Button(ctx, "Auto JSFX", 128) then
+  if r.ImGui_Button(ctx, "Auto JSFX", content_width) then
     if state.jsfx_automation_enabled then
       state.jsfx_automation_enabled = false
       state.jsfx_automation_index = -1
@@ -1911,7 +2273,7 @@ function drawNavigation()
     end
   end
 
-  if r.ImGui_Button(ctx, "Show Env", 128) and state.jsfx_automation_enabled and state.jsfx_automation_index >= 0 then
+  if r.ImGui_Button(ctx, "Show Env", content_width) and state.jsfx_automation_enabled and state.jsfx_automation_index >= 0 then
     r.TrackFX_Show(state.track, state.jsfx_automation_index, 3)
   end
 end
@@ -1919,18 +2281,18 @@ end
 function drawMode()
   local header_font = getStyleFont("header")
 
-  if header_font then
-    r.ImGui_PushFont(ctx, header_font)
+  if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, header_font, 0)
     r.ImGui_Text(ctx, "MODE")
     r.ImGui_PopFont(ctx)
     r.ImGui_Separator(ctx)
     r.ImGui_Dummy(ctx, 0, 0)
   end
-  if r.ImGui_Button(ctx, state.pad_mode == 0 and "Single" or "Single", 128, 22) then
+  if r.ImGui_Button(ctx, state.pad_mode == 0 and "Single" or "Single", 128) then
     state.pad_mode = 0
     scheduleSave()
   end
-  if r.ImGui_Button(ctx, state.pad_mode == 1 and "Granular" or "Granular", 128, 22) then
+  if r.ImGui_Button(ctx, state.pad_mode == 1 and "Granular" or "Granular", 128) then
     state.pad_mode = 1
     if not state.granular_grains or #state.granular_grains == 0 then
       initializeGranularGrid()
@@ -1949,7 +2311,8 @@ function drawMode()
       end
     end
     r.ImGui_SetNextItemWidth(ctx, 128)
-    local changed, new_grid_idx = r.ImGui_Combo(ctx, "##gran", current_grid_idx, table.concat(grid_sizes, "\0") .. "\0")
+    local changed, new_grid_idx = r.ImGui_Combo(ctx, "##gran", current_grid_idx,
+      table.concat(grid_sizes, "\0") .. "\0")
     if changed then
       state.granular_grid_size = grid_values[new_grid_idx + 1]
       initializeGranularGrid()
@@ -1998,8 +2361,8 @@ end
 function drawPadSection()
   local header_font = getStyleFont("header")
 
-  if header_font then
-    r.ImGui_PushFont(ctx, header_font)
+  if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, header_font, 0)
     r.ImGui_Text(ctx, "XY PAD")
     r.ImGui_PopFont(ctx)
     r.ImGui_Separator(ctx)
@@ -2015,8 +2378,27 @@ function drawPadSection()
     local click_y = 1.0 - (mouse_y - cursor_pos_y) / pad_size
     if not state.gesture_active then
       state.gesture_active = true
+      state.gesture_base_x = state.gesture_x
+      state.gesture_base_y = state.gesture_y
       captureBaseValues()
+      local cursor_screen_x = cursor_pos_x + state.gesture_x * pad_size
+      local cursor_screen_y = cursor_pos_y + (1.0 - state.gesture_y) * pad_size
+      local dx = mouse_x - cursor_screen_x
+      local dy = mouse_y - cursor_screen_y
+      local distance = math.sqrt(dx * dx + dy * dy)
+      local dead_zone_radius = 30
+      if distance <= dead_zone_radius then
+        state.click_offset_x = state.gesture_x - click_x
+        state.click_offset_y = state.gesture_y - click_y
+      else
+        state.click_offset_x = 0
+        state.click_offset_y = 0
+      end
     end
+    click_x = click_x + state.click_offset_x
+    click_y = click_y + state.click_offset_y
+    click_x = math.max(0, math.min(1, click_x))
+    click_y = math.max(0, math.min(1, click_y))
     if state.navigation_mode == 1 then
       state.random_walk_active = false
     elseif state.navigation_mode == 2 then
@@ -2041,9 +2423,12 @@ function drawPadSection()
   else
     if state.gesture_active then
       state.gesture_active = false
+      state.click_offset_x = 0
+      state.click_offset_y = 0
     end
   end
-  r.ImGui_DrawList_AddRectFilled(draw_list, cursor_pos_x, cursor_pos_y, cursor_pos_x + pad_size, cursor_pos_y + pad_size,
+  r.ImGui_DrawList_AddRectFilled(draw_list, cursor_pos_x, cursor_pos_y, cursor_pos_x + pad_size,
+    cursor_pos_y + pad_size,
     0x222222FF)
   r.ImGui_DrawList_AddRect(draw_list, cursor_pos_x, cursor_pos_y, cursor_pos_x + pad_size, cursor_pos_y + pad_size,
     0x666666FF)
@@ -2084,8 +2469,8 @@ function drawPadSection()
     r.ImGui_DrawList_AddCircle(draw_list, target_dot_x, target_dot_y, 6, 0x888888FF, 0, 2)
   end
   local mono_font = getStyleFont("mono")
-  if mono_font then
-    r.ImGui_PushFont(ctx, mono_font)
+  if mono_font and r.ImGui_ValidatePtr(mono_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, mono_font, 0)
     r.ImGui_Text(ctx, string.format("Position: %.2f, %.2f", state.gesture_x, state.gesture_y))
     r.ImGui_PopFont(ctx)
   end
@@ -2093,29 +2478,32 @@ end
 
 function drawRandomizer()
   local header_font = getStyleFont("header")
+  local content_width = r.ImGui_GetContentRegionAvail(ctx)
+  local button_width = content_width - item_spacing_x
 
-  if header_font then
-    r.ImGui_PushFont(ctx, header_font)
+
+  if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, header_font, 0)
     r.ImGui_Text(ctx, "RANDOMIZER")
     r.ImGui_PopFont(ctx)
     r.ImGui_Separator(ctx)
     r.ImGui_Dummy(ctx, 0, 0)
   end
-  if r.ImGui_Button(ctx, "FX Order", 128) then
+  if r.ImGui_Button(ctx, "FX Order", content_width) then
     randomizeFXOrder()
   end
-  if r.ImGui_Button(ctx, "Bypass", 62) then
+  if r.ImGui_Button(ctx, "Bypass", (content_width - item_spacing_x) / 2) then
     randomBypassFX()
   end
   r.ImGui_SameLine(ctx)
-  r.ImGui_SetNextItemWidth(ctx, 62)
+  r.ImGui_SetNextItemWidth(ctx, (content_width - item_spacing_x) / 2)
   local changed, new_bypass = r.ImGui_SliderDouble(ctx, "##bypass", state.random_bypass_percentage * 100, 0.0, 100.0,
     "%.0f%%")
   if changed then
     state.random_bypass_percentage = new_bypass / 100
     scheduleSave()
   end
-  if r.ImGui_Button(ctx, "XY", 36) then
+  if r.ImGui_Button(ctx, "XY", (content_width - 2 * item_spacing_x) / 4) then
     globalRandomXYAssign()
   end
   r.ImGui_SameLine(ctx)
@@ -2125,14 +2513,14 @@ function drawRandomizer()
     scheduleSave()
   end
   r.ImGui_SameLine(ctx)
-  if r.ImGui_Button(ctx, "N", 62) then
+  if r.ImGui_Button(ctx, "N", (content_width - item_spacing_x) / 2) then
     globalRandomInvert()
   end
   r.ImGui_Dummy(ctx, 0, 0)
-  if r.ImGui_Button(ctx, "Ranges", 128) then
+  if r.ImGui_Button(ctx, "Ranges", content_width) then
     globalRandomRanges()
   end
-  r.ImGui_SetNextItemWidth(ctx, 62)
+  r.ImGui_SetNextItemWidth(ctx, (content_width - item_spacing_x) / 2)
   local changed, new_rmin = r.ImGui_SliderDouble(ctx, "##rngmin", state.range_min, 0.0, 1.0, "%.2f")
   if changed then
     state.range_min = new_rmin
@@ -2140,7 +2528,7 @@ function drawRandomizer()
     scheduleSave()
   end
   r.ImGui_SameLine(ctx)
-  r.ImGui_SetNextItemWidth(ctx, 62)
+  r.ImGui_SetNextItemWidth(ctx, (content_width - item_spacing_x) / 2)
   local changed, new_rmax = r.ImGui_SliderDouble(ctx, "##rngmax", state.range_max, 0.0, 1.0, "%.2f")
   if changed then
     state.range_max = new_rmax
@@ -2148,14 +2536,14 @@ function drawRandomizer()
     scheduleSave()
   end
   r.ImGui_Dummy(ctx, 0, 0)
-  if r.ImGui_Button(ctx, "Bases", 128) then
+  if r.ImGui_Button(ctx, "Bases", content_width) then
     randomizeAllBases()
   end
 
-  r.ImGui_SetNextItemWidth(ctx, 128)
+  r.ImGui_SetNextItemWidth(ctx, content_width)
   local changed, new_intensity = r.ImGui_SliderDouble(ctx, "##intensity", state.randomize_intensity, 0.0, 1.0, "%.2f")
   if changed then state.randomize_intensity = new_intensity end
-  r.ImGui_SetNextItemWidth(ctx, 62)
+  r.ImGui_SetNextItemWidth(ctx, (content_width - item_spacing_x) / 2)
   local changed, new_min = r.ImGui_SliderDouble(ctx, "##basemin", state.randomize_min, 0.0, 1.0, "%.2f")
   if changed then
     state.randomize_min = new_min
@@ -2163,7 +2551,7 @@ function drawRandomizer()
     scheduleSave()
   end
   r.ImGui_SameLine(ctx)
-  r.ImGui_SetNextItemWidth(ctx, 62)
+  r.ImGui_SetNextItemWidth(ctx, (content_width - item_spacing_x) / 2)
   local changed, new_max = r.ImGui_SliderDouble(ctx, "##basemax", state.randomize_max, 0.0, 1.0, "%.2f")
   if changed then
     state.randomize_max = new_max
@@ -2172,41 +2560,218 @@ function drawRandomizer()
   end
 
   r.ImGui_Dummy(ctx, 0, 0)
-  if r.ImGui_Button(ctx, "Random", 128) then
+  if r.ImGui_Button(ctx, "Random", content_width) then
     globalRandomSelect()
     saveTrackSelection()
   end
 
-  r.ImGui_SetNextItemWidth(ctx, 62)
+  r.ImGui_SetNextItemWidth(ctx, (content_width - item_spacing_x) / 2)
   local changed, new_min = r.ImGui_SliderInt(ctx, "##min", state.random_min, 1, 300)
   if changed then state.random_min = new_min end
   r.ImGui_SameLine(ctx)
   r.ImGui_SameLine(ctx)
-  r.ImGui_SetNextItemWidth(ctx, 62)
+  r.ImGui_SetNextItemWidth(ctx, (content_width - item_spacing_x) / 2)
   local changed, new_max = r.ImGui_SliderInt(ctx, "##max", state.random_max, 1, 300)
   if changed then
     state.random_max = math.max(new_max, state.random_min)
   end
+end
+
+function drawPresets()
+  local header_font = getStyleFont("header")
+  local content_width = r.ImGui_GetContentRegionAvail(ctx)
+
+  if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, header_font, 0)
+    r.ImGui_Text(ctx, "PRESETS")
+    r.ImGui_PopFont(ctx)
+    r.ImGui_Separator(ctx)
+    r.ImGui_Dummy(ctx, 0, 0)
+  end
+
+  local button_width = (content_width - item_spacing_x) / 2
+  if r.ImGui_Button(ctx, "Save##presets", button_width) then
+   if state.current_loaded_preset ~= "" then
+    savePreset(state.current_loaded_preset)
+   else
+    local retval, preset_name = r.GetUserInputs("Save FX Chain Preset", 1, "Preset name:", "")
+    if retval and preset_name ~= "" then
+     savePreset(preset_name)
+     state.current_loaded_preset = preset_name
+    saveTrackSelection()
+   end
+  end
+  end
+  r.ImGui_SameLine(ctx)
+  if r.ImGui_Button(ctx, "Save As##presets", button_width) then
+  local retval, preset_name = r.GetUserInputs("Save FX Chain Preset As", 1, "Preset name:", state.current_loaded_preset)
+  if retval and preset_name ~= "" then
+  savePreset(preset_name)
+  state.current_loaded_preset = preset_name
+   saveTrackSelection()
+   end
+	end
+
+  local preset_list = {}
+  local preset_names = {}
+  local current_index = -1
+  local i = 0
+  for name, _ in pairs(state.presets) do
+    table.insert(preset_names, name)
+  end
+  table.sort(preset_names)
+  for idx, name in ipairs(preset_names) do
+    if name == state.current_loaded_preset then
+      current_index = idx - 1
+    end
+  end
+
+  r.ImGui_SetNextItemWidth(ctx, content_width)
+  local preset_combo_str = table.concat(preset_names, "\0") .. "\0"
+  if preset_combo_str == "\0" then preset_combo_str = " \0" end
+  local changed, new_index = r.ImGui_Combo(ctx, "##presetlist", current_index, preset_combo_str)
+  if changed and new_index >= 0 and preset_names[new_index + 1] then
+  loadPreset(preset_names[new_index + 1])
+  end
+
+  local delete_button_width = (content_width - item_spacing_x) / 2
+	if r.ImGui_Button(ctx, "Rename##preset", delete_button_width) then
+		if state.current_loaded_preset ~= "" then
+			local retval, new_name = r.GetUserInputs("Rename Preset", 1, "New name:", state.current_loaded_preset)
+			if retval and new_name ~= "" and new_name ~= state.current_loaded_preset then
+				renamePreset(state.current_loaded_preset, new_name)
+				state.current_loaded_preset = new_name
+				saveTrackSelection()
+			end
+		end
+	end
+	r.ImGui_SameLine(ctx)
+	if r.ImGui_Button(ctx, "Delete##preset", delete_button_width) then
+    if state.current_loaded_preset ~= "" then
+      local result = r.ShowMessageBox("Delete preset '" .. state.current_loaded_preset .. "'?", "Delete Preset", 4)
+      if result == 6 then
+        deletePreset(state.current_loaded_preset)
+        state.current_loaded_preset = ""
+      end
+    end
+  end
 
   r.ImGui_Dummy(ctx, 0, 0)
-  if r.ImGui_Button(ctx, "Presets", 128) then
-    state.show_presets_window = true
+
+  if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, header_font, 0)
+    r.ImGui_Text(ctx, "SNAPSHOTS")
+    r.ImGui_PopFont(ctx)
+    r.ImGui_Separator(ctx)
+    r.ImGui_Dummy(ctx, 0, 0)
+  end
+
+  r.ImGui_SetNextItemWidth(ctx, content_width)
+  local changed, new_name = r.ImGui_InputText(ctx, "##snapname", state.snapshot_name)
+  if changed then state.snapshot_name = new_name end
+
+  if r.ImGui_Button(ctx, "Save##snapshots", content_width) then
+    if state.snapshot_name and state.snapshot_name ~= "" then
+      saveSnapshot(state.snapshot_name)
+    end
+  end
+
+  r.ImGui_Dummy(ctx, 0, 0)
+
+  if r.ImGui_BeginChild(ctx, "SnapshotListPresets", content_width, -1) then
+    local fx_sig = getCurrentFXChainSignature()
+    if fx_sig and state.snapshots[fx_sig] then
+      for name, _ in pairs(state.snapshots[fx_sig]) do
+        r.ImGui_PushID(ctx, name)
+        local button_width = content_width - 54 - (2 * item_spacing_x)
+        if r.ImGui_Button(ctx, name, button_width) then
+          loadSnapshot(name)
+          state.snapshot_name = name
+        end
+        r.ImGui_SameLine(ctx)
+        if r.ImGui_Button(ctx, "R", 22) then
+          local retval, new_name = r.GetUserInputs("Rename Snapshot", 1, "New name:", name)
+          if retval and new_name ~= "" and new_name ~= name then
+            if state.snapshots[fx_sig] and state.snapshots[fx_sig][name] then
+              state.snapshots[fx_sig][new_name] = state.snapshots[fx_sig][name]
+              state.snapshots[fx_sig][name] = nil
+              scheduleSnapshotSave()
+            end
+          end
+        end
+        r.ImGui_SameLine(ctx)
+        if r.ImGui_Button(ctx, "X", 22) then
+          deleteSnapshot(name)
+        end
+        r.ImGui_PopID(ctx)
+      end
+    end
+    r.ImGui_EndChild(ctx)
+  end
+end
+
+function showAllFloatingFX()
+  local target_track = state.track_locked and state.locked_track or state.track
+  if not target_track or not r.ValidatePtr(target_track, "MediaTrack*") then return end
+
+  local command_id = r.NamedCommandLookup("_S&M_WNTSHW3")
+  if command_id > 0 then
+    local current_track = r.GetSelectedTrack(0, 0)
+    r.SetOnlyTrackSelected(target_track)
+    r.Main_OnCommand(command_id, 0)
+    if current_track and current_track ~= target_track then
+      r.SetOnlyTrackSelected(current_track)
+    end
+  end
+end
+
+function closeAllFloatingFX()
+  local target_track = state.track_locked and state.locked_track or state.track
+  if not target_track or not r.ValidatePtr(target_track, "MediaTrack*") then return end
+
+  local command_id = r.NamedCommandLookup("_S&M_WNCLS5")
+  if command_id > 0 then
+    local current_track = r.GetSelectedTrack(0, 0)
+    r.SetOnlyTrackSelected(target_track)
+    r.Main_OnCommand(command_id, 0)
+    if current_track and current_track ~= target_track then
+      r.SetOnlyTrackSelected(current_track)
+    end
   end
 end
 
 function drawFXSection()
   local header_font = getStyleFont("header")
 
-  if header_font then
-    r.ImGui_PushFont(ctx, header_font)
-    r.ImGui_Text(ctx, "FX SETTINGS")
+  if header_font and r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+    r.ImGui_PushFont(ctx, header_font, 0)
+    local header_text = "FX SETTINGS"
+    r.ImGui_Text(ctx, header_text)
     r.ImGui_PopFont(ctx)
+    r.ImGui_SameLine(ctx)
+    local selection_text = "| Selected: " .. state.selected_count
+    if state.current_loaded_preset ~= "" then
+      selection_text = selection_text .. " | " .. state.current_loaded_preset
+    end
+    r.ImGui_Text(ctx, selection_text)
     r.ImGui_Separator(ctx)
     r.ImGui_Dummy(ctx, 0, 0)
   end
   if r.ImGui_Button(ctx, state.show_filters_window and "Hide Filters" or "Show Filters") then
     state.show_filters_window = not state.show_filters_window
   end
+  r.ImGui_SameLine(ctx)
+  r.ImGui_Dummy(ctx, 0, 0)
+  r.ImGui_SameLine(ctx)
+  if r.ImGui_Button(ctx, "Show All FX") then
+    showAllFloatingFX()
+  end
+  r.ImGui_SameLine(ctx)
+  if r.ImGui_Button(ctx, "Close All FX") then
+    closeAllFloatingFX()
+  end
+  r.ImGui_SameLine(ctx)
+  r.ImGui_Dummy(ctx, 0, 0)
   r.ImGui_SameLine(ctx)
   if r.ImGui_Button(ctx, "Collapse All") then
     state.all_fx_collapsed = true
@@ -2222,7 +2787,7 @@ function drawFXSection()
     end
   end
   r.ImGui_SameLine(ctx)
-  r.ImGui_Text(ctx, "Selected: " .. state.selected_count)
+  r.ImGui_Dummy(ctx, 0, 0)
   r.ImGui_SameLine(ctx)
   if r.ImGui_Button(ctx, "All") then
     for fx_id, fx_data in pairs(state.fx_data) do
@@ -2231,15 +2796,17 @@ function drawFXSection()
     saveTrackSelection()
   end
   r.ImGui_SameLine(ctx)
-  if r.ImGui_Button(ctx, "Clear") then
+  if r.ImGui_Button(ctx, "All Cont") then
     for fx_id, fx_data in pairs(state.fx_data) do
-      selectAllParams(fx_data.params, false)
+      selectAllContinuousParams(fx_data.params, true)
     end
     saveTrackSelection()
   end
   r.ImGui_SameLine(ctx)
-  if r.ImGui_Button(ctx, "Set Base", 60) then
-    captureBaseValues()
+  if r.ImGui_Button(ctx, "Clear") then
+    for fx_id, fx_data in pairs(state.fx_data) do
+      selectAllParams(fx_data.params, false)
+    end
     saveTrackSelection()
   end
   r.ImGui_Dummy(ctx, 0, 0)
@@ -2258,88 +2825,114 @@ function drawFXSection()
           r.ImGui_BeginGroup(ctx)
           r.ImGui_PushStyleVar(ctx, r.ImGui_StyleVar_ChildBorderSize(), 1)
           local collapsed = state.fx_collapsed[fx_id] or false
-          local child_width = collapsed and 22 or fx_width
-          local child_height = collapsed and 270 or -1
+          local child_width = collapsed and 28 or fx_width
+          local child_height = collapsed and 320 or -1
           if r.ImGui_BeginChild(ctx, "FX" .. fx_id, child_width, child_height) then
             if collapsed then
+              if r.ImGui_Button(ctx, "+", -1) then
+                state.fx_collapsed[fx_id] = false
+              end
+              local enabled = fx_data.enabled
               r.ImGui_PushStyleVar(ctx, r.ImGui_StyleVar_ButtonTextAlign(), 0.5, 0.0)
               local fx_name_vertical = ""
               for i = 1, #fx_data.name do
                 fx_name_vertical = fx_name_vertical .. fx_data.name:sub(i, i) .. "\n"
               end
-              if r.ImGui_Button(ctx, fx_name_vertical, 22, 242) then
-                state.fx_collapsed[fx_id] = false
+              if r.ImGui_Button(ctx, fx_name_vertical, -1, 242) then
+                local actual_fx_id = fx_data.actual_fx_id or fx_id
+                r.TrackFX_Show(state.track, actual_fx_id, 3)
               end
               r.ImGui_PopStyleVar(ctx)
-              local enabled = fx_data.enabled
               if r.ImGui_Checkbox(ctx, "##enabled" .. fx_id, enabled) then
                 local actual_fx_id = fx_data.actual_fx_id or fx_id
                 r.TrackFX_SetEnabled(state.track, actual_fx_id, not enabled)
                 fx_data.enabled = not enabled
               end
-            else
-              local header_text = fx_data.name .. " [-]"
-              if r.ImGui_Button(ctx, header_text, fx_width - 44, 22) then
-                state.fx_collapsed[fx_id] = true
-              end
-              r.ImGui_SameLine(ctx)
-              local enabled = fx_data.enabled
-              if r.ImGui_Checkbox(ctx, "##enabled" .. fx_id, enabled) then
-                local actual_fx_id = fx_data.actual_fx_id or fx_id
-                r.TrackFX_SetEnabled(state.track, actual_fx_id, not enabled)
-                fx_data.enabled = not enabled
-              end
-              r.ImGui_Dummy(ctx, 0, 0)
-              local btn_width1 = (fx_width - 30) / 4
-              local btn_width2 = (fx_width - 26) / 3
-              if r.ImGui_Button(ctx, "All##" .. fx_id, btn_width1) then
+          else
+            local content_width = r.ImGui_GetContentRegionAvail(ctx)
+            local num_elements_line1 = 3
+            local num_spacings_line1 = num_elements_line1 - 1
+            local available_width_line1 = content_width - (num_spacings_line1 * item_spacing_x)
+            local part_width_line1 = available_width_line1 / 15
+
+            if r.ImGui_Button(ctx, "-", part_width_line1) then
+              state.fx_collapsed[fx_id] = true
+            end
+            r.ImGui_SameLine(ctx, 0, item_spacing_x)
+            if r.ImGui_Button(ctx, fx_data.name, 13 * part_width_line1) then
+              local actual_fx_id = fx_data.actual_fx_id or fx_id
+              local is_visible = r.TrackFX_GetOpen(state.track, actual_fx_id)
+              r.TrackFX_Show(state.track, actual_fx_id, is_visible and 2 or 3)
+            end
+            r.ImGui_SameLine(ctx, 0, item_spacing_x)
+            local enabled = fx_data.enabled
+            if r.ImGui_Checkbox(ctx, "##enabled" .. fx_id, enabled) then
+              local actual_fx_id = fx_data.actual_fx_id or fx_id
+              r.TrackFX_SetEnabled(state.track, actual_fx_id, not enabled)
+              fx_data.enabled = not enabled
+            end
+            local num_items = 5
+            local item_width = (content_width - (item_spacing_x * (num_items - 1))) / num_items
+            if r.ImGui_Button(ctx, "All##" .. fx_id, item_width) then
                 selectAllParams(fx_data.params, true)
                 saveTrackSelection()
               end
               r.ImGui_SameLine(ctx)
-              if r.ImGui_Button(ctx, "None##" .. fx_id, btn_width1) then
+              if r.ImGui_Button(ctx, "Cont##" .. fx_id, item_width) then
+                selectAllContinuousParams(fx_data.params, true)
+                saveTrackSelection()
+              end
+              r.ImGui_SameLine(ctx)
+              if r.ImGui_Button(ctx, "None##" .. fx_id, item_width) then
                 selectAllParams(fx_data.params, false)
                 saveTrackSelection()
               end
               r.ImGui_SameLine(ctx)
-              if r.ImGui_Button(ctx, "Rnd##" .. fx_id, btn_width1) then
+              if r.ImGui_Button(ctx, "Rnd##" .. fx_id, item_width) then
                 randomSelectParams(fx_data.params, fx_id)
                 saveTrackSelection()
               end
               r.ImGui_SameLine(ctx)
-              r.ImGui_SetNextItemWidth(ctx, btn_width1)
-              local changed, new_max = r.ImGui_SliderInt(ctx, "##max" .. fx_id, state.fx_random_max[fx_id] or 3, 1, 10)
-              if changed then
-                state.fx_random_max[fx_id] = new_max
-                saveTrackSelection()
-              end
-              if r.ImGui_Button(ctx, "RandXY##" .. fx_id, btn_width2) then
+              r.ImGui_SetNextItemWidth(ctx, item_width)
+              local fx_key = getFXKey(fx_id)
+              local current_max = (fx_key and state.fx_random_max[fx_key]) or 3
+              local changed, new_max = r.ImGui_SliderInt(ctx, "##max" .. fx_id, current_max, 1, 10)
+              if changed and fx_key then
+              state.fx_random_max[fx_key] = new_max
+               saveTrackSelection()
+            end
+              local num_items = 3
+              local item_width = (content_width - (item_spacing_x * (num_items - 1))) / num_items
+              if r.ImGui_Button(ctx, "RandXY##" .. fx_id, item_width) then
                 randomizeXYAssign(fx_data.params, fx_id)
               end
               r.ImGui_SameLine(ctx)
-              if r.ImGui_Button(ctx, "RandRng##" .. fx_id, btn_width2) then
+              if r.ImGui_Button(ctx, "RandRng##" .. fx_id, item_width) then
                 randomizeRanges(fx_data.params, fx_id)
               end
               r.ImGui_SameLine(ctx)
-              if r.ImGui_Button(ctx, "RndBase##" .. fx_id, btn_width2) then
+              if r.ImGui_Button(ctx, "RndBase##" .. fx_id, item_width) then
                 randomizeBaseValues(fx_data.params, fx_id)
               end
               r.ImGui_Dummy(ctx, 0, 0)
-              if r.ImGui_BeginTable(ctx, "params" .. fx_id, 6, r.ImGui_TableFlags_SizingFixedFit()) then
-                r.ImGui_TableSetupColumn(ctx, "Name", 0, 110)
-                r.ImGui_TableSetupColumn(ctx, "N", 0, 18)
-                r.ImGui_TableSetupColumn(ctx, "X", 0, 18)
-                r.ImGui_TableSetupColumn(ctx, "Y", 0, 18)
-                r.ImGui_TableSetupColumn(ctx, "Range", 0, 62)
-                r.ImGui_TableSetupColumn(ctx, "Base", 0, 62)
+              local table_flags = r.ImGui_TableFlags_SizingStretchProp()
+              if r.ImGui_BeginTable(ctx, "params" .. fx_id, 6, table_flags) then
+                r.ImGui_TableSetupColumn(ctx, "Name", 0, 4.0)
+                r.ImGui_TableSetupColumn(ctx, "N", 0, 1.0)
+                r.ImGui_TableSetupColumn(ctx, "X", 0, 1.0)
+                r.ImGui_TableSetupColumn(ctx, "Y", 0, 1.0)
+                r.ImGui_TableSetupColumn(ctx, "Range", 0, 2.0)
+                r.ImGui_TableSetupColumn(ctx, "Base", 0, 2.0)
                 for param_id, param_data in pairs(fx_data.params) do
+                  r.ImGui_PushID(ctx, fx_id * 10000 + param_id)
                   r.ImGui_TableNextRow(ctx)
                   r.ImGui_TableNextColumn(ctx)
                   local param_name = param_data.name
                   if #param_name > 14 then
                     param_name = param_name:sub(1, 11) .. "..."
                   end
-                  local changed, selected = r.ImGui_Checkbox(ctx, param_name .. "##" .. fx_id .. "_" .. param_id,
+                  local changed, selected = r.ImGui_Checkbox(ctx,
+                    param_name .. "##" .. fx_id .. "_" .. param_id,
                     param_data.selected)
                   if changed then
                     param_data.selected = selected
@@ -2354,32 +2947,46 @@ function drawFXSection()
                   end
                   r.ImGui_TableNextColumn(ctx)
                   local param_invert = getParamInvert(fx_id, param_id)
-                  if r.ImGui_Button(ctx, param_invert and "N" or "P" .. "##n" .. fx_id .. "_" .. param_id, 22, 22) then
+                  if r.ImGui_Button(ctx, param_invert and "N" or "P" .. "##n" .. fx_id .. "_" .. param_id, -1) then
                     setParamInvert(fx_id, param_id, not param_invert)
                   end
                   r.ImGui_TableNextColumn(ctx)
                   local x_assign, y_assign = getParamXYAssign(fx_id, param_id)
                   local param_invert = getParamInvert(fx_id, param_id)
-                  if r.ImGui_Button(ctx, x_assign and "X" or "-" .. "##x" .. fx_id .. "_" .. param_id, 22, 22) then
+                  if r.ImGui_Button(ctx, x_assign and "X" or "-" .. "##x" .. fx_id .. "_" .. param_id, -1) then
                     setParamXYAssign(fx_id, param_id, "x", not x_assign)
                   end
                   r.ImGui_TableNextColumn(ctx)
-                  if r.ImGui_Button(ctx, y_assign and "Y" or "-" .. "##y" .. fx_id .. "_" .. param_id, 22, 22) then
+                  if r.ImGui_Button(ctx, y_assign and "Y" or "-" .. "##y" .. fx_id .. "_" .. param_id, -1) then
                     setParamXYAssign(fx_id, param_id, "y", not y_assign)
                   end
                   r.ImGui_TableNextColumn(ctx)
-                  r.ImGui_SetNextItemWidth(ctx, 66)
+                  r.ImGui_SetNextItemWidth(ctx, -1)
                   local range = getParamRange(fx_id, param_id)
-                  local changed, new_range = r.ImGui_SliderDouble(ctx, "##r" .. fx_id .. "_" .. param_id, range, 0.1, 1.0,
+                  local changed, new_range = r.ImGui_SliderDouble(ctx,
+                    "##r" .. fx_id .. "_" .. param_id, range, 0.1, 1.0,
                     "%.1f")
                   if changed then
                     setParamRange(fx_id, param_id, new_range)
                   end
                   r.ImGui_TableNextColumn(ctx)
-                  r.ImGui_SetNextItemWidth(ctx, 66)
+                  r.ImGui_SetNextItemWidth(ctx, -1)
+                  local format_str = "%.2f"
+                  local display_value = param_data.base_value
+                  if param_data.step_count and param_data.step_count == 2 then
+                    format_str = param_data.base_value > 0.5 and "ON" or "OFF"
+                    display_value = param_data.base_value > 0.5 and 1.0 or 0.0
+                  elseif param_data.step_count and param_data.step_count > 2 and param_data.step_count <= 5 then
+                    local step_index = math.floor(param_data.base_value * (param_data.step_count - 1) +
+                    0.5)
+                    format_str = tostring(step_index + 1) .. "/" .. param_data.step_count
+                  end
                   local changed, new_base = r.ImGui_SliderDouble(ctx, "##b" .. fx_id .. "_" .. param_id,
-                    param_data.base_value, 0.0, 1.0, "%.2f")
+                    param_data.base_value, 0.0, 1.0, format_str)
                   if changed then
+                    if param_data.step_count and param_data.step_count > 0 then
+                      new_base = snapToDiscreteValue(new_base, param_data.step_count)
+                    end
                     updateParamBaseValue(fx_id, param_id, new_base)
                   end
                   if r.ImGui_IsItemHovered(ctx) then
@@ -2395,9 +3002,11 @@ function drawFXSection()
                     r.ImGui_SetTooltip(ctx,
                       param_data.name ..
                       ": " ..
-                      string.format("%.3f (Base: %.3f, Range: %.1f)", param_data.current_value, param_data.base_value,
+                      string.format("%.3f (Base: %.3f, Range: %.1f)", param_data.current_value,
+                        param_data.base_value,
                         range) .. xy_text .. invert_text)
                   end
+                  r.ImGui_PopID(ctx)
                 end
                 r.ImGui_EndTable(ctx)
               end
@@ -2419,7 +3028,7 @@ function drawResetButton()
   local window_pos_x, window_pos_y = r.ImGui_GetWindowPos(ctx)
   local child_pos_x, child_pos_y = r.ImGui_GetCursorPos(ctx)
   r.ImGui_SetCursorPos(ctx, child_pos_x, child_pos_y)
-  if r.ImGui_Button(ctx, "Reset", 80, 30) then
+  if r.ImGui_Button(ctx, "Reset", 80) then
     state.gesture_x = 0.5
     state.gesture_y = 0.5
     updateJSFXFromGesture()
@@ -2433,7 +3042,7 @@ function drawResetButton()
 end
 
 function drawHorizontalLayout()
-  if r.ImGui_BeginChild(ctx, "Navigation", 188, 0) then
+  if r.ImGui_BeginChild(ctx, "Navigation", 160, 0) then
     drawNavigation()
     r.ImGui_EndChild(ctx)
   end
@@ -2462,6 +3071,13 @@ function drawHorizontalLayout()
   r.ImGui_SameLine(ctx)
   r.ImGui_Dummy(ctx, 0, 0)
   r.ImGui_SameLine(ctx)
+  if r.ImGui_BeginChild(ctx, "Presets", 180, 0) then
+    drawPresets()
+    r.ImGui_EndChild(ctx)
+  end
+  r.ImGui_SameLine(ctx)
+  r.ImGui_Dummy(ctx, 0, 0)
+  r.ImGui_SameLine(ctx)
   if r.ImGui_BeginChild(ctx, "FX", 0, 0) then
     drawFXSection()
     r.ImGui_EndChild(ctx)
@@ -2469,53 +3085,91 @@ function drawHorizontalLayout()
 end
 
 function drawInterface()
-  if sl then
-    local success, colors, vars = sl.applyToContext(ctx)
-    if success then pc, pv = colors, vars end
+  if style_loader then
+    local success, colors, vars = style_loader.applyToContext(ctx)
+    if success then pushed_colors, pushed_vars = colors, vars end
   end
 
   r.ImGui_SetNextWindowSize(ctx, 1400, 800, r.ImGui_Cond_FirstUseEver())
-  local visible, open = r.ImGui_Begin(ctx, 'FX Constellation', true)
+  local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
+  local visible, open = r.ImGui_Begin(ctx, 'FX Constellation', true, window_flags)
   if visible then
-    local main_font = getStyleFont("main")
-
-    if main_font then
-      r.ImGui_PushFont(ctx, main_font)
+    if style_loader and style_loader.PushFont(ctx, "header") then
+      local lock_icon = state.track_locked and "[L] " or ""
+      r.ImGui_Text(ctx, lock_icon .. "FX Constellation")
+      style_loader.PopFont(ctx)
+    else
+      local lock_icon = state.track_locked and "[L] " or ""
+      r.ImGui_Text(ctx, lock_icon .. "FX Constellation")
     end
 
-    checkSave()
-    updateGestureMotion()
-    local new_track = r.GetSelectedTrack(0, 0)
-    if new_track ~= state.track then
-      if state.track then saveTrackSelection() end
-      state.track = new_track
-      if state.track then
-        scanTrackFX()
-        state.jsfx_automation_index = findAutomationJSFX()
-        state.jsfx_automation_enabled = state.jsfx_automation_index >= 0
+    r.ImGui_SameLine(ctx)
+    local lock_button_size = header_font_size + 6
+    if r.ImGui_Button(ctx, state.track_locked and "U" or "L", lock_button_size, lock_button_size) then
+      if state.track_locked then
+        state.track_locked = false
+        state.locked_track = nil
+      else
+        state.track_locked = true
+        state.locked_track = state.track
       end
     end
-    if isTrackValid() then
-      checkForFXChanges()
-    end
-    if not isTrackValid() then
-      r.ImGui_Text(ctx, "No track selected")
-      if main_font then r.ImGui_PopFont(ctx) end
-      r.ImGui_End(ctx)
-      if sl then sl.clearStyles(ctx, pc, pv) end
-      return open
+    if r.ImGui_IsItemHovered(ctx) then
+      r.ImGui_SetTooltip(ctx, state.track_locked and "Unlock track" or "Lock to current track")
     end
 
-    drawHorizontalLayout()
+    r.ImGui_SameLine(ctx)
+    local close_button_size = header_font_size + 6
+    local close_x = r.ImGui_GetWindowWidth(ctx) - close_button_size - window_padding_x
+    r.ImGui_SetCursorPosX(ctx, close_x)
+    if r.ImGui_Button(ctx, "X", close_button_size, close_button_size) then
+      open = false
+    end
 
-    if main_font then
-      r.ImGui_PopFont(ctx)
+    if style_loader and style_loader.PushFont(ctx, "main") then
+      r.ImGui_Separator(ctx)
+
+      checkSave()
+      updateGestureMotion()
+
+      if not state.track_locked then
+        local new_track = r.GetSelectedTrack(0, 0)
+        if new_track ~= state.track then
+          if state.track then saveTrackSelection() end
+          state.track = new_track
+          if state.track then
+            scanTrackFX()
+            state.jsfx_automation_index = findAutomationJSFX()
+            state.jsfx_automation_enabled = state.jsfx_automation_index >= 0
+          end
+        end
+      else
+        if state.locked_track and r.ValidatePtr(state.locked_track, "MediaTrack*") then
+          state.track = state.locked_track
+        else
+          state.track_locked = false
+          state.locked_track = nil
+        end
+      end
+      if isTrackValid() then
+        checkForFXChanges()
+      end
+      if not isTrackValid() then
+        r.ImGui_Text(ctx, "No track selected")
+        if style_loader and style_loader.PopFont then style_loader.PopFont(ctx) end
+        r.ImGui_End(ctx)
+        if style_loader then style_loader.clearStyles(ctx, pushed_colors, pushed_vars) end
+        return open
+      end
+
+      drawHorizontalLayout()
+
+      style_loader.PopFont(ctx)
     end
     r.ImGui_End(ctx)
   end
-  if sl then sl.clearStyles(ctx, pc, pv) end
+  if style_loader then style_loader.clearStyles(ctx, pushed_colors, pushed_vars) end
   drawFiltersWindow()
-  drawPresetsWindow()
   return open
 end
 
@@ -2526,13 +3180,3 @@ local function loop()
 end
 r.atexit(saveSettings)
 loop()
-
-
-
-
-
-
-
-
-
-

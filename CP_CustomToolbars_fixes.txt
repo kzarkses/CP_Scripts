@@ -1,0 +1,257 @@
+function DisplayToolbarWidget(toolbar)
+    if not toolbar.is_enabled then return false end
+    
+    if not toolbar.context or not r.ImGui_ValidatePtr(toolbar.context, "ImGui_Context*") then
+        toolbar.context = r.ImGui_CreateContext('Toolbar_' .. toolbar.id)
+        if not toolbar.context then return false end
+        if sl then sl.applyFontsToContext(toolbar.context) end
+        toolbar.font = nil
+        toolbar.font_needs_update = true
+        ClearIconCaches(toolbar)
+    end
+    
+    if not r.ImGui_ValidatePtr(toolbar.context, "ImGui_Context*") then
+        toolbar.context = nil
+        return false
+    end
+    
+    local pc, pv = 0, 0
+    if sl then
+        local success, colors, vars = sl.applyToContext(toolbar.context)
+        if success then pc, pv = colors, vars end
+    end
+    
+    local toolbar_flags = r.ImGui_WindowFlags_NoScrollbar()|
+        r.ImGui_WindowFlags_AlwaysAutoResize()|
+        r.ImGui_WindowFlags_NoTitleBar()|
+        r.ImGui_WindowFlags_NoFocusOnAppearing()|
+        r.ImGui_WindowFlags_NoDocking()|
+        r.ImGui_WindowFlags_NoSavedSettings()
+    
+    if not toolbar.show_background then
+        toolbar_flags = toolbar_flags|r.ImGui_WindowFlags_NoBackground()
+    end
+    
+    local target_hwnd = GetTargetWindow(toolbar)
+    if target_hwnd and toolbar.cached_target_rect then
+        local LEFT, TOP, RIGHT, BOT = toolbar.cached_target_rect.left, toolbar.cached_target_rect.top,
+            toolbar.cached_target_rect.right, toolbar.cached_target_rect.bottom
+        if r.APIExists("ImGui_PointConvertNative") then
+            LEFT, TOP = r.ImGui_PointConvertNative(toolbar.context, LEFT, TOP)
+            RIGHT, BOT = r.ImGui_PointConvertNative(toolbar.context, RIGHT, BOT)
+        end
+        local target_x, target_y
+        if toolbar.snap_to == "topleft" or toolbar.snap_to == "left" then
+            target_x = LEFT + toolbar.offset_x
+            target_y = TOP + toolbar.offset_y
+        elseif toolbar.snap_to == "topright" or toolbar.snap_to == "right" then
+            target_x = RIGHT - toolbar.widget_width - toolbar.offset_x
+            target_y = TOP + toolbar.offset_y
+        elseif toolbar.snap_to == "bottomleft" or toolbar.snap_to == "up" then
+            target_x = LEFT + toolbar.offset_x
+            target_y = BOT - toolbar.widget_height - toolbar.offset_y
+        elseif toolbar.snap_to == "bottomright" or toolbar.snap_to == "down" then
+            target_x = RIGHT - toolbar.widget_width - toolbar.offset_x
+            target_y = BOT - toolbar.widget_height - toolbar.offset_y
+        else
+            target_x = LEFT + toolbar.offset_x
+            target_y = TOP + toolbar.offset_y
+        end
+        r.ImGui_SetNextWindowPos(toolbar.context, target_x, target_y)
+        r.ImGui_SetNextWindowSize(toolbar.context, toolbar.widget_width, toolbar.widget_height)
+        toolbar.first_position_set = true
+    else
+        if not toolbar.first_position_set or toolbar.force_position_update then
+            local pos_x = toolbar.last_pos_x or 100
+            local pos_y = toolbar.last_pos_y or 100
+            r.ImGui_SetNextWindowPos(toolbar.context, pos_x, pos_y)
+            r.ImGui_SetNextWindowSize(toolbar.context, toolbar.widget_width, toolbar.widget_height)
+            toolbar.first_position_set = true
+            toolbar.force_position_update = false
+        end
+    end
+    
+    local style_vars_pushed = 0
+    local style_colors_pushed = 0
+    
+    r.ImGui_PushStyleVar(toolbar.context, r.ImGui_StyleVar_WindowRounding(), toolbar.window_rounding)
+    style_vars_pushed = style_vars_pushed + 1
+    r.ImGui_PushStyleVar(toolbar.context, r.ImGui_StyleVar_FrameRounding(), toolbar.frame_rounding)
+    style_vars_pushed = style_vars_pushed + 1
+    r.ImGui_PushStyleVar(toolbar.context, r.ImGui_StyleVar_PopupRounding(), toolbar.popup_rounding or toolbar.window_rounding)
+    style_vars_pushed = style_vars_pushed + 1
+    r.ImGui_PushStyleVar(toolbar.context, r.ImGui_StyleVar_GrabRounding(), toolbar.grab_rounding or toolbar.frame_rounding)
+    style_vars_pushed = style_vars_pushed + 1
+    r.ImGui_PushStyleVar(toolbar.context, r.ImGui_StyleVar_GrabMinSize(), toolbar.grab_min_size or 8)
+    style_vars_pushed = style_vars_pushed + 1
+    r.ImGui_PushStyleVar(toolbar.context, r.ImGui_StyleVar_FrameBorderSize(), 0)
+    style_vars_pushed = style_vars_pushed + 1
+    r.ImGui_PushStyleVar(toolbar.context, r.ImGui_StyleVar_WindowBorderSize(), toolbar.border_size or 1)
+    style_vars_pushed = style_vars_pushed + 1
+    
+    r.ImGui_PushStyleColor(toolbar.context, r.ImGui_Col_WindowBg(), toolbar.background_color)
+    style_colors_pushed = style_colors_pushed + 1
+    r.ImGui_PushStyleColor(toolbar.context, r.ImGui_Col_Text(), toolbar.text_color)
+    style_colors_pushed = style_colors_pushed + 1
+    r.ImGui_PushStyleColor(toolbar.context, r.ImGui_Col_Border(), toolbar.border_color)
+    style_colors_pushed = style_colors_pushed + 1
+    r.ImGui_PushStyleColor(toolbar.context, r.ImGui_Col_Button(), toolbar.button_color)
+    style_colors_pushed = style_colors_pushed + 1
+    r.ImGui_PushStyleColor(toolbar.context, r.ImGui_Col_ButtonHovered(), toolbar.button_hover_color)
+    style_colors_pushed = style_colors_pushed + 1
+    r.ImGui_PushStyleColor(toolbar.context, r.ImGui_Col_ButtonActive(), toolbar.button_active_color)
+    style_colors_pushed = style_colors_pushed + 1
+    
+    local font_pushed = false
+    if toolbar.font and r.ImGui_ValidatePtr(toolbar.font, "ImGui_Font*") then
+        r.ImGui_PushFont(toolbar.context, toolbar.font)
+        font_pushed = true
+    end
+    
+    local visible, open = r.ImGui_Begin(toolbar.context, 'Toolbar: ' .. toolbar.name, true, toolbar_flags)
+    if visible then
+        DisplayToolbar(toolbar, toolbar.context)
+        if not toolbar.window_to_follow or toolbar.window_to_follow == "custom" then
+            local window_pos_x, window_pos_y = r.ImGui_GetWindowPos(toolbar.context)
+            if window_pos_x ~= toolbar.last_pos_x or window_pos_y ~= toolbar.last_pos_y then
+                toolbar.last_pos_x = window_pos_x
+                toolbar.last_pos_y = window_pos_y
+            end
+        end
+        if r.ImGui_IsWindowHovered(toolbar.context) and r.ImGui_IsMouseClicked(toolbar.context, 1) and not r.ImGui_IsAnyItemHovered(toolbar.context) then
+            show_toolbar_manager = true
+            current_toolbar_index = GetToolbarIndexById(toolbar.id)
+        end
+        r.ImGui_End(toolbar.context)
+    end
+    
+    if font_pushed then r.ImGui_PopFont(toolbar.context) end
+    
+    if style_vars_pushed > 0 then
+        r.ImGui_PopStyleVar(toolbar.context, style_vars_pushed)
+    end
+    if style_colors_pushed > 0 then
+        r.ImGui_PopStyleColor(toolbar.context, style_colors_pushed)
+    end
+    
+    if sl then sl.clearStyles(toolbar.context, pc, pv) end
+    return open
+end
+
+function MainLoop()
+    local current_time = r.time_precise()
+    if current_time - cache_time > CACHE_INTERVAL then
+        for i, tb in ipairs(toolbars) do
+            if tb.is_enabled then
+                if tb.font_needs_update then 
+                    if tb.context and r.ImGui_ValidatePtr(tb.context, "ImGui_Context*") then
+                        InitFont(tb)
+                    end
+                end
+                if tb.cached_target_rect then
+                    tb.cached_target_rect = nil
+                    tb.last_window_check = 0
+                end
+            end
+        end
+        cache_time = current_time
+    end
+    
+    CheckToolbarToggleState()
+    
+    local open_manager = r.GetExtState(extname_base, "open_manager")
+    if open_manager == "1" then
+        show_toolbar_manager = true
+        r.DeleteExtState(extname_base, "open_manager", false)
+    end
+    
+    for i, tb in ipairs(toolbars) do
+        if tb.is_enabled then
+            local should_display = true
+            if tb.auto_hide and not show_toolbar_manager then
+                local target_hwnd = GetTargetWindow(tb)
+                if target_hwnd and tb.cached_target_rect then
+                    local left, top, right, bottom = tb.cached_target_rect.left, tb.cached_target_rect.top,
+                        tb.cached_target_rect.right, tb.cached_target_rect.bottom
+                    local window_width = right - left
+                    local window_height = bottom - top
+                    if window_width < tb.min_window_width or window_height < tb.min_window_height then
+                        should_display = false
+                    end
+                else
+                    local main_hwnd = r.GetMainHwnd()
+                    if main_hwnd then
+                        local retval, main_LEFT, main_TOP, main_RIGHT, main_BOT = r.JS_Window_GetRect(main_hwnd)
+                        if retval then
+                            local main_width = main_RIGHT - main_LEFT
+                            local main_height = main_BOT - main_TOP
+                            if main_width < tb.min_window_width or main_height < tb.min_window_height then
+                                should_display = false
+                            end
+                        end
+                    end
+                end
+            end
+            if show_toolbar_manager then should_display = true end
+            if should_display then 
+                pcall(DisplayToolbarWidget, tb)
+            end
+        end
+    end
+    
+    if show_toolbar_manager then
+        if main_ctx and r.ImGui_ValidatePtr(main_ctx, "ImGui_Context*") then
+            if not ShowToolbarManager() then 
+                show_toolbar_manager = false 
+            end
+        else
+            main_ctx = r.ImGui_CreateContext('Multi-Toolbar Manager')
+            if sl then sl.applyFontsToContext(main_ctx) end
+        end
+    end
+    
+    r.defer(MainLoop)
+end
+
+function Exit()
+    SaveToolbars()
+    
+    for _, tb in ipairs(toolbars) do
+        if tb.context and r.ImGui_ValidatePtr(tb.context, "ImGui_Context*") then
+            if tb.font and r.ImGui_ValidatePtr(tb.font, "ImGui_Font*") then
+                r.ImGui_Detach(tb.context, tb.font)
+            end
+        end
+        ClearIconCaches(tb)
+        tb.context = nil
+        tb.font = nil
+    end
+    
+    if main_ctx and r.ImGui_ValidatePtr(main_ctx, "ImGui_Context*") then
+        if main_font and r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+            r.ImGui_Detach(main_ctx, main_font)
+        end
+    end
+    
+    r.SetToggleCommandState(section_id, command_id, 0)
+    r.RefreshToolbar2(section_id, command_id)
+    r.SetExtState(extname_base, "running", "0", false)
+end
+
+function SetStyle(toolbar, ctx)
+    return false
+end
+
+function CleanupToolbar(toolbar)
+    if toolbar.context and r.ImGui_ValidatePtr(toolbar.context, "ImGui_Context*") then
+        if toolbar.font and r.ImGui_ValidatePtr(toolbar.font, "ImGui_Font*") then
+            r.ImGui_Detach(toolbar.context, toolbar.font)
+        end
+    end
+    ClearIconCaches(toolbar)
+    toolbar.context = nil
+    toolbar.font = nil
+    toolbar.font_needs_update = true
+    toolbar.force_position_update = true
+    toolbar.first_position_set = false
+end

@@ -4,45 +4,99 @@
 
 local r = reaper
 
-local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
-if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
+local script_name = "CP_StretchMarkersControl"
+local style_loader = nil
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
+if r.file_exists(style_loader_path) then 
+    local loader_func = dofile(style_loader_path)
+    if loader_func then 
+        style_loader = loader_func() 
+    end 
+end
 
 local ctx = r.ImGui_CreateContext('Stretch Markers Control')
-local pc, pv = 0, 0
+local pushed_colors = 0
+local pushed_vars = 0
 
-function getFont(font_name)
-    if sl then
-        return sl.getFont(ctx, font_name)
+if style_loader then 
+    style_loader.ApplyFontsToContext(ctx) 
+end
+
+function GetStyleValue(path, default_value)
+    if style_loader then
+        return style_loader.GetValue(path, default_value)
+    end
+    return default_value
+end
+
+function GetFont(font_name)
+    if style_loader then
+        return style_loader.GetFont(ctx, font_name)
     end
     return nil
 end
 
-if sl then sl.applyFontsToContext(ctx) end
+local header_font_size = GetStyleValue("fonts.header.size", 16)
+local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 6)
+local item_spacing_y = GetStyleValue("spacing.item_spacing_y", 6)
+local window_padding_x = GetStyleValue("spacing.window_padding_x", 6)
+local window_padding_y = GetStyleValue("spacing.window_padding_y", 6)
 
-local WINDOW_FLAGS = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
-
-local WINDOW_X_OFFSET = -235  
-local WINDOW_Y_OFFSET = 35  
-local WINDOW_WIDTH = 200    
-local WINDOW_HEIGHT = 76   
-
-local window_position_set = false
-local settings = {
+local config = {
     slope = 0,
-    last_slope = 0  
+    window_x_offset = -235,
+    window_y_offset = 35,
+    window_width = 200,
+    window_height = 76
 }
 
+local state = {
+    last_slope = 0,
+    window_position_set = false
+}
 
-local file = io.open(sp, "r")
-if file then
-  file:close()
-  local loader_func = dofile(sp)
-  if loader_func then
-    sl = loader_func()
-  end
+function ApplyStyle()
+    if style_loader then
+        local success, colors, vars = style_loader.ApplyToContext(ctx)
+        if success then 
+            pushed_colors = colors
+            pushed_vars = vars
+            return true
+        end
+    end
+    return false
 end
 
+function ClearStyle()
+    if style_loader then 
+        style_loader.ClearStyles(ctx, pushed_colors, pushed_vars)
+    end
+end
+
+function SaveSettings()
+    for key, value in pairs(config) do
+        local value_str = tostring(value)
+        if type(value) == "boolean" then
+            value_str = value and "1" or "0"
+        end
+        r.SetExtState(script_name, "config_" .. key, value_str, true)
+    end
+end
+
+function LoadSettings()
+    for key, default_value in pairs(config) do
+        local saved_value = r.GetExtState(script_name, "config_" .. key)
+        if saved_value ~= "" then
+            if type(default_value) == "number" then
+                config[key] = tonumber(saved_value) or default_value
+            elseif type(default_value) == "boolean" then
+                config[key] = saved_value == "1"
+            else
+                config[key] = saved_value
+            end
+        end
+    end
+end
 
 function SaveSelectedItems()
     local items = {}
@@ -52,8 +106,7 @@ function SaveSelectedItems()
     return items
 end
 
-
-function ApplyStretchMarkers(slopeIn)
+function ApplyStretchMarkers(slope_in)
     local items = SaveSelectedItems()
     if #items == 0 then return end  
     
@@ -63,18 +116,15 @@ function ApplyStretchMarkers(slopeIn)
     for i, item in ipairs(items) do
         local take = r.GetActiveTake(item)
         if take then
-            local itemLength = r.GetMediaItemInfo_Value(item, 'D_LENGTH')
+            local item_length = r.GetMediaItemInfo_Value(item, 'D_LENGTH')
             local playrate = r.GetMediaItemTakeInfo_Value(take, 'D_PLAYRATE')
-            
             
             r.DeleteTakeStretchMarkers(take, 0, r.GetTakeNumStretchMarkers(take))
             
-            
             local idx = r.SetTakeStretchMarker(take, -1, 0)
-            r.SetTakeStretchMarker(take, -1, itemLength * playrate)
+            r.SetTakeStretchMarker(take, -1, item_length * playrate)
             
-            
-            local slope = slopeIn
+            local slope = slope_in
             if slope > 4 then
                 slope = math.random() * math.min(4, (slope - 4)) / 4
                 if math.random() > 0.5 then slope = slope * -1 end
@@ -90,155 +140,90 @@ function ApplyStretchMarkers(slopeIn)
     r.UpdateArrange()
 end
 
-function Loop()
-    if not window_position_set then
-        if WINDOW_FOLLOW_MOUSE then
-            local mouse_x, mouse_y = r.GetMousePosition()
-            r.ImGui_SetNextWindowPos(ctx, mouse_x + WINDOW_X_OFFSET, mouse_y + WINDOW_Y_OFFSET)
-        end
-        r.ImGui_SetNextWindowSize(ctx, WINDOW_WIDTH, WINDOW_HEIGHT, r.ImGui_Cond_FirstUseEver())
-        window_position_set = true
-    end
-
-    if sl then
-        local success, colors, vars = sl.applyToContext(ctx)
-        if success then pc, pv = colors, vars end
-    end
-
-    local header_font = getFont("header")
-    local main_font = getFont("main")
-    local button_size = 22
-    local visible, open = r.ImGui_Begin(ctx, 'Stretch Marker', true, WINDOW_FLAGS)
-
+function MainLoop()
+    ApplyStyle()
+    
+    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
+    local visible, open = r.ImGui_Begin(ctx, 'Stretch Markers Control', true, window_flags)
     if visible then
-        if header_font then
-            r.ImGui_PushFont(ctx, header_font)
+        if style_loader and style_loader.PushFont(ctx, "header") then
             r.ImGui_Text(ctx, "Stretch Marker")
-            
-            local text_width, text_height = r.ImGui_CalcTextSize(ctx, "X")
-            button_size = math.max(text_height, 22)
-            
-            r.ImGui_PopFont(ctx)
+            style_loader.PopFont(ctx)
         else
             r.ImGui_Text(ctx, "Stretch Marker")
-            button_size = 22
         end
-        
+
         r.ImGui_SameLine(ctx)
-        local close_x = r.ImGui_GetWindowWidth(ctx) - (button_size + 8)
+        local close_button_size = header_font_size + 6
+        local close_x = r.ImGui_GetWindowWidth(ctx) - close_button_size - window_padding_x
         r.ImGui_SetCursorPosX(ctx, close_x)
-        
-        if r.ImGui_Button(ctx, "X", button_size, button_size) then
+        if r.ImGui_Button(ctx, "X", close_button_size, close_button_size) then
             open = false
         end
 
-        if main_font then r.ImGui_PushFont(ctx, main_font) end
+        if style_loader and style_loader.PushFont(ctx, "main") then
         
         r.ImGui_Separator(ctx)
-        r.ImGui_Spacing(ctx)
         
         local slope_changed
-        slope_changed, settings.slope = r.ImGui_SliderDouble(ctx, 'Slope', settings.slope, -4, 4, '%.2f')
-        r.ImGui_Spacing(ctx)
+        slope_changed, config.slope = r.ImGui_SliderDouble(ctx, 'Slope', config.slope, -4, 4, '%.2f')
         
-        
-        -- r.ImGui_Text(ctx, "Presets:")
-        
-        
-        -- if r.ImGui_Button(ctx, "-2") then
-        --     settings.slope = -4
-        --     slope_changed = true
-        -- end
-        -- r.ImGui_SameLine(ctx)
-        -- if r.ImGui_Button(ctx, "-1.75") then
-        --     settings.slope = -3
-        --     slope_changed = true
-        -- end
-        -- r.ImGui_SameLine(ctx)
-        -- if r.ImGui_Button(ctx, "-1.50") then
-        --     settings.slope = -2
-        --     slope_changed = true
-        -- end
-        -- r.ImGui_SameLine(ctx)
-        -- if r.ImGui_Button(ctx, "-1.25") then
-        --     settings.slope = -1
-        --     slope_changed = true
-        -- end
-        
-        
-        -- if r.ImGui_Button(ctx, "0") then
-        --     settings.slope = 0
-        --     slope_changed = true
-        -- end
-        -- r.ImGui_SameLine(ctx)
-        -- if r.ImGui_Button(ctx, "1.25") then
-        --     settings.slope = 1
-        --     slope_changed = true
-        -- end
-        -- r.ImGui_SameLine(ctx)
-        -- if r.ImGui_Button(ctx, "1.50") then
-        --     settings.slope = 2
-        --     slope_changed = true
-        -- end
-        -- r.ImGui_SameLine(ctx)
-        -- if r.ImGui_Button(ctx, "1.75") then
-        --     settings.slope = 3
-        --     slope_changed = true
-        -- end
-        -- r.ImGui_SameLine(ctx)
-        -- if r.ImGui_Button(ctx, "2") then
-        --     settings.slope = 4
-        --     slope_changed = true
-        -- end
-        
-        
-        if slope_changed or settings.slope ~= settings.last_slope then
-            ApplyStretchMarkers(settings.slope)
-            settings.last_slope = settings.slope
+        if slope_changed or config.slope ~= state.last_slope then
+            ApplyStretchMarkers(config.slope)
+            state.last_slope = config.slope
         end
 
-        if main_font then r.ImGui_PopFont(ctx) end
+            style_loader.PopFont(ctx)
+        end
         
         r.ImGui_End(ctx)
     end
     
+    ClearStyle()
     
-    if sl then sl.clearStyles(ctx, pc, pv) end
-
+    r.PreventUIRefresh(-1)
+    
     if open then
-        r.defer(Loop)
+        r.defer(MainLoop)
+    else
+        SaveSettings()
     end
 end
 
-
 function ToggleScript()
-    local _, _, sectionID, cmdID = r.get_action_context()
-    local state = r.GetToggleCommandState(cmdID)
+    local _, _, section_id, command_id = r.get_action_context()
+    local script_state = r.GetToggleCommandState(command_id)
     
-    if state == -1 or state == 0 then
-        r.SetToggleCommandState(sectionID, cmdID, 1)
-        r.RefreshToolbar2(sectionID, cmdID)
-        Loop()
+    if script_state == -1 or script_state == 0 then
+        r.SetToggleCommandState(section_id, command_id, 1)
+        r.RefreshToolbar2(section_id, command_id)
+        Start()
     else
-        r.SetToggleCommandState(sectionID, cmdID, 0)
-        r.RefreshToolbar2(sectionID, cmdID)
+        r.SetToggleCommandState(section_id, command_id, 0)
+        r.RefreshToolbar2(section_id, command_id)
+        Stop()
     end
+end
+
+function Start()
+    MainLoop()
+end
+
+function Stop()
+    SaveSettings()
+    Cleanup()
+end
+
+function Cleanup()
+    local _, _, section_id, command_id = r.get_action_context()
+    r.SetToggleCommandState(section_id, command_id, 0)
+    r.RefreshToolbar2(section_id, command_id)
 end
 
 function Exit()
-    local _, _, sectionID, cmdID = r.get_action_context()
-    r.SetToggleCommandState(sectionID, cmdID, 0)
-    r.RefreshToolbar2(sectionID, cmdID)
+    SaveSettings()
+    Cleanup()
 end
 
 r.atexit(Exit)
 ToggleScript()
-
-
-
-
-
-
-
-
-

@@ -1,59 +1,25 @@
 -- @description SoundGenerator
--- @version 1.0
+-- @version 1.0.3
 -- @author Cedric Pamalio
 
 local r = reaper
 
-local sl = nil
-local sp = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
-if r.file_exists(sp) then local lf = dofile(sp) if lf then sl = lf() end end
-
-local ctx = r.ImGui_CreateContext('Tone Generator')
-local pc, pv = 0, 0
-
-if sl then sl.applyFontsToContext(ctx) end
-
-function getStyleFont(font_name)
-    if sl then
-        return sl.getFont(ctx, font_name)
-    end
-    return nil
+local script_name = "CP_SoundGenerator"
+local style_loader = nil
+local style_loader_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/Various/CP_ImGuiStyleLoader.lua"
+if r.file_exists(style_loader_path) then 
+    local loader_func = dofile(style_loader_path)
+    if loader_func then 
+        style_loader = loader_func() 
+    end 
 end
 
-function dbToAmplitude(db)
-    return 10 ^ (db / 20)
-end
+local ctx = r.ImGui_CreateContext('Sound Generator')
+local pushed_colors = 0
+local pushed_vars = 0
 
-function amplitudeToDb(amplitude)
-    return 20 * math.log10(math.max(amplitude, 0.000001))
-end
-
-local noise_state = {
-    pink = { b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0 },
-    brown = { last = 0 }
-}
-
-function generateWhiteNoise()
-    return (math.random() * 2 - 1)
-end
-
-function generatePinkNoise()
-    local white = generateWhiteNoise()
-    noise_state.pink.b0 = 0.99886 * noise_state.pink.b0 + white * 0.0555179
-    noise_state.pink.b1 = 0.99332 * noise_state.pink.b1 + white * 0.0750759
-    noise_state.pink.b2 = 0.96900 * noise_state.pink.b2 + white * 0.1538520
-    noise_state.pink.b3 = 0.86650 * noise_state.pink.b3 + white * 0.3104856
-    noise_state.pink.b4 = 0.55000 * noise_state.pink.b4 + white * 0.5329522
-    noise_state.pink.b5 = -0.7616 * noise_state.pink.b5 - white * 0.0168980
-    local pink = noise_state.pink.b0 + noise_state.pink.b1 + noise_state.pink.b2 + noise_state.pink.b3 + noise_state.pink.b4 + noise_state.pink.b5 + noise_state.pink.b6 + white * 0.5362
-    noise_state.pink.b6 = white * 0.115926
-    return pink * 0.11
-end
-
-function generateBrownNoise()
-    local white = generateWhiteNoise()
-    noise_state.brown.last = (noise_state.brown.last + (0.02 * white)) / 1.02
-    return noise_state.brown.last * 3.5
+if style_loader then 
+    style_loader.ApplyFontsToContext(ctx) 
 end
 
 local config = {
@@ -62,22 +28,118 @@ local config = {
     tone_amplitude_db = -6,
     noise_type = "white",
     noise_amplitude_db = -6,
-    window_open = true,
-    auto_close = false
+    auto_close = false,
+    window_width = 310,
+    window_height = 310
 }
 
--- Valeurs par dÃ©faut pour reset
+local state = {
+    window_open = true,
+    noise = {
+        pink = { b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0 },
+        brown = { last = 0 }
+    }
+}
+
 local defaults = {
     tone_frequency = 440,
     tone_amplitude_db = -6,
     noise_amplitude_db = -6
 }
 
-function generateTone(buffer_size, sample_rate)
+function GetStyleValue(path, default_value)
+    if style_loader then
+        return style_loader.GetValue(path, default_value)
+    end
+    return default_value
+end
+
+function GetFont(font_name)
+    if style_loader then
+        return style_loader.GetFont(ctx, font_name)
+    end
+    return nil
+end
+
+function ApplyStyle()
+    if style_loader then
+        local success, colors, vars = style_loader.ApplyToContext(ctx)
+        if success then 
+            pushed_colors = colors
+            pushed_vars = vars
+            return true
+        end
+    end
+    return false
+end
+
+function ClearStyle()
+    if style_loader then 
+        style_loader.ClearStyles(ctx, pushed_colors, pushed_vars)
+    end
+end
+
+function SaveSettings()
+    for key, value in pairs(config) do
+        local value_str = tostring(value)
+        if type(value) == "boolean" then
+            value_str = value and "1" or "0"
+        end
+        r.SetExtState(script_name, "config_" .. key, value_str, true)
+    end
+end
+
+function LoadSettings()
+    for key, default_value in pairs(config) do
+        local saved_value = r.GetExtState(script_name, "config_" .. key)
+        if saved_value ~= "" then
+            if type(default_value) == "number" then
+                config[key] = tonumber(saved_value) or default_value
+            elseif type(default_value) == "boolean" then
+                config[key] = saved_value == "1"
+            else
+                config[key] = saved_value
+            end
+        end
+    end
+end
+
+function DbToAmplitude(db)
+    return 10 ^ (db / 20)
+end
+
+function AmplitudeToDb(amplitude)
+    return 20 * math.log10(math.max(amplitude, 0.000001))
+end
+
+function GenerateWhiteNoise()
+    return (math.random() * 2 - 1)
+end
+
+function GeneratePinkNoise()
+    local white = GenerateWhiteNoise()
+    state.noise.pink.b0 = 0.99886 * state.noise.pink.b0 + white * 0.0555179
+    state.noise.pink.b1 = 0.99332 * state.noise.pink.b1 + white * 0.0750759
+    state.noise.pink.b2 = 0.96900 * state.noise.pink.b2 + white * 0.1538520
+    state.noise.pink.b3 = 0.86650 * state.noise.pink.b3 + white * 0.3104856
+    state.noise.pink.b4 = 0.55000 * state.noise.pink.b4 + white * 0.5329522
+    state.noise.pink.b5 = -0.7616 * state.noise.pink.b5 - white * 0.0168980
+    local pink = state.noise.pink.b0 + state.noise.pink.b1 + state.noise.pink.b2 + state.noise.pink.b3 + state.noise.pink.b4 + state.noise.pink.b5 + state.noise.pink.b6 + white * 0.5362
+    state.noise.pink.b6 = white * 0.115926
+    return pink * 0.11
+end
+
+function GenerateBrownNoise()
+    local white = GenerateWhiteNoise()
+    state.noise.brown.last = (state.noise.brown.last + (0.02 * white)) / 1.02
+    return state.noise.brown.last * 3.5
+end
+
+function GenerateTone(buffer_size, sample_rate)
     local samples = {}
     local phase = 0
     local phase_inc = 2 * math.pi * config.tone_frequency / sample_rate
-    local amplitude = dbToAmplitude(config.tone_amplitude_db)
+    local amplitude = DbToAmplitude(config.tone_amplitude_db)
     
     for i = 1, buffer_size do
         local sample = 0
@@ -99,19 +161,19 @@ function generateTone(buffer_size, sample_rate)
     return samples
 end
 
-function generateNoise(buffer_size, sample_rate)
+function GenerateNoise(buffer_size, sample_rate)
     local samples = {}
-    local amplitude = dbToAmplitude(config.noise_amplitude_db)
+    local amplitude = DbToAmplitude(config.noise_amplitude_db)
     
     for i = 1, buffer_size do
         local sample = 0
         
         if config.noise_type == "white" then
-            sample = generateWhiteNoise()
+            sample = GenerateWhiteNoise()
         elseif config.noise_type == "pink" then
-            sample = generatePinkNoise()
+            sample = GeneratePinkNoise()
         elseif config.noise_type == "brown" then
-            sample = generateBrownNoise()
+            sample = GenerateBrownNoise()
         end
         
         samples[i] = sample * amplitude
@@ -120,7 +182,7 @@ function generateNoise(buffer_size, sample_rate)
     return samples
 end
 
-function createAudioFile(generator_func)
+function CreateAudioFile(generator_func)
     local start_time, end_time = r.GetSet_LoopTimeRange2(0, false, false, 0, 0, false)
     if start_time == end_time then return end
 
@@ -165,47 +227,48 @@ function createAudioFile(generator_func)
             r.Main_OnCommand(40441, 0)
             os.remove(filepath)
             if config.auto_close then
-                config.window_open = false
+                state.window_open = false
             end
         end
     end
 end
 
-function Loop()
-    if not config.window_open then
-        Exit()
-        return
-    end
+function MainLoop()
+    ApplyStyle()
     
-    if sl then
-        local success, colors, vars = sl.applyToContext(ctx)
-        if success then pc, pv = colors, vars end
-    end
+    local header_font = GetFont("header")
+    local main_font = GetFont("main")
     
-    r.ImGui_SetNextWindowSize(ctx, 310, 310, r.ImGui_Cond_Always())
-    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoResize() | r.ImGui_WindowFlags_NoCollapse()
-    local visible, open = r.ImGui_Begin(ctx, 'Tone Generator', true, window_flags)
+    r.ImGui_SetNextWindowSize(ctx, config.window_width, config.window_height, r.ImGui_Cond_FirstUseEver())
+    local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
+    local visible, open = r.ImGui_Begin(ctx, 'Sound Generator', true, window_flags)
     
     if visible then
-        local header_font = getStyleFont("header")
-        local main_font = getStyleFont("main")
-        
-        if header_font then r.ImGui_PushFont(ctx, header_font) end
-        r.ImGui_Text(ctx, "Sound Generator")
-        if header_font then r.ImGui_PopFont(ctx) end
-        if main_font then r.ImGui_PushFont(ctx, main_font) end
+        if style_loader and style_loader.PushFont(ctx, "header") then
+            r.ImGui_Text(ctx, "Sound Generator")
+            style_loader.PopFont(ctx)
+        else
+            r.ImGui_Text(ctx, "Sound Generator")
+        end
         
         r.ImGui_SameLine(ctx)
-        local auto_x = r.ImGui_GetWindowWidth(ctx) - 60
+        local header_font_size = GetStyleValue("fonts.header.size", 16)
+        local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 8)
+        local window_padding_x = GetStyleValue("spacing.window_padding_x", 8)
+        local auto_button_size = header_font_size + 6
+        local close_button_size = header_font_size + 6
+        local buttons_width = auto_button_size + close_button_size + item_spacing_x
+        local auto_x = r.ImGui_GetWindowWidth(ctx) - buttons_width - window_padding_x
+        
         r.ImGui_SetCursorPosX(ctx, auto_x)
-        local was_auto_close = config.auto_close  -- Sauvegarder l'Ã©tat avant le bouton
+        local was_auto_close = config.auto_close
         if config.auto_close then
             r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Button(), r.ImGui_GetStyleColor(ctx, r.ImGui_Col_ButtonActive()))
         end
-        if r.ImGui_Button(ctx, "A", 22, 22) then
+        if r.ImGui_Button(ctx, "A", auto_button_size, auto_button_size) then
             config.auto_close = not config.auto_close
         end
-        if was_auto_close then  -- Utiliser l'ancien Ã©tat pour le pop
+        if was_auto_close then
             r.ImGui_PopStyleColor(ctx)
         end
         if r.ImGui_IsItemHovered(ctx) then
@@ -213,29 +276,23 @@ function Loop()
         end
         
         r.ImGui_SameLine(ctx)
-        local close_x = r.ImGui_GetWindowWidth(ctx) - 30
-        r.ImGui_SetCursorPosX(ctx, close_x)
-        if r.ImGui_Button(ctx, "X", 22, 22) then
+        if r.ImGui_Button(ctx, "X", close_button_size, close_button_size) then
             open = false
         end
         
-        r.ImGui_Spacing(ctx)
-        r.ImGui_Separator(ctx)
-        r.ImGui_Spacing(ctx)
+        if style_loader and style_loader.PushFont(ctx, "main") then
         
-        -- SECTION TONE
+        r.ImGui_Separator(ctx)
+        
         r.ImGui_Text(ctx, "Tone Generator")
-        r.ImGui_Separator(ctx)
-        r.ImGui_Spacing(ctx)
         
-        -- Frequency slider with fine tuning
         local freq_flags = r.ImGui_SliderFlags_AlwaysClamp()
         if r.ImGui_IsKeyDown(ctx, r.ImGui_Key_LeftShift()) or r.ImGui_IsKeyDown(ctx, r.ImGui_Key_RightShift()) then
             freq_flags = freq_flags | r.ImGui_SliderFlags_Logarithmic()
         end
         local freq_changed
         freq_changed, config.tone_frequency = r.ImGui_SliderInt(ctx, 'Frequency (Hz)', config.tone_frequency, 20, 20000, "%d Hz", freq_flags)
-        if r.ImGui_IsItemClicked(ctx, 1) then -- Right click to reset
+        if r.ImGui_IsItemClicked(ctx, 1) then
             config.tone_frequency = defaults.tone_frequency
         end
         if r.ImGui_IsItemHovered(ctx) then
@@ -262,17 +319,13 @@ function Loop()
             r.ImGui_SetTooltip(ctx, "Shift+Drag for fine tuning\nRight-click to reset")
         end
         
-        if r.ImGui_Button(ctx, 'Generate Tone', -1, 30) then
-            createAudioFile(generateTone)
+        if r.ImGui_Button(ctx, 'Generate Tone', -1) then
+            CreateAudioFile(GenerateTone)
         end
         
-        r.ImGui_Spacing(ctx)
-        r.ImGui_Spacing(ctx)
-        
-        -- SECTION NOISE
-        r.ImGui_Text(ctx, "Noise Generator")
         r.ImGui_Separator(ctx)
-        r.ImGui_Spacing(ctx)
+        
+        r.ImGui_Text(ctx, "Noise Generator")
         
         local noise_options = {"white", "pink", "brown"}
         if r.ImGui_BeginCombo(ctx, 'Noise Type', config.noise_type) then
@@ -284,72 +337,74 @@ function Loop()
             r.ImGui_EndCombo(ctx)
         end
         
-        -- Noise amplitude slider with fine tuning
         local noise_amp_flags = r.ImGui_SliderFlags_AlwaysClamp()
         local noise_amp_changed
         noise_amp_changed, config.noise_amplitude_db = r.ImGui_SliderDouble(ctx, 'Noise Amplitude (dB)', config.noise_amplitude_db, -60, 0, "%.1f dB", noise_amp_flags)
-        if r.ImGui_IsItemClicked(ctx, 1) then -- Right click to reset
+        if r.ImGui_IsItemClicked(ctx, 1) then
             config.noise_amplitude_db = defaults.noise_amplitude_db
         end
         if r.ImGui_IsItemHovered(ctx) then
             r.ImGui_SetTooltip(ctx, "Shift+Drag for fine tuning\nRight-click to reset")
         end
         
-        if r.ImGui_Button(ctx, 'Generate Noise', -1, 30) then
-            createAudioFile(generateNoise)
+        if r.ImGui_Button(ctx, 'Generate Noise', -1) then
+            CreateAudioFile(GenerateNoise)
         end
         
-        if main_font then r.ImGui_PopFont(ctx) end
+        style_loader.PopFont(ctx)
+        end
+        
         r.ImGui_End(ctx)
     end
     
-    if sl then sl.clearStyles(ctx, pc, pv) end
+    ClearStyle()
     
-    if not open then
-        config.window_open = false
-    end
+    r.PreventUIRefresh(-1)
     
-    if open and config.window_open then
-        r.defer(Loop)
+    if open and state.window_open then
+        r.defer(MainLoop)
+    else
+        SaveSettings()
     end
 end
 
 function ToggleScript()
-    local _, _, sectionID, cmdID = r.get_action_context()
-    local state = r.GetToggleCommandState(cmdID)
+    local _, _, section_id, command_id = r.get_action_context()
+    local script_state = r.GetToggleCommandState(command_id)
     
-    local auto_close_state = r.GetExtState("CP_GenerateTone", "auto_close")
-    if auto_close_state ~= "" then
-        config.auto_close = auto_close_state == "1"
-    end
-    
-    if state == -1 or state == 0 then
-        r.SetToggleCommandState(sectionID, cmdID, 1)
-        r.RefreshToolbar2(sectionID, cmdID)
-        config.window_open = true
-        Loop()
+    if script_state == -1 or script_state == 0 then
+        r.SetToggleCommandState(section_id, command_id, 1)
+        r.RefreshToolbar2(section_id, command_id)
+        Start()
     else
-        r.SetToggleCommandState(sectionID, cmdID, 0)
-        r.RefreshToolbar2(sectionID, cmdID)
-        config.window_open = false
+        r.SetToggleCommandState(section_id, command_id, 0)
+        r.RefreshToolbar2(section_id, command_id)
+        Stop()
     end
 end
 
+function Start()
+    LoadSettings()
+    state.window_open = true
+    MainLoop()
+end
+
+function Stop()
+    SaveSettings()
+    state.window_open = false
+    Cleanup()
+end
+
+function Cleanup()
+    local _, _, section_id, command_id = r.get_action_context()
+    r.SetToggleCommandState(section_id, command_id, 0)
+    r.RefreshToolbar2(section_id, command_id)
+end
+
 function Exit()
-    local _, _, sectionID, cmdID = r.get_action_context()
-    r.SetExtState("CP_GenerateTone", "auto_close", config.auto_close and "1" or "0", true)
-    r.SetToggleCommandState(sectionID, cmdID, 0)
-    r.RefreshToolbar2(sectionID, cmdID)
+    SaveSettings()
+    Cleanup()
 end
 
 r.atexit(Exit)
 ToggleScript()
-
-
-
-
-
-
-
-
-

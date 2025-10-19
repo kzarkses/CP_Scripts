@@ -1,5 +1,5 @@
 -- @description TimeSelectionSync
--- @version 1.0.3
+-- @version 1.0.2
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -19,7 +19,7 @@ local pushed_colors = 0
 local pushed_vars = 0
 
 if style_loader then 
-    style_loader.ApplyFontsToContext(ctx) 
+    style_loader.applyFontsToContext(ctx) 
 end
 
 local window_flags = r.ImGui_WindowFlags_NoTitleBar() | r.ImGui_WindowFlags_NoCollapse()
@@ -30,31 +30,12 @@ local window_y_offset = 35
 local window_width = 250
 local window_height = 278
 
-function GetStyleValue(path, default_value)
-    if style_loader then
-        return style_loader.GetValue(path, default_value)
-    end
-    return default_value
-end
-
-function GetFont(font_name)
-    if style_loader then
-        return style_loader.GetFont(ctx, font_name)
-    end
-    return nil
-end
-
-local header_font_size = GetStyleValue("fonts.header.size", 16)
-local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 6)
-local item_spacing_y = GetStyleValue("spacing.item_spacing_y", 6)
-local window_padding_x = GetStyleValue("spacing.window_padding_x", 6)
-local window_padding_y = GetStyleValue("spacing.window_padding_y", 6)
-
 local config = {
     time_selection_extension = 0.0,
     sync_edit_cursor = false,
     sync_automation = false,
     sync_time_selection = true,
+    auto_play = true,
     playback_mode = "preview"
 }
 
@@ -64,6 +45,7 @@ local state = {
     last_selected_item_guid = nil,
     mouse_down_time = 0,
     last_mouse_state = 0,
+    click_threshold = 0.15,
     mouse_down_start = 0,
     long_press_threshold = 0.15,
     is_dragging = false,
@@ -77,6 +59,13 @@ local state = {
     last_item_rates = {},
     last_item_selection = {}
 }
+
+function GetFont(font_name)
+    if style_loader then
+        return style_loader.getFont(ctx, font_name)
+    end
+    return nil
+end
 
 function ApplyStyle()
     if style_loader then
@@ -334,6 +323,39 @@ function IsLeftClick()
     return false
 end
 
+function PlaySelectedItem()
+    if not (config.auto_play and IsReaperWindowActive()) then 
+        return 
+    end
+
+    local selected_item_count = r.CountSelectedMediaItems(0)
+    local is_playing = r.GetPlayState() & 1 == 1
+    local is_previewing = r.GetPlayState() & 4 == 4
+    
+    if selected_item_count == 0 and (is_playing or is_previewing) then
+        if config.playback_mode == "preview" then
+            r.Main_OnCommand(r.NamedCommandLookup("_BR_PREV_TAKE_CURSOR"), 0)
+        else
+            r.Main_OnCommand(1016, 0)
+        end
+        return
+    end
+    
+    if selected_item_count == 0 then return end
+
+    local clicked_item = IsMouseOverMediaItem()
+    if clicked_item and IsLeftClick() then
+        r.SetMediaItemSelected(clicked_item, true)
+        local item_pos = r.GetMediaItemInfo_Value(clicked_item, "D_POSITION")
+        r.SetEditCurPos(item_pos, false, false)
+        if config.playback_mode == "preview" then
+            r.Main_OnCommand(r.NamedCommandLookup("_BR_PREV_TAKE_CURSOR"), 0)
+        else
+            r.Main_OnCommand(1007, 0)
+        end
+    end
+end
+
 function SyncAutomationItems()
     local num_selected = r.CountSelectedMediaItems(0)
     if num_selected == 0 then return end
@@ -417,49 +439,60 @@ function MainLoop()
 
     ApplyStyle()
 
+    local header_font = GetFont("header")
+    local main_font = GetFont("main")
+
     local visible, open = r.ImGui_Begin(ctx, 'Time Selection Config', true, window_flags)
     if visible then
-        if style_loader and style_loader.PushFont(ctx, "header") then
-            r.ImGui_Text(ctx, "Time Selection Config")
-            style_loader.PopFont(ctx)
-        else
-            r.ImGui_Text(ctx, "Time Selection Config")
-        end
+        if header_font then r.ImGui_PushFont(ctx, header_font) end
+        r.ImGui_Text(ctx, "Time Selection Config")
+        if header_font then r.ImGui_PopFont(ctx) end
 
         r.ImGui_SameLine(ctx)
-        local close_button_size = header_font_size + 6
-        local close_x = r.ImGui_GetWindowWidth(ctx) - close_button_size - window_padding_x
+        local header_font_size = 16
+        if style_loader then
+            local styles = style_loader.getStyleValues()
+            if styles and styles.fonts and styles.fonts.header and styles.fonts.header.size then
+                header_font_size = styles.fonts.header.size
+            end
+        end
+        local close_button_size = header_font_size
+        local close_x = r.ImGui_GetWindowWidth(ctx) - close_button_size - 8
         r.ImGui_SetCursorPosX(ctx, close_x)
         if r.ImGui_Button(ctx, "X", close_button_size, close_button_size) then
             open = false
         end
 
-        if style_loader and style_loader.PushFont(ctx, "main") then
+        if main_font then r.ImGui_PushFont(ctx, main_font) end
         
         r.ImGui_Separator(ctx)
+        r.ImGui_Spacing(ctx)
         
         r.ImGui_Text(ctx, "Options:")
+        r.ImGui_Spacing(ctx)
         
         local time_sel_changed, cursor_changed, automation_changed, play_changed, extension_changed
+        
         time_sel_changed, config.sync_time_selection = r.ImGui_Checkbox(ctx, "Sync Time Selection", config.sync_time_selection)
-        cursor_changed, config.sync_edit_cursor = r.ImGui_Checkbox(ctx, "Sync Edit Cursor", config.sync_edit_cursor)  
+        r.ImGui_Spacing(ctx)
+        
+        cursor_changed, config.sync_edit_cursor = r.ImGui_Checkbox(ctx, "Sync Edit Cursor", config.sync_edit_cursor)
+        r.ImGui_Spacing(ctx)
+        
         automation_changed, config.sync_automation = r.ImGui_Checkbox(ctx, "Sync Automation", config.sync_automation)
+        r.ImGui_Spacing(ctx)
 
         if config.sync_time_selection then
+            r.ImGui_Spacing(ctx)
             r.ImGui_Separator(ctx)
+            r.ImGui_Spacing(ctx)
             
             r.ImGui_Text(ctx, "Time Selection Extension")
-            local content_width = r.ImGui_GetContentRegionAvail(ctx)
-            local font_size = 16
-            if style_loader then
-                local styles = style_loader.getStyleValues()
-                if styles and styles.fonts and styles.fonts.main and styles.fonts.main.size then
-                    font_size = styles.fonts.main.size
-                end
-            end
-            r.ImGui_SetNextItemWidth(ctx, content_width - font_size)
+            r.ImGui_Spacing(ctx)
+            
             extension_changed, config.time_selection_extension = r.ImGui_SliderDouble(ctx, 's', 
                                                                     config.time_selection_extension, 0.0, 5.0, '%.2f')
+            r.ImGui_Spacing(ctx)
             
             r.ImGui_Text(ctx, "Presets:")
             if r.ImGui_Button(ctx, "0.0s") then
@@ -492,17 +525,19 @@ function MainLoop()
             SaveSettings()
         end
 
-        style_loader.PopFont(ctx)
-
-        end
+        if main_font then r.ImGui_PopFont(ctx) end
         
         r.ImGui_End(ctx)
     end
 
     ClearStyle()
+
+    if config.auto_play then 
+        PlaySelectedItem() 
+    end
     
     local current_time = r.time_precise()
-    if current_time - state.last_refresh_time >= 0.015 then
+    if current_time - state.last_refresh_time >= 0.025 then
         if DetectChanges() then
             SyncAutomationItems()
         end
