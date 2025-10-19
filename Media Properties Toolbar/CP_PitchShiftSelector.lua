@@ -1,5 +1,5 @@
 -- @description PitchShiftSelector
--- @version 1.0.3
+-- @version 1.1
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -37,9 +37,11 @@ function GetFont(font_name)
 end
 
 local header_font_size = GetStyleValue("fonts.header.size", 16)
-local window_padding_x = GetStyleValue("spacing.window_padding_x", 8)
-local item_spacing_y = GetStyleValue("item_spacing_y", 6)
-local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 8)
+local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 6)
+local item_spacing_y = GetStyleValue("spacing.item_spacing_y", 6)
+local window_padding_x = GetStyleValue("spacing.window_padding_x", 6)
+local window_padding_y = GetStyleValue("spacing.window_padding_y", 6)
+
 
 local config = {
     window_width = 500,

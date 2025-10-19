@@ -1,5 +1,5 @@
 -- @description TimeSelectionSync
--- @version 1.0.3
+-- @version 1.1
 -- @author Cedric Pamalio
 
 local r = reaper

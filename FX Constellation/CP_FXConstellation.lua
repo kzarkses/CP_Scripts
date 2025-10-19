@@ -1,5 +1,5 @@
 -- @description FXConstellation
--- @version 1.0.1
+-- @version 1.1
 -- @author Cedric Pamalio
 
 local r = reaper

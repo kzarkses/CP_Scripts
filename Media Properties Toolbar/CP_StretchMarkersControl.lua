@@ -1,5 +1,5 @@
 -- @description StretchMarkersControl
--- @version 1.0.2
+-- @version 1.1
 -- @author Cedric Pamalio
 
 local r = reaper

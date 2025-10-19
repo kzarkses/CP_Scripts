@@ -1,5 +1,5 @@
 -- @description SourceManager
--- @version 1.0.2
+-- @version 1.1
 -- @author Cedric Pamalio
 
 local r = reaper
@@ -771,9 +771,6 @@ function MainLoop()
     if not _G[script_id] then return end
     
     ApplyStyle()
-    
-    local header_font = GetFont("header")
-    local main_font = GetFont("main")
     
     if not config.window_position_set then
         r.ImGui_SetNextWindowSize(ctx, 600, 500, r.ImGui_Cond_FirstUseEver())
