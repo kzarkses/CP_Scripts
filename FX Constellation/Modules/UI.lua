@@ -1141,7 +1141,7 @@ function UI.drawInterface()
 			end
 			if UI.core.isTrackValid() then
 				UI.fxmanager.checkForFXChanges()
-				UI.preset.checkPresetModification()
+				UI.presetsystem.checkPresetModification()
 			end
 			if not UI.core.isTrackValid() then
 				UI.r.ImGui_Text(UI.ctx, "No track selected")
