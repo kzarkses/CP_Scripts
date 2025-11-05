@@ -1,0 +1,170 @@
+local Core = {}
+
+function Core.init(reaper_api)
+	Core.r = reaper_api
+	Core.navigation_modes = { "Manual", "Random Walk", "Figures" }
+	Core.figures_modes = { "Circle", "Square", "Triangle", "Diamond", "Z", "Infinity" }
+
+	Core.state = {
+		track = nil,
+		fx_data = {},
+		presets = {},
+		track_selections = {},
+		gesture_x = 0.5,
+		gesture_y = 0.5,
+		gesture_base_x = 0.5,
+		gesture_base_y = 0.5,
+		param_base_values = {},
+		x_curve = 1.0,
+		y_curve = 1.0,
+		pad_mode = 0,
+		navigation_mode = 0,
+		randomize_intensity = 0.3,
+		randomize_min = 0.0,
+		randomize_max = 1.0,
+		gesture_min = 0.0,
+		gesture_max = 1.0,
+		selected_count = 0,
+		last_fx_count = 0,
+		last_fx_signature = "",
+		random_min = 3,
+		random_max = 8,
+		fx_random_max = {},
+		filter_keywords = {},
+		param_filter = "",
+		new_filter_word = "",
+		param_ranges = {},
+		param_xy_assign = {},
+		param_invert = {},
+		gesture_active = false,
+		gesture_range = 1.0,
+		exclusive_xy = false,
+		last_random_seed = os.time(),
+		save_timer = 0,
+		last_update_time = 0,
+		update_interval = 0.05,
+		save_cooldown = 0,
+		min_save_interval = 1.0,
+		target_gesture_x = 0.5,
+		target_gesture_y = 0.5,
+		smooth_speed = 0,
+		max_gesture_speed = 2.0,
+		random_walk_active = false,
+		random_walk_speed = 2.0,
+		random_walk_jitter = 0.2,
+		random_walk_next_time = 0,
+		random_walk_last_time = 0,
+		random_walk_control_points = {},
+		random_walk_bezier_progress = 0,
+		granular_grid_size = 3,
+		granular_grains = {},
+		granular_set_name = "GrainSet1",
+		snapshot_name = "Snapshot1",
+		random_bypass_percentage = 0.3,
+		layout_mode = 0,
+		fx_collapsed = {},
+		show_filters_window = false,
+		show_presets_window = false,
+		jsfx_automation_enabled = false,
+		jsfx_automation_index = -1,
+		all_fx_collapsed = false,
+		range_min = 0.0,
+		range_max = 1.0,
+		figures_mode = 0,
+		figures_speed = 1.0,
+		figures_size = 0.5,
+		figures_time = 0,
+		figures_active = false,
+		click_offset_x = 0,
+		click_offset_y = 0,
+		track_locked = false,
+		locked_track = nil,
+		current_loaded_preset = ""
+	}
+
+	return Core.state
+end
+
+function Core.getParamKey(fx_id, param_id, suffix)
+	local guid = Core.getTrackGUID()
+	if not guid or not Core.state.fx_data[fx_id] or not Core.state.fx_data[fx_id].params[param_id] then
+		return nil
+	end
+	local fx_name = Core.state.fx_data[fx_id].full_name
+	local param_name = Core.state.fx_data[fx_id].params[param_id].name
+	local key = guid .. "_" .. fx_name .. "||" .. param_name
+	return suffix and (key .. "_" .. suffix) or key
+end
+
+function Core.getFXKey(fx_id, suffix)
+	local guid = Core.getTrackGUID()
+	if not guid or not Core.state.fx_data[fx_id] then return nil end
+	local fx_name = Core.state.fx_data[fx_id].full_name
+	local key = guid .. "_" .. fx_name
+	return suffix and (key .. "_" .. suffix) or key
+end
+
+function Core.extractFXName(full_name)
+	local clean_name = full_name:match("^[^:]*:%s*(.+)") or full_name
+	clean_name = clean_name:gsub("%(.-%)", ""):match("^%s*(.-)%s*$")
+	return clean_name:len() > 25 and (clean_name:sub(1, 22) .. "...") or clean_name
+end
+
+function Core.normalizeParamValue(value, min_val, max_val)
+	if min_val == 0 and max_val == 1 then return value end
+	if max_val == min_val then return 0 end
+	return (value - min_val) / (max_val - min_val)
+end
+
+function Core.denormalizeParamValue(normalized_value, min_val, max_val)
+	if min_val == 0 and max_val == 1 then return normalized_value end
+	return min_val + (normalized_value * (max_val - min_val))
+end
+
+function Core.isTrackValid()
+	return Core.state.track and Core.r.ValidatePtr(Core.state.track, "MediaTrack*")
+end
+
+function Core.getTrackGUID()
+	if not Core.isTrackValid() then return nil end
+	local _, guid = Core.r.GetSetMediaTrackInfo_String(Core.state.track, "GUID", "", false)
+	return guid
+end
+
+function Core.createFXSignature()
+	if not Core.isTrackValid() then return "" end
+	local sig = ""
+	local fx_count = Core.r.TrackFX_GetCount(Core.state.track)
+	for fx = 0, fx_count - 1 do
+		local _, fx_name = Core.r.TrackFX_GetFXName(Core.state.track, fx, "")
+		sig = sig .. fx_name .. ":" .. Core.r.TrackFX_GetNumParams(Core.state.track, fx) .. ";"
+	end
+	return sig
+end
+
+function Core.getCurrentFXChainSignature()
+	local guid = Core.getTrackGUID()
+	return guid and (guid .. "_" .. Core.createFXSignature()) or nil
+end
+
+function Core.calculateAsymmetricRange(base, range, intensity, min_limit, max_limit)
+	local max_range = range * intensity * 0.5
+	local up_space = max_limit - base
+	local down_space = base - min_limit
+	local up_range = math.min(max_range, up_space)
+	local down_range = math.min(max_range, down_space)
+	if up_range < max_range then
+		down_range = math.min(down_range + (max_range - up_range), down_space)
+	elseif down_range < max_range then
+		up_range = math.min(up_range + (max_range - down_range), up_space)
+	end
+	return up_range, down_range
+end
+
+function Core.snapToDiscreteValue(value, step_count)
+	if step_count <= 1 then return value end
+	local step = 1.0 / (step_count - 1)
+	return math.floor((value / step) + 0.5) * step
+end
+
+return Core
