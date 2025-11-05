@@ -471,6 +471,11 @@ function UI.drawRandomizer()
 		UI.r.ImGui_Separator(UI.ctx)
 		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	end
+	if UI.r.ImGui_Button(UI.ctx, "ULTRA RANDOM", content_width) then
+		UI.fxmanager.ultraRandom()
+		UI.gesture.updateJSFXFromGesture()
+	end
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	if UI.r.ImGui_Button(UI.ctx, "FX Order", content_width) then
 		UI.fxmanager.randomizeFXOrder()
 	end

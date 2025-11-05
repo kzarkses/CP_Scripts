@@ -488,6 +488,17 @@ function FXManager.globalRandomSelect()
 	FXManager.saveTrackSelection()
 end
 
+function FXManager.ultraRandom()
+	FXManager.core.state.gesture_x = math.random()
+	FXManager.core.state.gesture_y = math.random()
+	FXManager.core.state.gesture_base_x = FXManager.core.state.gesture_x
+	FXManager.core.state.gesture_base_y = FXManager.core.state.gesture_y
+	FXManager.globalRandomInvert()
+	FXManager.randomizeAllBases()
+	FXManager.globalRandomRanges()
+	FXManager.captureBaseValues()
+end
+
 function FXManager.randomizeFXOrder()
 	if not FXManager.core.isTrackValid() then return end
 	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
