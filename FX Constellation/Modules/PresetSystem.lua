@@ -129,11 +129,13 @@ function PresetSystem.saveSnapshot(name)
 		gesture_base_x = PresetSystem.core.state.gesture_base_x,
 		gesture_base_y = PresetSystem.core.state.gesture_base_y,
 		fx_list = {},
+		fx_bypass_states = {},
 		param_data = {}
 	}
 
 	for fx_id, fx_data in pairs(PresetSystem.core.state.fx_data) do
 		table.insert(snapshot.fx_list, fx_data.full_name)
+		snapshot.fx_bypass_states[fx_data.full_name] = not fx_data.enabled
 
 		for param_id, param_data in pairs(fx_data.params) do
 			if param_data.selected then
@@ -207,6 +209,13 @@ function PresetSystem.loadSnapshot(name)
 	PresetSystem.gesture.updateJSFXFromGesture()
 
 	for fx_id, fx_data in pairs(PresetSystem.core.state.fx_data) do
+		if snapshot.fx_bypass_states and snapshot.fx_bypass_states[fx_data.full_name] ~= nil then
+			local actual_fx_id = fx_data.actual_fx_id or fx_id
+			local should_bypass = snapshot.fx_bypass_states[fx_data.full_name]
+			PresetSystem.r.TrackFX_SetEnabled(PresetSystem.core.state.track, actual_fx_id, not should_bypass)
+			fx_data.enabled = not should_bypass
+		end
+
 		for param_id, param_data in pairs(fx_data.params) do
 			local key = fx_data.full_name .. "||" .. param_data.name
 			local saved_param = snapshot.param_data[key]
@@ -242,6 +251,46 @@ function PresetSystem.deleteSnapshot(name)
 			PresetSystem.core.state.presets[current_preset].snapshots = {}
 		end
 		PresetSystem.persistence.schedulePresetSave()
+	end
+end
+
+function PresetSystem.captureFXChainState()
+	if not PresetSystem.core.isTrackValid() then return nil end
+	local state = { fx_list = {}, bypass_states = {} }
+	local fx_count = PresetSystem.r.TrackFX_GetCount(PresetSystem.core.state.track)
+	for fx_id = 0, fx_count - 1 do
+		local _, fx_name = PresetSystem.r.TrackFX_GetFXName(PresetSystem.core.state.track, fx_id, "")
+		if not fx_name:find("FX Constellation Bridge") then
+			table.insert(state.fx_list, fx_name)
+			state.bypass_states[fx_name] = not PresetSystem.r.TrackFX_GetEnabled(PresetSystem.core.state.track, fx_id)
+		end
+	end
+	return state
+end
+
+function PresetSystem.compareFXChainState(state1, state2)
+	if not state1 or not state2 then return false end
+	if #state1.fx_list ~= #state2.fx_list then return false end
+	for i, fx_name in ipairs(state1.fx_list) do
+		if state2.fx_list[i] ~= fx_name then return false end
+		if state1.bypass_states[fx_name] ~= state2.bypass_states[fx_name] then return false end
+	end
+	return true
+end
+
+function PresetSystem.checkPresetModification()
+	if PresetSystem.core.state.preset_base_name == "" or not PresetSystem.core.state.initial_fx_chain_state then
+		return
+	end
+	local current_state = PresetSystem.captureFXChainState()
+	if not PresetSystem.compareFXChainState(PresetSystem.core.state.initial_fx_chain_state, current_state) then
+		if not PresetSystem.core.state.current_loaded_preset:find(" %(Modified%)$") then
+			PresetSystem.core.state.current_loaded_preset = PresetSystem.core.state.preset_base_name .. " (Modified)"
+		end
+	else
+		if PresetSystem.core.state.current_loaded_preset:find(" %(Modified%)$") then
+			PresetSystem.core.state.current_loaded_preset = PresetSystem.core.state.preset_base_name
+		end
 	end
 end
 
@@ -296,6 +345,9 @@ function PresetSystem.savePreset(name)
 	if name == "" then return end
 	local preset_data = PresetSystem.captureCompleteState()
 	PresetSystem.core.state.presets[name] = preset_data
+	PresetSystem.core.state.current_loaded_preset = name
+	PresetSystem.core.state.preset_base_name = name
+	PresetSystem.core.state.initial_fx_chain_state = PresetSystem.captureFXChainState()
 	PresetSystem.persistence.schedulePresetSave()
 end
 
@@ -394,6 +446,8 @@ function PresetSystem.loadPreset(name)
 	PresetSystem.fxmanager.updateSelectedCount()
 	PresetSystem.fxmanager.captureBaseValues()
 	PresetSystem.core.state.current_loaded_preset = name
+	PresetSystem.core.state.preset_base_name = name
+	PresetSystem.core.state.initial_fx_chain_state = PresetSystem.captureFXChainState()
 	PresetSystem.fxmanager.saveTrackSelection()
 
 	if original_fxfloat >= 0 then
@@ -423,8 +477,10 @@ end
 function PresetSystem.deletePreset(name)
 	if PresetSystem.core.state.presets[name] then
 		PresetSystem.core.state.presets[name] = nil
-		if PresetSystem.core.state.current_loaded_preset == name then
+		if PresetSystem.core.state.current_loaded_preset == name or PresetSystem.core.state.preset_base_name == name then
 			PresetSystem.core.state.current_loaded_preset = ""
+			PresetSystem.core.state.preset_base_name = ""
+			PresetSystem.core.state.initial_fx_chain_state = nil
 		end
 		PresetSystem.persistence.schedulePresetSave()
 	end
@@ -436,6 +492,9 @@ function PresetSystem.renamePreset(old_name, new_name)
 		PresetSystem.core.state.presets[old_name] = nil
 		if PresetSystem.core.state.current_loaded_preset == old_name then
 			PresetSystem.core.state.current_loaded_preset = new_name
+		end
+		if PresetSystem.core.state.preset_base_name == old_name then
+			PresetSystem.core.state.preset_base_name = new_name
 		end
 		PresetSystem.persistence.schedulePresetSave()
 	end

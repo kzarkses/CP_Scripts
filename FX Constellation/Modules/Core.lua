@@ -79,7 +79,9 @@ function Core.init(reaper_api)
 		click_offset_y = 0,
 		track_locked = false,
 		locked_track = nil,
-		current_loaded_preset = ""
+		current_loaded_preset = "",
+		preset_base_name = "",
+		initial_fx_chain_state = nil
 	}
 
 	return Core.state

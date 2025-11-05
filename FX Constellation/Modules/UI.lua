@@ -228,8 +228,16 @@ function UI.drawNavigation()
 		end
 	end
 
-	if UI.r.ImGui_Button(UI.ctx, "Show Env", content_width) and UI.core.state.jsfx_automation_enabled and UI.core.state.jsfx_automation_index >= 0 then
-		UI.r.TrackFX_Show(UI.core.state.track, UI.core.state.jsfx_automation_index, 3)
+	if UI.r.ImGui_Button(UI.ctx, "Show Env", content_width) then
+		if not UI.core.state.jsfx_automation_enabled or UI.core.state.jsfx_automation_index < 0 then
+			UI.gesture.createAutomationJSFX()
+		end
+		if UI.core.state.jsfx_automation_enabled and UI.core.state.jsfx_automation_index >= 0 then
+			local x_env = UI.r.GetFXEnvelope(UI.core.state.track, UI.core.state.jsfx_automation_index, 0, true)
+			local y_env = UI.r.GetFXEnvelope(UI.core.state.track, UI.core.state.jsfx_automation_index, 1, true)
+			if x_env then UI.r.SetCursorContext(2, x_env) end
+			if y_env then UI.r.SetCursorContext(2, y_env) end
+		end
 	end
 end
 
@@ -1133,6 +1141,7 @@ function UI.drawInterface()
 			end
 			if UI.core.isTrackValid() then
 				UI.fxmanager.checkForFXChanges()
+				UI.preset.checkPresetModification()
 			end
 			if not UI.core.isTrackValid() then
 				UI.r.ImGui_Text(UI.ctx, "No track selected")
