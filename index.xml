@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="CP_Scripts" commit="fe36bb1060a13a20aa8457dee55f9179b2644582">
+<index version="1" name="CP_Scripts" commit="2b96940593acc1c1dc03f30fbe5feceb7c8c120e">
+  <category name="Backup">
+    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
+      <version name="1.1" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/Backup/CP_FXConstellation.lua</source>
+      </version>
+    </reapack>
+  </category>
   <category name="Colors">
     <reapack name="CP_AutoColorRegionFromTrack.lua" type="script" desc="AutoColorRegionFromTrack">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -45,6 +52,27 @@
       </version>
       <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/FX%20Constellation/CP_FXConstellation.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="FX Constellation - Copie">
+    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
+      <version name="1.1" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/FX%20Constellation%20-%20Copie/CP_FXConstellation.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="FX Constellation - Copie/Refactoring CC">
+    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation (Modular Version)">
+      <version name="2.0" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/FX%20Constellation%20-%20Copie/Refactoring%20CC/CP_FXConstellation.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="FX Constellation - Copie/Refactoring Try">
+    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
+      <version name="1.1" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/FX%20Constellation%20-%20Copie/Refactoring%20Try/CP_FXConstellation.lua</source>
       </version>
     </reapack>
   </category>
