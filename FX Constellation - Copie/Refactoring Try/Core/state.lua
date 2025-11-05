@@ -1,0 +1,160 @@
+local State = {}
+
+local state = {
+  track = nil,
+  fx_data = {},
+  presets = {},
+  track_selections = {},
+  gesture_x = 0.5,
+  gesture_y = 0.5,
+  gesture_base_x = 0.5,
+  gesture_base_y = 0.5,
+  param_base_values = {},
+  x_curve = 1.0,
+  y_curve = 1.0,
+  pad_mode = 0,
+  navigation_mode = 0,
+  randomize_intensity = 0.3,
+  randomize_min = 0.0,
+  randomize_max = 1.0,
+  gesture_min = 0.0,
+  gesture_max = 1.0,
+  preset_name = "Preset1",
+  selected_count = 0,
+  last_fx_count = 0,
+  last_fx_signature = "",
+  random_min = 3,
+  random_max = 8,
+  fx_random_max = {},
+  filter_keywords = {},
+  param_filter = "",
+  new_filter_word = "",
+  show_filters = false,
+  param_ranges = {},
+  param_xy_assign = {},
+  param_invert = {},
+  gesture_active = false,
+  gesture_range = 1.0,
+  exclusive_xy = false,
+  last_random_seed = os.time(),
+  needs_save = false,
+  save_timer = 0,
+  scroll_offset = 0,
+  selected_preset = "",
+  preset_scroll = 0,
+  show_preset_rename = false,
+  rename_preset_name = "",
+  fx_panel_scroll_x = 0,
+  fx_panel_scroll_y = 0,
+  last_update_time = 0,
+  update_interval = 0.05,
+  dirty_params = false,
+  save_cooldown = 0,
+  min_save_interval = 1.0,
+  target_gesture_x = 0.5,
+  target_gesture_y = 0.5,
+  smooth_speed = 0,
+  max_gesture_speed = 2.0,
+  random_walk_active = false,
+  random_walk_speed = 2.0,
+  random_walk_smooth = true,
+  random_walk_jitter = 0.2,
+  random_walk_next_time = 0,
+  random_walk_last_time = 0,
+  random_walk_control_points = {},
+  random_walk_bezier_progress = 0,
+  param_cache = {},
+  cache_dirty = true,
+  param_update_interval = 0.02,
+  granular_grid_size = 3,
+  granular_grains = {},
+  granular_sets = {},
+  granular_set_name = "GrainSet1",
+  snapshots = {},
+  snapshot_name = "Snapshot1",
+  show_snapshots = false,
+  random_bypass_percentage = 0.3,
+  layout_mode = 0,
+  fx_collapsed = {},
+  show_filters_window = false,
+  show_presets_window = false,
+  save_fx_chain = false,
+  jsfx_automation_enabled = false,
+  jsfx_automation_index = -1,
+  all_fx_collapsed = false,
+  range_min = 0.0,
+  range_max = 1.0,
+  figures_mode = 0,
+  figures_speed = 1.0,
+  figures_size = 0.5,
+  figures_time = 0,
+  figures_active = false,
+  click_offset_x = 0,
+  click_offset_y = 0,
+  track_locked = false,
+  locked_track = nil,
+  current_loaded_preset = "",
+  morph_preset_a = nil,
+  morph_preset_b = nil,
+  morph_amount = 0,
+  last_figures_update = 0,
+  last_smooth_update = 0
+}
+
+function State.Get()
+  return state
+end
+
+function State.Set(key, value)
+  state[key] = value
+end
+
+function State.GetSaveData()
+  return {
+    gesture_x = state.gesture_x,
+    gesture_y = state.gesture_y,
+    randomize_intensity = state.randomize_intensity,
+    randomize_min = state.randomize_min,
+    randomize_max = state.randomize_max,
+    gesture_min = state.gesture_min,
+    gesture_max = state.gesture_max,
+    gesture_range = state.gesture_range,
+    pad_mode = state.pad_mode,
+    navigation_mode = state.navigation_mode,
+    x_curve = state.x_curve,
+    random_min = state.random_min,
+    random_max = state.random_max,
+    exclusive_xy = state.exclusive_xy,
+    smooth_speed = state.smooth_speed,
+    max_gesture_speed = state.max_gesture_speed,
+    random_walk_speed = state.random_walk_speed,
+    random_walk_smooth = state.random_walk_smooth,
+    random_walk_jitter = state.random_walk_jitter,
+    target_gesture_x = state.target_gesture_x,
+    target_gesture_y = state.target_gesture_y,
+    granular_grid_size = state.granular_grid_size,
+    random_bypass_percentage = state.random_bypass_percentage,
+    layout_mode = state.layout_mode,
+    fx_collapsed = state.fx_collapsed,
+    range_min = state.range_min,
+    range_max = state.range_max,
+    figures_mode = state.figures_mode,
+    figures_speed = state.figures_speed,
+    figures_size = state.figures_size,
+    save_fx_chain = state.save_fx_chain,
+    jsfx_automation_enabled = state.jsfx_automation_enabled,
+    current_loaded_preset = state.current_loaded_preset
+  }
+end
+
+function State.LoadSaveData(data)
+  if data then
+    for k, v in pairs(data) do
+      if state[k] ~= nil then
+        state[k] = v
+      end
+    end
+  end
+end
+
+return State
