@@ -61,6 +61,10 @@ local state = {
     original_item_hidden = false,
     track_counter = 1,
     same_track_reference = nil,
+    time_selection_start = 0,
+    time_selection_end = 0,
+    has_time_selection = false,
+    generation_duration = 0,
 }
 
 function GetStyleValue(path, default_value)
@@ -137,6 +141,27 @@ function UpdateSourceItem()
     end
 end
 
+function UpdateTimeSelection()
+    local ts_start, ts_end = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+    if ts_start ~= ts_end then
+        state.has_time_selection = true
+        state.time_selection_start = ts_start
+        state.time_selection_end = ts_end
+        state.generation_duration = ts_end - ts_start
+    else
+        state.has_time_selection = false
+        state.time_selection_start = 0
+        state.time_selection_end = 0
+        state.generation_duration = 0
+    end
+end
+
+function FormatTime(seconds)
+    local minutes = math.floor(seconds / 60)
+    local secs = seconds - (minutes * 60)
+    return string.format("%d:%05.2f", minutes, secs)
+end
+
 function GetOrCreateTargetTrack()
     if config.output_mode == 0 then
         if not state.source_item then return nil end
@@ -200,17 +225,30 @@ function GenerateGrains()
             r.SetMediaItemInfo_Value(state.source_item, "B_MUTE", 1)
             state.original_item_hidden = true
         end
+        r.Main_OnCommand(40507, 0)
     end
+
+    UpdateTimeSelection()
 
     local grain_size_sec = config.grain_size_ms / 1000.0
     local position_jitter_sec = config.position_jitter_ms / 1000.0
     local fade_sec = config.fade_duration / 1000.0
 
-    local output_pos = source_pos
-    if config.mode == 0 then
-        output_pos = source_pos
+    local output_pos_start, output_pos_end, generation_span
+
+    if state.has_time_selection then
+        output_pos_start = state.time_selection_start
+        output_pos_end = state.time_selection_end
+        generation_span = output_pos_end - output_pos_start
     else
-        output_pos = r.GetCursorPosition()
+        if config.mode == 0 then
+            output_pos_start = source_pos
+        else
+            output_pos_start = r.GetCursorPosition()
+        end
+        local estimated_span = grain_size_sec * config.grain_count * (1 - config.overlap_percent / 100.0)
+        output_pos_end = output_pos_start + estimated_span
+        generation_span = estimated_span
     end
 
     for i = 1, config.grain_count do
@@ -229,15 +267,19 @@ function GenerateGrains()
             source_start_offset = source_offset + math.random() * (source_length * source_rate)
         end
 
-        local item_pos = output_pos
+        local item_pos
         if config.mode == 0 then
-            local spacing = (grain_size * (1 - config.overlap_percent / 100.0))
-            item_pos = output_pos + (i - 1) * spacing
+            local spacing = generation_span / config.grain_count
+            item_pos = output_pos_start + (i - 1) * spacing
         else
-            if config.position_mode == 0 then
-                item_pos = output_pos + math.random() * position_jitter_sec * config.grain_count
+            if state.has_time_selection then
+                item_pos = output_pos_start + math.random() * generation_span
             else
-                item_pos = output_pos + (math.random() * 2 - 1) * position_jitter_sec
+                if config.position_mode == 0 then
+                    item_pos = output_pos_start + math.random() * position_jitter_sec * config.grain_count
+                else
+                    item_pos = output_pos_start + (math.random() * 2 - 1) * position_jitter_sec
+                end
             end
         end
 
@@ -402,6 +444,16 @@ function MainLoop()
                 UpdateSourceItem()
             end
 
+            UpdateTimeSelection()
+
+            if state.has_time_selection then
+                r.ImGui_Text(ctx, "Time Selection: " .. FormatTime(state.generation_duration))
+                r.ImGui_SameLine(ctx)
+                r.ImGui_TextColored(ctx, 0.0, 0.8, 0.6, 1.0, "(Active - defines grain boundaries)")
+            else
+                r.ImGui_TextColored(ctx, 0.8, 0.4, 0.6, 1.0, "No Time Selection (using auto-calculation)")
+            end
+
             r.ImGui_Separator(ctx)
 
             r.ImGui_Text(ctx, "Generation Mode")
@@ -560,6 +612,15 @@ function MainLoop()
             r.ImGui_SameLine(ctx)
             if r.ImGui_Button(ctx, "Get Selected Item") then
                 UpdateSourceItem()
+            end
+
+            UpdateTimeSelection()
+
+            if state.has_time_selection then
+                r.ImGui_Text(ctx, "Time Selection: " .. FormatTime(state.generation_duration))
+                r.ImGui_Text(ctx, "(Active - defines grain boundaries)")
+            else
+                r.ImGui_Text(ctx, "No Time Selection (using auto-calculation)")
             end
 
             r.ImGui_Separator(ctx)
