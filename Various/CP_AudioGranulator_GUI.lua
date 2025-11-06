@@ -49,7 +49,7 @@ local config = {
 
     mode = 0,
 
-    target_track = 0,
+    output_mode = 1,
 }
 
 local state = {
@@ -58,6 +58,9 @@ local state = {
     source_item_name = "No item selected",
     generated_items = {},
     generation_track = nil,
+    original_item_hidden = false,
+    track_counter = 1,
+    same_track_reference = nil,
 }
 
 function GetStyleValue(path, default_value)
@@ -135,25 +138,28 @@ function UpdateSourceItem()
 end
 
 function GetOrCreateTargetTrack()
-    local track_count = r.CountTracks(0)
-
-    if config.target_track == 0 then
+    if config.output_mode == 0 then
+        if not state.source_item then return nil end
+        return r.GetMediaItem_Track(state.source_item)
+    elseif config.output_mode == 1 then
+        if state.same_track_reference and r.ValidatePtr(state.same_track_reference, "MediaTrack*") then
+            return state.same_track_reference
+        end
+        local track_count = r.CountTracks(0)
         local new_track_index = track_count
         r.InsertTrackAtIndex(new_track_index, true)
         local new_track = r.GetTrack(0, new_track_index)
         r.GetSetMediaTrackInfo_String(new_track, "P_NAME", "Granulated", true)
+        state.same_track_reference = new_track
         return new_track
     else
-        local target_index = config.target_track - 1
-        if target_index < track_count then
-            return r.GetTrack(0, target_index)
-        else
-            local new_track_index = track_count
-            r.InsertTrackAtIndex(new_track_index, true)
-            local new_track = r.GetTrack(0, new_track_index)
-            r.GetSetMediaTrackInfo_String(new_track, "P_NAME", "Granulated", true)
-            return new_track
-        end
+        local track_count = r.CountTracks(0)
+        local new_track_index = track_count
+        r.InsertTrackAtIndex(new_track_index, true)
+        local new_track = r.GetTrack(0, new_track_index)
+        r.GetSetMediaTrackInfo_String(new_track, "P_NAME", "Granulated " .. state.track_counter, true)
+        state.track_counter = state.track_counter + 1
+        return new_track
     end
 end
 
@@ -188,6 +194,13 @@ function GenerateGrains()
     state.generation_track = target_track
 
     ClearGeneratedGrains()
+
+    if config.output_mode == 0 then
+        if not state.original_item_hidden then
+            r.SetMediaItemInfo_Value(state.source_item, "B_MUTE", 1)
+            state.original_item_hidden = true
+        end
+    end
 
     local grain_size_sec = config.grain_size_ms / 1000.0
     local position_jitter_sec = config.position_jitter_ms / 1000.0
@@ -282,6 +295,38 @@ function GenerateGrains()
 end
 
 function ClearGeneratedGrains()
+    if config.output_mode == 2 then
+        state.generated_items = {}
+        return
+    end
+
+    if #state.generated_items > 0 then
+        for _, item in ipairs(state.generated_items) do
+            if r.ValidatePtr(item, "MediaItem*") then
+                local track = r.GetMediaItem_Track(item)
+                r.DeleteTrackMediaItem(track, item)
+            end
+        end
+        state.generated_items = {}
+        r.UpdateArrange()
+    end
+end
+
+function RestoreOriginalItem()
+    if state.source_item and r.ValidatePtr(state.source_item, "MediaItem*") then
+        r.Undo_BeginBlock()
+
+        ClearGeneratedGrains()
+
+        r.SetMediaItemInfo_Value(state.source_item, "B_MUTE", 0)
+        state.original_item_hidden = false
+
+        r.UpdateArrange()
+        r.Undo_EndBlock("Audio Granulator: Restore Original", -1)
+    end
+end
+
+function ClearAllGrains()
     if #state.generated_items > 0 then
         r.Undo_BeginBlock()
         for _, item in ipairs(state.generated_items) do
@@ -359,10 +404,19 @@ function MainLoop()
 
             r.ImGui_Separator(ctx)
 
-            r.ImGui_Text(ctx, "Mode")
+            r.ImGui_Text(ctx, "Generation Mode")
             local mode_changed, new_mode = r.ImGui_Combo(ctx, "##mode", config.mode, "Grid (Sequential)\0Chaos (Random)\0")
             if mode_changed then
                 config.mode = new_mode
+            end
+
+            r.ImGui_Text(ctx, "Output Mode")
+            local output_mode_changed, new_output_mode = r.ImGui_Combo(ctx, "##outputmode", config.output_mode, "Replace Item (Mute Original)\0Same Track (Replace Each Time)\0New Track (Keep History)\0")
+            if output_mode_changed then
+                config.output_mode = new_output_mode
+                if config.output_mode == 0 and state.original_item_hidden then
+                    RestoreOriginalItem()
+                end
             end
 
             r.ImGui_Separator(ctx)
@@ -464,16 +518,37 @@ function MainLoop()
             end
 
             local item_spacing_x = GetStyleValue("spacing.item_spacing_x", 6)
-            local button_width = (r.ImGui_GetContentRegionAvail(ctx) - item_spacing_x) / 2
 
-            if r.ImGui_Button(ctx, "Clear Grains", button_width) then
-                ClearGeneratedGrains()
-            end
+            if config.output_mode == 0 then
+                local button_width = (r.ImGui_GetContentRegionAvail(ctx) - item_spacing_x * 2) / 3
 
-            r.ImGui_SameLine(ctx, 0, item_spacing_x)
+                if r.ImGui_Button(ctx, "Restore Original", button_width) then
+                    RestoreOriginalItem()
+                end
 
-            if r.ImGui_Button(ctx, "Randomize All", button_width) then
-                RandomizeAll()
+                r.ImGui_SameLine(ctx, 0, item_spacing_x)
+
+                if r.ImGui_Button(ctx, "Clear All", button_width) then
+                    ClearAllGrains()
+                end
+
+                r.ImGui_SameLine(ctx, 0, item_spacing_x)
+
+                if r.ImGui_Button(ctx, "Randomize All", button_width) then
+                    RandomizeAll()
+                end
+            else
+                local button_width = (r.ImGui_GetContentRegionAvail(ctx) - item_spacing_x) / 2
+
+                if r.ImGui_Button(ctx, "Clear All", button_width) then
+                    ClearAllGrains()
+                end
+
+                r.ImGui_SameLine(ctx, 0, item_spacing_x)
+
+                if r.ImGui_Button(ctx, "Randomize All", button_width) then
+                    RandomizeAll()
+                end
             end
 
             style_loader.PopFont(ctx)
@@ -489,12 +564,30 @@ function MainLoop()
 
             r.ImGui_Separator(ctx)
 
+            r.ImGui_Text(ctx, "Output Mode")
+            local output_mode_changed, new_output_mode = r.ImGui_Combo(ctx, "##outputmode", config.output_mode, "Replace Item (Mute Original)\0Same Track (Replace Each Time)\0New Track (Keep History)\0")
+            if output_mode_changed then
+                config.output_mode = new_output_mode
+            end
+
+            r.ImGui_Separator(ctx)
+
             if r.ImGui_Button(ctx, "GENERATE GRAINS", -1) then
                 GenerateGrains()
             end
 
-            if r.ImGui_Button(ctx, "Clear Grains", -1) then
-                ClearGeneratedGrains()
+            if config.output_mode == 0 then
+                if r.ImGui_Button(ctx, "Restore Original", -1) then
+                    RestoreOriginalItem()
+                end
+            end
+
+            if r.ImGui_Button(ctx, "Clear All", -1) then
+                ClearAllGrains()
+            end
+
+            if r.ImGui_Button(ctx, "Randomize All", -1) then
+                RandomizeAll()
             end
 
         end
