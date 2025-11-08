@@ -1,12 +1,14 @@
 local UI = {}
 
-function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence, style_loader, ctx, header_font_size, item_spacing_x, item_spacing_y, window_padding_x, window_padding_y)
+function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence, soundgen, license, style_loader, ctx, header_font_size, item_spacing_x, item_spacing_y, window_padding_x, window_padding_y)
 	UI.r = reaper_api
 	UI.core = core
 	UI.fxmanager = fxmanager
 	UI.gesture = gesture
 	UI.presetsystem = presetsystem
 	UI.persistence = persistence
+	UI.soundgen = soundgen
+	UI.license = license
 	UI.style_loader = style_loader
 	UI.ctx = ctx
 	UI.filters_ctx = nil
@@ -22,6 +24,7 @@ function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence
 	UI.item_spacing_y = item_spacing_y
 	UI.window_padding_x = window_padding_x
 	UI.window_padding_y = window_padding_y
+	UI.license_key_input = ""
 end
 
 function UI.getStyleValue(path, default_value)
@@ -30,6 +33,33 @@ end
 
 function UI.getStyleFont(font_name, context)
 	return UI.style_loader and UI.style_loader.getFont(context or UI.ctx, font_name) or nil
+end
+
+function UI.drawCollapsibleHeader(section_name, display_text)
+	local is_collapsed = UI.core.state.section_collapsed[section_name]
+	local collapse_icon = is_collapsed and "▶ " or "▼ "
+	local header_font = UI.getStyleFont("header")
+	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+	end
+	UI.r.ImGui_Text(UI.ctx, collapse_icon .. display_text)
+	if UI.r.ImGui_IsItemHovered(UI.ctx) then
+		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+		local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
+		local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
+		UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x, min_y, max_x, max_y, 0x33FFFFFF)
+		UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+	end
+	if UI.r.ImGui_IsItemClicked(UI.ctx) then
+		UI.core.state.section_collapsed[section_name] = not is_collapsed
+		UI.persistence.scheduleSave()
+	end
+	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+		UI.r.ImGui_PopFont(UI.ctx)
+	end
+	UI.r.ImGui_Separator(UI.ctx)
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	return not is_collapsed
 end
 
 function UI.drawPatternIcon(draw_list, x, y, size, pattern_id, is_active)
@@ -70,15 +100,8 @@ function UI.drawPatternIcon(draw_list, x, y, size, pattern_id, is_active)
 end
 
 function UI.drawNavigation()
-	local header_font = UI.getStyleFont("header")
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		UI.r.ImGui_Text(UI.ctx, "NAVIGATION")
-		UI.r.ImGui_PopFont(UI.ctx)
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	end
+	if not UI.drawCollapsibleHeader("navigation", "NAVIGATION") then return end
 
 	UI.r.ImGui_SetNextItemWidth(UI.ctx, 128)
 	local nav_items = table.concat(UI.core.navigation_modes, "\0") .. "\0"
@@ -242,14 +265,8 @@ function UI.drawNavigation()
 end
 
 function UI.drawMode()
-	local header_font = UI.getStyleFont("header")
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		UI.r.ImGui_Text(UI.ctx, "MODE")
-		UI.r.ImGui_PopFont(UI.ctx)
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	end
+	if not UI.drawCollapsibleHeader("mode", "MODE") then return end
+
 	if UI.r.ImGui_Button(UI.ctx, "Single", 128) then
 		UI.core.state.pad_mode = 0
 		UI.persistence.scheduleSave()
@@ -324,41 +341,228 @@ function UI.drawMode()
 	end
 end
 
+function UI.drawSoundGenerator()
+	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+	if not UI.drawCollapsibleHeader("soundgen", "SOUND GENERATOR") then return end
+
+	if not UI.license.isFull() then
+		UI.r.ImGui_TextColored(UI.ctx, 0xFFAA00FF, "🔒 Premium Feature")
+		UI.r.ImGui_Text(UI.ctx, "Sound Generator is available")
+		UI.r.ImGui_Text(UI.ctx, "in the full version.")
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+		if UI.r.ImGui_Button(UI.ctx, "Activate License", content_width) then
+			UI.core.state.show_license_window = true
+		end
+		return
+	end
+
+	local sg = UI.core.state.sound_generator
+	local button_width = (content_width - UI.item_spacing_x) / 2
+
+	if not sg.enabled then
+		if UI.r.ImGui_Button(UI.ctx, "Create Generator", content_width) then
+			UI.soundgen.createGenerator()
+		end
+	else
+		if UI.r.ImGui_Button(UI.ctx, "Remove", button_width) then
+			UI.soundgen.removeGenerator()
+		end
+		UI.r.ImGui_SameLine(UI.ctx)
+		if UI.r.ImGui_Button(UI.ctx, sg.mode == 0 and "Continuous" or "Triggered", button_width) then
+			UI.soundgen.removeGenerator()
+			sg.mode = sg.mode == 0 and 1 or 0
+			UI.soundgen.createGenerator()
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+
+		if sg.mode == 0 then
+			local waveforms = {"Sine", "Triangle", "Square", "Saw"}
+			local wf_combo = table.concat(waveforms, "\0") .. "\0"
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_wf = UI.r.ImGui_Combo(UI.ctx, "Waveform##sg", sg.waveform, wf_combo)
+			if changed then
+				sg.waveform = new_wf
+				UI.soundgen.updateJSFXParams()
+			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_freq = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", sg.frequency, 20, 2000, "%.1f Hz")
+			if changed then
+				sg.frequency = new_freq
+				UI.soundgen.updateJSFXParams()
+			end
+
+			local changed, rhythmic = UI.r.ImGui_Checkbox(UI.ctx, "Rhythmic", sg.rhythmic)
+			if changed then
+				sg.rhythmic = rhythmic
+				UI.soundgen.updateJSFXParams()
+			end
+
+			if sg.rhythmic then
+				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+				local changed, new_rate = UI.r.ImGui_SliderDouble(UI.ctx, "Tick Rate##sg", sg.tick_rate, 0.1, 20, "%.2f Hz")
+				if changed then
+					sg.tick_rate = new_rate
+					UI.soundgen.updateJSFXParams()
+				end
+
+				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+				local changed, new_duty = UI.r.ImGui_SliderDouble(UI.ctx, "Duty Cycle##sg", sg.duty_cycle, 0.01, 0.99, "%.2f")
+				if changed then
+					sg.duty_cycle = new_duty
+					UI.soundgen.updateJSFXParams()
+				end
+			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_noise = UI.r.ImGui_SliderDouble(UI.ctx, "Noise Color##sg", sg.noise_color, 0, 1, "%.2f")
+			if changed then
+				sg.noise_color = new_noise
+				UI.soundgen.updateJSFXParams()
+			end
+		else
+			local waveforms = {"Sine", "Triangle", "Square", "Saw"}
+			local wf_combo = table.concat(waveforms, "\0") .. "\0"
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_wf = UI.r.ImGui_Combo(UI.ctx, "Waveform##sg", sg.waveform, wf_combo)
+			if changed then
+				sg.waveform = new_wf
+				UI.soundgen.updateJSFXParams()
+			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_freq = UI.r.ImGui_SliderDouble(UI.ctx, "Base Freq##sg", sg.base_freq, 20, 2000, "%.1f Hz")
+			if changed then
+				sg.base_freq = new_freq
+				UI.soundgen.updateJSFXParams()
+			end
+
+			local changed, use_adsr = UI.r.ImGui_Checkbox(UI.ctx, "ADSR Envelope", sg.use_adsr)
+			if changed then
+				sg.use_adsr = use_adsr
+				UI.soundgen.updateJSFXParams()
+			end
+
+			if sg.use_adsr then
+				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+				local changed, new_a = UI.r.ImGui_SliderDouble(UI.ctx, "Attack##sg", sg.attack, 0.001, 2, "%.3f s")
+				if changed then
+					sg.attack = new_a
+					UI.soundgen.updateJSFXParams()
+				end
+
+				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+				local changed, new_d = UI.r.ImGui_SliderDouble(UI.ctx, "Decay##sg", sg.decay, 0.001, 2, "%.3f s")
+				if changed then
+					sg.decay = new_d
+					UI.soundgen.updateJSFXParams()
+				end
+
+				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+				local changed, new_s = UI.r.ImGui_SliderDouble(UI.ctx, "Sustain##sg", sg.sustain, 0, 1, "%.2f")
+				if changed then
+					sg.sustain = new_s
+					UI.soundgen.updateJSFXParams()
+				end
+
+				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+				local changed, new_r = UI.r.ImGui_SliderDouble(UI.ctx, "Release##sg", sg.release, 0.001, 5, "%.3f s")
+				if changed then
+					sg.release = new_r
+					UI.soundgen.updateJSFXParams()
+				end
+			end
+
+			local changed, midi = UI.r.ImGui_Checkbox(UI.ctx, "MIDI Trigger", sg.midi_mode)
+			if changed then
+				sg.midi_mode = midi
+				UI.soundgen.updateJSFXParams()
+			end
+
+			if not sg.midi_mode then
+				UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+				if UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width) then
+					if UI.r.ImGui_IsItemActive(UI.ctx) then
+						UI.soundgen.setManualTrigger(true)
+					end
+				end
+				if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
+					UI.soundgen.setManualTrigger(false)
+				end
+			end
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+		local changed, new_amp = UI.r.ImGui_SliderDouble(UI.ctx, "Amplitude##sg", sg.amplitude, 0, 1, "%.2f")
+		if changed then
+			sg.amplitude = new_amp
+			UI.soundgen.updateJSFXParams()
+		end
+
+		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+		local changed, new_width = UI.r.ImGui_SliderDouble(UI.ctx, "Stereo Width##sg", sg.stereo_width, 0, 1, "%.2f")
+		if changed then
+			sg.stereo_width = new_width
+			UI.soundgen.updateJSFXParams()
+		end
+	end
+end
+
 function UI.drawPadSection()
+	local is_collapsed = UI.core.state.section_collapsed.pad
+	local collapse_icon = is_collapsed and "▶ " or "▼ "
 	local header_font = UI.getStyleFont("header")
 	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
 		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		UI.r.ImGui_Text(UI.ctx, "XY PAD")
-		UI.r.ImGui_SameLine(UI.ctx)
-		local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-		local reset_text = "↻"
-		local reset_text_width = UI.r.ImGui_CalcTextSize(UI.ctx, reset_text)
-		local reset_x = UI.r.ImGui_GetCursorPosX(UI.ctx) + content_width - reset_text_width
-		UI.r.ImGui_SetCursorPosX(UI.ctx, reset_x)
-		UI.r.ImGui_Text(UI.ctx, reset_text)
-		if UI.r.ImGui_IsItemClicked(UI.ctx) then
-			UI.core.state.gesture_x = 0.5
-			UI.core.state.gesture_y = 0.5
-			UI.core.state.gesture_base_x = 0.5
-			UI.core.state.gesture_base_y = 0.5
-			UI.gesture.updateJSFXFromGesture()
-			UI.fxmanager.captureBaseValues()
-			if UI.core.state.pad_mode == 1 then
-				if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
-					UI.gesture.initializeGranularGrid()
-				end
-				UI.gesture.applyGranularGesture(UI.core.state.gesture_x, UI.core.state.gesture_y)
-			else
-				UI.gesture.applyGestureToSelection(UI.core.state.gesture_x, UI.core.state.gesture_y)
-			end
-		end
-		if UI.r.ImGui_IsItemHovered(UI.ctx) then
-			UI.r.ImGui_SetTooltip(UI.ctx, "Reset XY Pad to center")
-		end
-		UI.r.ImGui_PopFont(UI.ctx)
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	end
+	UI.r.ImGui_Text(UI.ctx, collapse_icon .. "XY PAD")
+	local header_clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+	local header_hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+	if header_hovered then
+		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+		local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
+		local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
+		UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x, min_y, max_x, max_y, 0x33FFFFFF)
+		UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+	end
+	UI.r.ImGui_SameLine(UI.ctx)
+	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+	local reset_text = "↻"
+	local reset_text_width = UI.r.ImGui_CalcTextSize(UI.ctx, reset_text)
+	local reset_x = UI.r.ImGui_GetCursorPosX(UI.ctx) + content_width - reset_text_width
+	UI.r.ImGui_SetCursorPosX(UI.ctx, reset_x)
+	UI.r.ImGui_Text(UI.ctx, reset_text)
+	if UI.r.ImGui_IsItemClicked(UI.ctx) then
+		UI.core.state.gesture_x = 0.5
+		UI.core.state.gesture_y = 0.5
+		UI.core.state.gesture_base_x = 0.5
+		UI.core.state.gesture_base_y = 0.5
+		UI.gesture.updateJSFXFromGesture()
+		UI.fxmanager.captureBaseValues()
+		if UI.core.state.pad_mode == 1 then
+			if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
+				UI.gesture.initializeGranularGrid()
+			end
+			UI.gesture.applyGranularGesture(UI.core.state.gesture_x, UI.core.state.gesture_y)
+		else
+			UI.gesture.applyGestureToSelection(UI.core.state.gesture_x, UI.core.state.gesture_y)
+		end
+	end
+	if UI.r.ImGui_IsItemHovered(UI.ctx) then
+		UI.r.ImGui_SetTooltip(UI.ctx, "Reset XY Pad to center")
+	end
+	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+		UI.r.ImGui_PopFont(UI.ctx)
+	end
+	if header_clicked then
+		UI.core.state.section_collapsed.pad = not is_collapsed
+		UI.persistence.scheduleSave()
+	end
+	UI.r.ImGui_Separator(UI.ctx)
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	if is_collapsed then return end
 	local pad_size = 298
 	local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
 	local cursor_pos_x, cursor_pos_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
@@ -461,16 +665,9 @@ function UI.drawPadSection()
 end
 
 function UI.drawRandomizer()
-	local header_font = UI.getStyleFont("header")
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+	if not UI.drawCollapsibleHeader("randomizer", "RANDOMIZER") then return end
 
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		UI.r.ImGui_Text(UI.ctx, "RANDOMIZER")
-		UI.r.ImGui_PopFont(UI.ctx)
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	end
 	if UI.r.ImGui_Button(UI.ctx, "ULTRA RANDOM", content_width) then
 		UI.fxmanager.ultraRandom()
 		UI.gesture.updateJSFXFromGesture()
@@ -560,16 +757,8 @@ function UI.drawRandomizer()
 end
 
 function UI.drawPresets()
-	local header_font = UI.getStyleFont("header")
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		UI.r.ImGui_Text(UI.ctx, "PRESETS")
-		UI.r.ImGui_PopFont(UI.ctx)
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	end
+	if not UI.drawCollapsibleHeader("presets", "PRESETS") then return end
 
 	local button_width = (content_width - UI.item_spacing_x) / 2
 	if UI.r.ImGui_Button(UI.ctx, "Save##presets", button_width) then
@@ -1050,6 +1239,13 @@ function UI.drawHorizontalLayout()
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
+	if UI.r.ImGui_BeginChild(UI.ctx, "SoundGen", 160, 0) then
+		UI.drawSoundGenerator()
+		UI.r.ImGui_EndChild(UI.ctx)
+	end
+	UI.r.ImGui_SameLine(UI.ctx)
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	UI.r.ImGui_SameLine(UI.ctx)
 	if UI.r.ImGui_BeginChild(UI.ctx, "PadXY", 298, 0) then
 		UI.drawPadSection()
 		UI.r.ImGui_EndChild(UI.ctx)
@@ -1164,7 +1360,68 @@ function UI.drawInterface()
 	end
 	if UI.style_loader then UI.style_loader.clearStyles(UI.ctx, UI.pushed_colors, UI.pushed_vars) end
 	UI.drawFiltersWindow()
+	UI.drawLicenseWindow()
 	return open
+end
+
+function UI.drawLicenseWindow()
+	if not UI.core.state.show_license_window then return end
+
+	UI.r.ImGui_SetNextWindowSize(UI.ctx, 400, 250, UI.r.ImGui_Cond_FirstUseEver())
+	local visible, open = UI.r.ImGui_Begin(UI.ctx, 'FX Constellation - License', true)
+	if visible then
+		local status = UI.license.getStatus()
+
+		if status == "FULL" then
+			UI.r.ImGui_TextColored(UI.ctx, 0x00FF00FF, "✓ Licensed")
+			UI.r.ImGui_Text(UI.ctx, "Thank you for supporting FX Constellation!")
+			UI.r.ImGui_Dummy(UI.ctx, 0, 10)
+			if UI.r.ImGui_Button(UI.ctx, "Close", 100) then
+				UI.core.state.show_license_window = false
+			end
+		else
+			if status == "INVALID" then
+				UI.r.ImGui_TextColored(UI.ctx, 0xFF0000FF, "✗ Invalid License Key")
+				UI.r.ImGui_Dummy(UI.ctx, 0, 5)
+			end
+
+			UI.r.ImGui_Text(UI.ctx, "FX Constellation FREE")
+			UI.r.ImGui_Separator(UI.ctx)
+			UI.r.ImGui_Dummy(UI.ctx, 0, 5)
+			UI.r.ImGui_Text(UI.ctx, "Upgrade to unlock:")
+			UI.r.ImGui_BulletText(UI.ctx, "Sound Generator")
+			UI.r.ImGui_BulletText(UI.ctx, "Unlimited FX (FREE: max 10)")
+			UI.r.ImGui_BulletText(UI.ctx, "Granular mode")
+			UI.r.ImGui_BulletText(UI.ctx, "Random Walk & Figures")
+			UI.r.ImGui_Dummy(UI.ctx, 0, 10)
+
+			UI.r.ImGui_Text(UI.ctx, "Enter License Key:")
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, 350)
+			local changed, new_key = UI.r.ImGui_InputText(UI.ctx, "##licensekey", UI.license_key_input)
+			if changed then
+				UI.license_key_input = new_key
+			end
+
+			UI.r.ImGui_Dummy(UI.ctx, 0, 5)
+
+			if UI.r.ImGui_Button(UI.ctx, "Activate", 100) then
+				if UI.license.validate(UI.license_key_input) then
+					UI.license.setKey(UI.license_key_input)
+					UI.license_key_input = ""
+				end
+			end
+			UI.r.ImGui_SameLine(UI.ctx)
+			if UI.r.ImGui_Button(UI.ctx, "Cancel", 100) then
+				UI.core.state.show_license_window = false
+				UI.license_key_input = ""
+			end
+		end
+
+		UI.r.ImGui_End(UI.ctx)
+	end
+	if not open then
+		UI.core.state.show_license_window = false
+	end
 end
 
 return UI

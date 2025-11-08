@@ -1,11 +1,12 @@
 local PresetSystem = {}
 
-function PresetSystem.init(reaper_api, core, fxmanager, gesture, persistence)
+function PresetSystem.init(reaper_api, core, fxmanager, gesture, persistence, soundgen)
 	PresetSystem.r = reaper_api
 	PresetSystem.core = core
 	PresetSystem.fxmanager = fxmanager
 	PresetSystem.gesture = gesture
 	PresetSystem.persistence = persistence
+	PresetSystem.soundgen = soundgen
 end
 
 function PresetSystem.getNextSnapshotName()
@@ -297,13 +298,33 @@ end
 function PresetSystem.captureCompleteState()
 	if not PresetSystem.core.isTrackValid() then return {} end
 
+	local sg = PresetSystem.core.state.sound_generator
 	local complete_state = {
 		gesture_x = PresetSystem.core.state.gesture_x,
 		gesture_y = PresetSystem.core.state.gesture_y,
 		gesture_base_x = PresetSystem.core.state.gesture_base_x,
 		gesture_base_y = PresetSystem.core.state.gesture_base_y,
 		fx_chain = {},
-		track_guid = PresetSystem.core.getTrackGUID()
+		track_guid = PresetSystem.core.getTrackGUID(),
+		sound_generator = {
+			enabled = sg.enabled,
+			mode = sg.mode,
+			waveform = sg.waveform,
+			frequency = sg.frequency,
+			rhythmic = sg.rhythmic,
+			tick_rate = sg.tick_rate,
+			duty_cycle = sg.duty_cycle,
+			noise_color = sg.noise_color,
+			base_freq = sg.base_freq,
+			use_adsr = sg.use_adsr,
+			attack = sg.attack,
+			decay = sg.decay,
+			sustain = sg.sustain,
+			release = sg.release,
+			midi_mode = sg.midi_mode,
+			amplitude = sg.amplitude,
+			stereo_width = sg.stereo_width
+		}
 	}
 
 	local fx_count = PresetSystem.r.TrackFX_GetCount(PresetSystem.core.state.track)
@@ -439,6 +460,35 @@ function PresetSystem.loadPreset(name)
 				end
 				break
 			end
+		end
+	end
+
+	if preset.sound_generator then
+		local sg = PresetSystem.core.state.sound_generator
+		if preset.sound_generator.enabled then
+			sg.mode = preset.sound_generator.mode or 0
+			sg.waveform = preset.sound_generator.waveform or 0
+			sg.frequency = preset.sound_generator.frequency or 440
+			sg.rhythmic = preset.sound_generator.rhythmic or false
+			sg.tick_rate = preset.sound_generator.tick_rate or 4
+			sg.duty_cycle = preset.sound_generator.duty_cycle or 0.5
+			sg.noise_color = preset.sound_generator.noise_color or 0.5
+			sg.base_freq = preset.sound_generator.base_freq or 440
+			sg.use_adsr = preset.sound_generator.use_adsr ~= false
+			sg.attack = preset.sound_generator.attack or 0.01
+			sg.decay = preset.sound_generator.decay or 0.1
+			sg.sustain = preset.sound_generator.sustain or 0.7
+			sg.release = preset.sound_generator.release or 0.2
+			sg.midi_mode = preset.sound_generator.midi_mode ~= false
+			sg.amplitude = preset.sound_generator.amplitude or 0.5
+			sg.stereo_width = preset.sound_generator.stereo_width or 1.0
+			if not sg.enabled then
+				PresetSystem.soundgen.createGenerator()
+			else
+				PresetSystem.soundgen.updateJSFXParams()
+			end
+		elseif sg.enabled then
+			PresetSystem.soundgen.removeGenerator()
 		end
 	end
 

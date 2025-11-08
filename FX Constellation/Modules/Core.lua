@@ -65,6 +65,7 @@ function Core.init(reaper_api)
 		fx_collapsed = {},
 		show_filters_window = false,
 		show_presets_window = false,
+		show_license_window = false,
 		jsfx_automation_enabled = false,
 		jsfx_automation_index = -1,
 		all_fx_collapsed = false,
@@ -81,7 +82,35 @@ function Core.init(reaper_api)
 		locked_track = nil,
 		current_loaded_preset = "",
 		preset_base_name = "",
-		initial_fx_chain_state = nil
+		initial_fx_chain_state = nil,
+		section_collapsed = {
+			pad = false,
+			navigation = false,
+			mode = false,
+			soundgen = false,
+			randomizer = false,
+			presets = false
+		},
+		sound_generator = {
+			enabled = false,
+			jsfx_index = -1,
+			mode = 0,
+			waveform = 0,
+			frequency = 440.0,
+			rhythmic = false,
+			tick_rate = 4.0,
+			duty_cycle = 0.5,
+			noise_color = 0.5,
+			base_freq = 440.0,
+			use_adsr = true,
+			attack = 0.01,
+			decay = 0.1,
+			sustain = 0.7,
+			release = 0.2,
+			midi_mode = true,
+			amplitude = 0.5,
+			stereo_width = 1.0
+		}
 	}
 
 	return Core.state
