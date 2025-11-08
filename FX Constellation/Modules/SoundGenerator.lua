@@ -45,8 +45,8 @@ function SoundGenerator.createGenerator()
 	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, "FX Constellation - Sound Generator", false, -1000)
 	if fx_index >= 0 then
 		sg.enabled = true
-		sg.jsfx_index = 0
-		SoundGenerator.r.TrackFX_Show(SoundGenerator.core.state.track, 0, 0)
+		sg.jsfx_index = fx_index
+		SoundGenerator.r.TrackFX_Show(SoundGenerator.core.state.track, fx_index, 0)
 		SoundGenerator.updateJSFXParams()
 		return true
 	end
@@ -101,28 +101,28 @@ function SoundGenerator.syncFromJSFX()
 	if not sg.enabled or sg.jsfx_index < 0 then return end
 	if not SoundGenerator.core.isTrackValid() then return end
 
-	local _, fx_name = SoundGenerator.r.TrackFX_GetFXName(SoundGenerator.core.state.track, 0, "")
+	local _, fx_name = SoundGenerator.r.TrackFX_GetFXName(SoundGenerator.core.state.track, sg.jsfx_index, "")
 	if not fx_name:find("Sound Generator") then
 		sg.enabled = false
 		sg.jsfx_index = -1
 		return
 	end
 
-	sg.mode = math.floor(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 0) + 0.5)
-	sg.waveform = math.floor(SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 1), 0, 5) + 0.5)
-	sg.frequency = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 2), 20, 20000)
-	sg.width = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 3), 0, 100)
-	sg.amplitude = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 4), 0, 1)
-	sg.noise_color = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 5), 0, 1)
-	sg.rhythmic = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 6) > 0.5
-	sg.tick_rate = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 7), 0.1, 20)
-	sg.duty_cycle = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 8), 0.01, 0.99)
-	sg.use_adsr = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 9) > 0.5
-	sg.attack = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 10), 0.001, 2)
-	sg.decay = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 11), 0.001, 2)
-	sg.sustain = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 12), 0, 1)
-	sg.release = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 13), 0.001, 5)
-	sg.midi_mode = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 14) > 0.5
+	sg.mode = math.floor(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 0) + 0.5)
+	sg.waveform = math.floor(SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 1), 0, 5) + 0.5)
+	sg.frequency = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 2), 20, 20000)
+	sg.width = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 3), 0, 100)
+	sg.amplitude = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 4), 0, 1)
+	sg.noise_color = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 5), 0, 1)
+	sg.rhythmic = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 6) > 0.5
+	sg.tick_rate = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 7), 0.1, 20)
+	sg.duty_cycle = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 8), 0.01, 0.99)
+	sg.use_adsr = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 9) > 0.5
+	sg.attack = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 10), 0.001, 2)
+	sg.decay = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 11), 0.001, 2)
+	sg.sustain = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 12), 0, 1)
+	sg.release = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 13), 0.001, 5)
+	sg.midi_mode = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 14) > 0.5
 end
 
 function SoundGenerator.setManualTrigger(value)
