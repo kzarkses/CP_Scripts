@@ -1422,12 +1422,13 @@ function UI.drawFiltersWindow()
 end
 
 function UI.drawHorizontalLayout()
-	local nav_width = UI.core.state.section_collapsed.navigation and 30 or 160
-	local mode_width = UI.core.state.section_collapsed.mode and 30 or 128
-	local soundgen_width = UI.core.state.section_collapsed.soundgen and 30 or 160
-	local pad_width = UI.core.state.section_collapsed.pad and 30 or 298
-	local rand_width = UI.core.state.section_collapsed.randomizer and 30 or 128
-	local preset_width = UI.core.state.section_collapsed.presets and 30 or 180
+	local widths = UI.core.state.section_widths
+	local nav_width = UI.core.state.section_collapsed.navigation and 30 or widths.navigation
+	local mode_width = UI.core.state.section_collapsed.mode and 30 or widths.mode
+	local soundgen_width = UI.core.state.section_collapsed.soundgen and 30 or widths.soundgen
+	local pad_width = UI.core.state.section_collapsed.pad and 30 or widths.pad
+	local rand_width = UI.core.state.section_collapsed.randomizer and 30 or widths.randomizer
+	local preset_width = UI.core.state.section_collapsed.presets and 30 or widths.presets
 
 	if UI.r.ImGui_BeginChild(UI.ctx, "SoundGen", soundgen_width, 0) then
 		UI.drawSoundGenerator()
@@ -1584,6 +1585,9 @@ function UI.drawLicenseWindow()
 
 	if not UI.license_ctx then
 		UI.license_ctx = UI.r.ImGui_CreateContext('FX Constellation License')
+		if UI.style_loader then
+			UI.style_loader.ApplyFontsToContext(UI.license_ctx)
+		end
 	end
 
 	if UI.style_loader then
@@ -1591,9 +1595,38 @@ function UI.drawLicenseWindow()
 		if success then UI.license_pushed_colors, UI.license_pushed_vars = colors, vars end
 	end
 
-	UI.r.ImGui_SetNextWindowSize(UI.license_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation - License', true)
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
+	UI.r.ImGui_SetNextWindowSize(UI.license_ctx, 450, 400, UI.r.ImGui_Cond_FirstUseEver())
+	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation License', true, window_flags)
 	if visible then
+		local header_font = UI.getStyleFont("header", UI.license_ctx)
+		local main_font = UI.getStyleFont("main", UI.license_ctx)
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.license_ctx, header_font, 0)
+			UI.r.ImGui_Text(UI.license_ctx, "FX CONSTELLATION LICENSE")
+			UI.r.ImGui_PopFont(UI.license_ctx)
+		else
+			UI.r.ImGui_Text(UI.license_ctx, "FX Constellation License")
+		end
+
+		UI.r.ImGui_SameLine(UI.license_ctx)
+		local license_header_font_size = UI.getStyleValue("fonts.header.size", 16)
+		local license_window_padding_x = UI.getStyleValue("spacing.window_padding_x", 8)
+		local close_button_size = license_header_font_size + 6
+		local close_x = UI.r.ImGui_GetWindowWidth(UI.license_ctx) - close_button_size - license_window_padding_x
+		UI.r.ImGui_SetCursorPosX(UI.license_ctx, close_x)
+		if UI.r.ImGui_Button(UI.license_ctx, "X", close_button_size, close_button_size) then
+			open = false
+		end
+
+		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.license_ctx, main_font, 0)
+		end
+
+		UI.r.ImGui_Separator(UI.license_ctx)
+		UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
+
 		local status = UI.license.getStatus()
 
 		if status == "FULL" then
@@ -1660,6 +1693,9 @@ function UI.drawLicenseWindow()
 			end
 		end
 
+		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.license_ctx)
+		end
 		UI.r.ImGui_End(UI.license_ctx)
 	end
 	if not open then
@@ -1683,22 +1719,33 @@ function UI.drawSettingsWindow()
 		local success, colors, vars = UI.style_loader.applyToContext(UI.settings_ctx)
 		if success then UI.settings_pushed_colors, UI.settings_pushed_vars = colors, vars end
 	end
-	UI.r.ImGui_SetNextWindowSize(UI.settings_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'FX Constellation Settings', true)
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
+	UI.r.ImGui_SetNextWindowSize(UI.settings_ctx, 400, 650, UI.r.ImGui_Cond_FirstUseEver())
+	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'FX Constellation Settings', true, window_flags)
 	if visible then
-		local main_font = UI.getStyleFont("main", UI.settings_ctx)
 		local header_font = UI.getStyleFont("header", UI.settings_ctx)
-
-		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.settings_ctx, main_font, 0)
-		end
+		local main_font = UI.getStyleFont("main", UI.settings_ctx)
 
 		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
 			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
-			UI.r.ImGui_Text(UI.settings_ctx, "SETTINGS")
+			UI.r.ImGui_Text(UI.settings_ctx, "FX CONSTELLATION SETTINGS")
 			UI.r.ImGui_PopFont(UI.settings_ctx)
 		else
-			UI.r.ImGui_Text(UI.settings_ctx, "Settings")
+			UI.r.ImGui_Text(UI.settings_ctx, "FX Constellation Settings")
+		end
+
+		UI.r.ImGui_SameLine(UI.settings_ctx)
+		local settings_header_font_size = UI.getStyleValue("fonts.header.size", 16)
+		local settings_window_padding_x = UI.getStyleValue("spacing.window_padding_x", 8)
+		local close_button_size = settings_header_font_size + 6
+		local close_x = UI.r.ImGui_GetWindowWidth(UI.settings_ctx) - close_button_size - settings_window_padding_x
+		UI.r.ImGui_SetCursorPosX(UI.settings_ctx, close_x)
+		if UI.r.ImGui_Button(UI.settings_ctx, "X", close_button_size, close_button_size) then
+			open = false
+		end
+
+		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.settings_ctx, main_font, 0)
 		end
 
 		UI.r.ImGui_Separator(UI.settings_ctx)
@@ -1748,6 +1795,61 @@ function UI.drawSettingsWindow()
 		changed, val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize XY Pad Position", config.randomize_n)
 		if changed then
 			config.randomize_n = val
+			UI.persistence.scheduleSave()
+		end
+
+		UI.r.ImGui_Dummy(UI.settings_ctx, 0, 10)
+		UI.r.ImGui_Separator(UI.settings_ctx)
+		UI.r.ImGui_Dummy(UI.settings_ctx, 0, 5)
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
+			UI.r.ImGui_Text(UI.settings_ctx, "APPEARANCE")
+			UI.r.ImGui_PopFont(UI.settings_ctx)
+		else
+			UI.r.ImGui_Text(UI.settings_ctx, "Appearance:")
+		end
+
+		UI.r.ImGui_Dummy(UI.settings_ctx, 0, 3)
+
+		local widths = UI.core.state.section_widths
+
+		UI.r.ImGui_Text(UI.settings_ctx, "Section Widths:")
+		UI.r.ImGui_Dummy(UI.settings_ctx, 0, 3)
+
+		changed, val = UI.r.ImGui_SliderInt(UI.settings_ctx, "Sound Generator", widths.soundgen, 100, 300)
+		if changed then
+			widths.soundgen = val
+			UI.persistence.scheduleSave()
+		end
+
+		changed, val = UI.r.ImGui_SliderInt(UI.settings_ctx, "Navigation", widths.navigation, 100, 300)
+		if changed then
+			widths.navigation = val
+			UI.persistence.scheduleSave()
+		end
+
+		changed, val = UI.r.ImGui_SliderInt(UI.settings_ctx, "Mode", widths.mode, 80, 200)
+		if changed then
+			widths.mode = val
+			UI.persistence.scheduleSave()
+		end
+
+		changed, val = UI.r.ImGui_SliderInt(UI.settings_ctx, "XY Pad", widths.pad, 200, 500)
+		if changed then
+			widths.pad = val
+			UI.persistence.scheduleSave()
+		end
+
+		changed, val = UI.r.ImGui_SliderInt(UI.settings_ctx, "Randomizer", widths.randomizer, 80, 200)
+		if changed then
+			widths.randomizer = val
+			UI.persistence.scheduleSave()
+		end
+
+		changed, val = UI.r.ImGui_SliderInt(UI.settings_ctx, "Presets", widths.presets, 120, 300)
+		if changed then
+			widths.presets = val
 			UI.persistence.scheduleSave()
 		end
 

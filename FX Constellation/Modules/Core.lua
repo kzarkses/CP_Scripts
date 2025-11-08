@@ -101,6 +101,14 @@ function Core.init(reaper_api)
 			randomize_xy = true,
 			randomize_n = true
 		},
+		section_widths = {
+			soundgen = 160,
+			navigation = 160,
+			mode = 128,
+			pad = 298,
+			randomizer = 128,
+			presets = 180
+		},
 		sound_generator = {
 			enabled = false,
 			jsfx_index = -1,

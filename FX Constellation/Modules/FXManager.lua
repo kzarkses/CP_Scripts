@@ -83,6 +83,18 @@ function FXManager.scanTrackFX()
 			if fx_key and FXManager.core.state.fx_random_max[fx_key] == nil then
 				FXManager.core.state.fx_random_max[fx_key] = 3
 			end
+
+			local is_new_fx = fx_key and FXManager.core.state.fx_random_max[fx_key] == 3
+			local first_param_key = nil
+			for test_param = 0, param_count - 1 do
+				local test_key = FXManager.core.getParamKey(visible_fx_id, test_param, "xy")
+				if test_key then
+					first_param_key = test_key
+					break
+				end
+			end
+			is_new_fx = is_new_fx or (first_param_key and FXManager.core.state.param_xy_assign[first_param_key] == nil)
+
 			local param_counter = 0
 			for param = 0, param_count - 1 do
 				local _, param_name = FXManager.r.TrackFX_GetParamName(FXManager.core.state.track, fx, param, "")
@@ -108,8 +120,10 @@ function FXManager.scanTrackFX()
 					}
 
 					local param_key = FXManager.core.getParamKey(visible_fx_id, param, "xy")
-					if param_key and FXManager.core.state.param_xy_assign[param_key] == nil then
-						FXManager.core.state.param_xy_assign[param_key] = param_counter % 2
+					if param_key then
+						if FXManager.core.state.param_xy_assign[param_key] == nil or is_new_fx then
+							FXManager.core.state.param_xy_assign[param_key] = param_counter % 2
+						end
 					end
 					param_counter = param_counter + 1
 				end
