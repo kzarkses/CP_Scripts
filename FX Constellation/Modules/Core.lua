@@ -89,7 +89,8 @@ function Core.init(reaper_api)
 			mode = false,
 			soundgen = false,
 			randomizer = false,
-			presets = false
+			presets = false,
+			fx_settings = false
 		},
 		sound_generator = {
 			enabled = false,

@@ -58,7 +58,7 @@ function UI.drawCollapsibleHeader(section_name, display_text)
 
 		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
 		if hovered then
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x4DFFFFFF)
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
 			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
 			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
 			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
@@ -581,13 +581,76 @@ function UI.drawSoundGenerator()
 end
 
 function UI.drawPadSection()
-	local header_expanded = UI.drawCollapsibleHeader("pad", "XY PAD")
-	if UI.r.ImGui_IsItemClicked(UI.ctx) then
-		UI.core.state.section_collapsed.pad = not UI.core.state.section_collapsed.pad
-		UI.persistence.scheduleSave()
-	end
+	local is_collapsed = UI.core.state.section_collapsed.pad
+	local collapse_icon = is_collapsed and "▶" or "▼"
+	local header_font = UI.getStyleFont("header")
 
-	if header_expanded then
+	if is_collapsed then
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+		end
+		local char_height = 12
+		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
+		local display_text = "XY PAD"
+		local button_height = #display_text * char_height + 30
+		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_pad", 25, button_height)
+		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+
+		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+		if hovered then
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
+			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+		end
+
+		local icon_x = cursor_x + 5
+		local icon_y = cursor_y + 5
+		UI.r.ImGui_DrawList_AddText(draw_list, icon_x, icon_y, 0xFFFFFFFF, collapse_icon)
+
+		local text_x = cursor_x + 7
+		local text_y = cursor_y + 25
+		for i = 1, #display_text do
+			local char = display_text:sub(i, i)
+			UI.r.ImGui_DrawList_AddText(draw_list, text_x, text_y, 0xFFFFFFFF, char)
+			text_y = text_y + char_height
+		end
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.ctx)
+		end
+
+		if clicked then
+			UI.core.state.section_collapsed.pad = false
+			UI.persistence.scheduleSave()
+		end
+
+		return
+	else
+		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+		end
+		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " XY PAD")
+		local header_hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+		local header_clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+		if header_hovered then
+			local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+			local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
+			local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x - 2, min_y - 2, max_x + 2, max_y + 2, highlight_color, rounding)
+			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+			UI.r.ImGui_SetCursorScreenPos(UI.ctx, cursor_x, cursor_y)
+			UI.r.ImGui_Text(UI.ctx, collapse_icon .. " XY PAD")
+		end
+		if header_clicked then
+			UI.core.state.section_collapsed.pad = true
+			UI.persistence.scheduleSave()
+		end
+
 		UI.r.ImGui_SameLine(UI.ctx)
 		local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
 		local reset_text = "↻"
@@ -614,10 +677,13 @@ function UI.drawPadSection()
 		if UI.r.ImGui_IsItemHovered(UI.ctx) then
 			UI.r.ImGui_SetTooltip(UI.ctx, "Reset XY Pad to center")
 		end
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.ctx)
+		end
+
 		UI.r.ImGui_Separator(UI.ctx)
 		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	else
-		return
 	end
 	local pad_size = 298
 	local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
@@ -991,21 +1057,16 @@ function UI.drawPresets()
 end
 
 function UI.drawFXSection()
-	local header_font = UI.getStyleFont("header")
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		local header_text = "FX SETTINGS"
-		UI.r.ImGui_Text(UI.ctx, header_text)
-		UI.r.ImGui_PopFont(UI.ctx)
+	local header_expanded = UI.drawCollapsibleHeader("fx_settings", "FX SETTINGS")
+	if header_expanded then
 		UI.r.ImGui_SameLine(UI.ctx)
 		local selection_text = "| Selected: " .. UI.core.state.selected_count
 		if UI.core.state.current_loaded_preset ~= "" then
 			selection_text = selection_text .. " | " .. UI.core.state.current_loaded_preset
 		end
 		UI.r.ImGui_Text(UI.ctx, selection_text)
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	end
+	if not header_expanded then return end
 	if UI.r.ImGui_Button(UI.ctx, UI.core.state.show_filters_window and "Hide Filters" or "Show Filters") then
 		UI.core.state.show_filters_window = not UI.core.state.show_filters_window
 	end
@@ -1570,8 +1631,7 @@ function UI.drawLicenseWindow()
 	end
 
 	if UI.style_loader then
-		UI.style_loader.popColors(UI.license_ctx, UI.license_pushed_colors)
-		UI.style_loader.popVars(UI.license_ctx, UI.license_pushed_vars)
+		UI.style_loader.clearStyles(UI.license_ctx, UI.license_pushed_colors, UI.license_pushed_vars)
 	end
 end
 
