@@ -37,29 +37,73 @@ end
 
 function UI.drawCollapsibleHeader(section_name, display_text)
 	local is_collapsed = UI.core.state.section_collapsed[section_name]
-	local collapse_icon = is_collapsed and "▶ " or "▼ "
+	local collapse_icon = is_collapsed and "▶" or "▼"
 	local header_font = UI.getStyleFont("header")
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-	end
-	UI.r.ImGui_Text(UI.ctx, collapse_icon .. display_text)
-	if UI.r.ImGui_IsItemHovered(UI.ctx) then
+
+	if is_collapsed then
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+		end
+		local char_height = 12
+		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
+		local button_height = #display_text * char_height + 20
+		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_" .. section_name, 25, button_height)
+		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+
 		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-		local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
-		local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
-		UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x, min_y, max_x, max_y, 0x33FFFFFF)
-		UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+		if hovered then
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x33FFFFFF)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color)
+			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+		end
+
+		local icon_x = cursor_x + 5
+		local icon_y = cursor_y + 5
+		UI.r.ImGui_DrawList_AddText(draw_list, icon_x, icon_y, 0xFFFFFFFF, collapse_icon)
+
+		local text_x = cursor_x + 7
+		local text_y = cursor_y + 25
+		for i = 1, #display_text do
+			local char = display_text:sub(i, i)
+			UI.r.ImGui_DrawList_AddText(draw_list, text_x, text_y, 0xFFFFFFFF, char)
+			text_y = text_y + char_height
+		end
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.ctx)
+		end
+
+		if clicked then
+			UI.core.state.section_collapsed[section_name] = false
+			UI.persistence.scheduleSave()
+		end
+
+		return false
+	else
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+		end
+		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " " .. display_text)
+		if UI.r.ImGui_IsItemHovered(UI.ctx) then
+			local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+			local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
+			local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x33FFFFFF)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x, min_y, max_x, max_y, highlight_color)
+			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+		end
+		if UI.r.ImGui_IsItemClicked(UI.ctx) then
+			UI.core.state.section_collapsed[section_name] = true
+			UI.persistence.scheduleSave()
+		end
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.ctx)
+		end
+		UI.r.ImGui_Separator(UI.ctx)
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+		return true
 	end
-	if UI.r.ImGui_IsItemClicked(UI.ctx) then
-		UI.core.state.section_collapsed[section_name] = not is_collapsed
-		UI.persistence.scheduleSave()
-	end
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PopFont(UI.ctx)
-	end
-	UI.r.ImGui_Separator(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	return not is_collapsed
 end
 
 function UI.drawPatternIcon(draw_list, x, y, size, pattern_id, is_active)
@@ -104,24 +148,30 @@ function UI.drawNavigation()
 	if not UI.drawCollapsibleHeader("navigation", "NAVIGATION") then return end
 
 	UI.r.ImGui_SetNextItemWidth(UI.ctx, 128)
-	local nav_items = table.concat(UI.core.navigation_modes, "\0") .. "\0"
+	local nav_modes = UI.license.isFull() and UI.core.navigation_modes or {"Manual", "Random Walk 🔒", "Figures 🔒"}
+	local nav_items = table.concat(nav_modes, "\0") .. "\0"
 	local changed, new_nav_mode = UI.r.ImGui_Combo(UI.ctx, "##navmode", UI.core.state.navigation_mode, nav_items)
 	if changed then
-		UI.core.state.navigation_mode = new_nav_mode
-		if new_nav_mode == 1 then
-			UI.core.state.random_walk_active = true
-			UI.core.state.random_walk_next_time = UI.r.time_precise() + 1.0 / UI.core.state.random_walk_speed
-			UI.gesture.generateRandomWalkControlPoints()
-			UI.fxmanager.captureBaseValues()
-		elseif new_nav_mode == 2 then
-			UI.core.state.figures_active = true
-			UI.core.state.figures_time = 0
-			UI.fxmanager.captureBaseValues()
+		if (new_nav_mode == 1 or new_nav_mode == 2) and not UI.license.isFull() then
+			UI.core.state.navigation_mode = 0
+			UI.core.state.show_license_window = true
 		else
-			UI.core.state.random_walk_active = false
-			UI.core.state.figures_active = false
+			UI.core.state.navigation_mode = new_nav_mode
+			if new_nav_mode == 1 then
+				UI.core.state.random_walk_active = true
+				UI.core.state.random_walk_next_time = UI.r.time_precise() + 1.0 / UI.core.state.random_walk_speed
+				UI.gesture.generateRandomWalkControlPoints()
+				UI.fxmanager.captureBaseValues()
+			elseif new_nav_mode == 2 then
+				UI.core.state.figures_active = true
+				UI.core.state.figures_time = 0
+				UI.fxmanager.captureBaseValues()
+			else
+				UI.core.state.random_walk_active = false
+				UI.core.state.figures_active = false
+			end
+			UI.persistence.scheduleSave()
 		end
-		UI.persistence.scheduleSave()
 	end
 
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
@@ -271,12 +321,20 @@ function UI.drawMode()
 		UI.core.state.pad_mode = 0
 		UI.persistence.scheduleSave()
 	end
-	if UI.r.ImGui_Button(UI.ctx, "Granular", 128) then
-		UI.core.state.pad_mode = 1
-		if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
-			UI.gesture.initializeGranularGrid()
+	if not UI.license.isFull() then
+		UI.r.ImGui_BeginDisabled(UI.ctx)
+	end
+	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Granular" or "Granular 🔒", 128) then
+		if UI.license.isFull() then
+			UI.core.state.pad_mode = 1
+			if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
+				UI.gesture.initializeGranularGrid()
+			end
+			UI.persistence.scheduleSave()
 		end
-		UI.persistence.scheduleSave()
+	end
+	if not UI.license.isFull() then
+		UI.r.ImGui_EndDisabled(UI.ctx)
 	end
 	if UI.core.state.pad_mode == 1 then
 		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
@@ -668,11 +726,13 @@ function UI.drawRandomizer()
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
 	if not UI.drawCollapsibleHeader("randomizer", "RANDOMIZER") then return end
 
-	if UI.r.ImGui_Button(UI.ctx, "ULTRA RANDOM", content_width) then
-		UI.fxmanager.ultraRandom()
-		UI.gesture.updateJSFXFromGesture()
+	if UI.license.isFull() then
+		if UI.r.ImGui_Button(UI.ctx, "ULTRA RANDOM", content_width) then
+			UI.fxmanager.ultraRandom()
+			UI.gesture.updateJSFXFromGesture()
+		end
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	end
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	if UI.r.ImGui_Button(UI.ctx, "FX Order", content_width) then
 		UI.fxmanager.randomizeFXOrder()
 	end
@@ -1225,42 +1285,49 @@ function UI.drawFiltersWindow()
 end
 
 function UI.drawHorizontalLayout()
-	if UI.r.ImGui_BeginChild(UI.ctx, "Navigation", 160, 0) then
+	local nav_width = UI.core.state.section_collapsed.navigation and 30 or 160
+	local mode_width = UI.core.state.section_collapsed.mode and 30 or 128
+	local soundgen_width = UI.core.state.section_collapsed.soundgen and 30 or 160
+	local pad_width = UI.core.state.section_collapsed.pad and 30 or 298
+	local rand_width = UI.core.state.section_collapsed.randomizer and 30 or 128
+	local preset_width = UI.core.state.section_collapsed.presets and 30 or 180
+
+	if UI.r.ImGui_BeginChild(UI.ctx, "Navigation", nav_width, 0) then
 		UI.drawNavigation()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Mode", 128, 0) then
+	if UI.r.ImGui_BeginChild(UI.ctx, "Mode", mode_width, 0) then
 		UI.drawMode()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "SoundGen", 160, 0) then
+	if UI.r.ImGui_BeginChild(UI.ctx, "SoundGen", soundgen_width, 0) then
 		UI.drawSoundGenerator()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "PadXY", 298, 0) then
+	if UI.r.ImGui_BeginChild(UI.ctx, "PadXY", pad_width, 0) then
 		UI.drawPadSection()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Randomizer", 128, 0) then
+	if UI.r.ImGui_BeginChild(UI.ctx, "Randomizer", rand_width, 0) then
 		UI.drawRandomizer()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Presets", 180, 0) then
+	if UI.r.ImGui_BeginChild(UI.ctx, "Presets", preset_width, 0) then
 		UI.drawPresets()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end

@@ -1,9 +1,10 @@
 local FXManager = {}
 
-function FXManager.init(reaper_api, core, persistence)
+function FXManager.init(reaper_api, core, persistence, license)
 	FXManager.r = reaper_api
 	FXManager.core = core
 	FXManager.persistence = persistence
+	FXManager.license = license
 end
 
 function FXManager.shouldFilterParam(param_name)
@@ -63,9 +64,13 @@ function FXManager.scanTrackFX()
 	FXManager.core.state.fx_data = {}
 	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
 	local visible_fx_id = 0
+	local max_fx = FXManager.license and not FXManager.license.isFull() and 5 or 999
 	for fx = 0, fx_count - 1 do
 		local _, fx_name = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, fx, "")
-		if not fx_name:find("FX Constellation Bridge") then
+		if not fx_name:find("FX Constellation Bridge") and not fx_name:find("Sound Generator") then
+			if visible_fx_id >= max_fx then
+				break
+			end
 			local param_count = FXManager.r.TrackFX_GetNumParams(FXManager.core.state.track, fx)
 			FXManager.core.state.fx_data[visible_fx_id] = {
 				name = FXManager.core.extractFXName(fx_name),
