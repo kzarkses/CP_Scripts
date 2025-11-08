@@ -38,6 +38,8 @@ function SoundGenerator.createGenerator()
 	local sg = SoundGenerator.core.state.sound_generator
 	if sg.enabled then return true end
 
+	SoundGenerator.removeAllSoundGenerators()
+
 	if not SoundGenerator.installJSFX() then return false end
 
 	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, "FX Constellation - Sound Generator", false, -1000)
@@ -49,6 +51,17 @@ function SoundGenerator.createGenerator()
 		return true
 	end
 	return false
+end
+
+function SoundGenerator.removeAllSoundGenerators()
+	if not SoundGenerator.core.isTrackValid() then return end
+	local fx_count = SoundGenerator.r.TrackFX_GetCount(SoundGenerator.core.state.track)
+	for i = fx_count - 1, 0, -1 do
+		local _, fx_name = SoundGenerator.r.TrackFX_GetFXName(SoundGenerator.core.state.track, i, "")
+		if fx_name:find("Sound Generator") then
+			SoundGenerator.r.TrackFX_Delete(SoundGenerator.core.state.track, i)
+		end
+	end
 end
 
 function SoundGenerator.removeGenerator()
