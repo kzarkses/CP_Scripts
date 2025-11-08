@@ -40,17 +40,22 @@ amp = amplitude;
 @sample
 dt = 1 / srate;
 
-// Width as detune in cents
-cents_to_ratio = 2^(width / 1200);
-freq_l = frequency / cents_to_ratio;
-freq_r = frequency * cents_to_ratio;
+// Width as detune in cents - force mono if width < 0.01
+width < 0.01 ? (
+	freq_l = frequency;
+	freq_r = frequency;
+) : (
+	cents_to_ratio = 2^(width / 1200);
+	freq_l = frequency / cents_to_ratio;
+	freq_r = frequency * cents_to_ratio;
+);
 
 phase_inc_l = freq_l * dt;
 phase_inc_r = freq_r * dt;
 
 // Rhythmic gating
 tick_on = 1;
-rhythmic == 1 ? (
+rhythmic > 0.5 ? (
 	tick_phase += tick_rate * dt;
 	tick_on = (tick_phase % 1) < duty_cycle;
 	tick_phase >= 1 ? tick_phase -= 1;
@@ -61,25 +66,25 @@ tick_on ? (
 	out_r = 0;
 
 	// Waveforms 0-3: Oscillators
-	waveform == 0 ? (
+	waveform < 0.5 ? (
 		// Sine
 		out_l = sin(phase_l * pi2);
 		out_r = sin(phase_r * pi2);
-	) : waveform == 1 ? (
+	) : waveform < 1.5 ? (
 		// Triangle
 		t_l = (phase_l % 1);
 		t_r = (phase_r % 1);
 		out_l = t_l < 0.5 ? (t_l * 4 - 1) : (3 - t_l * 4);
 		out_r = t_r < 0.5 ? (t_r * 4 - 1) : (3 - t_r * 4);
-	) : waveform == 2 ? (
+	) : waveform < 2.5 ? (
 		// Square
 		out_l = (phase_l % 1) < 0.5 ? 1 : -1;
 		out_r = (phase_r % 1) < 0.5 ? 1 : -1;
-	) : waveform == 3 ? (
+	) : waveform < 3.5 ? (
 		// Saw
 		out_l = (phase_l % 1) * 2 - 1;
 		out_r = (phase_r % 1) * 2 - 1;
-	) : waveform == 4 ? (
+	) : waveform < 4.5 ? (
 		// Noise
 		white_l = rand() * 2 - 1;
 		white_r = rand() * 2 - 1;
@@ -89,15 +94,15 @@ tick_on ? (
 		brown_r = max(-1, min(1, brown_r));
 		out_l = white_l * (1 - noise_color) + brown_l * noise_color;
 		out_r = white_r * (1 - noise_color) + brown_r * noise_color;
-	) : waveform == 5 ? (
+	) : (
 		// Click
 		click_phase < 0.005 ? (
-			env = 1 - (click_phase / 0.005);
-			env = env * env;
+			click_env = 1 - (click_phase / 0.005);
+			click_env = click_env * click_env;
 			white_l = rand() * 2 - 1;
 			white_r = rand() * 2 - 1;
-			out_l = white_l * env;
-			out_r = white_r * env;
+			out_l = white_l * click_env;
+			out_r = white_r * click_env;
 		) : (
 			out_l = 0;
 			out_r = 0;
@@ -115,7 +120,7 @@ tick_on ? (
 	);
 
 	// Reset click phase on tick start for rhythmic mode
-	waveform == 5 && rhythmic == 1 ? (
+	waveform > 4.5 && rhythmic > 0.5 ? (
 		(tick_phase % 1) < (dt * tick_rate) ? (
 			click_phase = 0;
 		);
@@ -171,7 +176,7 @@ click_phase = 0;
 amp = amplitude;
 
 @block
-midi_mode == 1 ? (
+midi_mode > 0.5 ? (
 	while (midirecv(offset, msg1, msg2, msg3)) (
 		status = msg1 & 0xF0;
 		status == 0x90 && msg3 > 0 ? (
@@ -187,12 +192,12 @@ midi_mode == 1 ? (
 		midisend(offset, msg1, msg2, msg3);
 	);
 ) : (
-	manual_trigger == 1 && last_manual == 0 ? (
+	manual_trigger > 0.5 && last_manual < 0.5 ? (
 		note_on = 1;
 		env_state = 1;
 		env = 0;
 		click_phase = 0;
-	) : manual_trigger == 0 && last_manual == 1 ? (
+	) : manual_trigger < 0.5 && last_manual > 0.5 ? (
 		note_on = 0;
 		env_state = 3;
 	);
@@ -203,36 +208,45 @@ midi_mode == 1 ? (
 dt = 1 / srate;
 
 // Calculate frequency from MIDI note or base frequency
-midi_mode == 1 && note_on ? (
+midi_mode > 0.5 && note_on ? (
 	target_freq = frequency * 2^((midi_note - 69) / 12);
 ) : (
 	target_freq = frequency;
 );
 
-// Width as detune in cents
-cents_to_ratio = 2^(width / 1200);
-freq_l = target_freq / cents_to_ratio;
-freq_r = target_freq * cents_to_ratio;
+// Width as detune in cents - force mono if width < 0.01
+width < 0.01 ? (
+	freq_l = target_freq;
+	freq_r = target_freq;
+) : (
+	cents_to_ratio = 2^(width / 1200);
+	freq_l = target_freq / cents_to_ratio;
+	freq_r = target_freq * cents_to_ratio;
+);
 
 phase_inc_l = freq_l * dt;
 phase_inc_r = freq_r * dt;
 
-// ADSR Envelope
-use_adsr == 1 ? (
+// ADSR Envelope with exponential curves
+use_adsr > 0.5 ? (
 	env_state == 1 ? (
+		// Attack - linear rise
 		env += dt / attack;
 		env >= 1 ? (
 			env = 1;
 			env_state = 2;
 		);
 	) : env_state == 2 ? (
-		env -= dt * (1 - sustain) / decay;
-		env <= sustain ? (
+		// Decay - exponential fall
+		target = sustain;
+		env -= (env - target) * (1 - exp(-5 * dt / decay));
+		abs(env - sustain) < 0.001 ? (
 			env = sustain;
 		);
 	) : env_state == 3 ? (
-		env -= dt * sustain / release;
-		env <= 0 ? (
+		// Release - exponential fall
+		env -= env * (1 - exp(-5 * dt / release));
+		env <= 0.001 ? (
 			env = 0;
 			env_state = 0;
 		);
@@ -246,25 +260,25 @@ env > 0 ? (
 	out_r = 0;
 
 	// Waveforms 0-3: Oscillators
-	waveform == 0 ? (
+	waveform < 0.5 ? (
 		// Sine
 		out_l = sin(phase_l * pi2);
 		out_r = sin(phase_r * pi2);
-	) : waveform == 1 ? (
+	) : waveform < 1.5 ? (
 		// Triangle
 		t_l = (phase_l % 1);
 		t_r = (phase_r % 1);
 		out_l = t_l < 0.5 ? (t_l * 4 - 1) : (3 - t_l * 4);
 		out_r = t_r < 0.5 ? (t_r * 4 - 1) : (3 - t_r * 4);
-	) : waveform == 2 ? (
+	) : waveform < 2.5 ? (
 		// Square
 		out_l = (phase_l % 1) < 0.5 ? 1 : -1;
 		out_r = (phase_r % 1) < 0.5 ? 1 : -1;
-	) : waveform == 3 ? (
+	) : waveform < 3.5 ? (
 		// Saw
-		out_l = (phase_r % 1) * 2 - 1;
+		out_l = (phase_l % 1) * 2 - 1;
 		out_r = (phase_r % 1) * 2 - 1;
-	) : waveform == 4 ? (
+	) : waveform < 4.5 ? (
 		// Noise
 		white_l = rand() * 2 - 1;
 		white_r = rand() * 2 - 1;
@@ -274,7 +288,7 @@ env > 0 ? (
 		brown_r = max(-1, min(1, brown_r));
 		out_l = white_l * (1 - noise_color) + brown_l * noise_color;
 		out_r = white_r * (1 - noise_color) + brown_r * noise_color;
-	) : waveform == 5 ? (
+	) : (
 		// Click
 		click_phase < 0.005 ? (
 			click_env = 1 - (click_phase / 0.005);
@@ -329,11 +343,11 @@ function SoundGenerator.createGenerator()
 		if not SoundGenerator.createTriggeredJSFX() then return false end
 	end
 
-	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, jsfx_name, false, -1)
+	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, jsfx_name, false, -1000)
 	if fx_index >= 0 then
 		sg.enabled = true
-		sg.jsfx_index = fx_index
-		SoundGenerator.r.TrackFX_Show(SoundGenerator.core.state.track, fx_index, 0)
+		sg.jsfx_index = 0
+		SoundGenerator.r.TrackFX_Show(SoundGenerator.core.state.track, 0, 0)
 		SoundGenerator.updateJSFXParams()
 		return true
 	end
@@ -384,27 +398,34 @@ function SoundGenerator.syncFromJSFX()
 	if not sg.enabled or sg.jsfx_index < 0 then return end
 	if not SoundGenerator.core.isTrackValid() then return end
 
+	local _, fx_name = SoundGenerator.r.TrackFX_GetFXName(SoundGenerator.core.state.track, 0, "")
+	if not fx_name:find("Sound Generator") then
+		sg.enabled = false
+		sg.jsfx_index = -1
+		return
+	end
+
 	if sg.mode == 0 then
-		sg.waveform = math.floor(SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 0), 0, 5) + 0.5)
-		sg.frequency = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 1), 20, 20000)
-		sg.width = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 2), 0, 100)
-		sg.amplitude = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 3), 0, 1)
-		sg.noise_color = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 4), 0, 1)
-		sg.rhythmic = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 5) > 0.5
-		sg.tick_rate = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 6), 0.1, 20)
-		sg.duty_cycle = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 7), 0.01, 0.99)
+		sg.waveform = math.floor(SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 0), 0, 5) + 0.5)
+		sg.frequency = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 1), 20, 20000)
+		sg.width = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 2), 0, 100)
+		sg.amplitude = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 3), 0, 1)
+		sg.noise_color = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 4), 0, 1)
+		sg.rhythmic = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 5) > 0.5
+		sg.tick_rate = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 6), 0.1, 20)
+		sg.duty_cycle = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 7), 0.01, 0.99)
 	else
-		sg.waveform = math.floor(SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 0), 0, 5) + 0.5)
-		sg.frequency = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 1), 20, 20000)
-		sg.width = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 2), 0, 100)
-		sg.amplitude = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 3), 0, 1)
-		sg.noise_color = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 4), 0, 1)
-		sg.use_adsr = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 5) > 0.5
-		sg.attack = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 6), 0.001, 2)
-		sg.decay = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 7), 0.001, 2)
-		sg.sustain = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 8), 0, 1)
-		sg.release = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 9), 0.001, 5)
-		sg.midi_mode = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 10) > 0.5
+		sg.waveform = math.floor(SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 0), 0, 5) + 0.5)
+		sg.frequency = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 1), 20, 20000)
+		sg.width = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 2), 0, 100)
+		sg.amplitude = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 3), 0, 1)
+		sg.noise_color = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 4), 0, 1)
+		sg.use_adsr = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 5) > 0.5
+		sg.attack = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 6), 0.001, 2)
+		sg.decay = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 7), 0.001, 2)
+		sg.sustain = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 8), 0, 1)
+		sg.release = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 9), 0.001, 5)
+		sg.midi_mode = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 10) > 0.5
 	end
 end
 
