@@ -98,19 +98,18 @@ function Core.init(reaper_api)
 			mode = 0,
 			waveform = 0,
 			frequency = 440.0,
+			width = 10.0,
+			amplitude = 0.5,
+			noise_color = 0.5,
 			rhythmic = false,
 			tick_rate = 4.0,
 			duty_cycle = 0.5,
-			noise_color = 0.5,
-			base_freq = 440.0,
 			use_adsr = true,
 			attack = 0.01,
 			decay = 0.1,
 			sustain = 0.7,
 			release = 0.2,
-			midi_mode = true,
-			amplitude = 0.5,
-			stereo_width = 1.0
+			midi_mode = false
 		}
 	}
 

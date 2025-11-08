@@ -427,155 +427,150 @@ function UI.drawSoundGenerator()
 	end
 
 	local sg = UI.core.state.sound_generator
-	local button_width = (content_width - UI.item_spacing_x) / 2
+	UI.soundgen.syncFromJSFX()
 
-	if not sg.enabled then
-		if UI.r.ImGui_Button(UI.ctx, "Create Generator", content_width) then
+	local button_width = (content_width - UI.item_spacing_x) / 2
+	local toggle_label = sg.enabled and (sg.mode == 0 and "● Continuous" or "● Triggered") or "○ OFF"
+	if UI.r.ImGui_Button(UI.ctx, toggle_label, content_width) then
+		if not sg.enabled then
 			UI.soundgen.createGenerator()
-		end
-	else
-		if UI.r.ImGui_Button(UI.ctx, "Remove", button_width) then
-			UI.soundgen.removeGenerator()
-		end
-		UI.r.ImGui_SameLine(UI.ctx)
-		if UI.r.ImGui_Button(UI.ctx, sg.mode == 0 and "Continuous" or "Triggered", button_width) then
+			UI.fxmanager.scanTrackFX()
+		else
 			UI.soundgen.removeGenerator()
 			sg.mode = sg.mode == 0 and 1 or 0
 			UI.soundgen.createGenerator()
+			UI.fxmanager.scanTrackFX()
 		end
+	end
 
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	if not sg.enabled then return end
 
-		if sg.mode == 0 then
-			local waveforms = {"Sine", "Triangle", "Square", "Saw"}
-			local wf_combo = table.concat(waveforms, "\0") .. "\0"
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_wf = UI.r.ImGui_Combo(UI.ctx, "Waveform##sg", sg.waveform, wf_combo)
-			if changed then
-				sg.waveform = new_wf
-				UI.soundgen.updateJSFXParams()
-			end
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_freq = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", sg.frequency, 20, 2000, "%.1f Hz")
-			if changed then
-				sg.frequency = new_freq
-				UI.soundgen.updateJSFXParams()
-			end
+	local waveforms = {"Sine", "Triangle", "Square", "Saw", "Noise", "Click"}
+	local wf_combo = table.concat(waveforms, "\0") .. "\0"
+	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+	local changed, new_wf = UI.r.ImGui_Combo(UI.ctx, "Type##sg", sg.waveform, wf_combo)
+	if changed then
+		sg.waveform = new_wf
+		UI.soundgen.updateJSFXParams()
+	end
 
-			local changed, rhythmic = UI.r.ImGui_Checkbox(UI.ctx, "Rhythmic", sg.rhythmic)
-			if changed then
-				sg.rhythmic = rhythmic
-				UI.soundgen.updateJSFXParams()
-			end
-
-			if sg.rhythmic then
-				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-				local changed, new_rate = UI.r.ImGui_SliderDouble(UI.ctx, "Tick Rate##sg", sg.tick_rate, 0.1, 20, "%.2f Hz")
-				if changed then
-					sg.tick_rate = new_rate
-					UI.soundgen.updateJSFXParams()
-				end
-
-				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-				local changed, new_duty = UI.r.ImGui_SliderDouble(UI.ctx, "Duty Cycle##sg", sg.duty_cycle, 0.01, 0.99, "%.2f")
-				if changed then
-					sg.duty_cycle = new_duty
-					UI.soundgen.updateJSFXParams()
-				end
-			end
-
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_noise = UI.r.ImGui_SliderDouble(UI.ctx, "Noise Color##sg", sg.noise_color, 0, 1, "%.2f")
-			if changed then
-				sg.noise_color = new_noise
-				UI.soundgen.updateJSFXParams()
-			end
-		else
-			local waveforms = {"Sine", "Triangle", "Square", "Saw"}
-			local wf_combo = table.concat(waveforms, "\0") .. "\0"
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_wf = UI.r.ImGui_Combo(UI.ctx, "Waveform##sg", sg.waveform, wf_combo)
-			if changed then
-				sg.waveform = new_wf
-				UI.soundgen.updateJSFXParams()
-			end
-
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_freq = UI.r.ImGui_SliderDouble(UI.ctx, "Base Freq##sg", sg.base_freq, 20, 2000, "%.1f Hz")
-			if changed then
-				sg.base_freq = new_freq
-				UI.soundgen.updateJSFXParams()
-			end
-
-			local changed, use_adsr = UI.r.ImGui_Checkbox(UI.ctx, "ADSR Envelope", sg.use_adsr)
-			if changed then
-				sg.use_adsr = use_adsr
-				UI.soundgen.updateJSFXParams()
-			end
-
-			if sg.use_adsr then
-				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-				local changed, new_a = UI.r.ImGui_SliderDouble(UI.ctx, "Attack##sg", sg.attack, 0.001, 2, "%.3f s")
-				if changed then
-					sg.attack = new_a
-					UI.soundgen.updateJSFXParams()
-				end
-
-				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-				local changed, new_d = UI.r.ImGui_SliderDouble(UI.ctx, "Decay##sg", sg.decay, 0.001, 2, "%.3f s")
-				if changed then
-					sg.decay = new_d
-					UI.soundgen.updateJSFXParams()
-				end
-
-				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-				local changed, new_s = UI.r.ImGui_SliderDouble(UI.ctx, "Sustain##sg", sg.sustain, 0, 1, "%.2f")
-				if changed then
-					sg.sustain = new_s
-					UI.soundgen.updateJSFXParams()
-				end
-
-				UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-				local changed, new_r = UI.r.ImGui_SliderDouble(UI.ctx, "Release##sg", sg.release, 0.001, 5, "%.3f s")
-				if changed then
-					sg.release = new_r
-					UI.soundgen.updateJSFXParams()
-				end
-			end
-
-			local changed, midi = UI.r.ImGui_Checkbox(UI.ctx, "MIDI Trigger", sg.midi_mode)
-			if changed then
-				sg.midi_mode = midi
-				UI.soundgen.updateJSFXParams()
-			end
-
-			if not sg.midi_mode then
-				UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-				if UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width) then
-					if UI.r.ImGui_IsItemActive(UI.ctx) then
-						UI.soundgen.setManualTrigger(true)
-					end
-				end
-				if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
-					UI.soundgen.setManualTrigger(false)
-				end
-			end
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	if sg.waveform < 4 then
 		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_amp = UI.r.ImGui_SliderDouble(UI.ctx, "Amplitude##sg", sg.amplitude, 0, 1, "%.2f")
+		local changed, new_freq = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", sg.frequency, 20, 20000, "%.1f Hz")
 		if changed then
-			sg.amplitude = new_amp
+			sg.frequency = new_freq
 			UI.soundgen.updateJSFXParams()
 		end
 
 		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_width = UI.r.ImGui_SliderDouble(UI.ctx, "Stereo Width##sg", sg.stereo_width, 0, 1, "%.2f")
+		local changed, new_width = UI.r.ImGui_SliderDouble(UI.ctx, "Width##sg", sg.width, 0, 100, "%.1f cents")
 		if changed then
-			sg.stereo_width = new_width
+			sg.width = new_width
 			UI.soundgen.updateJSFXParams()
+		end
+	elseif sg.waveform == 4 then
+		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+		local changed, new_color = UI.r.ImGui_SliderDouble(UI.ctx, "Color##sg", sg.noise_color, 0, 1, "%.2f")
+		if changed then
+			sg.noise_color = new_color
+			UI.soundgen.updateJSFXParams()
+		end
+
+		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+		local changed, new_width = UI.r.ImGui_SliderDouble(UI.ctx, "Width##sg", sg.width, 0, 100, "%.1f cents")
+		if changed then
+			sg.width = new_width
+			UI.soundgen.updateJSFXParams()
+		end
+	end
+
+	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+	local changed, new_amp = UI.r.ImGui_SliderDouble(UI.ctx, "Amplitude##sg", sg.amplitude, 0, 1, "%.2f")
+	if changed then
+		sg.amplitude = new_amp
+		UI.soundgen.updateJSFXParams()
+	end
+
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+
+	if sg.mode == 0 then
+		local changed, rhythmic = UI.r.ImGui_Checkbox(UI.ctx, "Rhythmic", sg.rhythmic)
+		if changed then
+			sg.rhythmic = rhythmic
+			UI.soundgen.updateJSFXParams()
+		end
+
+		if sg.rhythmic then
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_rate = UI.r.ImGui_SliderDouble(UI.ctx, "Tick Rate##sg", sg.tick_rate, 0.1, 20, "%.2f Hz")
+			if changed then
+				sg.tick_rate = new_rate
+				UI.soundgen.updateJSFXParams()
+			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_duty = UI.r.ImGui_SliderDouble(UI.ctx, "Duty Cycle##sg", sg.duty_cycle, 0.01, 0.99, "%.2f")
+			if changed then
+				sg.duty_cycle = new_duty
+				UI.soundgen.updateJSFXParams()
+			end
+		end
+	else
+		local changed, use_adsr = UI.r.ImGui_Checkbox(UI.ctx, "ADSR Envelope", sg.use_adsr)
+		if changed then
+			sg.use_adsr = use_adsr
+			UI.soundgen.updateJSFXParams()
+		end
+
+		if sg.use_adsr then
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_a = UI.r.ImGui_SliderDouble(UI.ctx, "Attack##sg", sg.attack, 0.001, 2, "%.3f s")
+			if changed then
+				sg.attack = new_a
+				UI.soundgen.updateJSFXParams()
+			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_d = UI.r.ImGui_SliderDouble(UI.ctx, "Decay##sg", sg.decay, 0.001, 2, "%.3f s")
+			if changed then
+				sg.decay = new_d
+				UI.soundgen.updateJSFXParams()
+			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_s = UI.r.ImGui_SliderDouble(UI.ctx, "Sustain##sg", sg.sustain, 0, 1, "%.2f")
+			if changed then
+				sg.sustain = new_s
+				UI.soundgen.updateJSFXParams()
+			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_r = UI.r.ImGui_SliderDouble(UI.ctx, "Release##sg", sg.release, 0.001, 5, "%.3f s")
+			if changed then
+				sg.release = new_r
+				UI.soundgen.updateJSFXParams()
+			end
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+
+		local changed, midi = UI.r.ImGui_Checkbox(UI.ctx, "MIDI Trigger", sg.midi_mode)
+		if changed then
+			sg.midi_mode = midi
+			UI.soundgen.updateJSFXParams()
+		end
+
+		if not sg.midi_mode then
+			UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+			UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width)
+			if UI.r.ImGui_IsItemActive(UI.ctx) then
+				UI.soundgen.setManualTrigger(true)
+			end
+			if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
+				UI.soundgen.setManualTrigger(false)
+			end
 		end
 	end
 end
