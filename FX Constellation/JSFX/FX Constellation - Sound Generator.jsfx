@@ -1,20 +1,20 @@
 desc: FX Constellation - Sound Generator
-slider1:mode=0<0,1,1{Continuous,Triggered}>Mode
-slider2:waveform=0<0,5,1{Sine,Triangle,Square,Saw,Noise,Click}>Type
-slider3:frequency=440<20,20000,1>Frequency (Hz)
-slider4:width=10<0,100,0.1>Width (cents)
-slider5:amplitude=0.5<0,1,0.01>Amplitude
-slider6:noise_color=0.5<0,1,0.01>Noise Color
-slider7:rhythmic=0<0,1,1{Off,On}>Rhythmic
-slider8:tick_rate=4<0.1,20,0.1>Tick Rate (Hz)
-slider9:duty_cycle=0.5<0.01,0.99,0.01>Duty Cycle
-slider10:use_adsr=1<0,1,1{Off,On}>ADSR
-slider11:attack=0.01<0.001,2,0.001>Attack (s)
-slider12:decay=0.1<0.001,2,0.001>Decay (s)
-slider13:sustain=0.7<0,1,0.01>Sustain
-slider14:release=0.2<0.001,5,0.001>Release (s)
-slider15:midi_mode=0<0,1,1{Manual,MIDI}>Trigger Mode
-slider16:manual_trigger=0<0,1,1>Manual Trigger
+slider1:waveform=0<0,5,1{Sine,Triangle,Square,Saw,Noise,Click}>Type
+slider2:frequency=440<20,20000,1>Frequency (Hz)
+slider3:width=10<0,100,0.1>Width (cents)
+slider4:amplitude=0.5<0,1,0.01>Amplitude
+slider5:noise_color=0.5<0,1,0.01>Noise Color
+slider6:rhythmic=0<0,1,1{Off,On}>Rhythmic
+slider7:tick_rate=4<0.1,20,0.1>Tick Rate (Hz)
+slider8:duty_cycle=0.5<0.01,0.99,0.01>Duty Cycle
+slider9:use_adsr=1<0,1,1{Off,On}>ADSR
+slider10:attack=0.01<0.001,2,0.001>Attack (s)
+slider11:decay=0.1<0.001,2,0.001>Decay (s)
+slider12:sustain=0.7<0,1,0.01>Sustain
+slider13:release=0.2<0.001,5,0.001>Release (s)
+slider14:midi_mode=0<0,1,1{Manual,MIDI}>Trigger Mode
+slider15:manual_trigger=0<0,1,1>Manual Trigger
+slider16:mode=0<0,1,1{Continuous,Triggered}>-Mode
 
 @init
 phase_l = 0;
