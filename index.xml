@@ -1,12 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="CP_Scripts" commit="c6a04df16feb2a0f096743da94e3039dd0a73c46">
-  <category name="Backup">
-    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
-      <version name="1.1" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/Backup/CP_FXConstellation.lua</source>
-      </version>
-    </reapack>
-  </category>
+<index version="1" name="CP_Scripts" commit="6ac9d786f6d6e19b66309e5bfbe1867622a0c0ac">
   <category name="Colors">
     <reapack name="CP_AutoColorRegionFromTrack.lua" type="script" desc="AutoColorRegionFromTrack">
       <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
@@ -36,11 +29,6 @@
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Custom%20Toolbars/CP_CustomToolbars.lua</source>
       </version>
     </reapack>
-    <reapack name="CP_CustomToolbars_OpenManager.lua" type="script" desc="CustomToolbars OpenManager">
-      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Custom%20Toolbars/CP_CustomToolbars_OpenManager.lua</source>
-      </version>
-    </reapack>
   </category>
   <category name="FX Constellation">
     <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
@@ -60,27 +48,6 @@
     <reapack name="Generate_License_Key.lua" type="script" desc="Generate FX Constellation License Key">
       <version name="1.0" author="Cedric Pamalio" time="2025-11-08T18:28:13Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b0b91322beeafdd7162db382a4e8ddd9940bf626/FX%20Constellation/Generate_License_Key.lua</source>
-      </version>
-    </reapack>
-  </category>
-  <category name="FX Constellation - Copie">
-    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
-      <version name="1.1" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/FX%20Constellation%20-%20Copie/CP_FXConstellation.lua</source>
-      </version>
-    </reapack>
-  </category>
-  <category name="FX Constellation - Copie/Refactoring CC">
-    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation (Modular Version)">
-      <version name="2.0" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/FX%20Constellation%20-%20Copie/Refactoring%20CC/CP_FXConstellation.lua</source>
-      </version>
-    </reapack>
-  </category>
-  <category name="FX Constellation - Copie/Refactoring Try">
-    <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
-      <version name="1.1" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/a7e864aa1142eba8aaaee456ed1ddd73272ae9cc/FX%20Constellation%20-%20Copie/Refactoring%20Try/CP_FXConstellation.lua</source>
       </version>
     </reapack>
   </category>
@@ -250,18 +217,9 @@
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_ImGuiStyleLoader.lua</source>
       </version>
     </reapack>
-    <reapack name="CP_ImGuiStyleManager_GUI.lua" type="script" desc="ImGuiStyleManager - GUI">
-      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_ImGuiStyleManager_GUI.lua</source>
-      </version>
-      <version name="1.0.1" author="Cedric Pamalio" time="2025-07-04T11:08:51Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/9499af53ce530470252a1a067654f7f20c1a9079/Various/CP_ImGuiStyleManager_GUI.lua</source>
-      </version>
-      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_ImGuiStyleManager_GUI.lua</source>
-      </version>
-      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
-        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_ImGuiStyleManager_GUI.lua</source>
+    <reapack name="CP_ImGuiStyleManager.lua" type="script" desc="ImGuiStyleManager - GUI">
+      <version name="1.1" author="Cedric Pamalio" time="2025-11-08T21:37:48Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/6ac9d786f6d6e19b66309e5bfbe1867622a0c0ac/Various/CP_ImGuiStyleManager.lua</source>
       </version>
     </reapack>
     <reapack name="CP_ProjectNoteEditor.lua" type="script" desc="ProjectNoteEditor">
