@@ -111,7 +111,8 @@ function Core.init(reaper_api)
 		},
 		sound_generator = {
 			enabled = false,
-			jsfx_index = -1,
+			jsfx_continuous_index = -1,
+			jsfx_triggered_index = -1,
 			mode = 0,
 			waveform = 0,
 			frequency = 440.0,

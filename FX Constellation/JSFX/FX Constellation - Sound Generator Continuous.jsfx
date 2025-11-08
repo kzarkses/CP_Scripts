@@ -1,0 +1,104 @@
+desc: FX Constellation - Sound Generator Continuous
+slider1:waveform=0<0,5,1{Sine,Triangle,Square,Saw,Noise,Click}>Type
+slider2:frequency=440<20,20000,1>Frequency (Hz)
+slider3:width=10<0,100,0.1>Width (cents)
+slider4:amplitude=0.5<0,1,0.01>Amplitude
+slider5:noise_color=0.5<0,1,0.01>Noise Color
+slider6:rhythmic=0<0,1,1{Off,On}>Rhythmic
+slider7:tick_rate=4<0.1,20,0.1>Tick Rate (Hz)
+slider8:duty_cycle=0.5<0.01,0.99,0.01>Duty Cycle
+
+@init
+pos_l = 0;
+pos_r = 0;
+tick_phase = 0;
+brown_l = 0;
+brown_r = 0;
+pi2 = $pi * 2;
+click_phase = 0;
+
+@slider
+amp = amplitude;
+
+@sample
+dt = 1 / srate;
+
+// Width as detune in cents - perfect mono when width == 0
+width == 0.0 ? (
+  freq_l = frequency;
+  freq_r = frequency;
+) : (
+  cents_to_ratio = 2^(width / 1200);
+  freq_l = frequency / cents_to_ratio;
+  freq_r = frequency * cents_to_ratio;
+);
+
+adj_l = pi2 * freq_l / srate;
+adj_r = pi2 * freq_r / srate;
+
+// Rhythmic gating
+tick_on = 1;
+rhythmic > 0.5 ? (
+  tick_phase += tick_rate * dt;
+  tick_on = (tick_phase % 1) < duty_cycle;
+  tick_phase >= 1 ? tick_phase -= 1;
+);
+
+tick_on ? (
+  out_l = 0;
+  out_r = 0;
+
+  // Waveforms
+  waveform < 0.5 ? (
+    // Sine
+    out_l = cos(pos_l);
+    out_r = cos(pos_r);
+  ) : waveform < 1.5 ? (
+    // Triangle
+    out_l = 2.0 * pos_l / $pi - 1.0;
+    out_l > 1.0 ? out_l = 2.0 - out_l;
+    out_r = 2.0 * pos_r / $pi - 1.0;
+    out_r > 1.0 ? out_r = 2.0 - out_r;
+  ) : waveform < 2.5 ? (
+    // Square
+    out_l = pos_l < $pi ? 1 : -1;
+    out_r = pos_r < $pi ? 1 : -1;
+  ) : waveform < 3.5 ? (
+    // Saw
+    out_l = 1.0 - pos_l / $pi;
+    out_r = 1.0 - pos_r / $pi;
+  ) : waveform < 4.5 ? (
+    // Noise
+    white_l = rand() * 2 - 1;
+    white_r = rand() * 2 - 1;
+    brown_l += (white_l - brown_l) * 0.1;
+    brown_r += (white_r - brown_r) * 0.1;
+    brown_l = max(-1, min(1, brown_l));
+    brown_r = max(-1, min(1, brown_r));
+    out_l = white_l * (1 - noise_color) + brown_l * noise_color;
+    out_r = white_r * (1 - noise_color) + brown_r * noise_color;
+  ) : (
+    // Click
+    click_phase < 0.005 ? (
+      click_env = 1 - (click_phase / 0.005);
+      out_l = (rand() * 2 - 1) * click_env;
+      out_r = (rand() * 2 - 1) * click_env;
+      click_phase += dt;
+    ) : (
+      out_l = 0;
+      out_r = 0;
+      click_phase = 0;
+    );
+  );
+
+  pos_l += adj_l;
+  pos_r += adj_r;
+  pos_l >= pi2 ? pos_l -= pi2;
+  pos_r >= pi2 ? pos_r -= pi2;
+
+  spl0 = out_l * amp;
+  spl1 = out_r * amp;
+) : (
+  spl0 = 0;
+  spl1 = 0;
+);

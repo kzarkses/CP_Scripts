@@ -449,9 +449,7 @@ function UI.drawSoundGenerator()
 		local mode_label = sg.mode == 0 and "Continuous" or "Triggered"
 		if UI.r.ImGui_Button(UI.ctx, mode_label, button_width) then
 			sg.mode = sg.mode == 0 and 1 or 0
-			UI.soundgen.removeAllSoundGenerators()
-			UI.soundgen.createGenerator()
-			UI.fxmanager.scanTrackFX()
+			UI.soundgen.updateJSFXParams()
 		end
 	end
 
