@@ -14,12 +14,18 @@ function License.setKey(key)
 end
 
 function License.validate(key)
-	if not key or key == "" then return false end
+	if not key or key == "" or #key < 20 then return false end
+	local key_without_check = key:sub(1, #key - 1)
+	local check_char = key:sub(#key, #key)
 	local hash = 0
-	for i = 1, #key do
-		hash = (hash * 31 + string.byte(key, i)) % 1000000007
+	for i = 1, #key_without_check do
+		hash = (hash * 31 + string.byte(key_without_check, i)) % 1000000007
 	end
-	return hash % 54321 == 12345
+	local expected_checksum = 12345 - (hash % 54321)
+	if expected_checksum < 0 then expected_checksum = expected_checksum + 54321 end
+	local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	local expected_char = chars:sub((expected_checksum % #chars) + 1, (expected_checksum % #chars) + 1)
+	return check_char == expected_char
 end
 
 function License.getStatus()

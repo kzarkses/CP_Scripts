@@ -13,18 +13,23 @@ function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence
 	UI.ctx = ctx
 	UI.filters_ctx = nil
 	UI.presets_ctx = nil
+	UI.license_ctx = nil
 	UI.pushed_colors = 0
 	UI.filters_pushed_colors = 0
 	UI.presets_pushed_colors = 0
+	UI.license_pushed_colors = 0
 	UI.pushed_vars = 0
 	UI.filters_pushed_vars = 0
 	UI.presets_pushed_vars = 0
+	UI.license_pushed_vars = 0
 	UI.header_font_size = header_font_size
 	UI.item_spacing_x = item_spacing_x
 	UI.item_spacing_y = item_spacing_y
 	UI.window_padding_x = window_padding_x
 	UI.window_padding_y = window_padding_y
 	UI.license_key_input = ""
+	UI.license_activation_message = ""
+	UI.license_message_time = 0
 end
 
 function UI.getStyleValue(path, default_value)
@@ -46,15 +51,16 @@ function UI.drawCollapsibleHeader(section_name, display_text)
 		end
 		local char_height = 12
 		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-		local button_height = #display_text * char_height + 20
+		local button_height = #display_text * char_height + 30
 		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_" .. section_name, 25, button_height)
 		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
 		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
 
 		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
 		if hovered then
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x33FFFFFF)
-			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color)
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x4DFFFFFF)
+			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
 			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
 		end
 
@@ -81,19 +87,25 @@ function UI.drawCollapsibleHeader(section_name, display_text)
 
 		return false
 	else
+		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
 		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
 			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
 		end
 		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " " .. display_text)
-		if UI.r.ImGui_IsItemHovered(UI.ctx) then
+		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+		if hovered then
 			local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
 			local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
 			local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x33FFFFFF)
-			UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x, min_y, max_x, max_y, highlight_color)
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x - 2, min_y - 2, max_x + 2, max_y + 2, highlight_color, rounding)
 			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+			UI.r.ImGui_SetCursorScreenPos(UI.ctx, cursor_x, cursor_y)
+			UI.r.ImGui_Text(UI.ctx, collapse_icon .. " " .. display_text)
 		end
-		if UI.r.ImGui_IsItemClicked(UI.ctx) then
+		if clicked then
 			UI.core.state.section_collapsed[section_name] = true
 			UI.persistence.scheduleSave()
 		end
@@ -569,58 +581,44 @@ function UI.drawSoundGenerator()
 end
 
 function UI.drawPadSection()
-	local is_collapsed = UI.core.state.section_collapsed.pad
-	local collapse_icon = is_collapsed and "▶ " or "▼ "
-	local header_font = UI.getStyleFont("header")
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-	end
-	UI.r.ImGui_Text(UI.ctx, collapse_icon .. "XY PAD")
-	local header_clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
-	local header_hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
-	if header_hovered then
-		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-		local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
-		local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
-		UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x, min_y, max_x, max_y, 0x33FFFFFF)
-		UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	local reset_text = "↻"
-	local reset_text_width = UI.r.ImGui_CalcTextSize(UI.ctx, reset_text)
-	local reset_x = UI.r.ImGui_GetCursorPosX(UI.ctx) + content_width - reset_text_width
-	UI.r.ImGui_SetCursorPosX(UI.ctx, reset_x)
-	UI.r.ImGui_Text(UI.ctx, reset_text)
+	local header_expanded = UI.drawCollapsibleHeader("pad", "XY PAD")
 	if UI.r.ImGui_IsItemClicked(UI.ctx) then
-		UI.core.state.gesture_x = 0.5
-		UI.core.state.gesture_y = 0.5
-		UI.core.state.gesture_base_x = 0.5
-		UI.core.state.gesture_base_y = 0.5
-		UI.gesture.updateJSFXFromGesture()
-		UI.fxmanager.captureBaseValues()
-		if UI.core.state.pad_mode == 1 then
-			if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
-				UI.gesture.initializeGranularGrid()
-			end
-			UI.gesture.applyGranularGesture(UI.core.state.gesture_x, UI.core.state.gesture_y)
-		else
-			UI.gesture.applyGestureToSelection(UI.core.state.gesture_x, UI.core.state.gesture_y)
-		end
-	end
-	if UI.r.ImGui_IsItemHovered(UI.ctx) then
-		UI.r.ImGui_SetTooltip(UI.ctx, "Reset XY Pad to center")
-	end
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PopFont(UI.ctx)
-	end
-	if header_clicked then
-		UI.core.state.section_collapsed.pad = not is_collapsed
+		UI.core.state.section_collapsed.pad = not UI.core.state.section_collapsed.pad
 		UI.persistence.scheduleSave()
 	end
-	UI.r.ImGui_Separator(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	if is_collapsed then return end
+
+	if header_expanded then
+		UI.r.ImGui_SameLine(UI.ctx)
+		local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+		local reset_text = "↻"
+		local reset_text_width = UI.r.ImGui_CalcTextSize(UI.ctx, reset_text)
+		local reset_x = UI.r.ImGui_GetCursorPosX(UI.ctx) + content_width - reset_text_width
+		UI.r.ImGui_SetCursorPosX(UI.ctx, reset_x)
+		UI.r.ImGui_Text(UI.ctx, reset_text)
+		if UI.r.ImGui_IsItemClicked(UI.ctx) then
+			UI.core.state.gesture_x = 0.5
+			UI.core.state.gesture_y = 0.5
+			UI.core.state.gesture_base_x = 0.5
+			UI.core.state.gesture_base_y = 0.5
+			UI.gesture.updateJSFXFromGesture()
+			UI.fxmanager.captureBaseValues()
+			if UI.core.state.pad_mode == 1 then
+				if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
+					UI.gesture.initializeGranularGrid()
+				end
+				UI.gesture.applyGranularGesture(UI.core.state.gesture_x, UI.core.state.gesture_y)
+			else
+				UI.gesture.applyGestureToSelection(UI.core.state.gesture_x, UI.core.state.gesture_y)
+			end
+		end
+		if UI.r.ImGui_IsItemHovered(UI.ctx) then
+			UI.r.ImGui_SetTooltip(UI.ctx, "Reset XY Pad to center")
+		end
+		UI.r.ImGui_Separator(UI.ctx)
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	else
+		return
+	end
 	local pad_size = 298
 	local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
 	local cursor_pos_x, cursor_pos_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
@@ -820,26 +818,38 @@ function UI.drawPresets()
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
 	if not UI.drawCollapsibleHeader("presets", "PRESETS") then return end
 
+	if not UI.license.isFull() then
+		UI.r.ImGui_BeginDisabled(UI.ctx)
+	end
+
 	local button_width = (content_width - UI.item_spacing_x) / 2
-	if UI.r.ImGui_Button(UI.ctx, "Save##presets", button_width) then
-		if UI.core.state.current_loaded_preset ~= "" then
-			UI.presetsystem.savePreset(UI.core.state.current_loaded_preset)
+	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Save##presets" or "Save 🔒##presets", button_width) then
+		if UI.license.isFull() then
+			if UI.core.state.current_loaded_preset ~= "" then
+				UI.presetsystem.savePreset(UI.core.state.current_loaded_preset)
+			else
+				local retval, preset_name = UI.r.GetUserInputs("Save FX Chain Preset", 1, "Preset name:", "")
+				if retval and preset_name ~= "" then
+					UI.presetsystem.savePreset(preset_name)
+					UI.core.state.current_loaded_preset = preset_name
+					UI.fxmanager.saveTrackSelection()
+				end
+			end
 		else
-			local retval, preset_name = UI.r.GetUserInputs("Save FX Chain Preset", 1, "Preset name:", "")
+			UI.core.state.show_license_window = true
+		end
+	end
+	UI.r.ImGui_SameLine(UI.ctx)
+	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Save As##presets" or "Save As 🔒##presets", button_width) then
+		if UI.license.isFull() then
+			local retval, preset_name = UI.r.GetUserInputs("Save FX Chain Preset As", 1, "Preset name:", UI.core.state.current_loaded_preset)
 			if retval and preset_name ~= "" then
 				UI.presetsystem.savePreset(preset_name)
 				UI.core.state.current_loaded_preset = preset_name
 				UI.fxmanager.saveTrackSelection()
 			end
-		end
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Save As##presets", button_width) then
-		local retval, preset_name = UI.r.GetUserInputs("Save FX Chain Preset As", 1, "Preset name:", UI.core.state.current_loaded_preset)
-		if retval and preset_name ~= "" then
-			UI.presetsystem.savePreset(preset_name)
-			UI.core.state.current_loaded_preset = preset_name
-			UI.fxmanager.saveTrackSelection()
+		else
+			UI.core.state.show_license_window = true
 		end
 	end
 
@@ -860,48 +870,73 @@ function UI.drawPresets()
 	if preset_combo_str == "\0" then preset_combo_str = " \0" end
 	local changed, new_index = UI.r.ImGui_Combo(UI.ctx, "##presetlist", current_index, preset_combo_str)
 	if changed and new_index >= 0 and preset_names[new_index + 1] then
-		UI.presetsystem.loadPreset(preset_names[new_index + 1])
+		if UI.license.isFull() then
+			UI.presetsystem.loadPreset(preset_names[new_index + 1])
+		else
+			UI.core.state.show_license_window = true
+		end
 	end
 
 	local delete_button_width = (content_width - UI.item_spacing_x) / 2
-	if UI.r.ImGui_Button(UI.ctx, "Rename##preset", delete_button_width) then
-		if UI.core.state.current_loaded_preset ~= "" then
-			local retval, new_name = UI.r.GetUserInputs("Rename Preset", 1, "New name:", UI.core.state.current_loaded_preset)
-			if retval and new_name ~= "" and new_name ~= UI.core.state.current_loaded_preset then
-				UI.presetsystem.renamePreset(UI.core.state.current_loaded_preset, new_name)
-				UI.core.state.current_loaded_preset = new_name
-				UI.fxmanager.saveTrackSelection()
+	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Rename##preset" or "Rename 🔒##preset", delete_button_width) then
+		if UI.license.isFull() then
+			if UI.core.state.current_loaded_preset ~= "" then
+				local retval, new_name = UI.r.GetUserInputs("Rename Preset", 1, "New name:", UI.core.state.current_loaded_preset)
+				if retval and new_name ~= "" and new_name ~= UI.core.state.current_loaded_preset then
+					UI.presetsystem.renamePreset(UI.core.state.current_loaded_preset, new_name)
+					UI.core.state.current_loaded_preset = new_name
+					UI.fxmanager.saveTrackSelection()
+				end
 			end
+		else
+			UI.core.state.show_license_window = true
 		end
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Delete##preset", delete_button_width) then
-		if UI.core.state.current_loaded_preset ~= "" then
-			local result = UI.r.ShowMessageBox("Delete preset '" .. UI.core.state.current_loaded_preset .. "'?", "Delete Preset", 4)
-			if result == 6 then
-				UI.presetsystem.deletePreset(UI.core.state.current_loaded_preset)
-				UI.core.state.current_loaded_preset = ""
+	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Delete##preset" or "Delete 🔒##preset", delete_button_width) then
+		if UI.license.isFull() then
+			if UI.core.state.current_loaded_preset ~= "" then
+				local result = UI.r.ShowMessageBox("Delete preset '" .. UI.core.state.current_loaded_preset .. "'?", "Delete Preset", 4)
+				if result == 6 then
+					UI.presetsystem.deletePreset(UI.core.state.current_loaded_preset)
+					UI.core.state.current_loaded_preset = ""
+				end
 			end
+		else
+			UI.core.state.show_license_window = true
 		end
+	end
+
+	if not UI.license.isFull() then
+		UI.r.ImGui_EndDisabled(UI.ctx)
 	end
 
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 
+	local header_font = UI.getStyleFont("header")
 	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
 		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		UI.r.ImGui_Text(UI.ctx, "SNAPSHOTS")
+		UI.r.ImGui_Text(UI.ctx, UI.license.isFull() and "SNAPSHOTS" or "SNAPSHOTS 🔒")
 		UI.r.ImGui_PopFont(UI.ctx)
 		UI.r.ImGui_Separator(UI.ctx)
 		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	end
+
+	if not UI.license.isFull() then
+		UI.r.ImGui_BeginDisabled(UI.ctx)
 	end
 
 	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
 	local changed, new_name = UI.r.ImGui_InputText(UI.ctx, "##snapname", UI.core.state.snapshot_name)
 	if changed then UI.core.state.snapshot_name = new_name end
 
-	if UI.r.ImGui_Button(UI.ctx, "Save##snapshots", content_width) then
-		if UI.core.state.snapshot_name and UI.core.state.snapshot_name ~= "" then
-			UI.presetsystem.saveSnapshot(UI.core.state.snapshot_name)
+	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Save##snapshots" or "Save 🔒##snapshots", content_width) then
+		if UI.license.isFull() then
+			if UI.core.state.snapshot_name and UI.core.state.snapshot_name ~= "" then
+				UI.presetsystem.saveSnapshot(UI.core.state.snapshot_name)
+			end
+		else
+			UI.core.state.show_license_window = true
 		end
 	end
 
@@ -914,28 +949,44 @@ function UI.drawPresets()
 				UI.r.ImGui_PushID(UI.ctx, name)
 				local button_width = content_width - 54 - (2 * UI.item_spacing_x)
 				if UI.r.ImGui_Button(UI.ctx, name, button_width) then
-					UI.presetsystem.loadSnapshot(name)
-					UI.core.state.snapshot_name = UI.presetsystem.getNextSnapshotName()
+					if UI.license.isFull() then
+						UI.presetsystem.loadSnapshot(name)
+						UI.core.state.snapshot_name = UI.presetsystem.getNextSnapshotName()
+					else
+						UI.core.state.show_license_window = true
+					end
 				end
 				UI.r.ImGui_SameLine(UI.ctx)
 				if UI.r.ImGui_Button(UI.ctx, "R", 22) then
-					local retval, new_name = UI.r.GetUserInputs("Rename Snapshot", 1, "New name:", name)
-					if retval and new_name ~= "" and new_name ~= name then
-						if UI.core.state.presets[current_preset].snapshots[name] then
-							UI.core.state.presets[current_preset].snapshots[new_name] = UI.core.state.presets[current_preset].snapshots[name]
-							UI.core.state.presets[current_preset].snapshots[name] = nil
-							UI.persistence.schedulePresetSave()
+					if UI.license.isFull() then
+						local retval, new_name = UI.r.GetUserInputs("Rename Snapshot", 1, "New name:", name)
+						if retval and new_name ~= "" and new_name ~= name then
+							if UI.core.state.presets[current_preset].snapshots[name] then
+								UI.core.state.presets[current_preset].snapshots[new_name] = UI.core.state.presets[current_preset].snapshots[name]
+								UI.core.state.presets[current_preset].snapshots[name] = nil
+								UI.persistence.schedulePresetSave()
+							end
 						end
+					else
+						UI.core.state.show_license_window = true
 					end
 				end
 				UI.r.ImGui_SameLine(UI.ctx)
 				if UI.r.ImGui_Button(UI.ctx, "X", 22) then
-					UI.presetsystem.deleteSnapshot(name)
+					if UI.license.isFull() then
+						UI.presetsystem.deleteSnapshot(name)
+					else
+						UI.core.state.show_license_window = true
+					end
 				end
 				UI.r.ImGui_PopID(UI.ctx)
 			end
 		end
 		UI.r.ImGui_EndChild(UI.ctx)
+	end
+
+	if not UI.license.isFull() then
+		UI.r.ImGui_EndDisabled(UI.ctx)
 	end
 end
 
@@ -1434,60 +1485,93 @@ end
 function UI.drawLicenseWindow()
 	if not UI.core.state.show_license_window then return end
 
-	UI.r.ImGui_SetNextWindowSize(UI.ctx, 400, 250, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.ctx, 'FX Constellation - License', true)
+	if not UI.license_ctx then
+		UI.license_ctx = UI.r.ImGui_CreateContext('FX Constellation License')
+	end
+
+	if UI.style_loader then
+		local success, colors, vars = UI.style_loader.applyToContext(UI.license_ctx)
+		if success then UI.license_pushed_colors, UI.license_pushed_vars = colors, vars end
+	end
+
+	UI.r.ImGui_SetNextWindowSize(UI.license_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
+	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation - License', true)
 	if visible then
 		local status = UI.license.getStatus()
 
 		if status == "FULL" then
-			UI.r.ImGui_TextColored(UI.ctx, 0x00FF00FF, "✓ Licensed")
-			UI.r.ImGui_Text(UI.ctx, "Thank you for supporting FX Constellation!")
-			UI.r.ImGui_Dummy(UI.ctx, 0, 10)
-			if UI.r.ImGui_Button(UI.ctx, "Close", 100) then
+			UI.r.ImGui_TextColored(UI.license_ctx, 0x00FF00FF, "✓ Licensed")
+			UI.r.ImGui_Text(UI.license_ctx, "Thank you for supporting FX Constellation!")
+			UI.r.ImGui_Dummy(UI.license_ctx, 0, 10)
+			if UI.r.ImGui_Button(UI.license_ctx, "Close", 100) then
 				UI.core.state.show_license_window = false
 			end
 		else
 			if status == "INVALID" then
-				UI.r.ImGui_TextColored(UI.ctx, 0xFF0000FF, "✗ Invalid License Key")
-				UI.r.ImGui_Dummy(UI.ctx, 0, 5)
+				UI.r.ImGui_TextColored(UI.license_ctx, 0xFF0000FF, "✗ Invalid License Key")
+				UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
 			end
 
-			UI.r.ImGui_Text(UI.ctx, "FX Constellation FREE")
-			UI.r.ImGui_Separator(UI.ctx)
-			UI.r.ImGui_Dummy(UI.ctx, 0, 5)
-			UI.r.ImGui_Text(UI.ctx, "Upgrade to unlock:")
-			UI.r.ImGui_BulletText(UI.ctx, "Sound Generator")
-			UI.r.ImGui_BulletText(UI.ctx, "Unlimited FX (FREE: max 10)")
-			UI.r.ImGui_BulletText(UI.ctx, "Granular mode")
-			UI.r.ImGui_BulletText(UI.ctx, "Random Walk & Figures")
-			UI.r.ImGui_Dummy(UI.ctx, 0, 10)
+			UI.r.ImGui_Text(UI.license_ctx, "FX Constellation FREE")
+			UI.r.ImGui_Separator(UI.license_ctx)
+			UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
+			UI.r.ImGui_Text(UI.license_ctx, "Upgrade to unlock:")
+			UI.r.ImGui_BulletText(UI.license_ctx, "Sound Generator")
+			UI.r.ImGui_BulletText(UI.license_ctx, "Unlimited FX (FREE: max 5)")
+			UI.r.ImGui_BulletText(UI.license_ctx, "Granular mode")
+			UI.r.ImGui_BulletText(UI.license_ctx, "Random Walk & Figures")
+			UI.r.ImGui_BulletText(UI.license_ctx, "Ultra Random")
+			UI.r.ImGui_Dummy(UI.license_ctx, 0, 10)
 
-			UI.r.ImGui_Text(UI.ctx, "Enter License Key:")
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, 350)
-			local changed, new_key = UI.r.ImGui_InputText(UI.ctx, "##licensekey", UI.license_key_input)
+			UI.r.ImGui_Text(UI.license_ctx, "Enter License Key:")
+			UI.r.ImGui_SetNextItemWidth(UI.license_ctx, 350)
+			local changed, new_key = UI.r.ImGui_InputText(UI.license_ctx, "##licensekey", UI.license_key_input)
 			if changed then
 				UI.license_key_input = new_key
 			end
 
-			UI.r.ImGui_Dummy(UI.ctx, 0, 5)
+			UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
 
-			if UI.r.ImGui_Button(UI.ctx, "Activate", 100) then
-				if UI.license.validate(UI.license_key_input) then
+			if UI.r.ImGui_Button(UI.license_ctx, "Activate", 100) then
+				if UI.license_key_input == "" then
+					UI.license_activation_message = "Please enter a license key"
+					UI.license_message_time = UI.r.time_precise()
+				elseif UI.license.validate(UI.license_key_input) then
 					UI.license.setKey(UI.license_key_input)
+					UI.license_activation_message = "License activated successfully!"
+					UI.license_message_time = UI.r.time_precise()
 					UI.license_key_input = ""
+				else
+					UI.license_activation_message = "Invalid license key. Please check and try again."
+					UI.license_message_time = UI.r.time_precise()
 				end
 			end
-			UI.r.ImGui_SameLine(UI.ctx)
-			if UI.r.ImGui_Button(UI.ctx, "Cancel", 100) then
+			UI.r.ImGui_SameLine(UI.license_ctx)
+			if UI.r.ImGui_Button(UI.license_ctx, "Cancel", 100) then
 				UI.core.state.show_license_window = false
 				UI.license_key_input = ""
+				UI.license_activation_message = ""
+			end
+
+			if UI.license_activation_message ~= "" and (UI.r.time_precise() - UI.license_message_time < 5) then
+				UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
+				UI.r.ImGui_Separator(UI.license_ctx)
+				UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
+				local is_success = UI.license_activation_message:find("success")
+				local msg_color = is_success and 0x00FF00FF or 0xFF0000FF
+				UI.r.ImGui_TextColored(UI.license_ctx, msg_color, UI.license_activation_message)
 			end
 		end
 
-		UI.r.ImGui_End(UI.ctx)
+		UI.r.ImGui_End(UI.license_ctx)
 	end
 	if not open then
 		UI.core.state.show_license_window = false
+	end
+
+	if UI.style_loader then
+		UI.style_loader.popColors(UI.license_ctx, UI.license_pushed_colors)
+		UI.style_loader.popVars(UI.license_ctx, UI.license_pushed_vars)
 	end
 end
 
