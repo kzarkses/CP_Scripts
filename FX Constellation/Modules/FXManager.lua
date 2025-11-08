@@ -1,0 +1,547 @@
+local FXManager = {}
+
+function FXManager.init(reaper_api, core, persistence, license)
+	FXManager.r = reaper_api
+	FXManager.core = core
+	FXManager.persistence = persistence
+	FXManager.license = license
+end
+
+function FXManager.shouldFilterParam(param_name)
+	local lower_name = param_name:lower()
+	for _, keyword in ipairs(FXManager.core.state.filter_keywords) do
+		if lower_name:find(keyword:lower(), 1, true) then
+			return true
+		end
+	end
+	if FXManager.core.state.param_filter ~= "" then
+		return not lower_name:find(FXManager.core.state.param_filter:lower(), 1, true)
+	end
+	return false
+end
+
+function FXManager.detectParamSteps(fx_id, param_id)
+	if not FXManager.core.isTrackValid() then return 0 end
+	local actual_fx_id = FXManager.core.state.fx_data[fx_id].actual_fx_id or fx_id
+	local original_value = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, actual_fx_id, param_id)
+	local _, min_val, max_val = FXManager.r.TrackFX_GetParamEx(FXManager.core.state.track, actual_fx_id, param_id)
+
+	if min_val and max_val and min_val ~= max_val then
+		local range = math.abs(max_val - min_val)
+		if range > 10 then return 0 end
+
+		local samples = {}
+		for i = 0, 20 do
+			local test_val = min_val + (i / 20) * range
+			FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, test_val)
+			local result = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, actual_fx_id, param_id)
+			local found = false
+			for _, s in ipairs(samples) do
+				if math.abs(s - result) < 0.001 then
+					found = true
+					break
+				end
+			end
+			if not found then
+				table.insert(samples, result)
+			end
+		end
+		FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, original_value)
+		table.sort(samples)
+
+		if #samples == 2 then
+			return 2
+		elseif #samples >= 3 and #samples <= 10 then
+			return #samples
+		end
+	end
+
+	return 0
+end
+
+function FXManager.scanTrackFX()
+	if not FXManager.core.isTrackValid() then return end
+	FXManager.core.state.fx_data = {}
+	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
+	local visible_fx_id = 0
+	local max_fx = FXManager.license and not FXManager.license.isFull() and 5 or 999
+	for fx = 0, fx_count - 1 do
+		local _, fx_name = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, fx, "")
+		if not fx_name:find("FX Constellation Bridge") and not fx_name:find("Sound Generator") then
+			if visible_fx_id >= max_fx then
+				break
+			end
+			local param_count = FXManager.r.TrackFX_GetNumParams(FXManager.core.state.track, fx)
+			FXManager.core.state.fx_data[visible_fx_id] = {
+				name = FXManager.core.extractFXName(fx_name),
+				full_name = fx_name,
+				enabled = FXManager.r.TrackFX_GetEnabled(FXManager.core.state.track, fx),
+				actual_fx_id = fx,
+				params = {}
+			}
+			local fx_key = FXManager.core.getFXKey(visible_fx_id)
+			if fx_key and FXManager.core.state.fx_random_max[fx_key] == nil then
+				FXManager.core.state.fx_random_max[fx_key] = 3
+			end
+			for param = 0, param_count - 1 do
+				local _, param_name = FXManager.r.TrackFX_GetParamName(FXManager.core.state.track, fx, param, "")
+				if not FXManager.shouldFilterParam(param_name) then
+					local value, min_val, max_val = FXManager.r.TrackFX_GetParamEx(FXManager.core.state.track, fx, param)
+					if not min_val or not max_val then
+						min_val, max_val = 0, 1
+						value = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, fx, param)
+					end
+					local normalized_value = FXManager.core.normalizeParamValue(value, min_val, max_val)
+					local step_count = FXManager.detectParamSteps(visible_fx_id, param)
+					FXManager.core.state.fx_data[visible_fx_id].params[param] = {
+						name = param_name,
+						current_value = normalized_value,
+						base_value = normalized_value,
+						min_val = min_val,
+						max_val = max_val,
+						selected = false,
+						fx_id = visible_fx_id,
+						param_id = param,
+						actual_fx_id = fx,
+						step_count = step_count
+					}
+				end
+			end
+			visible_fx_id = visible_fx_id + 1
+		end
+	end
+	FXManager.core.state.last_fx_count = fx_count
+	FXManager.core.state.last_fx_signature = FXManager.core.createFXSignature()
+	FXManager.loadTrackSelection()
+	FXManager.updateSelectedCount()
+end
+
+function FXManager.checkForFXChanges()
+	if not FXManager.core.isTrackValid() then return false end
+	local current_time = FXManager.r.time_precise()
+	if current_time - FXManager.core.state.last_update_time < FXManager.core.state.update_interval then
+		return false
+	end
+	FXManager.core.state.last_update_time = current_time
+	local current_fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
+	local current_signature = FXManager.core.createFXSignature()
+	local changes_detected = false
+	if current_fx_count ~= FXManager.core.state.last_fx_count or current_signature ~= FXManager.core.state.last_fx_signature then
+		FXManager.scanTrackFX()
+		changes_detected = true
+	else
+		for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+			local actual_fx_id = fx_data.actual_fx_id or fx_id
+			local current_enabled = FXManager.r.TrackFX_GetEnabled(FXManager.core.state.track, actual_fx_id)
+			if fx_data.enabled ~= current_enabled then
+				fx_data.enabled = current_enabled
+				changes_detected = true
+			end
+			for param_id, param_data in pairs(fx_data.params) do
+				local actual_fx_param_id = param_data.actual_fx_id or actual_fx_id
+				local raw_value = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, actual_fx_param_id, param_id)
+				local current_value = FXManager.core.normalizeParamValue(raw_value, param_data.min_val, param_data.max_val)
+				if math.abs(param_data.current_value - current_value) > 0.001 then
+					param_data.current_value = current_value
+					if not param_data.selected then
+						param_data.base_value = current_value
+					end
+				end
+			end
+		end
+	end
+	return changes_detected
+end
+
+function FXManager.updateSelectedCount()
+	FXManager.core.state.selected_count = 0
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		for param_id, param_data in pairs(fx_data.params) do
+			if param_data.selected then
+				FXManager.core.state.selected_count = FXManager.core.state.selected_count + 1
+			end
+		end
+	end
+end
+
+function FXManager.selectAllContinuousParams(params, selected)
+	for _, param in pairs(params) do
+		param.selected = (not param.step_count or param.step_count == 0 or param.step_count > 10) and selected or false
+	end
+	FXManager.updateSelectedCount()
+	FXManager.saveTrackSelection()
+end
+
+function FXManager.selectAllParams(params, selected)
+	for _, param in pairs(params) do
+		param.selected = selected
+	end
+	FXManager.updateSelectedCount()
+	FXManager.saveTrackSelection()
+end
+
+function FXManager.getParamRange(fx_id, param_id)
+	local key = FXManager.core.getParamKey(fx_id, param_id, "range")
+	return key and (FXManager.core.state.param_ranges[key] or 1.0) or 1.0
+end
+
+function FXManager.setParamRange(fx_id, param_id, range)
+	local key = FXManager.core.getParamKey(fx_id, param_id, "range")
+	if key then
+		FXManager.core.state.param_ranges[key] = range
+		FXManager.saveTrackSelection()
+	end
+end
+
+function FXManager.getParamInvert(fx_id, param_id)
+	local key = FXManager.core.getParamKey(fx_id, param_id, "invert")
+	return key and (FXManager.core.state.param_invert[key] or false) or false
+end
+
+function FXManager.setParamInvert(fx_id, param_id, invert)
+	local key = FXManager.core.getParamKey(fx_id, param_id, "invert")
+	if key then
+		FXManager.core.state.param_invert[key] = invert
+		FXManager.saveTrackSelection()
+	end
+end
+
+function FXManager.getParamXYAssign(fx_id, param_id)
+	local x_key = FXManager.core.getParamKey(fx_id, param_id, "x")
+	local y_key = FXManager.core.getParamKey(fx_id, param_id, "y")
+	if not x_key or not y_key then return true, true end
+	return FXManager.core.state.param_xy_assign[x_key] ~= false, FXManager.core.state.param_xy_assign[y_key] ~= false
+end
+
+function FXManager.setParamXYAssign(fx_id, param_id, axis, value)
+	local key = FXManager.core.getParamKey(fx_id, param_id, axis)
+	if not key then return end
+	FXManager.core.state.param_xy_assign[key] = value
+	if FXManager.core.state.exclusive_xy and value then
+		local other_axis = axis == "x" and "y" or "x"
+		local other_key = FXManager.core.getParamKey(fx_id, param_id, other_axis)
+		if other_key then
+			FXManager.core.state.param_xy_assign[other_key] = false
+		end
+	end
+	FXManager.saveTrackSelection()
+end
+
+function FXManager.captureBaseValues()
+	FXManager.core.state.param_base_values = {}
+	FXManager.core.state.gesture_base_x = FXManager.core.state.gesture_x
+	FXManager.core.state.gesture_base_y = FXManager.core.state.gesture_y
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		for param_id, param_data in pairs(fx_data.params) do
+			if param_data.selected then
+				param_data.base_value = param_data.current_value
+				local key = FXManager.core.getParamKey(fx_id, param_id)
+				if key then
+					FXManager.core.state.param_base_values[key] = param_data.current_value
+				end
+			end
+		end
+	end
+end
+
+function FXManager.updateParamBaseValue(fx_id, param_id, new_value)
+	if not FXManager.core.isTrackValid() then return end
+	local param_data = FXManager.core.state.fx_data[fx_id].params[param_id]
+	if param_data then
+		param_data.base_value = new_value
+		local key = FXManager.core.getParamKey(fx_id, param_id)
+		if key then
+			FXManager.core.state.param_base_values[key] = new_value
+		end
+		local actual_fx_id = FXManager.core.state.fx_data[fx_id].actual_fx_id or fx_id
+		local denormalized_value = FXManager.core.denormalizeParamValue(new_value, param_data.min_val, param_data.max_val)
+		FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
+		param_data.current_value = new_value
+		FXManager.saveTrackSelection()
+	end
+end
+
+function FXManager.saveTrackSelection()
+	local guid = FXManager.core.getTrackGUID()
+	if not guid then return end
+	local selection, ranges, xy_assign, invert_assign, fx_rand_max, base_values = {}, {}, {}, {}, {}, {}
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		local fx_key = guid .. "_" .. fx_data.full_name
+		fx_rand_max[fx_data.full_name] = FXManager.core.state.fx_random_max[fx_key] or 3
+		for param_id, param_data in pairs(fx_data.params) do
+			local key = fx_data.full_name .. "||" .. param_data.name
+			if param_data.selected then
+				selection[key] = true
+			end
+			local range_key = guid .. "_" .. key .. "_range"
+			local invert_key = guid .. "_" .. key .. "_invert"
+			local x_key = guid .. "_" .. key .. "_x"
+			local y_key = guid .. "_" .. key .. "_y"
+			ranges[key] = FXManager.core.state.param_ranges[range_key] or 1.0
+			invert_assign[key] = FXManager.core.state.param_invert[invert_key] or false
+			xy_assign[key] = {
+				x = FXManager.core.state.param_xy_assign[x_key] ~= false,
+				y = FXManager.core.state.param_xy_assign[y_key] ~= false
+			}
+			base_values[key] = param_data.base_value
+		end
+	end
+	FXManager.core.state.track_selections[guid] = {
+		selection = selection,
+		ranges = ranges,
+		xy_assign = xy_assign,
+		invert_assign = invert_assign,
+		fx_random_max = fx_rand_max,
+		base_values = base_values,
+		gesture_base_x = FXManager.core.state.gesture_base_x,
+		gesture_base_y = FXManager.core.state.gesture_base_y,
+		gesture_x = FXManager.core.state.gesture_x,
+		gesture_y = FXManager.core.state.gesture_y,
+		current_preset = FXManager.core.state.current_loaded_preset
+	}
+	FXManager.persistence.scheduleTrackSave()
+end
+
+function FXManager.loadTrackSelection()
+	local guid = FXManager.core.getTrackGUID()
+	if not guid then return end
+	local track_data = FXManager.core.state.track_selections[guid]
+	if not track_data then
+		FXManager.core.state.current_loaded_preset = ""
+		FXManager.captureBaseValues()
+		return
+	end
+	local selection = track_data.selection or {}
+	local ranges = track_data.ranges or {}
+	local xy_assign = track_data.xy_assign or {}
+	local invert_assign = track_data.invert_assign or {}
+	local fx_rand_max = track_data.fx_random_max or {}
+	local base_values = track_data.base_values or {}
+	FXManager.core.state.gesture_base_x = track_data.gesture_base_x or 0.5
+	FXManager.core.state.gesture_base_y = track_data.gesture_base_y or 0.5
+	FXManager.core.state.gesture_x = track_data.gesture_x or 0.5
+	FXManager.core.state.gesture_y = track_data.gesture_y or 0.5
+	FXManager.core.state.current_loaded_preset = track_data.current_preset or ""
+
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		local fx_key = guid .. "_" .. fx_data.full_name
+		if fx_rand_max[fx_data.full_name] then
+			FXManager.core.state.fx_random_max[fx_key] = fx_rand_max[fx_data.full_name]
+		end
+		for param_id, param_data in pairs(fx_data.params) do
+			local key = fx_data.full_name .. "||" .. param_data.name
+			param_data.selected = selection[key] or false
+			param_data.base_value = base_values[key] or param_data.current_value
+			local range_key = guid .. "_" .. key .. "_range"
+			FXManager.core.state.param_ranges[range_key] = ranges[key] or 1.0
+			local invert_key = guid .. "_" .. key .. "_invert"
+			FXManager.core.state.param_invert[invert_key] = invert_assign[key] or false
+			local xy = xy_assign[key]
+			local x_key = guid .. "_" .. key .. "_x"
+			local y_key = guid .. "_" .. key .. "_y"
+			if xy then
+				FXManager.core.state.param_xy_assign[x_key] = xy.x
+				FXManager.core.state.param_xy_assign[y_key] = xy.y
+			else
+				FXManager.core.state.param_xy_assign[x_key] = true
+				FXManager.core.state.param_xy_assign[y_key] = true
+			end
+		end
+	end
+	FXManager.updateSelectedCount()
+end
+
+function FXManager.randomSelectParams(params, fx_id)
+	FXManager.selectAllParams(params, false)
+	local param_list = {}
+	for id, param in pairs(params) do
+		table.insert(param_list, param)
+	end
+	if #param_list == 0 then return end
+	local fx_key = FXManager.core.getFXKey(fx_id)
+	local max_count = (fx_key and FXManager.core.state.fx_random_max[fx_key]) or 3
+	local count = math.random(1, math.min(max_count, #param_list))
+	for i = 1, count do
+		local idx = math.random(1, #param_list)
+		param_list[idx].selected = true
+		table.remove(param_list, idx)
+	end
+	FXManager.updateSelectedCount()
+	FXManager.captureBaseValues()
+	FXManager.saveTrackSelection()
+end
+
+function FXManager.randomizeBaseValues(params, fx_id)
+	if not FXManager.core.isTrackValid() then return end
+	local actual_fx_id = FXManager.core.state.fx_data[fx_id] and FXManager.core.state.fx_data[fx_id].actual_fx_id or fx_id
+	for param_id, param_data in pairs(params) do
+		if param_data.selected then
+			local new_base = math.random()
+			param_data.base_value = new_base
+			local key = FXManager.core.getParamKey(fx_id, param_id)
+			if key then
+				FXManager.core.state.param_base_values[key] = new_base
+			end
+			local denormalized_value = FXManager.core.denormalizeParamValue(new_base, param_data.min_val, param_data.max_val)
+			FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
+			param_data.current_value = new_base
+		end
+	end
+	FXManager.saveTrackSelection()
+end
+
+function FXManager.randomizeAllBases()
+	if not FXManager.core.isTrackValid() then return end
+	FXManager.r.Undo_BeginBlock()
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		for param_id, param_data in pairs(fx_data.params) do
+			if param_data.selected then
+				local center_val = (FXManager.core.state.randomize_min + FXManager.core.state.randomize_max) / 2
+				local range_val = (FXManager.core.state.randomize_max - FXManager.core.state.randomize_min) / 2
+				local rand_offset = (math.random() * 2 - 1) * range_val * FXManager.core.state.randomize_intensity
+				local new_base = math.max(FXManager.core.state.randomize_min, math.min(FXManager.core.state.randomize_max, center_val + rand_offset))
+				param_data.base_value = new_base
+				local key = FXManager.core.getParamKey(fx_id, param_id)
+				if key then
+					FXManager.core.state.param_base_values[key] = new_base
+				end
+				local actual_fx_id = fx_data.actual_fx_id or fx_id
+				local denormalized_value = FXManager.core.denormalizeParamValue(new_base, param_data.min_val, param_data.max_val)
+				FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
+				param_data.current_value = new_base
+			end
+		end
+	end
+	FXManager.r.Undo_EndBlock("Randomize all bases", -1)
+	FXManager.captureBaseValues()
+	FXManager.saveTrackSelection()
+end
+
+function FXManager.randomizeXYAssign(params, fx_id)
+	for param_id, param_data in pairs(params) do
+		if param_data.selected then
+			local rand = math.random()
+			if FXManager.core.state.exclusive_xy then
+				FXManager.setParamXYAssign(fx_id, param_id, "x", rand < 0.5)
+				FXManager.setParamXYAssign(fx_id, param_id, "y", rand >= 0.5)
+			else
+				if rand < 0.33 then
+					FXManager.setParamXYAssign(fx_id, param_id, "x", true)
+					FXManager.setParamXYAssign(fx_id, param_id, "y", false)
+				elseif rand < 0.66 then
+					FXManager.setParamXYAssign(fx_id, param_id, "x", false)
+					FXManager.setParamXYAssign(fx_id, param_id, "y", true)
+				else
+					FXManager.setParamXYAssign(fx_id, param_id, "x", true)
+					FXManager.setParamXYAssign(fx_id, param_id, "y", true)
+				end
+			end
+		end
+	end
+end
+
+function FXManager.globalRandomInvert()
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		for param_id, param_data in pairs(fx_data.params) do
+			if param_data.selected then
+				FXManager.setParamInvert(fx_id, param_id, math.random() < 0.5)
+			end
+		end
+	end
+end
+
+function FXManager.globalRandomXYAssign()
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		FXManager.randomizeXYAssign(fx_data.params, fx_id)
+	end
+end
+
+function FXManager.randomizeRanges(params, fx_id)
+	for param_id, param_data in pairs(params) do
+		if param_data.selected then
+			local new_range = FXManager.core.state.range_min + math.random() * (FXManager.core.state.range_max - FXManager.core.state.range_min)
+			FXManager.setParamRange(fx_id, param_id, new_range)
+		end
+	end
+end
+
+function FXManager.globalRandomRanges()
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		FXManager.randomizeRanges(fx_data.params, fx_id)
+	end
+end
+
+function FXManager.globalRandomSelect()
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		FXManager.selectAllParams(fx_data.params, false)
+	end
+	local all_params = {}
+	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
+		for param_id, param_data in pairs(fx_data.params) do
+			table.insert(all_params, param_data)
+		end
+	end
+	if #all_params == 0 then return end
+	local count = math.random(FXManager.core.state.random_min, math.min(FXManager.core.state.random_max, #all_params))
+	for i = 1, count do
+		local idx = math.random(1, #all_params)
+		all_params[idx].selected = true
+		table.remove(all_params, idx)
+	end
+	FXManager.updateSelectedCount()
+	FXManager.captureBaseValues()
+	FXManager.saveTrackSelection()
+end
+
+function FXManager.ultraRandom()
+	FXManager.core.state.gesture_x = math.random()
+	FXManager.core.state.gesture_y = math.random()
+	FXManager.core.state.gesture_base_x = FXManager.core.state.gesture_x
+	FXManager.core.state.gesture_base_y = FXManager.core.state.gesture_y
+	FXManager.globalRandomInvert()
+	FXManager.randomizeAllBases()
+	FXManager.globalRandomRanges()
+	FXManager.captureBaseValues()
+end
+
+function FXManager.randomizeFXOrder()
+	if not FXManager.core.isTrackValid() then return end
+	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
+	if fx_count < 2 then return end
+	FXManager.saveTrackSelection()
+	FXManager.r.Undo_BeginBlock()
+
+	for i = fx_count - 1, 1, -1 do
+		local _, fx_name_i = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, i, "")
+		if not fx_name_i:find("FX Constellation Bridge") then
+			local j = math.random(0, i - 1)
+			local _, fx_name_j = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, j, "")
+			if not fx_name_j:find("FX Constellation Bridge") and i ~= j then
+				local temp_pos = fx_count
+				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, i, FXManager.core.state.track, temp_pos, true)
+				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, j, FXManager.core.state.track, i, true)
+				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, temp_pos, FXManager.core.state.track, j, true)
+			end
+		end
+	end
+	FXManager.r.Undo_EndBlock("Randomize FX order", -1)
+	FXManager.scanTrackFX()
+end
+
+function FXManager.randomBypassFX()
+	if not FXManager.core.isTrackValid() then return end
+	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
+	if fx_count == 0 then return end
+	FXManager.r.Undo_BeginBlock()
+	for fx_id = 0, fx_count - 1 do
+		local _, fx_name = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, fx_id, "")
+		if not fx_name:find("FX Constellation Bridge") then
+			local should_bypass = math.random() < FXManager.core.state.random_bypass_percentage
+			FXManager.r.TrackFX_SetEnabled(FXManager.core.state.track, fx_id, not should_bypass)
+		end
+	end
+	FXManager.r.Undo_EndBlock("Random bypass FX", -1)
+	FXManager.scanTrackFX()
+end
+
+return FXManager
