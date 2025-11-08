@@ -230,7 +230,7 @@ function SoundGenerator.createGenerator()
 		if not SoundGenerator.createTriggeredJSFX() then return false end
 	end
 
-	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, jsfx_name, false, 0)
+	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, jsfx_name, false, -1)
 	if fx_index >= 0 then
 		sg.enabled = true
 		sg.jsfx_index = fx_index
