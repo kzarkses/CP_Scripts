@@ -1399,6 +1399,13 @@ function UI.drawHorizontalLayout()
 	local rand_width = UI.core.state.section_collapsed.randomizer and 30 or 128
 	local preset_width = UI.core.state.section_collapsed.presets and 30 or 180
 
+	if UI.r.ImGui_BeginChild(UI.ctx, "SoundGen", soundgen_width, 0) then
+		UI.drawSoundGenerator()
+		UI.r.ImGui_EndChild(UI.ctx)
+	end
+	UI.r.ImGui_SameLine(UI.ctx)
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	UI.r.ImGui_SameLine(UI.ctx)	
 	if UI.r.ImGui_BeginChild(UI.ctx, "Navigation", nav_width, 0) then
 		UI.drawNavigation()
 		UI.r.ImGui_EndChild(UI.ctx)
@@ -1408,13 +1415,6 @@ function UI.drawHorizontalLayout()
 	UI.r.ImGui_SameLine(UI.ctx)
 	if UI.r.ImGui_BeginChild(UI.ctx, "Mode", mode_width, 0) then
 		UI.drawMode()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "SoundGen", soundgen_width, 0) then
-		UI.drawSoundGenerator()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
