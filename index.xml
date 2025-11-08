@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="CP_Scripts" commit="2b96940593acc1c1dc03f30fbe5feceb7c8c120e">
+<index version="1" name="CP_Scripts" commit="c6a04df16feb2a0f096743da94e3039dd0a73c46">
   <category name="Backup">
     <reapack name="CP_FXConstellation.lua" type="script" desc="FXConstellation">
       <version name="1.1" author="Cedric Pamalio" time="2025-11-05T18:01:32Z">
@@ -52,6 +52,14 @@
       </version>
       <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
         <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/FX%20Constellation/CP_FXConstellation.lua</source>
+      </version>
+      <version name="1.2" author="Cedric Pamalio" time="2025-11-05T18:33:29Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d913f769f45d7cc2baa871e7d3508daba479acd9/FX%20Constellation/CP_FXConstellation.lua</source>
+      </version>
+    </reapack>
+    <reapack name="Generate_License_Key.lua" type="script" desc="Generate FX Constellation License Key">
+      <version name="1.0" author="Cedric Pamalio" time="2025-11-08T18:28:13Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b0b91322beeafdd7162db382a4e8ddd9940bf626/FX%20Constellation/Generate_License_Key.lua</source>
       </version>
     </reapack>
   </category>
