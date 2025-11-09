@@ -19,12 +19,7 @@ function FXManagerUI.getStyleValue(path, default_value)
 end
 
 function FXManagerUI.getStyleFont(font_name, context)
-	if not FXManagerUI.style_loader then return nil end
-	local ctx = context or FXManagerUI.ctx
-	local font_config = FXManagerUI.style_loader.GetValue("fonts." .. font_name, nil)
-	if not font_config then return nil end
-	local font = FXManagerUI.r.ImGui_CreateFont(font_config.family or "sans-serif", font_config.size or 14)
-	return font
+	return FXManagerUI.style_loader and FXManagerUI.style_loader.getFont(context or FXManagerUI.ctx, font_name) or nil
 end
 
 function FXManagerUI.drawWindow()
