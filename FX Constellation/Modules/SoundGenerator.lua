@@ -441,7 +441,7 @@ function SoundGenerator.setManualTrigger(value)
 	local sg = SoundGenerator.core.state.sound_generator
 	if sg.mode == 1 and sg.enabled and sg.jsfx_index >= 0 then
 		if not SoundGenerator.core.isTrackValid() then return end
-		SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 15, value and 1 or 0)
+		SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 16, value and 1 or 0)
 	end
 end
 

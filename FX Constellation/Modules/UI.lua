@@ -1419,23 +1419,37 @@ function UI.drawSettingsWindow()
 		if success then UI.settings_pushed_colors, UI.settings_pushed_vars = colors, vars end
 	end
 	UI.r.ImGui_SetNextWindowSize(UI.settings_ctx, 400, 350, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'Settings', true)
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
+	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'Settings', true, window_flags)
 	if visible then
 		local main_font = UI.getStyleFont("main", UI.settings_ctx)
 		local header_font = UI.getStyleFont("header", UI.settings_ctx)
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
+			UI.r.ImGui_Text(UI.settings_ctx, "SETTINGS")
+			UI.r.ImGui_PopFont(UI.settings_ctx)
+		else
+			UI.r.ImGui_Text(UI.settings_ctx, "SETTINGS")
+		end
+
+		UI.r.ImGui_SameLine(UI.settings_ctx)
+		local header_font_size = UI.getStyleValue("fonts.header.size", 16)
+		local window_padding_x = UI.getStyleValue("spacing.window_padding_x", 8)
+		local close_button_size = header_font_size + 6
+		local close_x = UI.r.ImGui_GetWindowWidth(UI.settings_ctx) - close_button_size - window_padding_x
+		UI.r.ImGui_SetCursorPosX(UI.settings_ctx, close_x)
+		if UI.r.ImGui_Button(UI.settings_ctx, "X", close_button_size, close_button_size) then
+			open = false
+		end
 
 		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
 			UI.r.ImGui_PushFont(UI.settings_ctx, main_font, 0)
 		end
 
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
-			UI.r.ImGui_Text(UI.settings_ctx, "ULTRA RANDOM SETTINGS")
-			UI.r.ImGui_PopFont(UI.settings_ctx)
-		else
-			UI.r.ImGui_Text(UI.settings_ctx, "ULTRA RANDOM SETTINGS")
-		end
+		UI.r.ImGui_Separator(UI.settings_ctx)
 
+		UI.r.ImGui_Text(UI.settings_ctx, "ULTRA RANDOM SETTINGS")
 		UI.r.ImGui_Separator(UI.settings_ctx)
 
 		local urs = UI.core.state.ultra_random_settings

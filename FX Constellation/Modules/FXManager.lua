@@ -1,10 +1,11 @@
 local FXManager = {}
 
-function FXManager.init(reaper_api, core, persistence, license)
+function FXManager.init(reaper_api, core, persistence, license, soundgen)
 	FXManager.r = reaper_api
 	FXManager.core = core
 	FXManager.persistence = persistence
 	FXManager.license = license
+	FXManager.soundgen = soundgen
 end
 
 function FXManager.shouldFilterParam(param_name)
@@ -513,13 +514,43 @@ function FXManager.globalRandomSelect()
 end
 
 function FXManager.ultraRandom()
-	FXManager.core.state.gesture_x = math.random()
-	FXManager.core.state.gesture_y = math.random()
-	FXManager.core.state.gesture_base_x = FXManager.core.state.gesture_x
-	FXManager.core.state.gesture_base_y = FXManager.core.state.gesture_y
-	FXManager.globalRandomInvert()
-	FXManager.randomizeAllBases()
-	FXManager.globalRandomRanges()
+	local urs = FXManager.core.state.ultra_random_settings
+
+	if urs.xy_assignments then
+		FXManager.globalRandomXYAssign()
+	end
+
+	if urs.invert then
+		FXManager.globalRandomInvert()
+	end
+
+	if urs.bases then
+		FXManager.randomizeAllBases()
+	end
+
+	if urs.ranges then
+		FXManager.globalRandomRanges()
+	end
+
+	if urs.bypass then
+		FXManager.randomBypassFX()
+	end
+
+	if urs.fx_order then
+		FXManager.randomizeFXOrder()
+	end
+
+	if urs.sound_frequency and FXManager.core.state.sound_generator.enabled then
+		local sg = FXManager.core.state.sound_generator
+		local freq_min_log = math.log(20)
+		local freq_max_log = math.log(20000)
+		local random_freq_log = freq_min_log + math.random() * (freq_max_log - freq_min_log)
+		sg.frequency = math.exp(random_freq_log)
+		if FXManager.soundgen then
+			FXManager.soundgen.updateJSFXParams()
+		end
+	end
+
 	FXManager.captureBaseValues()
 end
 
