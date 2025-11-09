@@ -9,6 +9,8 @@ function FXManagerUI.init(reaper, core, fxmanager, fxdatabase, style_loader)
 	FXManagerUI.ctx = nil
 	FXManagerUI.pushed_colors = 0
 	FXManagerUI.pushed_vars = 0
+	FXManagerUI.double_click_time = 0
+	FXManagerUI.double_click_plugin = nil
 end
 
 function FXManagerUI.getStyleValue(path, default_value)
@@ -40,7 +42,7 @@ function FXManagerUI.drawWindow()
 		end
 	end
 
-	FXManagerUI.r.ImGui_SetNextWindowSize(FXManagerUI.ctx, 600, 700, FXManagerUI.r.ImGui_Cond_FirstUseEver())
+	FXManagerUI.r.ImGui_SetNextWindowSize(FXManagerUI.ctx, 800, 600, FXManagerUI.r.ImGui_Cond_FirstUseEver())
 
 	local window_flags = FXManagerUI.r.ImGui_WindowFlags_NoTitleBar() | FXManagerUI.r.ImGui_WindowFlags_NoCollapse()
 	local visible, open = FXManagerUI.r.ImGui_Begin(FXManagerUI.ctx, 'FX Manager', true, window_flags)
@@ -105,139 +107,22 @@ function FXManagerUI.drawWindow()
 			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, FXManagerUI.core.state.fxdb_scan_message)
 		end
 
-		local plugin_types = FXManagerUI.fxdatabase.getPluginTypes()
-		table.insert(plugin_types, 1, "All")
-		local type_filter = FXManagerUI.core.state.fxdb_type_filter or "All"
-		local current_type_index = 1
-		for i, ptype in ipairs(plugin_types) do
-			if ptype == type_filter then
-				current_type_index = i - 1
-				break
-			end
-		end
-
-		FXManagerUI.r.ImGui_SetNextItemWidth(FXManagerUI.ctx, content_width)
-		local changed, new_index = FXManagerUI.r.ImGui_Combo(FXManagerUI.ctx, "##typefilter", current_type_index, table.concat(plugin_types, "\0") .. "\0")
-		if changed then
-			FXManagerUI.core.state.fxdb_type_filter = plugin_types[new_index + 1]
-		end
-
 		FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
 
-		local favorites = FXManagerUI.fxdatabase.getFavorites()
-		if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "⭐ FAVORITES")
-			FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
-		else
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "FAVORITES")
-		end
+		local categories_width = content_width * 0.25
 
-		local window_height = FXManagerUI.r.ImGui_GetWindowHeight(FXManagerUI.ctx)
-		local favorites_height = window_height * 0.25
-
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "Favorites", 0, favorites_height) then
-			for _, plugin in ipairs(favorites) do
-				local display_name = plugin.name
-				if FXManagerUI.core.state.fxdb_search_query ~= "" then
-					if not display_name:lower():find(FXManagerUI.core.state.fxdb_search_query:lower(), 1, true) then
-						goto continue_fav
-					end
-				end
-				if FXManagerUI.core.state.fxdb_type_filter and FXManagerUI.core.state.fxdb_type_filter ~= "All" then
-					if plugin.type ~= FXManagerUI.core.state.fxdb_type_filter then
-						goto continue_fav
-					end
-				end
-
-				local star_icon = "⭐"
-				if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##fav_" .. plugin.name) then
-					FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
-				end
-
-				FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-				FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, display_name)
-
-				FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-				local button_width = 50
-				local cursor_x = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx) - button_width
-				FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, FXManagerUI.r.ImGui_GetCursorPosX(FXManagerUI.ctx) + cursor_x)
-				if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Add##fav_add_" .. plugin.name, button_width) then
-					FXManagerUI.fxmanager.addFXByName(plugin.name)
-					if FXManagerUI.core.state.fxmanager_auto_close then
-						open = false
-					end
-				end
-
-				::continue_fav::
-			end
+		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "Categories", categories_width, 0) then
+			FXManagerUI.drawCategories(header_font)
 			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
 		end
 
-		FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+		FXManagerUI.r.ImGui_Dummy(FXManagerUI.ctx, 0, 0)
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
 
-		if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "📦 ALL PLUGINS")
-			FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
-		else
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "ALL PLUGINS")
-		end
-
-		local all_height = window_height * 0.35
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "AllPlugins", 0, all_height) then
-			local type_filter_value = (FXManagerUI.core.state.fxdb_type_filter == "All") and "" or FXManagerUI.core.state.fxdb_type_filter
-			local plugins = FXManagerUI.fxdatabase.searchPlugins(FXManagerUI.core.state.fxdb_search_query, type_filter_value)
-
-			for _, plugin in ipairs(plugins) do
-				local star_icon = plugin.favorite and "⭐" or "☆"
-				if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##all_" .. plugin.name) then
-					FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
-				end
-
-				FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-				FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, plugin.name)
-
-				FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-				local button_width = 50
-				local cursor_x = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx) - button_width
-				FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, FXManagerUI.r.ImGui_GetCursorPosX(FXManagerUI.ctx) + cursor_x)
-				if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Add##all_add_" .. plugin.name, button_width) then
-					FXManagerUI.fxmanager.addFXByName(plugin.name)
-					if FXManagerUI.core.state.fxmanager_auto_close then
-						open = false
-					end
-				end
-			end
+		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "PluginsList", 0, 0) then
+			FXManagerUI.drawPluginsList(header_font)
 			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
-		end
-
-		FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
-
-		if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "RANDOM")
-			FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
-		else
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "RANDOM")
-		end
-
-		local changed, favorites_only = FXManagerUI.r.ImGui_Checkbox(FXManagerUI.ctx, "Favorites only", FXManagerUI.core.state.fxdb_random_favorites_only)
-		if changed then
-			FXManagerUI.core.state.fxdb_random_favorites_only = favorites_only
-		end
-
-		FXManagerUI.r.ImGui_SetNextItemWidth(FXManagerUI.ctx, content_width)
-		local changed, new_count = FXManagerUI.r.ImGui_SliderInt(FXManagerUI.ctx, "Count", FXManagerUI.core.state.fxdb_random_count, 1, 20)
-		if changed then
-			FXManagerUI.core.state.fxdb_random_count = new_count
-		end
-
-		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Add Random FX", content_width) then
-			FXManagerUI.fxmanager.addRandomFX(FXManagerUI.core.state.fxdb_random_count, FXManagerUI.core.state.fxdb_random_favorites_only)
-			if FXManagerUI.core.state.fxmanager_auto_close then
-				open = false
-			end
 		end
 
 		if main_font and FXManagerUI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
@@ -253,6 +138,76 @@ function FXManagerUI.drawWindow()
 
 	if FXManagerUI.style_loader then
 		FXManagerUI.style_loader.clearStyles(FXManagerUI.ctx, FXManagerUI.pushed_colors, FXManagerUI.pushed_vars)
+	end
+end
+
+function FXManagerUI.drawCategories(header_font)
+	local categories = FXManagerUI.fxdatabase.getCategories()
+
+	for _, category in ipairs(categories) do
+		local is_selected = FXManagerUI.core.state.fxdb_selected_category == category.name
+		local flags = is_selected and FXManagerUI.r.ImGui_TreeNodeFlags_Selected() or 0
+		flags = flags | FXManagerUI.r.ImGui_TreeNodeFlags_Leaf() | FXManagerUI.r.ImGui_TreeNodeFlags_NoTreePushOnOpen()
+
+		FXManagerUI.r.ImGui_TreeNodeEx(FXManagerUI.ctx, category.name, flags, category.name)
+
+		if FXManagerUI.r.ImGui_IsItemClicked(FXManagerUI.ctx) then
+			FXManagerUI.core.state.fxdb_selected_category = category.name
+		end
+	end
+end
+
+function FXManagerUI.drawPluginsList(header_font)
+	local selected_category = FXManagerUI.core.state.fxdb_selected_category
+	local search_query = FXManagerUI.core.state.fxdb_search_query
+	local plugins = FXManagerUI.fxdatabase.searchPlugins(search_query, selected_category)
+
+	for _, plugin in ipairs(plugins) do
+		local star_icon = plugin.favorite and "⭐" or "☆"
+
+		if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##fav_" .. plugin.name) then
+			FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
+		end
+
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+
+		local is_hovered = FXManagerUI.core.state.fxdb_hovered_plugin == plugin.name
+
+		if is_hovered then
+			local draw_list = FXManagerUI.r.ImGui_GetWindowDrawList(FXManagerUI.ctx)
+			local cursor_x, cursor_y = FXManagerUI.r.ImGui_GetCursorScreenPos(FXManagerUI.ctx)
+			local text_width, text_height = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, plugin.name)
+			local highlight_color = FXManagerUI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+			FXManagerUI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + text_width, cursor_y + text_height, highlight_color)
+		end
+
+		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, plugin.name)
+
+		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+			FXManagerUI.core.state.fxdb_hovered_plugin = plugin.name
+
+			if FXManagerUI.r.ImGui_IsMouseDoubleClicked(FXManagerUI.ctx, 0) then
+				FXManagerUI.fxmanager.addFXByName(plugin.name)
+				if FXManagerUI.core.state.fxmanager_auto_close then
+					FXManagerUI.core.state.show_fxmanager_window = false
+				end
+			end
+		else
+			if FXManagerUI.core.state.fxdb_hovered_plugin == plugin.name then
+				FXManagerUI.core.state.fxdb_hovered_plugin = nil
+			end
+		end
+
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+		local button_width = 50
+		local cursor_x = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx) - button_width
+		FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, FXManagerUI.r.ImGui_GetCursorPosX(FXManagerUI.ctx) + cursor_x)
+		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Add##add_" .. plugin.name, button_width) then
+			FXManagerUI.fxmanager.addFXByName(plugin.name)
+			if FXManagerUI.core.state.fxmanager_auto_close then
+				FXManagerUI.core.state.show_fxmanager_window = false
+			end
+		end
 	end
 end
 

@@ -126,12 +126,13 @@ function Core.init(reaper_api)
 		show_fxmanager_window = false,
 		fxdb_search_query = "",
 		fxdb_selected_plugin = nil,
-		fxdb_type_filter = "All",
+		fxdb_selected_category = "All",
 		fxdb_random_favorites_only = true,
 		fxdb_random_count = 1,
 		fxdb_scan_message = "",
 		fxdb_scan_time = 0,
-		fxmanager_auto_close = false
+		fxmanager_auto_close = false,
+		fxdb_hovered_plugin = nil
 	}
 
 	return Core.state

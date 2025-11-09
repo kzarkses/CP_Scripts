@@ -8,7 +8,23 @@ function FXDatabase.init(reaper, core, persistence, data_path)
 	FXDatabase.database_file = data_path .. "fx_database.dat"
 	FXDatabase.plugins = {}
 	FXDatabase.favorites = {}
+	FXDatabase.categories = {}
 	FXDatabase.last_scan_time = 0
+	FXDatabase.blacklist = {
+		"waveshell",
+		"<SHELL>",
+		"!!!VSTi$"
+	}
+end
+
+function FXDatabase.isBlacklisted(name)
+	local lower_name = name:lower()
+	for _, pattern in ipairs(FXDatabase.blacklist) do
+		if lower_name:find(pattern:lower()) then
+			return true
+		end
+	end
+	return false
 end
 
 function FXDatabase.parsePluginsIni()
@@ -16,30 +32,36 @@ function FXDatabase.parsePluginsIni()
 	local resource_path = FXDatabase.r.GetResourcePath()
 
 	local ini_files = {
-		resource_path .. "/reaper-vstplugins64.ini",
-		resource_path .. "/reaper-vstplugins.ini",
-		resource_path .. "/reaper-vst3plugins64.ini",
-		resource_path .. "/reaper-vst3plugins.ini",
-		resource_path .. "/reaper-jsfx.ini"
+		{path = resource_path .. "/reaper-vstplugins64.ini", type = "VST"},
+		{path = resource_path .. "/reaper-vstplugins.ini", type = "VST"},
+		{path = resource_path .. "/reaper-vst3plugins64.ini", type = "VST3"},
+		{path = resource_path .. "/reaper-vst3plugins.ini", type = "VST3"},
+		{path = resource_path .. "/reaper-jsfx.ini", type = "JS"}
 	}
 
-	for _, ini_path in ipairs(ini_files) do
-		local file = io.open(ini_path, "r")
+	for _, ini_info in ipairs(ini_files) do
+		local file = io.open(ini_info.path, "r")
 		if file then
-			local current_type = ""
+			local current_section = ""
 
 			for line in file:lines() do
 				local section = line:match("%[(.+)%]")
 				if section then
-					current_type = section
+					current_section = section
 				else
 					local plugin_name = line:match("^([^=]+)=")
-					if plugin_name and plugin_name ~= "" and current_type ~= "" then
+					if plugin_name and plugin_name ~= "" and current_section ~= "" then
 						local clean_name = plugin_name:match("^%s*(.-)%s*$")
-						if clean_name and clean_name ~= "" then
+						if clean_name and clean_name ~= "" and not FXDatabase.isBlacklisted(clean_name) then
+							local is_instrument = clean_name:find("!!!VSTi")
+							if is_instrument then
+								clean_name = clean_name:gsub("!!!VSTi", "")
+							end
+
 							table.insert(plugins, {
 								name = clean_name,
-								type = current_type,
+								type = ini_info.type,
+								instrument = is_instrument,
 								favorite = false
 							})
 						end
@@ -54,8 +76,50 @@ function FXDatabase.parsePluginsIni()
 	return plugins
 end
 
+function FXDatabase.parseFXFolders()
+	local resource_path = FXDatabase.r.GetResourcePath()
+	local fxfolders_file = resource_path .. "/reaper-fxfolders.ini"
+
+	local categories = {
+		{name = "All", type = "builtin", collapsed = false},
+		{name = "Favorites", type = "builtin", collapsed = false},
+		{name = "VST", type = "builtin", collapsed = false},
+		{name = "VST3", type = "builtin", collapsed = false},
+		{name = "JS Effects", type = "builtin", collapsed = false}
+	}
+
+	local file = io.open(fxfolders_file, "r")
+	if not file then
+		return categories
+	end
+
+	local folders = {}
+	local current_section = ""
+
+	for line in file:lines() do
+		local section = line:match("%[(.+)%]")
+		if section then
+			current_section = section
+		elseif current_section == "Folders" then
+			local id, name = line:match("^Name(%d+)=(.+)$")
+			if id and name then
+				folders[id] = {name = name, type = "custom", collapsed = true}
+			end
+		end
+	end
+
+	file:close()
+
+	for _, folder in pairs(folders) do
+		table.insert(categories, folder)
+	end
+
+	return categories
+end
+
 function FXDatabase.scanPlugins()
 	FXDatabase.plugins = FXDatabase.parsePluginsIni()
+	FXDatabase.categories = FXDatabase.parseFXFolders()
 	FXDatabase.last_scan_time = FXDatabase.r.time_precise()
 	FXDatabase.saveDatabase()
 	return #FXDatabase.plugins
@@ -68,6 +132,7 @@ function FXDatabase.saveDatabase()
 	local data = {
 		plugins = FXDatabase.plugins,
 		favorites = FXDatabase.favorites,
+		categories = FXDatabase.categories,
 		last_scan_time = FXDatabase.last_scan_time
 	}
 
@@ -92,6 +157,7 @@ function FXDatabase.loadDatabase()
 		if data then
 			FXDatabase.plugins = data.plugins or {}
 			FXDatabase.favorites = data.favorites or {}
+			FXDatabase.categories = data.categories or FXDatabase.parseFXFolders()
 			FXDatabase.last_scan_time = data.last_scan_time or 0
 
 			for _, plugin in ipairs(FXDatabase.plugins) do
@@ -132,27 +198,36 @@ function FXDatabase.getFavorites()
 	return favs
 end
 
-function FXDatabase.searchPlugins(query, type_filter)
-	if not query or query == "" then
-		if type_filter and type_filter ~= "" then
-			return FXDatabase.filterByType(type_filter)
-		end
+function FXDatabase.getPluginsByCategory(category_name)
+	if category_name == "All" then
 		return FXDatabase.plugins
+	elseif category_name == "Favorites" then
+		return FXDatabase.getFavorites()
+	elseif category_name == "VST" then
+		return FXDatabase.filterByType("VST")
+	elseif category_name == "VST3" then
+		return FXDatabase.filterByType("VST3")
+	elseif category_name == "JS Effects" then
+		return FXDatabase.filterByType("JS")
+	else
+		return FXDatabase.plugins
+	end
+end
+
+function FXDatabase.searchPlugins(query, category_name)
+	local base_plugins = FXDatabase.getPluginsByCategory(category_name or "All")
+
+	if not query or query == "" then
+		return base_plugins
 	end
 
 	local results = {}
 	local lower_query = query:lower()
 
-	for _, plugin in ipairs(FXDatabase.plugins) do
-		if type_filter and type_filter ~= "" and plugin.type ~= type_filter then
-			goto continue
-		end
-
+	for _, plugin in ipairs(base_plugins) do
 		if plugin.name:lower():find(lower_query, 1, true) then
 			table.insert(results, plugin)
 		end
-
-		::continue::
 	end
 
 	return results
@@ -200,6 +275,23 @@ function FXDatabase.getPluginTypes()
 
 	table.sort(types)
 	return types
+end
+
+function FXDatabase.getCategories()
+	if not FXDatabase.categories or #FXDatabase.categories == 0 then
+		FXDatabase.categories = FXDatabase.parseFXFolders()
+	end
+	return FXDatabase.categories
+end
+
+function FXDatabase.toggleCategoryCollapsed(category_name)
+	for _, category in ipairs(FXDatabase.categories) do
+		if category.name == category_name then
+			category.collapsed = not category.collapsed
+			FXDatabase.saveDatabase()
+			return
+		end
+	end
 end
 
 function FXDatabase.serializeTable(tbl, indent)
