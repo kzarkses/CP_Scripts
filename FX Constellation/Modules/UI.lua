@@ -1,6 +1,6 @@
 local UI = {}
 
-function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence, soundgen, license, style_loader, ctx, header_font_size, item_spacing_x, item_spacing_y, window_padding_x, window_padding_y)
+function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence, soundgen, license, fxmanagerui, style_loader, ctx, header_font_size, item_spacing_x, item_spacing_y, window_padding_x, window_padding_y)
 	UI.r = reaper_api
 	UI.core = core
 	UI.fxmanager = fxmanager
@@ -9,6 +9,7 @@ function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence
 	UI.persistence = persistence
 	UI.soundgen = soundgen
 	UI.license = license
+	UI.fxmanagerui = fxmanagerui
 	UI.style_loader = style_loader
 	UI.ctx = ctx
 	UI.filters_ctx = nil
@@ -1077,53 +1078,72 @@ function UI.drawFXSection()
 		UI.r.ImGui_Text(UI.ctx, selection_text)
 	end
 	if not header_expanded then return end
-	if UI.r.ImGui_Button(UI.ctx, UI.core.state.show_filters_window and "Hide Filters" or "Show Filters") then
-		UI.core.state.show_filters_window = not UI.core.state.show_filters_window
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Show All FX") then
-		UI.presetsystem.showAllFloatingFX()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Close All FX") then
-		UI.presetsystem.closeAllFloatingFX()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Collapse All") then
-		UI.core.state.all_fx_collapsed = true
-		for fx_id, _ in pairs(UI.core.state.fx_data) do
-			UI.core.state.fx_collapsed[fx_id] = true
+
+	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+	local buttons_column_width = content_width * 0.25
+
+	if UI.r.ImGui_BeginChild(UI.ctx, "FXButtons", buttons_column_width, 0, 0) then
+		local button_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+
+		if UI.r.ImGui_Button(UI.ctx, "Add FX...", button_width) then
+			UI.core.state.show_fxmanager_window = not UI.core.state.show_fxmanager_window
 		end
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Expand All") then
-		UI.core.state.all_fx_collapsed = false
-		for fx_id, _ in pairs(UI.core.state.fx_data) do
-			UI.core.state.fx_collapsed[fx_id] = false
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, UI.core.state.show_filters_window and "Hide Filters" or "Show Filters", button_width) then
+			UI.core.state.show_filters_window = not UI.core.state.show_filters_window
 		end
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "All") then
-		for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-			UI.fxmanager.selectAllParams(fx_data.params, true)
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, "Show All FX", button_width) then
+			UI.presetsystem.showAllFloatingFX()
 		end
-		UI.fxmanager.saveTrackSelection()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "All Cont") then
-		for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-			UI.fxmanager.selectAllContinuousParams(fx_data.params, true)
+		if UI.r.ImGui_Button(UI.ctx, "Close All FX", button_width) then
+			UI.presetsystem.closeAllFloatingFX()
 		end
-		UI.fxmanager.saveTrackSelection()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Clear") then
-		for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-			UI.fxmanager.selectAllParams(fx_data.params, false)
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, "Collapse All", button_width) then
+			UI.core.state.all_fx_collapsed = true
+			for fx_id, _ in pairs(UI.core.state.fx_data) do
+				UI.core.state.fx_collapsed[fx_id] = true
+			end
 		end
-		UI.fxmanager.saveTrackSelection()
+		if UI.r.ImGui_Button(UI.ctx, "Expand All", button_width) then
+			UI.core.state.all_fx_collapsed = false
+			for fx_id, _ in pairs(UI.core.state.fx_data) do
+				UI.core.state.fx_collapsed[fx_id] = false
+			end
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, "All", button_width) then
+			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
+				UI.fxmanager.selectAllParams(fx_data.params, true)
+			end
+			UI.fxmanager.saveTrackSelection()
+		end
+		if UI.r.ImGui_Button(UI.ctx, "All Cont", button_width) then
+			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
+				UI.fxmanager.selectAllContinuousParams(fx_data.params, true)
+			end
+			UI.fxmanager.saveTrackSelection()
+		end
+		if UI.r.ImGui_Button(UI.ctx, "Clear", button_width) then
+			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
+				UI.fxmanager.selectAllParams(fx_data.params, false)
+			end
+			UI.fxmanager.saveTrackSelection()
+		end
+
+		UI.r.ImGui_EndChild(UI.ctx)
 	end
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+
+	UI.r.ImGui_SameLine(UI.ctx)
 	local fx_count = 0
 	for _ in pairs(UI.core.state.fx_data) do fx_count = fx_count + 1 end
 	if fx_count > 0 then
@@ -1676,6 +1696,9 @@ function UI.drawInterface()
 	UI.drawFiltersWindow()
 	UI.drawSettingsWindow()
 	UI.drawLicenseWindow()
+	if UI.fxmanagerui then
+		UI.fxmanagerui.drawWindow()
+	end
 	return open
 end
 

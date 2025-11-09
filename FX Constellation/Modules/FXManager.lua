@@ -1,11 +1,12 @@
 local FXManager = {}
 
-function FXManager.init(reaper_api, core, persistence, license, soundgen)
+function FXManager.init(reaper_api, core, persistence, license, soundgen, fxdatabase)
 	FXManager.r = reaper_api
 	FXManager.core = core
 	FXManager.persistence = persistence
 	FXManager.license = license
 	FXManager.soundgen = soundgen
+	FXManager.fxdatabase = fxdatabase
 end
 
 function FXManager.shouldFilterParam(param_name)
@@ -594,6 +595,53 @@ function FXManager.randomBypassFX()
 	end
 	FXManager.r.Undo_EndBlock("Random bypass FX", -1)
 	FXManager.scanTrackFX()
+end
+
+function FXManager.addFXByName(fx_name)
+	if not FXManager.core.isTrackValid() then return false end
+	if not fx_name or fx_name == "" then return false end
+
+	FXManager.r.Undo_BeginBlock()
+	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
+	local new_fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, false, -1)
+
+	if new_fx_id >= 0 then
+		FXManager.r.Undo_EndBlock("Add FX: " .. fx_name, -1)
+		FXManager.scanTrackFX()
+		return true
+	else
+		FXManager.r.Undo_EndBlock("Add FX failed", -1)
+		return false
+	end
+end
+
+function FXManager.addRandomFX(count, favorites_only)
+	if not FXManager.core.isTrackValid() then return false end
+	if not count or count <= 0 then return false end
+	if not FXManager.fxdatabase then return false end
+
+	local plugins = FXManager.fxdatabase.getRandomPlugins(count, favorites_only)
+	if #plugins == 0 then return false end
+
+	FXManager.r.Undo_BeginBlock()
+	local added_count = 0
+
+	for _, plugin in ipairs(plugins) do
+		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, plugin.name, false, -1)
+		if fx_id >= 0 then
+			added_count = added_count + 1
+		end
+	end
+
+	local undo_text = "Add " .. added_count .. " random FX"
+	if favorites_only then
+		undo_text = undo_text .. " (favorites)"
+	end
+
+	FXManager.r.Undo_EndBlock(undo_text, -1)
+	FXManager.scanTrackFX()
+
+	return added_count > 0
 end
 
 return FXManager

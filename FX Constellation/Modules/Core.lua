@@ -122,7 +122,16 @@ function Core.init(reaper_api)
 			sound_frequency = false
 		},
 		section_width_percent = 100,
-		show_settings_window = false
+		show_settings_window = false,
+		show_fxmanager_window = false,
+		fxdb_search_query = "",
+		fxdb_selected_plugin = nil,
+		fxdb_type_filter = "All",
+		fxdb_random_favorites_only = true,
+		fxdb_random_count = 1,
+		fxdb_scan_message = "",
+		fxdb_scan_time = 0,
+		fxmanager_auto_close = false
 	}
 
 	return Core.state
