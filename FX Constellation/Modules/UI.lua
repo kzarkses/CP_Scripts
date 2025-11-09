@@ -1340,6 +1340,8 @@ function UI.drawFiltersWindow()
 	if not UI.core.state.show_filters_window then return end
 	if not UI.filters_ctx or not UI.r.ImGui_ValidatePtr(UI.filters_ctx, "ImGui_Context*") then
 		UI.filters_ctx = UI.r.ImGui_CreateContext('FX Constellation Filters')
+		local config_flags = UI.r.ImGui_ConfigFlags_NoKeyboard()
+		UI.r.ImGui_SetConfigFlags(UI.filters_ctx, config_flags)
 		if UI.style_loader then
 			UI.style_loader.ApplyFontsToContext(UI.filters_ctx)
 		end
@@ -1410,6 +1412,8 @@ function UI.drawSettingsWindow()
 	if not UI.core.state.show_settings_window then return end
 	if not UI.settings_ctx or not UI.r.ImGui_ValidatePtr(UI.settings_ctx, "ImGui_Context*") then
 		UI.settings_ctx = UI.r.ImGui_CreateContext('FX Constellation Settings')
+		local config_flags = UI.r.ImGui_ConfigFlags_NoKeyboard()
+		UI.r.ImGui_SetConfigFlags(UI.settings_ctx, config_flags)
 		if UI.style_loader then
 			UI.style_loader.ApplyFontsToContext(UI.settings_ctx)
 		end
@@ -1684,6 +1688,8 @@ function UI.drawLicenseWindow()
 
 	if not UI.license_ctx then
 		UI.license_ctx = UI.r.ImGui_CreateContext('FX Constellation License')
+		local config_flags = UI.r.ImGui_ConfigFlags_NoKeyboard()
+		UI.r.ImGui_SetConfigFlags(UI.license_ctx, config_flags)
 	end
 
 	if UI.style_loader then
