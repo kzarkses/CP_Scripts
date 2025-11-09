@@ -149,7 +149,7 @@ function FXManagerUI.drawCategories(header_font)
 		local flags = is_selected and FXManagerUI.r.ImGui_TreeNodeFlags_Selected() or 0
 		flags = flags | FXManagerUI.r.ImGui_TreeNodeFlags_Leaf() | FXManagerUI.r.ImGui_TreeNodeFlags_NoTreePushOnOpen()
 
-		FXManagerUI.r.ImGui_TreeNodeEx(FXManagerUI.ctx, category.name, flags, category.name)
+		FXManagerUI.r.ImGui_TreeNodeEx(FXManagerUI.ctx, category.name, category.name, flags)
 
 		if FXManagerUI.r.ImGui_IsItemClicked(FXManagerUI.ctx) then
 			FXManagerUI.core.state.fxdb_selected_category = category.name
