@@ -141,7 +141,7 @@ function FXManagerUI.drawWindow()
 		local window_height = FXManagerUI.r.ImGui_GetWindowHeight(FXManagerUI.ctx)
 		local favorites_height = window_height * 0.25
 
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "Favorites", 0, favorites_height, FXManagerUI.r.ImGui_ChildFlags_Border()) then
+		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "Favorites", 0, favorites_height, true) then
 			for _, plugin in ipairs(favorites) do
 				local display_name = plugin.name
 				if FXManagerUI.core.state.fxdb_search_query ~= "" then
@@ -190,7 +190,7 @@ function FXManagerUI.drawWindow()
 		end
 
 		local all_height = window_height * 0.35
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "AllPlugins", 0, all_height, FXManagerUI.r.ImGui_ChildFlags_Border()) then
+		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "AllPlugins", 0, all_height, true) then
 			local type_filter_value = (FXManagerUI.core.state.fxdb_type_filter == "All") and "" or FXManagerUI.core.state.fxdb_type_filter
 			local plugins = FXManagerUI.fxdatabase.searchPlugins(FXManagerUI.core.state.fxdb_search_query, type_filter_value)
 

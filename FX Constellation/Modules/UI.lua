@@ -1068,19 +1068,94 @@ function UI.drawPresets()
 end
 
 function UI.drawFXSection()
-	local header_expanded = UI.drawCollapsibleHeader("fx_settings", "FX SETTINGS")
+	local is_collapsed = UI.core.state.section_collapsed.fx_settings
+	local collapse_icon = is_collapsed and "▶" or "▼"
+	local header_font = UI.getStyleFont("header")
+
+	if is_collapsed then
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+		end
+		local char_height = 12
+		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
+		local display_text = "FX SETTINGS"
+		local button_height = #display_text * char_height + 30
+		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_fx_settings", 25, button_height)
+		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+
+		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+		if hovered then
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
+			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+		end
+
+		local icon_x = cursor_x + 5
+		local icon_y = cursor_y + 5
+		UI.r.ImGui_DrawList_AddText(draw_list, icon_x, icon_y, 0xFFFFFFFF, collapse_icon)
+
+		local text_x = cursor_x + 7
+		local text_y = cursor_y + 25
+		for i = 1, #display_text do
+			local char = display_text:sub(i, i)
+			UI.r.ImGui_DrawList_AddText(draw_list, text_x, text_y, 0xFFFFFFFF, char)
+			text_y = text_y + char_height
+		end
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.ctx)
+		end
+
+		if clicked then
+			UI.core.state.section_collapsed.fx_settings = false
+			UI.persistence.scheduleSave()
+		end
+		return
+	end
+
+	local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
+	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+	end
+	UI.r.ImGui_Text(UI.ctx, collapse_icon .. " FX SETTINGS")
+	local header_hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+	local header_clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+	if header_hovered then
+		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+		local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
+		local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
+		local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+		local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+		UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x - 2, min_y - 2, max_x + 2, max_y + 2, highlight_color, rounding)
+		UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+		UI.r.ImGui_SetCursorScreenPos(UI.ctx, cursor_x, cursor_y)
+		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " FX SETTINGS")
+	end
+	if header_clicked then
+		UI.core.state.section_collapsed.fx_settings = true
+		UI.persistence.scheduleSave()
+	end
+
 	UI.r.ImGui_SameLine(UI.ctx)
 	local selection_text = "| Selected: " .. UI.core.state.selected_count
 	if UI.core.state.current_loaded_preset ~= "" then
 		selection_text = selection_text .. " | " .. UI.core.state.current_loaded_preset
 	end
 	UI.r.ImGui_Text(UI.ctx, selection_text)
-	if not header_expanded then return end
+
+	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+		UI.r.ImGui_PopFont(UI.ctx)
+	end
+
+	UI.r.ImGui_Separator(UI.ctx)
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
 	local buttons_column_width = content_width * 0.15
 
-	if UI.r.ImGui_BeginChild(UI.ctx, "FXButtons", buttons_column_width, 0, 0) then
+	if UI.r.ImGui_BeginChild(UI.ctx, "FXButtons", buttons_column_width, 0) then
 		local button_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
 
 		if UI.r.ImGui_Button(UI.ctx, "Add FX...", button_width) then
@@ -1142,10 +1217,10 @@ function UI.drawFXSection()
 	end
 
 	UI.r.ImGui_SameLine(UI.ctx)
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	UI.r.ImGui_SameLine(UI.ctx)
 
-	if UI.r.ImGui_BeginChild(UI.ctx, "FXListColumn", 0, 0, 0) then
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+	if UI.r.ImGui_BeginChild(UI.ctx, "FXListColumn", 0, 0) then
 
 		local fx_count = 0
 		for _ in pairs(UI.core.state.fx_data) do fx_count = fx_count + 1 end
