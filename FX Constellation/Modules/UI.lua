@@ -430,16 +430,23 @@ function UI.drawSoundGenerator()
 	UI.soundgen.syncFromJSFX()
 
 	local button_width = (content_width - UI.item_spacing_x) / 2
-	local toggle_label = sg.enabled and (sg.mode == 0 and "● Continuous" or "● Triggered") or "○ OFF"
-	if UI.r.ImGui_Button(UI.ctx, toggle_label, content_width) then
+	local toggle_label = sg.enabled and "● ON" or "○ OFF"
+	if UI.r.ImGui_Button(UI.ctx, toggle_label, button_width) then
 		if not sg.enabled then
 			UI.soundgen.createGenerator()
 			UI.fxmanager.scanTrackFX()
 		else
 			UI.soundgen.removeGenerator()
-			sg.mode = sg.mode == 0 and 1 or 0
-			UI.soundgen.createGenerator()
 			UI.fxmanager.scanTrackFX()
+		end
+	end
+
+	if sg.enabled then
+		UI.r.ImGui_SameLine(UI.ctx)
+		local mode_button_width = (content_width - UI.item_spacing_x) / 2
+		if UI.r.ImGui_Button(UI.ctx, sg.mode == 0 and "Continuous" or "Triggered", mode_button_width) then
+			sg.mode = sg.mode == 0 and 1 or 0
+			UI.soundgen.updateJSFXParams()
 		end
 	end
 
@@ -458,9 +465,12 @@ function UI.drawSoundGenerator()
 
 	if sg.waveform < 4 then
 		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_freq = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", sg.frequency, 20, 20000, "%.1f Hz")
+		local freq_min_log = math.log(20)
+		local freq_max_log = math.log(20000)
+		local freq_norm = (math.log(sg.frequency) - freq_min_log) / (freq_max_log - freq_min_log)
+		local changed, new_freq_norm = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", freq_norm, 0, 1, string.format("%.1f Hz", sg.frequency))
 		if changed then
-			sg.frequency = new_freq
+			sg.frequency = math.exp(freq_min_log + new_freq_norm * (freq_max_log - freq_min_log))
 			UI.soundgen.updateJSFXParams()
 		end
 
@@ -516,6 +526,13 @@ function UI.drawSoundGenerator()
 				sg.duty_cycle = new_duty
 				UI.soundgen.updateJSFXParams()
 			end
+
+			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
+			local changed, new_curve = UI.r.ImGui_SliderDouble(UI.ctx, "Rhythmic Curve##sg", sg.rhythmic_curve, 0, 1, "%.2f")
+			if changed then
+				sg.rhythmic_curve = new_curve
+				UI.soundgen.updateJSFXParams()
+			end
 		end
 	else
 		local changed, use_adsr = UI.r.ImGui_Checkbox(UI.ctx, "ADSR Envelope", sg.use_adsr)
@@ -562,15 +579,13 @@ function UI.drawSoundGenerator()
 			UI.soundgen.updateJSFXParams()
 		end
 
-		if not sg.midi_mode then
-			UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-			UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width)
-			if UI.r.ImGui_IsItemActive(UI.ctx) then
-				UI.soundgen.setManualTrigger(true)
-			end
-			if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
-				UI.soundgen.setManualTrigger(false)
-			end
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+		UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width)
+		if UI.r.ImGui_IsItemActive(UI.ctx) then
+			UI.soundgen.setManualTrigger(true)
+		end
+		if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
+			UI.soundgen.setManualTrigger(false)
 		end
 	end
 end
@@ -1391,6 +1406,124 @@ function UI.drawFiltersWindow()
 	if UI.style_loader then UI.style_loader.clearStyles(UI.filters_ctx, UI.filters_pushed_colors, UI.filters_pushed_vars) end
 end
 
+function UI.drawSettingsWindow()
+	if not UI.core.state.show_settings_window then return end
+	if not UI.settings_ctx or not UI.r.ImGui_ValidatePtr(UI.settings_ctx, "ImGui_Context*") then
+		UI.settings_ctx = UI.r.ImGui_CreateContext('FX Constellation Settings')
+		if UI.style_loader then
+			UI.style_loader.ApplyFontsToContext(UI.settings_ctx)
+		end
+	end
+	if UI.style_loader then
+		local success, colors, vars = UI.style_loader.applyToContext(UI.settings_ctx)
+		if success then UI.settings_pushed_colors, UI.settings_pushed_vars = colors, vars end
+	end
+	UI.r.ImGui_SetNextWindowSize(UI.settings_ctx, 400, 350, UI.r.ImGui_Cond_FirstUseEver())
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
+	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'Settings', true, window_flags)
+	if visible then
+		local main_font = UI.getStyleFont("main", UI.settings_ctx)
+		local header_font = UI.getStyleFont("header", UI.settings_ctx)
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
+			UI.r.ImGui_Text(UI.settings_ctx, "SETTINGS")
+			UI.r.ImGui_PopFont(UI.settings_ctx)
+		else
+			UI.r.ImGui_Text(UI.settings_ctx, "SETTINGS")
+		end
+
+		UI.r.ImGui_SameLine(UI.settings_ctx)
+		local header_font_size = UI.getStyleValue("fonts.header.size", 16)
+		local window_padding_x = UI.getStyleValue("spacing.window_padding_x", 8)
+		local close_button_size = header_font_size + 6
+		local close_x = UI.r.ImGui_GetWindowWidth(UI.settings_ctx) - close_button_size - window_padding_x
+		UI.r.ImGui_SetCursorPosX(UI.settings_ctx, close_x)
+		if UI.r.ImGui_Button(UI.settings_ctx, "X", close_button_size, close_button_size) then
+			open = false
+		end
+
+		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.settings_ctx, main_font, 0)
+		end
+
+		UI.r.ImGui_Separator(UI.settings_ctx)
+
+		UI.r.ImGui_Text(UI.settings_ctx, "ULTRA RANDOM SETTINGS")
+		UI.r.ImGui_Separator(UI.settings_ctx)
+
+		local urs = UI.core.state.ultra_random_settings
+
+		local changed, xy_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize XY Assignments", urs.xy_assignments)
+		if changed then
+			urs.xy_assignments = xy_val
+			UI.persistence.scheduleSave()
+		end
+
+		local changed, ranges_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Ranges", urs.ranges)
+		if changed then
+			urs.ranges = ranges_val
+			UI.persistence.scheduleSave()
+		end
+
+		local changed, bases_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Bases", urs.bases)
+		if changed then
+			urs.bases = bases_val
+			UI.persistence.scheduleSave()
+		end
+
+		local changed, bypass_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Bypass", urs.bypass)
+		if changed then
+			urs.bypass = bypass_val
+			UI.persistence.scheduleSave()
+		end
+
+		local changed, fx_order_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize FX Order", urs.fx_order)
+		if changed then
+			urs.fx_order = fx_order_val
+			UI.persistence.scheduleSave()
+		end
+
+		local changed, invert_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Invert", urs.invert)
+		if changed then
+			urs.invert = invert_val
+			UI.persistence.scheduleSave()
+		end
+
+		local changed, sound_freq_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Sound Generator Frequency", urs.sound_frequency)
+		if changed then
+			urs.sound_frequency = sound_freq_val
+			UI.persistence.scheduleSave()
+		end
+
+		UI.r.ImGui_Separator(UI.settings_ctx)
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
+			UI.r.ImGui_Text(UI.settings_ctx, "SECTION WIDTH")
+			UI.r.ImGui_PopFont(UI.settings_ctx)
+		else
+			UI.r.ImGui_Text(UI.settings_ctx, "SECTION WIDTH")
+		end
+
+		UI.r.ImGui_SetNextItemWidth(UI.settings_ctx, -1)
+		local changed, new_width = UI.r.ImGui_SliderInt(UI.settings_ctx, "##sectionwidth", UI.core.state.section_width_percent, 50, 200, "%d%%")
+		if changed then
+			UI.core.state.section_width_percent = new_width
+			UI.persistence.scheduleSave()
+		end
+
+		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.settings_ctx)
+		end
+		UI.r.ImGui_End(UI.settings_ctx)
+	end
+	if not open then
+		UI.core.state.show_settings_window = false
+	end
+	if UI.style_loader then UI.style_loader.clearStyles(UI.settings_ctx, UI.settings_pushed_colors, UI.settings_pushed_vars) end
+end
+
 function UI.drawHorizontalLayout()
 	local nav_width = UI.core.state.section_collapsed.navigation and 30 or 160
 	local mode_width = UI.core.state.section_collapsed.mode and 30 or 128
@@ -1483,6 +1616,13 @@ function UI.drawInterface()
 
 		UI.r.ImGui_SameLine(UI.ctx)
 		local close_button_size = UI.header_font_size + 6
+		local settings_x = UI.r.ImGui_GetWindowWidth(UI.ctx) - (close_button_size * 2) - UI.item_spacing_x - UI.window_padding_x
+		UI.r.ImGui_SetCursorPosX(UI.ctx, settings_x)
+		if UI.r.ImGui_Button(UI.ctx, "⚙", close_button_size, close_button_size) then
+			UI.core.state.show_settings_window = not UI.core.state.show_settings_window
+		end
+
+		UI.r.ImGui_SameLine(UI.ctx)
 		local close_x = UI.r.ImGui_GetWindowWidth(UI.ctx) - close_button_size - UI.window_padding_x
 		UI.r.ImGui_SetCursorPosX(UI.ctx, close_x)
 		if UI.r.ImGui_Button(UI.ctx, "X", close_button_size, close_button_size) then
@@ -1534,6 +1674,7 @@ function UI.drawInterface()
 	end
 	if UI.style_loader then UI.style_loader.clearStyles(UI.ctx, UI.pushed_colors, UI.pushed_vars) end
 	UI.drawFiltersWindow()
+	UI.drawSettingsWindow()
 	UI.drawLicenseWindow()
 	return open
 end

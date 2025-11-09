@@ -1,10 +1,11 @@
 local FXManager = {}
 
-function FXManager.init(reaper_api, core, persistence, license)
+function FXManager.init(reaper_api, core, persistence, license, soundgen)
 	FXManager.r = reaper_api
 	FXManager.core = core
 	FXManager.persistence = persistence
 	FXManager.license = license
+	FXManager.soundgen = soundgen
 end
 
 function FXManager.shouldFilterParam(param_name)
@@ -99,12 +100,21 @@ function FXManager.scanTrackFX()
 						base_value = normalized_value,
 						min_val = min_val,
 						max_val = max_val,
-						selected = false,
+						selected = FXManager.core.state.exclusive_xy and true or false,
 						fx_id = visible_fx_id,
 						param_id = param,
 						actual_fx_id = fx,
 						step_count = step_count
 					}
+					if FXManager.core.state.exclusive_xy then
+						local x_key = FXManager.core.getParamKey(visible_fx_id, param, "x")
+						local y_key = FXManager.core.getParamKey(visible_fx_id, param, "y")
+						if x_key and y_key then
+							local is_x_param = ((visible_fx_id + param) % 2) == 0
+							FXManager.core.state.param_xy_assign[x_key] = is_x_param
+							FXManager.core.state.param_xy_assign[y_key] = not is_x_param
+						end
+					end
 				end
 			end
 			visible_fx_id = visible_fx_id + 1
@@ -394,21 +404,23 @@ function FXManager.randomizeAllBases()
 	if not FXManager.core.isTrackValid() then return end
 	FXManager.r.Undo_BeginBlock()
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
-		for param_id, param_data in pairs(fx_data.params) do
-			if param_data.selected then
-				local center_val = (FXManager.core.state.randomize_min + FXManager.core.state.randomize_max) / 2
-				local range_val = (FXManager.core.state.randomize_max - FXManager.core.state.randomize_min) / 2
-				local rand_offset = (math.random() * 2 - 1) * range_val * FXManager.core.state.randomize_intensity
-				local new_base = math.max(FXManager.core.state.randomize_min, math.min(FXManager.core.state.randomize_max, center_val + rand_offset))
-				param_data.base_value = new_base
-				local key = FXManager.core.getParamKey(fx_id, param_id)
-				if key then
-					FXManager.core.state.param_base_values[key] = new_base
+		if not fx_data.full_name:find("Sound Generator") then
+			for param_id, param_data in pairs(fx_data.params) do
+				if param_data.selected then
+					local center_val = (FXManager.core.state.randomize_min + FXManager.core.state.randomize_max) / 2
+					local range_val = (FXManager.core.state.randomize_max - FXManager.core.state.randomize_min) / 2
+					local rand_offset = (math.random() * 2 - 1) * range_val * FXManager.core.state.randomize_intensity
+					local new_base = math.max(FXManager.core.state.randomize_min, math.min(FXManager.core.state.randomize_max, center_val + rand_offset))
+					param_data.base_value = new_base
+					local key = FXManager.core.getParamKey(fx_id, param_id)
+					if key then
+						FXManager.core.state.param_base_values[key] = new_base
+					end
+					local actual_fx_id = fx_data.actual_fx_id or fx_id
+					local denormalized_value = FXManager.core.denormalizeParamValue(new_base, param_data.min_val, param_data.max_val)
+					FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
+					param_data.current_value = new_base
 				end
-				local actual_fx_id = fx_data.actual_fx_id or fx_id
-				local denormalized_value = FXManager.core.denormalizeParamValue(new_base, param_data.min_val, param_data.max_val)
-				FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
-				param_data.current_value = new_base
 			end
 		end
 	end
@@ -442,9 +454,11 @@ end
 
 function FXManager.globalRandomInvert()
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
-		for param_id, param_data in pairs(fx_data.params) do
-			if param_data.selected then
-				FXManager.setParamInvert(fx_id, param_id, math.random() < 0.5)
+		if not fx_data.full_name:find("Sound Generator") then
+			for param_id, param_data in pairs(fx_data.params) do
+				if param_data.selected then
+					FXManager.setParamInvert(fx_id, param_id, math.random() < 0.5)
+				end
 			end
 		end
 	end
@@ -452,7 +466,9 @@ end
 
 function FXManager.globalRandomXYAssign()
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
-		FXManager.randomizeXYAssign(fx_data.params, fx_id)
+		if not fx_data.full_name:find("Sound Generator") then
+			FXManager.randomizeXYAssign(fx_data.params, fx_id)
+		end
 	end
 end
 
@@ -467,7 +483,9 @@ end
 
 function FXManager.globalRandomRanges()
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
-		FXManager.randomizeRanges(fx_data.params, fx_id)
+		if not fx_data.full_name:find("Sound Generator") then
+			FXManager.randomizeRanges(fx_data.params, fx_id)
+		end
 	end
 end
 
@@ -477,8 +495,10 @@ function FXManager.globalRandomSelect()
 	end
 	local all_params = {}
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
-		for param_id, param_data in pairs(fx_data.params) do
-			table.insert(all_params, param_data)
+		if not fx_data.full_name:find("Sound Generator") then
+			for param_id, param_data in pairs(fx_data.params) do
+				table.insert(all_params, param_data)
+			end
 		end
 	end
 	if #all_params == 0 then return end
@@ -494,13 +514,43 @@ function FXManager.globalRandomSelect()
 end
 
 function FXManager.ultraRandom()
-	FXManager.core.state.gesture_x = math.random()
-	FXManager.core.state.gesture_y = math.random()
-	FXManager.core.state.gesture_base_x = FXManager.core.state.gesture_x
-	FXManager.core.state.gesture_base_y = FXManager.core.state.gesture_y
-	FXManager.globalRandomInvert()
-	FXManager.randomizeAllBases()
-	FXManager.globalRandomRanges()
+	local urs = FXManager.core.state.ultra_random_settings
+
+	if urs.xy_assignments then
+		FXManager.globalRandomXYAssign()
+	end
+
+	if urs.invert then
+		FXManager.globalRandomInvert()
+	end
+
+	if urs.bases then
+		FXManager.randomizeAllBases()
+	end
+
+	if urs.ranges then
+		FXManager.globalRandomRanges()
+	end
+
+	if urs.bypass then
+		FXManager.randomBypassFX()
+	end
+
+	if urs.fx_order then
+		FXManager.randomizeFXOrder()
+	end
+
+	if urs.sound_frequency and FXManager.core.state.sound_generator.enabled then
+		local sg = FXManager.core.state.sound_generator
+		local freq_min_log = math.log(20)
+		local freq_max_log = math.log(20000)
+		local random_freq_log = freq_min_log + math.random() * (freq_max_log - freq_min_log)
+		sg.frequency = math.exp(random_freq_log)
+		if FXManager.soundgen then
+			FXManager.soundgen.updateJSFXParams()
+		end
+	end
+
 	FXManager.captureBaseValues()
 end
 
@@ -511,12 +561,14 @@ function FXManager.randomizeFXOrder()
 	FXManager.saveTrackSelection()
 	FXManager.r.Undo_BeginBlock()
 
-	for i = fx_count - 1, 1, -1 do
+	local start_index = FXManager.core.state.sound_generator.enabled and 1 or 0
+
+	for i = fx_count - 1, start_index + 1, -1 do
 		local _, fx_name_i = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, i, "")
-		if not fx_name_i:find("FX Constellation Bridge") then
-			local j = math.random(0, i - 1)
+		if not fx_name_i:find("FX Constellation Bridge") and not fx_name_i:find("Sound Generator") then
+			local j = math.random(start_index, i - 1)
 			local _, fx_name_j = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, j, "")
-			if not fx_name_j:find("FX Constellation Bridge") and i ~= j then
+			if not fx_name_j:find("FX Constellation Bridge") and not fx_name_j:find("Sound Generator") and i ~= j then
 				local temp_pos = fx_count
 				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, i, FXManager.core.state.track, temp_pos, true)
 				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, j, FXManager.core.state.track, i, true)
@@ -535,7 +587,7 @@ function FXManager.randomBypassFX()
 	FXManager.r.Undo_BeginBlock()
 	for fx_id = 0, fx_count - 1 do
 		local _, fx_name = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, fx_id, "")
-		if not fx_name:find("FX Constellation Bridge") then
+		if not fx_name:find("FX Constellation Bridge") and not fx_name:find("Sound Generator") then
 			local should_bypass = math.random() < FXManager.core.state.random_bypass_percentage
 			FXManager.r.TrackFX_SetEnabled(FXManager.core.state.track, fx_id, not should_bypass)
 		end
