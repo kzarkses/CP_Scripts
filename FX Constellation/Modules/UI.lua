@@ -1491,6 +1491,13 @@ function UI.drawInterface()
 
 		UI.r.ImGui_SameLine(UI.ctx)
 		local close_button_size = UI.header_font_size + 6
+		local settings_x = UI.r.ImGui_GetWindowWidth(UI.ctx) - (close_button_size * 2) - UI.item_spacing_x - UI.window_padding_x
+		UI.r.ImGui_SetCursorPosX(UI.ctx, settings_x)
+		if UI.r.ImGui_Button(UI.ctx, "⚙", close_button_size, close_button_size) then
+			UI.core.state.show_settings_window = not UI.core.state.show_settings_window
+		end
+
+		UI.r.ImGui_SameLine(UI.ctx)
 		local close_x = UI.r.ImGui_GetWindowWidth(UI.ctx) - close_button_size - UI.window_padding_x
 		UI.r.ImGui_SetCursorPosX(UI.ctx, close_x)
 		if UI.r.ImGui_Button(UI.ctx, "X", close_button_size, close_button_size) then
