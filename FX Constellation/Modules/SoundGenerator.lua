@@ -25,15 +25,17 @@ slider6:noise_color=0.5<0,1,0.01>Noise Color
 slider7:rhythmic=0<0,1,1{Off,On}>Rhythmic
 slider8:tick_rate=4<0.1,20,0.1>Tick Rate (Hz)
 slider9:duty_cycle=0.5<0.01,0.99,0.01>Duty Cycle
-slider10:use_adsr=1<0,1,1{Off,On}>ADSR
-slider11:attack=0.01<0.001,2,0.001>Attack (s)
-slider12:decay=0.1<0.001,2,0.001>Decay (s)
-slider13:sustain=0.7<0,1,0.01>Sustain
-slider14:release=0.2<0.001,5,0.001>Release (s)
-slider15:midi_mode=0<0,1,1{Manual,MIDI}>Trigger Mode
-slider16:manual_trigger=0<0,1,1>Manual Trigger
+slider10:rhythmic_curve=0<0,1,0.01>Rhythmic Curve
+slider11:use_adsr=1<0,1,1{Off,On}>ADSR
+slider12:attack=0.01<0.001,2,0.001>Attack (s)
+slider13:decay=0.1<0.001,2,0.001>Decay (s)
+slider14:sustain=0.7<0,1,0.01>Sustain
+slider15:release=0.2<0.001,5,0.001>Release (s)
+slider16:midi_mode=0<0,1,1{Manual,MIDI}>Trigger Mode
+slider17:manual_trigger=0<0,1,1>Manual Trigger
 
 @init
+pos = 0;
 pos_l = 0;
 pos_r = 0;
 tick_phase = 0;
@@ -45,6 +47,7 @@ env_state = 0;
 note_on = 0;
 last_manual = 0;
 click_phase = 0;
+tick_env = 1;
 
 @slider
 amp = amplitude;
@@ -65,7 +68,9 @@ mode > 0.5 && midi_mode > 0.5 ? (
 		);
 		midisend(offset, msg1, msg2, msg3);
 	);
-) : mode > 0.5 ? (
+);
+
+mode > 0.5 ? (
 	manual_trigger > 0.5 && last_manual < 0.5 ? (
 		note_on = 1;
 		env_state = 1;
@@ -99,19 +104,68 @@ width <= 0.0 ? (
 );
 
 // Phase increment (REAPER style: 2*pi*freq/srate)
+adj = pi2 * base_freq / srate;
 adj_l = pi2 * freq_l / srate;
 adj_r = pi2 * freq_r / srate;
 
 // CONTINUOUS MODE
 mode < 0.5 ? (
-	tick_on = 1;
 	rhythmic > 0.5 ? (
 		tick_phase += tick_rate * dt;
 		tick_phase >= 1 ? tick_phase -= 1;
 		tick_on = tick_phase < duty_cycle;
+		target_env = tick_on ? 1 : 0;
+		rhythmic_curve > 0.001 ? (
+			tick_env += (target_env - tick_env) * min(1, dt / (rhythmic_curve * 0.1));
+		) : (
+			tick_env = target_env;
+		);
+	) : (
+		tick_env = 1;
 	);
 
-	tick_on ? (
+	width <= 0.0 ? (
+		waveform < 0.5 ? (
+			out_l = cos(pos);
+		) : waveform < 1.5 ? (
+			tone = 2.0 * pos / $pi - 1.0;
+			tone > 1.0 ? tone = 2.0 - tone;
+			out_l = tone;
+		) : waveform < 2.5 ? (
+			out_l = (pos % pi2) < $pi ? 1 : -1;
+		) : waveform < 3.5 ? (
+			out_l = 1.0 - pos / $pi;
+		) : waveform < 4.5 ? (
+			white = rand() * 2 - 1;
+			brown_l += (white - brown_l) * 0.1;
+			brown_l = max(-1, min(1, brown_l));
+			out_l = white * (1 - noise_color) + brown_l * noise_color;
+		) : (
+			click_phase < 0.005 ? (
+				click_env = 1 - (click_phase / 0.005);
+				click_env = click_env * click_env;
+				white = rand() * 2 - 1;
+				out_l = white * click_env;
+			) : (
+				out_l = 0;
+			);
+			click_phase += dt;
+			click_phase >= 0.005 ? click_phase = 0.005;
+		);
+		out_r = out_l;
+
+		waveform < 4 ? (
+			pos += adj;
+			pos >= pi2 ? pos -= pi2;
+		);
+
+		waveform > 4.5 && rhythmic > 0.5 ? (
+			tick_phase < (dt * tick_rate) ? click_phase = 0;
+		);
+
+		spl0 = out_l * amp * tick_env;
+		spl1 = out_r * amp * tick_env;
+	) : (
 		waveform < 0.5 ? (
 			out_l = cos(pos_l);
 			out_r = cos(pos_r);
@@ -164,11 +218,8 @@ mode < 0.5 ? (
 			tick_phase < (dt * tick_rate) ? click_phase = 0;
 		);
 
-		spl0 = out_l * amp;
-		spl1 = out_r * amp;
-	) : (
-		spl0 = 0;
-		spl1 = 0;
+		spl0 = out_l * amp * tick_env;
+		spl1 = out_r * amp * tick_env;
 	);
 ) : (
 	use_adsr > 0.5 ? (
@@ -194,55 +245,93 @@ mode < 0.5 ? (
 	);
 
 	env > 0 ? (
-		waveform < 0.5 ? (
-			out_l = cos(pos_l);
-			out_r = cos(pos_r);
-		) : waveform < 1.5 ? (
-			tone_l = 2.0 * pos_l / $pi - 1.0;
-			tone_l > 1.0 ? tone_l = 2.0 - tone_l;
-			tone_r = 2.0 * pos_r / $pi - 1.0;
-			tone_r > 1.0 ? tone_r = 2.0 - tone_r;
-			out_l = tone_l;
-			out_r = tone_r;
-		) : waveform < 2.5 ? (
-			out_l = (pos_l % pi2) < $pi ? 1 : -1;
-			out_r = (pos_r % pi2) < $pi ? 1 : -1;
-		) : waveform < 3.5 ? (
-			out_l = 1.0 - pos_l / $pi;
-			out_r = 1.0 - pos_r / $pi;
-		) : waveform < 4.5 ? (
-			white_l = rand() * 2 - 1;
-			white_r = rand() * 2 - 1;
-			brown_l += (white_l - brown_l) * 0.1;
-			brown_r += (white_r - brown_r) * 0.1;
-			brown_l = max(-1, min(1, brown_l));
-			brown_r = max(-1, min(1, brown_r));
-			out_l = white_l * (1 - noise_color) + brown_l * noise_color;
-			out_r = white_r * (1 - noise_color) + brown_r * noise_color;
+		width <= 0.0 ? (
+			waveform < 0.5 ? (
+				out_l = cos(pos);
+			) : waveform < 1.5 ? (
+				tone = 2.0 * pos / $pi - 1.0;
+				tone > 1.0 ? tone = 2.0 - tone;
+				out_l = tone;
+			) : waveform < 2.5 ? (
+				out_l = (pos % pi2) < $pi ? 1 : -1;
+			) : waveform < 3.5 ? (
+				out_l = 1.0 - pos / $pi;
+			) : waveform < 4.5 ? (
+				white = rand() * 2 - 1;
+				brown_l += (white - brown_l) * 0.1;
+				brown_l = max(-1, min(1, brown_l));
+				out_l = white * (1 - noise_color) + brown_l * noise_color;
+			) : (
+				click_phase < 0.005 ? (
+					click_env = 1 - (click_phase / 0.005);
+					click_env = click_env * click_env;
+					white = rand() * 2 - 1;
+					out_l = white * click_env;
+					click_phase += dt;
+				) : (
+					out_l = 0;
+				);
+			);
+			out_r = out_l;
+
+			waveform < 4 ? (
+				pos += adj;
+				pos >= pi2 ? pos -= pi2;
+			);
+
+			spl0 = out_l * env * amp;
+			spl1 = out_r * env * amp;
 		) : (
-			click_phase < 0.005 ? (
-				click_env = 1 - (click_phase / 0.005);
-				click_env = click_env * click_env;
+			waveform < 0.5 ? (
+				out_l = cos(pos_l);
+				out_r = cos(pos_r);
+			) : waveform < 1.5 ? (
+				tone_l = 2.0 * pos_l / $pi - 1.0;
+				tone_l > 1.0 ? tone_l = 2.0 - tone_l;
+				tone_r = 2.0 * pos_r / $pi - 1.0;
+				tone_r > 1.0 ? tone_r = 2.0 - tone_r;
+				out_l = tone_l;
+				out_r = tone_r;
+			) : waveform < 2.5 ? (
+				out_l = (pos_l % pi2) < $pi ? 1 : -1;
+				out_r = (pos_r % pi2) < $pi ? 1 : -1;
+			) : waveform < 3.5 ? (
+				out_l = 1.0 - pos_l / $pi;
+				out_r = 1.0 - pos_r / $pi;
+			) : waveform < 4.5 ? (
 				white_l = rand() * 2 - 1;
 				white_r = rand() * 2 - 1;
-				out_l = white_l * click_env;
-				out_r = white_r * click_env;
-				click_phase += dt;
+				brown_l += (white_l - brown_l) * 0.1;
+				brown_r += (white_r - brown_r) * 0.1;
+				brown_l = max(-1, min(1, brown_l));
+				brown_r = max(-1, min(1, brown_r));
+				out_l = white_l * (1 - noise_color) + brown_l * noise_color;
+				out_r = white_r * (1 - noise_color) + brown_r * noise_color;
 			) : (
-				out_l = 0;
-				out_r = 0;
+				click_phase < 0.005 ? (
+					click_env = 1 - (click_phase / 0.005);
+					click_env = click_env * click_env;
+					white_l = rand() * 2 - 1;
+					white_r = rand() * 2 - 1;
+					out_l = white_l * click_env;
+					out_r = white_r * click_env;
+					click_phase += dt;
+				) : (
+					out_l = 0;
+					out_r = 0;
+				);
 			);
-		);
 
-		waveform < 4 ? (
-			pos_l += adj_l;
-			pos_r += adj_r;
-			pos_l >= pi2 ? pos_l -= pi2;
-			pos_r >= pi2 ? pos_r -= pi2;
-		);
+			waveform < 4 ? (
+				pos_l += adj_l;
+				pos_r += adj_r;
+				pos_l >= pi2 ? pos_l -= pi2;
+				pos_r >= pi2 ? pos_r -= pi2;
+			);
 
-		spl0 = out_l * env * amp;
-		spl1 = out_r * env * amp;
+			spl0 = out_l * env * amp;
+			spl1 = out_r * env * amp;
+		);
 	) : (
 		spl0 = 0;
 		spl1 = 0;
@@ -267,6 +356,15 @@ function SoundGenerator.createGenerator()
 
 	if not SoundGenerator.createUnifiedJSFX() then return false end
 
+	local _, fx_name = SoundGenerator.r.TrackFX_GetFXName(SoundGenerator.core.state.track, 0, "")
+	if fx_name:find("Sound Generator") then
+		sg.enabled = true
+		sg.jsfx_index = 0
+		SoundGenerator.r.TrackFX_SetEnabled(SoundGenerator.core.state.track, 0, true)
+		SoundGenerator.updateJSFXParams()
+		return true
+	end
+
 	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, "FX Constellation - Sound Generator", false, -1000)
 	if fx_index >= 0 then
 		sg.enabled = true
@@ -282,9 +380,8 @@ function SoundGenerator.removeGenerator()
 	if not sg.enabled or sg.jsfx_index < 0 then return end
 	if not SoundGenerator.core.isTrackValid() then return end
 
-	SoundGenerator.r.TrackFX_Delete(SoundGenerator.core.state.track, sg.jsfx_index)
+	SoundGenerator.r.TrackFX_SetEnabled(SoundGenerator.core.state.track, sg.jsfx_index, false)
 	sg.enabled = false
-	sg.jsfx_index = -1
 end
 
 function SoundGenerator.updateJSFXParams()
@@ -301,12 +398,13 @@ function SoundGenerator.updateJSFXParams()
 	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 6, sg.rhythmic and 1 or 0)
 	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 7, SoundGenerator.normalize(sg.tick_rate, 0.1, 20))
 	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 8, SoundGenerator.normalize(sg.duty_cycle, 0.01, 0.99))
-	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 9, sg.use_adsr and 1 or 0)
-	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 10, SoundGenerator.normalize(sg.attack, 0.001, 2))
-	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 11, SoundGenerator.normalize(sg.decay, 0.001, 2))
-	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 12, SoundGenerator.normalize(sg.sustain, 0, 1))
-	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 13, SoundGenerator.normalize(sg.release, 0.001, 5))
-	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 14, sg.midi_mode and 1 or 0)
+	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 9, SoundGenerator.normalize(sg.rhythmic_curve, 0, 1))
+	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 10, sg.use_adsr and 1 or 0)
+	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 11, SoundGenerator.normalize(sg.attack, 0.001, 2))
+	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 12, SoundGenerator.normalize(sg.decay, 0.001, 2))
+	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 13, SoundGenerator.normalize(sg.sustain, 0, 1))
+	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 14, SoundGenerator.normalize(sg.release, 0.001, 5))
+	SoundGenerator.r.TrackFX_SetParamNormalized(SoundGenerator.core.state.track, sg.jsfx_index, 15, sg.midi_mode and 1 or 0)
 end
 
 function SoundGenerator.syncFromJSFX()
@@ -330,12 +428,13 @@ function SoundGenerator.syncFromJSFX()
 	sg.rhythmic = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 6) > 0.5
 	sg.tick_rate = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 7), 0.1, 20)
 	sg.duty_cycle = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 8), 0.01, 0.99)
-	sg.use_adsr = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 9) > 0.5
-	sg.attack = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 10), 0.001, 2)
-	sg.decay = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 11), 0.001, 2)
-	sg.sustain = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 12), 0, 1)
-	sg.release = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 13), 0.001, 5)
-	sg.midi_mode = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 14) > 0.5
+	sg.rhythmic_curve = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 9), 0, 1)
+	sg.use_adsr = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 10) > 0.5
+	sg.attack = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 11), 0.001, 2)
+	sg.decay = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 12), 0.001, 2)
+	sg.sustain = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 13), 0, 1)
+	sg.release = SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 14), 0.001, 5)
+	sg.midi_mode = SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 15) > 0.5
 end
 
 function SoundGenerator.setManualTrigger(value)

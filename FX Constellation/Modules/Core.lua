@@ -104,6 +104,7 @@ function Core.init(reaper_api)
 			rhythmic = false,
 			tick_rate = 4.0,
 			duty_cycle = 0.5,
+			rhythmic_curve = 0.0,
 			use_adsr = true,
 			attack = 0.01,
 			decay = 0.1,
