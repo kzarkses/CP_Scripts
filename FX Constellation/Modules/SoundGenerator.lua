@@ -369,6 +369,7 @@ function SoundGenerator.createGenerator()
 	if fx_index >= 0 then
 		sg.enabled = true
 		sg.jsfx_index = 0
+		SoundGenerator.r.TrackFX_SetEnabled(SoundGenerator.core.state.track, 0, true)
 		SoundGenerator.updateJSFXParams()
 		return true
 	end
@@ -411,7 +412,7 @@ function SoundGenerator.syncFromJSFX()
 	local sg = SoundGenerator.core.state.sound_generator
 	if not SoundGenerator.core.isTrackValid() then return end
 
-	-- Check if Sound Generator JSFX exists at index 0, even if currently disabled
+	-- Check if Sound Generator JSFX exists at index 0
 	local _, fx_name = SoundGenerator.r.TrackFX_GetFXName(SoundGenerator.core.state.track, 0, "")
 	if not fx_name:find("Sound Generator") then
 		-- JSFX doesn't exist, mark as disabled
@@ -420,11 +421,10 @@ function SoundGenerator.syncFromJSFX()
 		return
 	end
 
-	-- JSFX exists! Enable it and sync parameters
-	if not sg.enabled then
-		sg.enabled = true
-		sg.jsfx_index = 0
-	end
+	-- JSFX exists! Check if it's enabled (not bypassed)
+	local fx_enabled = SoundGenerator.r.TrackFX_GetEnabled(SoundGenerator.core.state.track, 0)
+	sg.enabled = fx_enabled
+	sg.jsfx_index = 0
 
 	sg.mode = math.floor(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 0) + 0.5)
 	sg.waveform = math.floor(SoundGenerator.denormalize(SoundGenerator.r.TrackFX_GetParamNormalized(SoundGenerator.core.state.track, 0, 1), 0, 5) + 0.5)

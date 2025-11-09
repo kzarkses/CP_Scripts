@@ -1349,8 +1349,7 @@ function UI.drawFiltersWindow()
 		if success then UI.filters_pushed_colors, UI.filters_pushed_vars = colors, vars end
 	end
 	UI.r.ImGui_SetNextWindowSize(UI.filters_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local window_flags = UI.r.ImGui_WindowFlags_NoNavInputs()
-	local visible, open = UI.r.ImGui_Begin(UI.filters_ctx, 'Filter Keywords', true, window_flags)
+	local visible, open = UI.r.ImGui_Begin(UI.filters_ctx, 'Filter Keywords', true)
 	if visible then
 		local main_font = UI.getStyleFont("main", UI.filters_ctx)
 		local header_font = UI.getStyleFont("header", UI.filters_ctx)
@@ -1420,7 +1419,7 @@ function UI.drawSettingsWindow()
 		if success then UI.settings_pushed_colors, UI.settings_pushed_vars = colors, vars end
 	end
 	UI.r.ImGui_SetNextWindowSize(UI.settings_ctx, 400, 350, UI.r.ImGui_Cond_FirstUseEver())
-	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse() | UI.r.ImGui_WindowFlags_NoNavInputs()
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
 	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'Settings', true, window_flags)
 	if visible then
 		local main_font = UI.getStyleFont("main", UI.settings_ctx)
@@ -1588,8 +1587,7 @@ function UI.drawInterface()
 	end
 
 	UI.r.ImGui_SetNextWindowSize(UI.ctx, 1400, 800, UI.r.ImGui_Cond_FirstUseEver())
-	-- Add NoNavInputs flag to allow REAPER's Virtual Keyboard to work while using the XY Pad
-	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse() | UI.r.ImGui_WindowFlags_NoNavInputs()
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
 	local visible, open = UI.r.ImGui_Begin(UI.ctx, 'FX Constellation', true, window_flags)
 	if visible then
 		if UI.style_loader and UI.style_loader.PushFont(UI.ctx, "header") then
@@ -1694,8 +1692,7 @@ function UI.drawLicenseWindow()
 	end
 
 	UI.r.ImGui_SetNextWindowSize(UI.license_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local window_flags = UI.r.ImGui_WindowFlags_NoNavInputs()
-	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation - License', true, window_flags)
+	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation - License', true)
 	if visible then
 		local status = UI.license.getStatus()
 
