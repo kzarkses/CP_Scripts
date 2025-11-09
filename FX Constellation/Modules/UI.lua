@@ -430,16 +430,23 @@ function UI.drawSoundGenerator()
 	UI.soundgen.syncFromJSFX()
 
 	local button_width = (content_width - UI.item_spacing_x) / 2
-	local toggle_label = sg.enabled and (sg.mode == 0 and "● Continuous" or "● Triggered") or "○ OFF"
-	if UI.r.ImGui_Button(UI.ctx, toggle_label, content_width) then
+	local toggle_label = sg.enabled and "● ON" or "○ OFF"
+	if UI.r.ImGui_Button(UI.ctx, toggle_label, button_width) then
 		if not sg.enabled then
 			UI.soundgen.createGenerator()
 			UI.fxmanager.scanTrackFX()
 		else
 			UI.soundgen.removeGenerator()
-			sg.mode = sg.mode == 0 and 1 or 0
-			UI.soundgen.createGenerator()
 			UI.fxmanager.scanTrackFX()
+		end
+	end
+
+	if sg.enabled then
+		UI.r.ImGui_SameLine(UI.ctx)
+		local mode_button_width = (content_width - UI.item_spacing_x) / 2
+		if UI.r.ImGui_Button(UI.ctx, sg.mode == 0 and "Continuous" or "Triggered", mode_button_width) then
+			sg.mode = sg.mode == 0 and 1 or 0
+			UI.soundgen.updateJSFXParams()
 		end
 	end
 
@@ -458,9 +465,12 @@ function UI.drawSoundGenerator()
 
 	if sg.waveform < 4 then
 		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_freq = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", sg.frequency, 20, 20000, "%.1f Hz")
+		local freq_min_log = math.log(20)
+		local freq_max_log = math.log(20000)
+		local freq_norm = (math.log(sg.frequency) - freq_min_log) / (freq_max_log - freq_min_log)
+		local changed, new_freq_norm = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", freq_norm, 0, 1, string.format("%.1f Hz", sg.frequency))
 		if changed then
-			sg.frequency = new_freq
+			sg.frequency = math.exp(freq_min_log + new_freq_norm * (freq_max_log - freq_min_log))
 			UI.soundgen.updateJSFXParams()
 		end
 
@@ -562,15 +572,13 @@ function UI.drawSoundGenerator()
 			UI.soundgen.updateJSFXParams()
 		end
 
-		if not sg.midi_mode then
-			UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-			UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width)
-			if UI.r.ImGui_IsItemActive(UI.ctx) then
-				UI.soundgen.setManualTrigger(true)
-			end
-			if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
-				UI.soundgen.setManualTrigger(false)
-			end
+		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+		UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width)
+		if UI.r.ImGui_IsItemActive(UI.ctx) then
+			UI.soundgen.setManualTrigger(true)
+		end
+		if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
+			UI.soundgen.setManualTrigger(false)
 		end
 	end
 end

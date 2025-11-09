@@ -38,7 +38,7 @@ function Core.init(reaper_api)
 		param_invert = {},
 		gesture_active = false,
 		gesture_range = 1.0,
-		exclusive_xy = false,
+		exclusive_xy = true,
 		last_random_seed = os.time(),
 		save_timer = 0,
 		last_update_time = 0,
@@ -110,7 +110,18 @@ function Core.init(reaper_api)
 			sustain = 0.7,
 			release = 0.2,
 			midi_mode = false
-		}
+		},
+		ultra_random_settings = {
+			xy_assignments = true,
+			ranges = true,
+			bases = true,
+			bypass = true,
+			fx_order = true,
+			invert = true,
+			sound_frequency = false
+		},
+		section_width_percent = 100,
+		show_settings_window = false
 	}
 
 	return Core.state
