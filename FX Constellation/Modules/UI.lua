@@ -1340,8 +1340,6 @@ function UI.drawFiltersWindow()
 	if not UI.core.state.show_filters_window then return end
 	if not UI.filters_ctx or not UI.r.ImGui_ValidatePtr(UI.filters_ctx, "ImGui_Context*") then
 		UI.filters_ctx = UI.r.ImGui_CreateContext('FX Constellation Filters')
-		local config_flags = UI.r.ImGui_ConfigFlags_NoKeyboard()
-		UI.r.ImGui_SetConfigFlags(UI.filters_ctx, config_flags)
 		if UI.style_loader then
 			UI.style_loader.ApplyFontsToContext(UI.filters_ctx)
 		end
@@ -1351,7 +1349,8 @@ function UI.drawFiltersWindow()
 		if success then UI.filters_pushed_colors, UI.filters_pushed_vars = colors, vars end
 	end
 	UI.r.ImGui_SetNextWindowSize(UI.filters_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.filters_ctx, 'Filter Keywords', true)
+	local window_flags = UI.r.ImGui_WindowFlags_NoNavInputs()
+	local visible, open = UI.r.ImGui_Begin(UI.filters_ctx, 'Filter Keywords', true, window_flags)
 	if visible then
 		local main_font = UI.getStyleFont("main", UI.filters_ctx)
 		local header_font = UI.getStyleFont("header", UI.filters_ctx)
@@ -1412,8 +1411,6 @@ function UI.drawSettingsWindow()
 	if not UI.core.state.show_settings_window then return end
 	if not UI.settings_ctx or not UI.r.ImGui_ValidatePtr(UI.settings_ctx, "ImGui_Context*") then
 		UI.settings_ctx = UI.r.ImGui_CreateContext('FX Constellation Settings')
-		local config_flags = UI.r.ImGui_ConfigFlags_NoKeyboard()
-		UI.r.ImGui_SetConfigFlags(UI.settings_ctx, config_flags)
 		if UI.style_loader then
 			UI.style_loader.ApplyFontsToContext(UI.settings_ctx)
 		end
@@ -1423,7 +1420,7 @@ function UI.drawSettingsWindow()
 		if success then UI.settings_pushed_colors, UI.settings_pushed_vars = colors, vars end
 	end
 	UI.r.ImGui_SetNextWindowSize(UI.settings_ctx, 400, 350, UI.r.ImGui_Cond_FirstUseEver())
-	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse() | UI.r.ImGui_WindowFlags_NoNavInputs()
 	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'Settings', true, window_flags)
 	if visible then
 		local main_font = UI.getStyleFont("main", UI.settings_ctx)
@@ -1591,7 +1588,8 @@ function UI.drawInterface()
 	end
 
 	UI.r.ImGui_SetNextWindowSize(UI.ctx, 1400, 800, UI.r.ImGui_Cond_FirstUseEver())
-	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
+	-- Add NoNavInputs flag to allow REAPER's Virtual Keyboard to work while using the XY Pad
+	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse() | UI.r.ImGui_WindowFlags_NoNavInputs()
 	local visible, open = UI.r.ImGui_Begin(UI.ctx, 'FX Constellation', true, window_flags)
 	if visible then
 		if UI.style_loader and UI.style_loader.PushFont(UI.ctx, "header") then
@@ -1688,8 +1686,6 @@ function UI.drawLicenseWindow()
 
 	if not UI.license_ctx then
 		UI.license_ctx = UI.r.ImGui_CreateContext('FX Constellation License')
-		local config_flags = UI.r.ImGui_ConfigFlags_NoKeyboard()
-		UI.r.ImGui_SetConfigFlags(UI.license_ctx, config_flags)
 	end
 
 	if UI.style_loader then
@@ -1698,7 +1694,8 @@ function UI.drawLicenseWindow()
 	end
 
 	UI.r.ImGui_SetNextWindowSize(UI.license_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation - License', true)
+	local window_flags = UI.r.ImGui_WindowFlags_NoNavInputs()
+	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation - License', true, window_flags)
 	if visible then
 		local status = UI.license.getStatus()
 

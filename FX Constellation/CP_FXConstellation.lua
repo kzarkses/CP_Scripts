@@ -18,12 +18,6 @@ if r.file_exists(style_loader_path) then
 end
 
 local ctx = r.ImGui_CreateContext('FX Constellation')
-
--- Configure ImGui to not capture keyboard events, allowing REAPER's Virtual Keyboard to work
--- This ensures MIDI input from computer keyboard continues to work while using the XY Pad
-local config_flags = r.ImGui_ConfigFlags_NoKeyboard()
-r.ImGui_SetConfigFlags(ctx, config_flags)
-
 if style_loader then
 	style_loader.ApplyFontsToContext(ctx)
 end
