@@ -12,35 +12,45 @@ function FXDatabase.init(reaper, core, persistence, data_path)
 end
 
 function FXDatabase.parsePluginsIni()
-	local plugins_ini = FXDatabase.r.GetResourcePath() .. "/reaper-plugins.ini"
-	local file = io.open(plugins_ini, "r")
-	if not file then
-		return {}
-	end
-
 	local plugins = {}
-	local current_type = ""
+	local resource_path = FXDatabase.r.GetResourcePath()
 
-	for line in file:lines() do
-		local section = line:match("%[(.+)%]")
-		if section then
-			current_type = section
-		else
-			local plugin_name = line:match("^([^=]+)=")
-			if plugin_name and plugin_name ~= "" and current_type ~= "" then
-				local clean_name = plugin_name:match("^%s*(.-)%s*$")
-				if clean_name and clean_name ~= "" then
-					table.insert(plugins, {
-						name = clean_name,
-						type = current_type,
-						favorite = false
-					})
+	local ini_files = {
+		resource_path .. "/reaper-vstplugins64.ini",
+		resource_path .. "/reaper-vstplugins.ini",
+		resource_path .. "/reaper-vst3plugins64.ini",
+		resource_path .. "/reaper-vst3plugins.ini",
+		resource_path .. "/reaper-jsfx.ini"
+	}
+
+	for _, ini_path in ipairs(ini_files) do
+		local file = io.open(ini_path, "r")
+		if file then
+			local current_type = ""
+
+			for line in file:lines() do
+				local section = line:match("%[(.+)%]")
+				if section then
+					current_type = section
+				else
+					local plugin_name = line:match("^([^=]+)=")
+					if plugin_name and plugin_name ~= "" and current_type ~= "" then
+						local clean_name = plugin_name:match("^%s*(.-)%s*$")
+						if clean_name and clean_name ~= "" then
+							table.insert(plugins, {
+								name = clean_name,
+								type = current_type,
+								favorite = false
+							})
+						end
+					end
 				end
 			end
+
+			file:close()
 		end
 	end
 
-	file:close()
 	return plugins
 end
 
