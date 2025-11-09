@@ -1069,18 +1069,16 @@ end
 
 function UI.drawFXSection()
 	local header_expanded = UI.drawCollapsibleHeader("fx_settings", "FX SETTINGS")
-	if header_expanded then
-		UI.r.ImGui_SameLine(UI.ctx)
-		local selection_text = "| Selected: " .. UI.core.state.selected_count
-		if UI.core.state.current_loaded_preset ~= "" then
-			selection_text = selection_text .. " | " .. UI.core.state.current_loaded_preset
-		end
-		UI.r.ImGui_Text(UI.ctx, selection_text)
+	UI.r.ImGui_SameLine(UI.ctx)
+	local selection_text = "| Selected: " .. UI.core.state.selected_count
+	if UI.core.state.current_loaded_preset ~= "" then
+		selection_text = selection_text .. " | " .. UI.core.state.current_loaded_preset
 	end
+	UI.r.ImGui_Text(UI.ctx, selection_text)
 	if not header_expanded then return end
 
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	local buttons_column_width = content_width * 0.25
+	local buttons_column_width = content_width * 0.15
 
 	if UI.r.ImGui_BeginChild(UI.ctx, "FXButtons", buttons_column_width, 0, 0) then
 		local button_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
@@ -1144,10 +1142,15 @@ function UI.drawFXSection()
 	end
 
 	UI.r.ImGui_SameLine(UI.ctx)
-	local fx_count = 0
-	for _ in pairs(UI.core.state.fx_data) do fx_count = fx_count + 1 end
-	if fx_count > 0 then
-		if UI.r.ImGui_BeginChild(UI.ctx, "FXHorizontal", 0, 0, 0, UI.r.ImGui_WindowFlags_HorizontalScrollbar()) then
+
+	if UI.r.ImGui_BeginChild(UI.ctx, "FXListColumn", 0, 0, 0) then
+		UI.r.ImGui_Separator(UI.ctx)
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		local fx_count = 0
+		for _ in pairs(UI.core.state.fx_data) do fx_count = fx_count + 1 end
+		if fx_count > 0 then
+			if UI.r.ImGui_BeginChild(UI.ctx, "FXHorizontal", 0, 0, 0, UI.r.ImGui_WindowFlags_HorizontalScrollbar()) then
 			local fx_width = 350
 			UI.r.ImGui_SetCursorPosX(UI.ctx, 0)
 			for fx_id = 0, fx_count - 1 do
@@ -1353,6 +1356,8 @@ function UI.drawFXSection()
 		end
 	else
 		UI.r.ImGui_Text(UI.ctx, "No FX found")
+	end
+	UI.r.ImGui_EndChild(UI.ctx)
 	end
 end
 

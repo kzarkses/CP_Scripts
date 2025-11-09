@@ -122,7 +122,7 @@ function FXManagerUI.drawWindow()
 		end
 
 		FXManagerUI.r.ImGui_SetNextItemWidth(FXManagerUI.ctx, content_width)
-		local changed, new_index = FXManagerUI.r.ImGui_Combo(FXManagerUI.ctx, "##typefilter", current_type_index, table.concat(plugin_types, "\31"))
+		local changed, new_index = FXManagerUI.r.ImGui_Combo(FXManagerUI.ctx, "##typefilter", current_type_index, table.concat(plugin_types, "\0") .. "\0")
 		if changed then
 			FXManagerUI.core.state.fxdb_type_filter = plugin_types[new_index + 1]
 		end
