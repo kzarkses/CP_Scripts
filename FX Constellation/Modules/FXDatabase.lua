@@ -77,9 +77,6 @@ function FXDatabase.parsePluginsIni()
 end
 
 function FXDatabase.parseFXFolders()
-	local resource_path = FXDatabase.r.GetResourcePath()
-	local fxfolders_file = resource_path .. "/reaper-fxfolders.ini"
-
 	local categories = {
 		{name = "All", type = "builtin", collapsed = false},
 		{name = "Favorites", type = "builtin", collapsed = false},
@@ -87,32 +84,6 @@ function FXDatabase.parseFXFolders()
 		{name = "VST3", type = "builtin", collapsed = false},
 		{name = "JS Effects", type = "builtin", collapsed = false}
 	}
-
-	local file = io.open(fxfolders_file, "r")
-	if not file then
-		return categories
-	end
-
-	local folders = {}
-	local current_section = ""
-
-	for line in file:lines() do
-		local section = line:match("%[(.+)%]")
-		if section then
-			current_section = section
-		elseif current_section == "Folders" then
-			local id, name = line:match("^Name(%d+)=(.+)$")
-			if id and name then
-				folders[id] = {name = name, type = "custom", collapsed = true}
-			end
-		end
-	end
-
-	file:close()
-
-	for _, folder in pairs(folders) do
-		table.insert(categories, folder)
-	end
 
 	return categories
 end

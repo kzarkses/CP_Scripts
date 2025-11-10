@@ -48,8 +48,8 @@ function FXManagerUI.drawWindow()
 	local visible, open = FXManagerUI.r.ImGui_Begin(FXManagerUI.ctx, 'FX Manager', true, window_flags)
 
 	if visible then
-		local main_font = FXManagerUI.getStyleFont("main", FXManagerUI.ctx)
-		local header_font = FXManagerUI.getStyleFont("header", FXManagerUI.ctx)
+		local main_font = FXManagerUI.getStyleFont("main")
+		local header_font = FXManagerUI.getStyleFont("header")
 
 		if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
 			FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
@@ -162,7 +162,7 @@ function FXManagerUI.drawPluginsList(header_font)
 	local search_query = FXManagerUI.core.state.fxdb_search_query
 	local plugins = FXManagerUI.fxdatabase.searchPlugins(search_query, selected_category)
 
-	for _, plugin in ipairs(plugins) do
+	for i, plugin in ipairs(plugins) do
 		local star_icon = plugin.favorite and "⭐" or "☆"
 
 		if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##fav_" .. plugin.name) then
@@ -171,41 +171,51 @@ function FXManagerUI.drawPluginsList(header_font)
 
 		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
 
-		local is_hovered = FXManagerUI.core.state.fxdb_hovered_plugin == plugin.name
+		local is_selected = FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] == true
+		local flags = FXManagerUI.r.ImGui_SelectableFlags_SpanAllColumns()
 
-		if is_hovered then
-			local draw_list = FXManagerUI.r.ImGui_GetWindowDrawList(FXManagerUI.ctx)
-			local cursor_x, cursor_y = FXManagerUI.r.ImGui_GetCursorScreenPos(FXManagerUI.ctx)
-			local text_width, text_height = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, plugin.name)
-			local highlight_color = FXManagerUI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
-			FXManagerUI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + text_width, cursor_y + text_height, highlight_color)
+		if FXManagerUI.r.ImGui_Selectable(FXManagerUI.ctx, plugin.name .. "##sel_" .. plugin.name, is_selected, flags) then
+			local ctrl_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Ctrl())
+			local shift_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Shift())
+
+			if shift_down and FXManagerUI.core.state.fxdb_last_clicked_plugin then
+				local start_idx = nil
+				local end_idx = nil
+
+				for idx, p in ipairs(plugins) do
+					if p.name == FXManagerUI.core.state.fxdb_last_clicked_plugin then
+						start_idx = idx
+					end
+					if p.name == plugin.name then
+						end_idx = idx
+					end
+				end
+
+				if start_idx and end_idx then
+					if start_idx > end_idx then
+						start_idx, end_idx = end_idx, start_idx
+					end
+
+					for idx = start_idx, end_idx do
+						FXManagerUI.core.state.fxdb_selected_plugins[plugins[idx].name] = true
+					end
+				end
+			elseif ctrl_down then
+				FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] = not is_selected
+			else
+				FXManagerUI.core.state.fxdb_selected_plugins = {}
+				FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] = true
+			end
+
+			FXManagerUI.core.state.fxdb_last_clicked_plugin = plugin.name
 		end
 
-		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, plugin.name)
-
 		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
-			FXManagerUI.core.state.fxdb_hovered_plugin = plugin.name
-
 			if FXManagerUI.r.ImGui_IsMouseDoubleClicked(FXManagerUI.ctx, 0) then
 				FXManagerUI.fxmanager.addFXByName(plugin.name)
 				if FXManagerUI.core.state.fxmanager_auto_close then
 					FXManagerUI.core.state.show_fxmanager_window = false
 				end
-			end
-		else
-			if FXManagerUI.core.state.fxdb_hovered_plugin == plugin.name then
-				FXManagerUI.core.state.fxdb_hovered_plugin = nil
-			end
-		end
-
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-		local button_width = 50
-		local cursor_x = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx) - button_width
-		FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, FXManagerUI.r.ImGui_GetCursorPosX(FXManagerUI.ctx) + cursor_x)
-		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Add##add_" .. plugin.name, button_width) then
-			FXManagerUI.fxmanager.addFXByName(plugin.name)
-			if FXManagerUI.core.state.fxmanager_auto_close then
-				FXManagerUI.core.state.show_fxmanager_window = false
 			end
 		end
 	end

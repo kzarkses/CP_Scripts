@@ -125,14 +125,14 @@ function Core.init(reaper_api)
 		show_settings_window = false,
 		show_fxmanager_window = false,
 		fxdb_search_query = "",
-		fxdb_selected_plugin = nil,
+		fxdb_selected_plugins = {},
+		fxdb_last_clicked_plugin = nil,
 		fxdb_selected_category = "All",
 		fxdb_random_favorites_only = true,
 		fxdb_random_count = 1,
 		fxdb_scan_message = "",
 		fxdb_scan_time = 0,
-		fxmanager_auto_close = false,
-		fxdb_hovered_plugin = nil
+		fxmanager_auto_close = false
 	}
 
 	return Core.state
