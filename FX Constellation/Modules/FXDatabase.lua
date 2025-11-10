@@ -58,8 +58,14 @@ function FXDatabase.parsePluginsIni()
 								clean_name = clean_name:gsub("!!!VSTi", "")
 							end
 
+							local display_name = clean_name:gsub("_", " ")
+							display_name = display_name:gsub("%.vst3$", "")
+							display_name = display_name:gsub("%.vst$", "")
+							display_name = display_name:gsub("%.dll$", "")
+
 							table.insert(plugins, {
 								name = clean_name,
+								display_name = display_name,
 								type = ini_info.type,
 								instrument = is_instrument,
 								favorite = false
@@ -196,7 +202,8 @@ function FXDatabase.searchPlugins(query, category_name)
 	local lower_query = query:lower()
 
 	for _, plugin in ipairs(base_plugins) do
-		if plugin.name:lower():find(lower_query, 1, true) then
+		local search_text = plugin.display_name or plugin.name
+		if search_text:lower():find(lower_query, 1, true) then
 			table.insert(results, plugin)
 		end
 	end

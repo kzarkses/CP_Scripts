@@ -162,10 +162,22 @@ function FXManagerUI.drawPluginsList(header_font)
 	local search_query = FXManagerUI.core.state.fxdb_search_query
 	local plugins = FXManagerUI.fxdatabase.searchPlugins(search_query, selected_category)
 
+	local slider_grab_color = FXManagerUI.getStyleValue("colors.slider_grab", 0x3F7FBFFF)
+	local r_val = ((slider_grab_color >> 24) & 0xFF)
+	local g_val = ((slider_grab_color >> 16) & 0xFF)
+	local b_val = ((slider_grab_color >> 8) & 0xFF)
+	local selection_color = (r_val << 24) | (g_val << 16) | (b_val << 8) | 0x99
+
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Header(), selection_color)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderHovered(), selection_color)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderActive(), selection_color)
+
 	for i, plugin in ipairs(plugins) do
+		FXManagerUI.r.ImGui_PushID(FXManagerUI.ctx, i)
+
 		local star_icon = plugin.favorite and "⭐" or "☆"
 
-		if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##fav_" .. plugin.name) then
+		if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##fav") then
 			FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
 		end
 
@@ -173,8 +185,9 @@ function FXManagerUI.drawPluginsList(header_font)
 
 		local is_selected = FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] == true
 		local flags = FXManagerUI.r.ImGui_SelectableFlags_SpanAllColumns()
+		local display_text = plugin.display_name or plugin.name
 
-		if FXManagerUI.r.ImGui_Selectable(FXManagerUI.ctx, plugin.name .. "##sel_" .. plugin.name, is_selected, flags) then
+		if FXManagerUI.r.ImGui_Selectable(FXManagerUI.ctx, display_text .. "##sel", is_selected, flags) then
 			local ctrl_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Ctrl())
 			local shift_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Shift())
 
@@ -218,7 +231,11 @@ function FXManagerUI.drawPluginsList(header_font)
 				end
 			end
 		end
+
+		FXManagerUI.r.ImGui_PopID(FXManagerUI.ctx)
 	end
+
+	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx, 3)
 end
 
 return FXManagerUI
