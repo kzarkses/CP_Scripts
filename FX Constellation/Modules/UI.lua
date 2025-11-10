@@ -1,6 +1,6 @@
 local UI = {}
 
-function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence, soundgen, license, style_loader, ctx, header_font_size, item_spacing_x, item_spacing_y, window_padding_x, window_padding_y)
+function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence, soundgen, license, fxmanagerui, style_loader, ctx, header_font_size, item_spacing_x, item_spacing_y, window_padding_x, window_padding_y)
 	UI.r = reaper_api
 	UI.core = core
 	UI.fxmanager = fxmanager
@@ -9,6 +9,7 @@ function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence
 	UI.persistence = persistence
 	UI.soundgen = soundgen
 	UI.license = license
+	UI.fxmanagerui = fxmanagerui
 	UI.style_loader = style_loader
 	UI.ctx = ctx
 	UI.filters_ctx = nil
@@ -1067,67 +1068,164 @@ function UI.drawPresets()
 end
 
 function UI.drawFXSection()
-	local header_expanded = UI.drawCollapsibleHeader("fx_settings", "FX SETTINGS")
-	if header_expanded then
-		UI.r.ImGui_SameLine(UI.ctx)
-		local selection_text = "| Selected: " .. UI.core.state.selected_count
-		if UI.core.state.current_loaded_preset ~= "" then
-			selection_text = selection_text .. " | " .. UI.core.state.current_loaded_preset
+	local is_collapsed = UI.core.state.section_collapsed.fx_settings
+	local collapse_icon = is_collapsed and "▶" or "▼"
+	local header_font = UI.getStyleFont("header")
+
+	if is_collapsed then
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
 		end
-		UI.r.ImGui_Text(UI.ctx, selection_text)
-	end
-	if not header_expanded then return end
-	if UI.r.ImGui_Button(UI.ctx, UI.core.state.show_filters_window and "Hide Filters" or "Show Filters") then
-		UI.core.state.show_filters_window = not UI.core.state.show_filters_window
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Show All FX") then
-		UI.presetsystem.showAllFloatingFX()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Close All FX") then
-		UI.presetsystem.closeAllFloatingFX()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Collapse All") then
-		UI.core.state.all_fx_collapsed = true
-		for fx_id, _ in pairs(UI.core.state.fx_data) do
-			UI.core.state.fx_collapsed[fx_id] = true
+		local char_height = 12
+		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
+		local display_text = "FX SETTINGS"
+		local button_height = #display_text * char_height + 30
+		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_fx_settings", 25, button_height)
+		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+
+		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+		if hovered then
+			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
+			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
 		end
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Expand All") then
-		UI.core.state.all_fx_collapsed = false
-		for fx_id, _ in pairs(UI.core.state.fx_data) do
-			UI.core.state.fx_collapsed[fx_id] = false
+
+		local icon_x = cursor_x + 5
+		local icon_y = cursor_y + 5
+		UI.r.ImGui_DrawList_AddText(draw_list, icon_x, icon_y, 0xFFFFFFFF, collapse_icon)
+
+		local text_x = cursor_x + 7
+		local text_y = cursor_y + 25
+		for i = 1, #display_text do
+			local char = display_text:sub(i, i)
+			UI.r.ImGui_DrawList_AddText(draw_list, text_x, text_y, 0xFFFFFFFF, char)
+			text_y = text_y + char_height
 		end
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "All") then
-		for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-			UI.fxmanager.selectAllParams(fx_data.params, true)
+
+		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+			UI.r.ImGui_PopFont(UI.ctx)
 		end
-		UI.fxmanager.saveTrackSelection()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "All Cont") then
-		for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-			UI.fxmanager.selectAllContinuousParams(fx_data.params, true)
+
+		if clicked then
+			UI.core.state.section_collapsed.fx_settings = false
+			UI.persistence.scheduleSave()
 		end
-		UI.fxmanager.saveTrackSelection()
+		return
 	end
+
+	local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
+	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
+	end
+	UI.r.ImGui_Text(UI.ctx, collapse_icon .. " FX SETTINGS")
+	local header_hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
+	local header_clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
+	if header_hovered then
+		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
+		local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
+		local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
+		local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
+		local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
+		UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x - 2, min_y - 2, max_x + 2, max_y + 2, highlight_color, rounding)
+		UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
+		UI.r.ImGui_SetCursorScreenPos(UI.ctx, cursor_x, cursor_y)
+		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " FX SETTINGS")
+	end
+	if header_clicked then
+		UI.core.state.section_collapsed.fx_settings = true
+		UI.persistence.scheduleSave()
+	end
+
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Clear") then
-		for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-			UI.fxmanager.selectAllParams(fx_data.params, false)
-		end
-		UI.fxmanager.saveTrackSelection()
+	local selection_text = "| Selected: " .. UI.core.state.selected_count
+	if UI.core.state.current_loaded_preset ~= "" then
+		selection_text = selection_text .. " | " .. UI.core.state.current_loaded_preset
 	end
+	UI.r.ImGui_Text(UI.ctx, selection_text)
+
+	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
+		UI.r.ImGui_PopFont(UI.ctx)
+	end
+
+	UI.r.ImGui_Separator(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	local fx_count = 0
-	for _ in pairs(UI.core.state.fx_data) do fx_count = fx_count + 1 end
-	if fx_count > 0 then
-		if UI.r.ImGui_BeginChild(UI.ctx, "FXHorizontal", 0, 0, 0, UI.r.ImGui_WindowFlags_HorizontalScrollbar()) then
+
+	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+	local buttons_column_width = content_width * 0.15
+
+	if UI.r.ImGui_BeginChild(UI.ctx, "FXButtons", buttons_column_width, 0) then
+		local button_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
+
+		if UI.r.ImGui_Button(UI.ctx, "Add FX...", button_width) then
+			UI.core.state.show_fxmanager_window = not UI.core.state.show_fxmanager_window
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, UI.core.state.show_filters_window and "Hide Filters" or "Show Filters", button_width) then
+			UI.core.state.show_filters_window = not UI.core.state.show_filters_window
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, "Show All FX", button_width) then
+			UI.presetsystem.showAllFloatingFX()
+		end
+		if UI.r.ImGui_Button(UI.ctx, "Close All FX", button_width) then
+			UI.presetsystem.closeAllFloatingFX()
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, "Collapse All", button_width) then
+			UI.core.state.all_fx_collapsed = true
+			for fx_id, _ in pairs(UI.core.state.fx_data) do
+				UI.core.state.fx_collapsed[fx_id] = true
+			end
+		end
+		if UI.r.ImGui_Button(UI.ctx, "Expand All", button_width) then
+			UI.core.state.all_fx_collapsed = false
+			for fx_id, _ in pairs(UI.core.state.fx_data) do
+				UI.core.state.fx_collapsed[fx_id] = false
+			end
+		end
+
+		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
+
+		if UI.r.ImGui_Button(UI.ctx, "All", button_width) then
+			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
+				UI.fxmanager.selectAllParams(fx_data.params, true)
+			end
+			UI.fxmanager.saveTrackSelection()
+		end
+		if UI.r.ImGui_Button(UI.ctx, "All Cont", button_width) then
+			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
+				UI.fxmanager.selectAllContinuousParams(fx_data.params, true)
+			end
+			UI.fxmanager.saveTrackSelection()
+		end
+		if UI.r.ImGui_Button(UI.ctx, "Clear", button_width) then
+			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
+				UI.fxmanager.selectAllParams(fx_data.params, false)
+			end
+			UI.fxmanager.saveTrackSelection()
+		end
+
+		UI.r.ImGui_EndChild(UI.ctx)
+	end
+
+	UI.r.ImGui_SameLine(UI.ctx)
+	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
+	UI.r.ImGui_SameLine(UI.ctx)
+
+	if UI.r.ImGui_BeginChild(UI.ctx, "FXListColumn", 0, 0) then
+
+		local fx_count = 0
+		for _ in pairs(UI.core.state.fx_data) do fx_count = fx_count + 1 end
+		if fx_count > 0 then
+			if UI.r.ImGui_BeginChild(UI.ctx, "FXHorizontal", 0, 0, 0, UI.r.ImGui_WindowFlags_HorizontalScrollbar()) then
 			local fx_width = 350
 			UI.r.ImGui_SetCursorPosX(UI.ctx, 0)
 			for fx_id = 0, fx_count - 1 do
@@ -1167,11 +1265,12 @@ function UI.drawFXSection()
 							local available_width_line1 = content_width - (num_spacings_line1 * UI.item_spacing_x)
 							local part_width_line1 = available_width_line1 / 15
 
-							if UI.r.ImGui_Button(UI.ctx, "-", part_width_line1) then
+							if UI.r.ImGui_Button(UI.ctx, "-##collapse" .. fx_id, part_width_line1) then
 								UI.core.state.fx_collapsed[fx_id] = true
 							end
 							UI.r.ImGui_SameLine(UI.ctx, 0, UI.item_spacing_x)
-							if UI.r.ImGui_Button(UI.ctx, fx_data.name, 13 * part_width_line1) then
+							local fx_button_label = (fx_data.name and fx_data.name ~= "") and fx_data.name or ("FX " .. fx_id)
+							if UI.r.ImGui_Button(UI.ctx, fx_button_label .. "##fxname" .. fx_id, 13 * part_width_line1) then
 								local actual_fx_id = fx_data.actual_fx_id or fx_id
 								local is_visible = UI.r.TrackFX_GetOpen(UI.core.state.track, actual_fx_id)
 								UI.r.TrackFX_Show(UI.core.state.track, actual_fx_id, is_visible and 2 or 3)
@@ -1333,6 +1432,8 @@ function UI.drawFXSection()
 		end
 	else
 		UI.r.ImGui_Text(UI.ctx, "No FX found")
+	end
+	UI.r.ImGui_EndChild(UI.ctx)
 	end
 end
 
@@ -1560,15 +1661,15 @@ function UI.drawHorizontalLayout()
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Randomizer", rand_width, 0) then
-		UI.drawRandomizer()
+	if UI.r.ImGui_BeginChild(UI.ctx, "Presets", preset_width, 0) then
+		UI.drawPresets()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Presets", preset_width, 0) then
-		UI.drawPresets()
+	if UI.r.ImGui_BeginChild(UI.ctx, "Randomizer", rand_width, 0) then
+		UI.drawRandomizer()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
@@ -1676,6 +1777,9 @@ function UI.drawInterface()
 	UI.drawFiltersWindow()
 	UI.drawSettingsWindow()
 	UI.drawLicenseWindow()
+	if UI.fxmanagerui then
+		UI.fxmanagerui.drawWindow()
+	end
 	return open
 end
 
