@@ -1265,11 +1265,12 @@ function UI.drawFXSection()
 							local available_width_line1 = content_width - (num_spacings_line1 * UI.item_spacing_x)
 							local part_width_line1 = available_width_line1 / 15
 
-							if UI.r.ImGui_Button(UI.ctx, "-", part_width_line1) then
+							if UI.r.ImGui_Button(UI.ctx, "-##collapse" .. fx_id, part_width_line1) then
 								UI.core.state.fx_collapsed[fx_id] = true
 							end
 							UI.r.ImGui_SameLine(UI.ctx, 0, UI.item_spacing_x)
-							if UI.r.ImGui_Button(UI.ctx, fx_data.name, 13 * part_width_line1) then
+							local fx_button_label = (fx_data.name and fx_data.name ~= "") and fx_data.name or ("FX " .. fx_id)
+							if UI.r.ImGui_Button(UI.ctx, fx_button_label .. "##fxname" .. fx_id, 13 * part_width_line1) then
 								local actual_fx_id = fx_data.actual_fx_id or fx_id
 								local is_visible = UI.r.TrackFX_GetOpen(UI.core.state.track, actual_fx_id)
 								UI.r.TrackFX_Show(UI.core.state.track, actual_fx_id, is_visible and 2 or 3)
