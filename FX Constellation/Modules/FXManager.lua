@@ -597,6 +597,32 @@ function FXManager.randomBypassFX()
 	FXManager.scanTrackFX()
 end
 
+function FXManager.buildFXName(plugin)
+	if not plugin then return "" end
+
+	local fx_name = plugin.name
+	local plugin_type = plugin.type
+	local is_instrument = plugin.instrument
+
+	if plugin_type == "VST3" then
+		if is_instrument then
+			fx_name = "VST3i: " .. fx_name
+		else
+			fx_name = "VST3: " .. fx_name
+		end
+	elseif plugin_type == "VST" then
+		if is_instrument then
+			fx_name = "VSTi: " .. fx_name
+		else
+			fx_name = "VST: " .. fx_name
+		end
+	elseif plugin_type == "JS" then
+		fx_name = "JS: " .. fx_name
+	end
+
+	return fx_name
+end
+
 function FXManager.addFXByName(fx_name)
 	if not FXManager.core.isTrackValid() then return false end
 	if not fx_name or fx_name == "" then return false end
@@ -627,7 +653,8 @@ function FXManager.addRandomFX(count, favorites_only)
 	local added_count = 0
 
 	for _, plugin in ipairs(plugins) do
-		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, plugin.name, false, -1)
+		local fx_name = FXManager.buildFXName(plugin)
+		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, false, -1)
 		if fx_id >= 0 then
 			added_count = added_count + 1
 		end

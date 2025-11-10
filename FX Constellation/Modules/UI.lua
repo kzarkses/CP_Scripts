@@ -1661,15 +1661,15 @@ function UI.drawHorizontalLayout()
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Randomizer", rand_width, 0) then
-		UI.drawRandomizer()
+	if UI.r.ImGui_BeginChild(UI.ctx, "Presets", preset_width, 0) then
+		UI.drawPresets()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Presets", preset_width, 0) then
-		UI.drawPresets()
+	if UI.r.ImGui_BeginChild(UI.ctx, "Randomizer", rand_width, 0) then
+		UI.drawRandomizer()
 		UI.r.ImGui_EndChild(UI.ctx)
 	end
 	UI.r.ImGui_SameLine(UI.ctx)

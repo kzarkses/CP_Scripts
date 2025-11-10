@@ -29,14 +29,15 @@ end
 
 function FXDatabase.parsePluginsIni()
 	local plugins = {}
+	local plugin_map = {}
 	local resource_path = FXDatabase.r.GetResourcePath()
 
 	local ini_files = {
-		{path = resource_path .. "/reaper-vstplugins64.ini", type = "VST"},
-		{path = resource_path .. "/reaper-vstplugins.ini", type = "VST"},
-		{path = resource_path .. "/reaper-vst3plugins64.ini", type = "VST3"},
-		{path = resource_path .. "/reaper-vst3plugins.ini", type = "VST3"},
-		{path = resource_path .. "/reaper-jsfx.ini", type = "JS"}
+		{path = resource_path .. "/reaper-vst3plugins64.ini", type = "VST3", priority = 1},
+		{path = resource_path .. "/reaper-vst3plugins.ini", type = "VST3", priority = 1},
+		{path = resource_path .. "/reaper-vstplugins64.ini", type = "VST", priority = 2},
+		{path = resource_path .. "/reaper-vstplugins.ini", type = "VST", priority = 2},
+		{path = resource_path .. "/reaper-jsfx.ini", type = "JS", priority = 3}
 	}
 
 	for _, ini_info in ipairs(ini_files) do
@@ -63,13 +64,18 @@ function FXDatabase.parsePluginsIni()
 							display_name = display_name:gsub("%.vst$", "")
 							display_name = display_name:gsub("%.dll$", "")
 
-							table.insert(plugins, {
-								name = clean_name,
-								display_name = display_name,
-								type = ini_info.type,
-								instrument = is_instrument,
-								favorite = false
-							})
+							local map_key = display_name:lower()
+							if not plugin_map[map_key] or plugin_map[map_key].priority > ini_info.priority then
+								local plugin_entry = {
+									name = clean_name,
+									display_name = display_name,
+									type = ini_info.type,
+									instrument = is_instrument,
+									favorite = false,
+									priority = ini_info.priority
+								}
+								plugin_map[map_key] = plugin_entry
+							end
 						end
 					end
 				end
@@ -77,6 +83,11 @@ function FXDatabase.parsePluginsIni()
 
 			file:close()
 		end
+	end
+
+	for _, plugin in pairs(plugin_map) do
+		plugin.priority = nil
+		table.insert(plugins, plugin)
 	end
 
 	return plugins

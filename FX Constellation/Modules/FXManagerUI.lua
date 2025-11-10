@@ -163,14 +163,21 @@ function FXManagerUI.drawPluginsList(header_font)
 	local plugins = FXManagerUI.fxdatabase.searchPlugins(search_query, selected_category)
 
 	local slider_grab_color = FXManagerUI.getStyleValue("colors.slider_grab", 0x3F7FBFFF)
+	local slider_grab_active_color = FXManagerUI.getStyleValue("colors.slider_grab_active", 0x5F9FDFFF)
+
 	local r_val = ((slider_grab_color >> 24) & 0xFF)
 	local g_val = ((slider_grab_color >> 16) & 0xFF)
 	local b_val = ((slider_grab_color >> 8) & 0xFF)
 	local selection_color = (r_val << 24) | (g_val << 16) | (b_val << 8) | 0x99
 
+	local r_hover = ((slider_grab_active_color >> 24) & 0xFF)
+	local g_hover = ((slider_grab_active_color >> 16) & 0xFF)
+	local b_hover = ((slider_grab_active_color >> 8) & 0xFF)
+	local hover_color = (r_hover << 24) | (g_hover << 16) | (b_hover << 8) | 0xCC
+
 	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Header(), selection_color)
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderHovered(), selection_color)
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderActive(), selection_color)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderHovered(), hover_color)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderActive(), hover_color)
 
 	for i, plugin in ipairs(plugins) do
 		FXManagerUI.r.ImGui_PushID(FXManagerUI.ctx, i)
@@ -225,7 +232,8 @@ function FXManagerUI.drawPluginsList(header_font)
 
 		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
 			if FXManagerUI.r.ImGui_IsMouseDoubleClicked(FXManagerUI.ctx, 0) then
-				FXManagerUI.fxmanager.addFXByName(plugin.name)
+				local fx_name = FXManagerUI.fxmanager.buildFXName(plugin)
+				FXManagerUI.fxmanager.addFXByName(fx_name)
 				if FXManagerUI.core.state.fxmanager_auto_close then
 					FXManagerUI.core.state.show_fxmanager_window = false
 				end
