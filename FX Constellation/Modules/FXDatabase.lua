@@ -50,31 +50,45 @@ function FXDatabase.parsePluginsIni()
 				if section then
 					current_section = section
 				else
-					local plugin_name = line:match("^([^=]+)=")
-					if plugin_name and plugin_name ~= "" and current_section ~= "" then
-						local clean_name = plugin_name:match("^%s*(.-)%s*$")
-						if clean_name and clean_name ~= "" and not FXDatabase.isBlacklisted(clean_name) then
-							local is_instrument = clean_name:find("!!!VSTi")
-							if is_instrument then
-								clean_name = clean_name:gsub("!!!VSTi", "")
-							end
+					local line_content = line:match("^([^=]+)=(.+)$")
+					if line_content then
+						local key_name, value_part = line:match("^([^=]+)=(.+)$")
+						if key_name and value_part and current_section ~= "" then
+							local clean_key = key_name:match("^%s*(.-)%s*$")
+							if clean_key and clean_key ~= "" and not FXDatabase.isBlacklisted(clean_key) then
+								local parts = {}
+								for part in value_part:gmatch("[^,]+") do
+									table.insert(parts, part)
+								end
+								
+								if #parts >= 3 then
+									local plugin_display_name = parts[3]:match("^%s*(.-)%s*$")
+									if plugin_display_name and plugin_display_name ~= "" then
+										local original_name = plugin_display_name
+										local is_instrument = original_name:find("!!!VSTi")
+										if is_instrument then
+											original_name = original_name:gsub("!!!VSTi", "")
+										end
 
-							local display_name = clean_name:gsub("_", " ")
-							display_name = display_name:gsub("%.vst3$", "")
-							display_name = display_name:gsub("%.vst$", "")
-							display_name = display_name:gsub("%.dll$", "")
+										local display_name = original_name
+										display_name = display_name:gsub("%.vst3%<%d+%>", "")
+										display_name = display_name:gsub("%x%x%x%x%x%x%x%x%x%x+", "")
+										display_name = display_name:gsub("%s+", " "):match("^%s*(.-)%s*$")
 
-							local map_key = display_name:lower()
-							if not plugin_map[map_key] or plugin_map[map_key].priority > ini_info.priority then
-								local plugin_entry = {
-									name = clean_name,
-									display_name = display_name,
-									type = ini_info.type,
-									instrument = is_instrument,
-									favorite = false,
-									priority = ini_info.priority
-								}
-								plugin_map[map_key] = plugin_entry
+										local map_key = display_name:lower()
+										if not plugin_map[map_key] or plugin_map[map_key].priority > ini_info.priority then
+											local plugin_entry = {
+												name = original_name,
+												display_name = display_name,
+												type = ini_info.type,
+												instrument = is_instrument,
+												favorite = false,
+												priority = ini_info.priority
+											}
+											plugin_map[map_key] = plugin_entry
+										end
+									end
+								end
 							end
 						end
 					end

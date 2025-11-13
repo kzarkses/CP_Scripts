@@ -19,13 +19,13 @@ function SoundGenerator.createUnifiedJSFX()
 slider1:mode=0<0,1,1{Continuous,Triggered}>Mode
 slider2:waveform=0<0,5,1{Sine,Triangle,Square,Saw,Noise,Click}>Type
 slider3:frequency=440<20,20000,1>Frequency (Hz)
-slider4:width=10<0,100,0.1>Width (cents)
+slider4:width=0.0<0,100,0.1>Width (cents)
 slider5:amplitude=0.5<0,1,0.01>Amplitude
 slider6:noise_color=0.5<0,1,0.01>Noise Color
 slider7:rhythmic=0<0,1,1{Off,On}>Rhythmic
 slider8:tick_rate=4<0.1,20,0.1>Tick Rate (Hz)
 slider9:duty_cycle=0.5<0.01,0.99,0.01>Duty Cycle
-slider10:rhythmic_curve=0<0,1,0.01>Rhythmic Curve
+slider10:rhythmic_curve=0.01<0,1,0.01>Rhythmic Curve
 slider11:use_adsr=1<0,1,1{Off,On}>ADSR
 slider12:attack=0.01<0.001,2,0.001>Attack (s)
 slider13:decay=0.1<0.001,2,0.001>Decay (s)
@@ -412,16 +412,13 @@ function SoundGenerator.syncFromJSFX()
 	local sg = SoundGenerator.core.state.sound_generator
 	if not SoundGenerator.core.isTrackValid() then return end
 
-	-- Check if Sound Generator JSFX exists at index 0
 	local _, fx_name = SoundGenerator.r.TrackFX_GetFXName(SoundGenerator.core.state.track, 0, "")
 	if not fx_name:find("Sound Generator") then
-		-- JSFX doesn't exist, mark as disabled
 		sg.enabled = false
 		sg.jsfx_index = -1
 		return
 	end
 
-	-- JSFX exists! Check if it's enabled (not bypassed)
 	local fx_enabled = SoundGenerator.r.TrackFX_GetEnabled(SoundGenerator.core.state.track, 0)
 	sg.enabled = fx_enabled
 	sg.jsfx_index = 0

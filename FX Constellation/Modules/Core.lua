@@ -132,7 +132,8 @@ function Core.init(reaper_api)
 		fxdb_random_count = 1,
 		fxdb_scan_message = "",
 		fxdb_scan_time = 0,
-		fxmanager_auto_close = false
+		fxmanager_auto_close = false,
+		fxmanager_auto_open = false
 	}
 
 	return Core.state
