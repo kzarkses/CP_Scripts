@@ -9,6 +9,8 @@ function FXDatabase.init(reaper, core, persistence, data_path)
 	FXDatabase.plugins = {}
 	FXDatabase.favorites = {}
 	FXDatabase.categories = {}
+	FXDatabase.custom_folders = {}
+	FXDatabase.folder_plugins = {}
 	FXDatabase.last_scan_time = 0
 	FXDatabase.blacklist = {
 		"waveshell",
@@ -135,6 +137,8 @@ function FXDatabase.saveDatabase()
 		plugins = FXDatabase.plugins,
 		favorites = FXDatabase.favorites,
 		categories = FXDatabase.categories,
+		custom_folders = FXDatabase.custom_folders,
+		folder_plugins = FXDatabase.folder_plugins,
 		last_scan_time = FXDatabase.last_scan_time
 	}
 
@@ -160,6 +164,8 @@ function FXDatabase.loadDatabase()
 			FXDatabase.plugins = data.plugins or {}
 			FXDatabase.favorites = data.favorites or {}
 			FXDatabase.categories = data.categories or FXDatabase.parseFXFolders()
+			FXDatabase.custom_folders = data.custom_folders or {}
+			FXDatabase.folder_plugins = data.folder_plugins or {}
 			FXDatabase.last_scan_time = data.last_scan_time or 0
 
 			for _, plugin in ipairs(FXDatabase.plugins) do
@@ -217,6 +223,12 @@ function FXDatabase.getPluginsByCategory(category_name)
 	elseif category_name == "JS Effects" then
 		return FXDatabase.filterByType("JS")
 	else
+		-- Check if it's a custom folder
+		for _, folder in ipairs(FXDatabase.custom_folders) do
+			if folder.name == category_name then
+				return FXDatabase.getPluginsByFolder(category_name)
+			end
+		end
 		return FXDatabase.plugins
 	end
 end
@@ -322,6 +334,82 @@ function FXDatabase.serializeTable(tbl, indent)
 
 	result = result .. spacing .. "}"
 	return result
+end
+
+function FXDatabase.createFolder(folder_name)
+	table.insert(FXDatabase.custom_folders, {
+		name = folder_name,
+		collapsed = false
+	})
+	FXDatabase.saveDatabase()
+end
+
+function FXDatabase.deleteFolder(folder_name)
+	for i, folder in ipairs(FXDatabase.custom_folders) do
+		if folder.name == folder_name then
+			table.remove(FXDatabase.custom_folders, i)
+			FXDatabase.folder_plugins[folder_name] = nil
+			FXDatabase.saveDatabase()
+			return true
+		end
+	end
+	return false
+end
+
+function FXDatabase.renameFolder(old_name, new_name)
+	for i, folder in ipairs(FXDatabase.custom_folders) do
+		if folder.name == old_name then
+			folder.name = new_name
+			if FXDatabase.folder_plugins[old_name] then
+				FXDatabase.folder_plugins[new_name] = FXDatabase.folder_plugins[old_name]
+				FXDatabase.folder_plugins[old_name] = nil
+			end
+			FXDatabase.saveDatabase()
+			return true
+		end
+	end
+	return false
+end
+
+function FXDatabase.addPluginToFolder(folder_name, plugin_name)
+	if not FXDatabase.folder_plugins[folder_name] then
+		FXDatabase.folder_plugins[folder_name] = {}
+	end
+	FXDatabase.folder_plugins[folder_name][plugin_name] = true
+	FXDatabase.saveDatabase()
+end
+
+function FXDatabase.removePluginFromFolder(folder_name, plugin_name)
+	if FXDatabase.folder_plugins[folder_name] then
+		FXDatabase.folder_plugins[folder_name][plugin_name] = nil
+		FXDatabase.saveDatabase()
+	end
+end
+
+function FXDatabase.getPluginsByFolder(folder_name)
+	local folder_plugin_names = FXDatabase.folder_plugins[folder_name] or {}
+	local result = {}
+	for _, plugin in ipairs(FXDatabase.plugins) do
+		if folder_plugin_names[plugin.name] then
+			table.insert(result, plugin)
+		end
+	end
+	return result
+end
+
+function FXDatabase.getAllCategories()
+	local all_categories = {}
+	for _, cat in ipairs(FXDatabase.categories) do
+		table.insert(all_categories, cat)
+	end
+	for _, folder in ipairs(FXDatabase.custom_folders) do
+		table.insert(all_categories, {
+			name = folder.name,
+			type = "custom",
+			collapsed = folder.collapsed or false
+		})
+	end
+	return all_categories
 end
 
 return FXDatabase

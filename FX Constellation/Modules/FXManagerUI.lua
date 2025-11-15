@@ -180,9 +180,13 @@ function FXManagerUI.drawWindow()
 end
 
 function FXManagerUI.drawCategories(header_font)
-	local categories = FXManagerUI.fxdatabase.getCategories()
+	local all_categories = FXManagerUI.fxdatabase.getAllCategories()
 
-	for _, category in ipairs(categories) do
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Header(), 0x40404080)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderHovered(), 0x606060AA)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderActive(), 0x808080CC)
+
+	for _, category in ipairs(all_categories) do
 		local is_selected = FXManagerUI.core.state.fxdb_selected_category == category.name
 		local flags = is_selected and FXManagerUI.r.ImGui_TreeNodeFlags_Selected() or 0
 		flags = flags | FXManagerUI.r.ImGui_TreeNodeFlags_Leaf() | FXManagerUI.r.ImGui_TreeNodeFlags_NoTreePushOnOpen()
@@ -192,7 +196,106 @@ function FXManagerUI.drawCategories(header_font)
 		if FXManagerUI.r.ImGui_IsItemClicked(FXManagerUI.ctx) then
 			FXManagerUI.core.state.fxdb_selected_category = category.name
 		end
+
+		if category.type == "custom" then
+			if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) and FXManagerUI.r.ImGui_IsMouseReleased(FXManagerUI.ctx, 1) then
+				FXManagerUI.r.ImGui_OpenPopup(FXManagerUI.ctx, "CategoryContextMenu##" .. category.name)
+			end
+
+			if FXManagerUI.r.ImGui_BeginPopup(FXManagerUI.ctx, "CategoryContextMenu##" .. category.name) then
+				if FXManagerUI.r.ImGui_MenuItem(FXManagerUI.ctx, "Rename") then
+					FXManagerUI.core.state.renaming_folder = category.name
+					FXManagerUI.core.state.rename_folder_text = category.name
+				end
+				if FXManagerUI.r.ImGui_MenuItem(FXManagerUI.ctx, "Delete") then
+					FXManagerUI.fxdatabase.deleteFolder(category.name)
+					if FXManagerUI.core.state.fxdb_selected_category == category.name then
+						FXManagerUI.core.state.fxdb_selected_category = "All"
+					end
+				end
+				FXManagerUI.r.ImGui_EndPopup(FXManagerUI.ctx)
+			end
+
+			if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
+				local ret, payload = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
+				if ret then
+					local plugins_data = {}
+					for plugin_str in payload:gmatch("[^|]+") do
+						local name, ptype, is_inst = plugin_str:match("^(.-)::(.-)::(.-)$")
+						if name and ptype then
+							FXManagerUI.fxdatabase.addPluginToFolder(category.name, name)
+						end
+					end
+				end
+				FXManagerUI.r.ImGui_EndDragDropTarget(FXManagerUI.ctx)
+			end
+		end
 	end
+
+	FXManagerUI.r.ImGui_Dummy(FXManagerUI.ctx, 0, 10)
+
+	if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "+", 0) then
+		FXManagerUI.core.state.creating_folder = true
+		FXManagerUI.core.state.new_folder_name = "New Folder"
+	end
+	if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+		FXManagerUI.r.ImGui_SetTooltip(FXManagerUI.ctx, "Create New Folder")
+	end
+
+	if FXManagerUI.core.state.creating_folder then
+		FXManagerUI.r.ImGui_OpenPopup(FXManagerUI.ctx, "CreateFolderPopup")
+		FXManagerUI.core.state.creating_folder = false
+	end
+
+	if FXManagerUI.core.state.renaming_folder then
+		FXManagerUI.r.ImGui_OpenPopup(FXManagerUI.ctx, "RenameFolderPopup")
+		local old_name = FXManagerUI.core.state.renaming_folder
+		FXManagerUI.core.state.renaming_folder = nil
+		FXManagerUI.core.state.renaming_folder_old_name = old_name
+	end
+
+	if FXManagerUI.r.ImGui_BeginPopup(FXManagerUI.ctx, "CreateFolderPopup") then
+		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "New Folder Name:")
+		local changed, new_text = FXManagerUI.r.ImGui_InputText(FXManagerUI.ctx, "##newfoldername", FXManagerUI.core.state.new_folder_name or "")
+		if changed then
+			FXManagerUI.core.state.new_folder_name = new_text
+		end
+		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Create") then
+			if FXManagerUI.core.state.new_folder_name and FXManagerUI.core.state.new_folder_name ~= "" then
+				FXManagerUI.fxdatabase.createFolder(FXManagerUI.core.state.new_folder_name)
+			end
+			FXManagerUI.r.ImGui_CloseCurrentPopup(FXManagerUI.ctx)
+		end
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Cancel") then
+			FXManagerUI.r.ImGui_CloseCurrentPopup(FXManagerUI.ctx)
+		end
+		FXManagerUI.r.ImGui_EndPopup(FXManagerUI.ctx)
+	end
+
+	if FXManagerUI.r.ImGui_BeginPopup(FXManagerUI.ctx, "RenameFolderPopup") then
+		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Rename Folder:")
+		local changed, new_text = FXManagerUI.r.ImGui_InputText(FXManagerUI.ctx, "##renamefoldername", FXManagerUI.core.state.rename_folder_text or "")
+		if changed then
+			FXManagerUI.core.state.rename_folder_text = new_text
+		end
+		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Rename") then
+			if FXManagerUI.core.state.rename_folder_text and FXManagerUI.core.state.rename_folder_text ~= "" and FXManagerUI.core.state.renaming_folder_old_name then
+				FXManagerUI.fxdatabase.renameFolder(FXManagerUI.core.state.renaming_folder_old_name, FXManagerUI.core.state.rename_folder_text)
+				if FXManagerUI.core.state.fxdb_selected_category == FXManagerUI.core.state.renaming_folder_old_name then
+					FXManagerUI.core.state.fxdb_selected_category = FXManagerUI.core.state.rename_folder_text
+				end
+			end
+			FXManagerUI.r.ImGui_CloseCurrentPopup(FXManagerUI.ctx)
+		end
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Cancel") then
+			FXManagerUI.r.ImGui_CloseCurrentPopup(FXManagerUI.ctx)
+		end
+		FXManagerUI.r.ImGui_EndPopup(FXManagerUI.ctx)
+	end
+
+	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx, 3)
 end
 
 function FXManagerUI.drawPluginsList(header_font)
@@ -366,6 +469,33 @@ function FXManagerUI.drawPluginsList(header_font)
 				for _, p in ipairs(selected_plugins) do
 					if FXManagerUI.fxdatabase.isFavorite(p.name) then
 						FXManagerUI.fxdatabase.toggleFavorite(p.name)
+					end
+				end
+			end
+
+			-- Check if current category is a custom folder
+			local is_custom_folder = false
+			local all_categories = FXManagerUI.fxdatabase.getAllCategories()
+			for _, cat in ipairs(all_categories) do
+				if cat.type == "custom" and cat.name == selected_category then
+					is_custom_folder = true
+					break
+				end
+			end
+
+			if is_custom_folder then
+				if FXManagerUI.r.ImGui_MenuItem(FXManagerUI.ctx, "Remove from Folder") then
+					local selected_plugins = {}
+					for _, p in ipairs(plugins) do
+						if FXManagerUI.core.state.fxdb_selected_plugins[p.name] then
+							table.insert(selected_plugins, p)
+						end
+					end
+					if #selected_plugins == 0 then
+						table.insert(selected_plugins, plugin)
+					end
+					for _, p in ipairs(selected_plugins) do
+						FXManagerUI.fxdatabase.removePluginFromFolder(selected_category, p.name)
 					end
 				end
 			end
