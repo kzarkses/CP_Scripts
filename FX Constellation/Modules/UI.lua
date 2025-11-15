@@ -1153,7 +1153,7 @@ function UI.drawFXSection()
 	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
 
 	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	local buttons_column_width = content_width * 0.15
+	local buttons_column_width = 120
 
 	if UI.r.ImGui_BeginChild(UI.ctx, "FXButtons", buttons_column_width, 0) then
 		local button_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)

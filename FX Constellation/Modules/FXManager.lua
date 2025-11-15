@@ -690,4 +690,36 @@ function FXManager.addRandomFX(count, favorites_only)
 	return added_count > 0
 end
 
+function FXManager.addRandomFXFromList(count, plugin_list)
+	if not FXManager.core.isTrackValid() then return false end
+	if not count or count <= 0 then return false end
+	if not plugin_list or #plugin_list == 0 then return false end
+
+	local selected_plugins = {}
+	for i = 1, math.min(count, #plugin_list) do
+		local random_index = math.random(1, #plugin_list)
+		table.insert(selected_plugins, plugin_list[random_index])
+	end
+
+	FXManager.r.Undo_BeginBlock()
+	local added_count = 0
+
+	for _, plugin in ipairs(selected_plugins) do
+		local fx_name = FXManager.buildFXName(plugin)
+		local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
+		local recFX = false
+		local insert_pos = -1000 - fx_count
+		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, insert_pos)
+		if fx_id >= 0 then
+			FXManager.r.TrackFX_Show(FXManager.core.state.track, fx_id, 2)
+			added_count = added_count + 1
+		end
+	end
+
+	FXManager.r.Undo_EndBlock("Add " .. added_count .. " random FX from displayed", -1)
+	FXManager.scanTrackFX()
+
+	return added_count > 0
+end
+
 return FXManager

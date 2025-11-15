@@ -236,10 +236,29 @@ function FXManagerUI.drawPluginsList(header_font)
 	for i, plugin in ipairs(plugins) do
 		FXManagerUI.r.ImGui_PushID(FXManagerUI.ctx, i)
 
-		local star_icon = plugin.favorite and "⭐" or "☆"
+		local star_icon = "★"
+		local star_color
+		if plugin.favorite then
+			star_color = 0xFFCC00FF
+		else
+			star_color = 0x888888FF
+		end
 
-		if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##fav") then
-			FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
+		FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), star_color)
+		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, star_icon)
+		FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)
+
+		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+			local hover_color = plugin.favorite and 0xFFDD44FF or 0xAAAA00FF
+			local cursor_x, cursor_y = FXManagerUI.r.ImGui_GetCursorScreenPos(FXManagerUI.ctx)
+			local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
+			local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
+			local draw_list = FXManagerUI.r.ImGui_GetWindowDrawList(FXManagerUI.ctx)
+			FXManagerUI.r.ImGui_DrawList_AddRectFilled(draw_list, item_x_min, item_y_min, item_x_max, item_y_max, hover_color & 0xFFFFFF44)
+
+			if FXManagerUI.r.ImGui_IsMouseClicked(FXManagerUI.ctx, 0) then
+				FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
+			end
 		end
 
 		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
@@ -405,6 +424,9 @@ function FXManagerUI.drawRandomFXInsertion(header_font)
 	if FXManagerUI.core.state.random_fx_favorites_only == nil then
 		FXManagerUI.core.state.random_fx_favorites_only = false
 	end
+	if FXManagerUI.core.state.random_fx_from_displayed == nil then
+		FXManagerUI.core.state.random_fx_from_displayed = false
+	end
 
 	if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
 		FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
@@ -416,7 +438,7 @@ function FXManagerUI.drawRandomFXInsertion(header_font)
 
 	local content_width = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx)
 	local item_spacing_x = FXManagerUI.getStyleValue("spacing.item_spacing_x", 6)
-	local slider_width = content_width * 0.4
+	local slider_width = content_width * 0.3
 	local button_width = 120
 
 	FXManagerUI.r.ImGui_SetNextItemWidth(FXManagerUI.ctx, slider_width)
@@ -429,7 +451,7 @@ function FXManagerUI.drawRandomFXInsertion(header_font)
 	end
 
 	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, item_spacing_x)
-	local checkbox_changed, checkbox_value = FXManagerUI.r.ImGui_Checkbox(FXManagerUI.ctx, "Favorites Only", FXManagerUI.core.state.random_fx_favorites_only)
+	local checkbox_changed, checkbox_value = FXManagerUI.r.ImGui_Checkbox(FXManagerUI.ctx, "Favorites", FXManagerUI.core.state.random_fx_favorites_only)
 	if checkbox_changed then
 		FXManagerUI.core.state.random_fx_favorites_only = checkbox_value
 		if FXManagerUI.fxmanager.persistence then
@@ -438,8 +460,40 @@ function FXManagerUI.drawRandomFXInsertion(header_font)
 	end
 
 	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, item_spacing_x)
+	local checkbox_changed2, checkbox_value2 = FXManagerUI.r.ImGui_Checkbox(FXManagerUI.ctx, "From Displayed", FXManagerUI.core.state.random_fx_from_displayed)
+	if checkbox_changed2 then
+		FXManagerUI.core.state.random_fx_from_displayed = checkbox_value2
+		if FXManagerUI.fxmanager.persistence then
+			FXManagerUI.fxmanager.persistence.scheduleSave()
+		end
+	end
+
+	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, item_spacing_x)
 	if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Add Random FX", button_width) then
-		local success = FXManagerUI.fxmanager.addRandomFX(FXManagerUI.core.state.random_fx_count, FXManagerUI.core.state.random_fx_favorites_only)
+		local success
+		if FXManagerUI.core.state.random_fx_from_displayed then
+			local selected_category = FXManagerUI.core.state.fxdb_selected_category
+			local search_query = FXManagerUI.core.state.fxdb_search_query
+			local displayed_plugins = FXManagerUI.fxdatabase.searchPlugins(search_query, selected_category)
+
+			if FXManagerUI.core.state.fxdb_sort_mode == "az" then
+				table.sort(displayed_plugins, function(a, b)
+					local name_a = (a.display_name or a.name):lower()
+					local name_b = (b.display_name or b.name):lower()
+					return name_a < name_b
+				end)
+			elseif FXManagerUI.core.state.fxdb_sort_mode == "za" then
+				table.sort(displayed_plugins, function(a, b)
+					local name_a = (a.display_name or a.name):lower()
+					local name_b = (b.display_name or b.name):lower()
+					return name_a > name_b
+				end)
+			end
+
+			success = FXManagerUI.fxmanager.addRandomFXFromList(FXManagerUI.core.state.random_fx_count, displayed_plugins)
+		else
+			success = FXManagerUI.fxmanager.addRandomFX(FXManagerUI.core.state.random_fx_count, FXManagerUI.core.state.random_fx_favorites_only)
+		end
 		if success and FXManagerUI.core.state.fxmanager_auto_close then
 			FXManagerUI.core.state.show_fxmanager_window = false
 		end
@@ -453,6 +507,32 @@ function FXManagerUI.drawFXChain(header_font)
 		FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
 	else
 		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Track FX Chain")
+	end
+
+	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+	local header_font_size = FXManagerUI.getStyleValue("fonts.header.size", 16)
+	local clear_button_size = header_font_size + 6
+	local window_width = FXManagerUI.r.ImGui_GetWindowWidth(FXManagerUI.ctx)
+	local cursor_x = window_width - clear_button_size - 10
+	FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, cursor_x)
+	if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "C", clear_button_size, clear_button_size) then
+		if FXManagerUI.core.isTrackValid() then
+			local track = FXManagerUI.core.state.track
+			local fx_count = FXManagerUI.r.TrackFX_GetCount(track)
+			FXManagerUI.r.Undo_BeginBlock()
+			for fx_idx = fx_count - 1, 0, -1 do
+				local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
+				local display_name = FXManagerUI.core.extractFXName(fx_name)
+				if not (display_name:find("JSFX Sound") or display_name:find("FX Constellation Sound Generator") or display_name:find("FX Constellation Bridge")) then
+					FXManagerUI.r.TrackFX_Delete(track, fx_idx)
+				end
+			end
+			FXManagerUI.r.Undo_EndBlock("Clear FX Chain", -1)
+			FXManagerUI.core.state.fxchain_selected_fx = {}
+		end
+	end
+	if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+		FXManagerUI.r.ImGui_SetTooltip(FXManagerUI.ctx, "Clear FX Chain")
 	end
 
 	FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
@@ -556,13 +636,21 @@ function FXManagerUI.drawFXChain(header_font)
 
 		FXManagerUI.r.ImGui_PushID(FXManagerUI.ctx, fx_idx)
 
-		local item_text = (fx_idx + 1) .. ". " .. display_name
-		if not is_enabled then
-			item_text = item_text .. " (bypassed)"
+		local checkbox_changed, checkbox_value = FXManagerUI.r.ImGui_Checkbox(FXManagerUI.ctx, "##bypass", is_enabled)
+		if checkbox_changed then
+			FXManagerUI.r.TrackFX_SetEnabled(track, fx_idx, checkbox_value)
 		end
+
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+
+		local item_text = (fx_idx + 1) .. ". " .. display_name
 
 		if not FXManagerUI.core.state.fxchain_selected_fx then
 			FXManagerUI.core.state.fxchain_selected_fx = {}
+		end
+
+		if not is_enabled then
+			FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), 0xFF8855FF)
 		end
 
 		local is_selected = FXManagerUI.core.state.fxchain_selected_fx[fx_idx] == true
@@ -573,15 +661,8 @@ function FXManagerUI.drawFXChain(header_font)
 
 			if FXManagerUI.r.ImGui_IsMouseDoubleClicked(FXManagerUI.ctx, 0) then
 				FXManagerUI.r.TrackFX_Show(track, fx_idx, 3)
-			elseif shift_down and FXManagerUI.core.state.fxchain_last_clicked_fx then
-				local start_idx = FXManagerUI.core.state.fxchain_last_clicked_fx
-				local end_idx = fx_idx
-				if start_idx > end_idx then
-					start_idx, end_idx = end_idx, start_idx
-				end
-				for idx = start_idx, end_idx do
-					FXManagerUI.core.state.fxchain_selected_fx[idx] = true
-				end
+			elseif shift_down then
+				FXManagerUI.r.TrackFX_SetEnabled(track, fx_idx, not is_enabled)
 			elseif ctrl_down then
 				FXManagerUI.core.state.fxchain_selected_fx[fx_idx] = not is_selected
 			else
@@ -590,6 +671,10 @@ function FXManagerUI.drawFXChain(header_font)
 			end
 
 			FXManagerUI.core.state.fxchain_last_clicked_fx = fx_idx
+		end
+
+		if not is_enabled then
+			FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)
 		end
 
 		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
