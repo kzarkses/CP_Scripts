@@ -502,7 +502,7 @@ function FXManagerUI.drawFXChain(header_font)
 	end
 
 	for fx_idx = 0, fx_count - 1 do
-		local _, fx_name = FXManagerUI.r.ImGui_GetFXName(track, fx_idx, "")
+		local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
 		local display_name = FXManagerUI.core.extractFXName(fx_name)
 
 		if display_name:find("JSFX Sound") or display_name:find("FX Constellation Sound Generator") then
