@@ -322,6 +322,10 @@ function FXManagerUI.drawPluginsList(header_font)
 		end
 
 		if FXManagerUI.r.ImGui_BeginDragDropSource(FXManagerUI.ctx) then
+			if not is_selected then
+				FXManagerUI.core.state.fxdb_selected_plugins = {}
+				FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] = true
+			end
 			local selected_plugins = {}
 			for _, p in ipairs(plugins) do
 				if FXManagerUI.core.state.fxdb_selected_plugins[p.name] then
@@ -491,6 +495,7 @@ function FXManagerUI.drawFXChain(header_font)
 	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Header(), selection_color)
 	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderHovered(), hover_color)
 	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderActive(), hover_color)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_DragDropTarget(), 0x00000000)
 
 	if not FXManagerUI.core.state.fxchain_drag_target then
 		FXManagerUI.core.state.fxchain_drag_target = -1
@@ -500,7 +505,7 @@ function FXManagerUI.drawFXChain(header_font)
 		local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
 		local display_name = FXManagerUI.core.extractFXName(fx_name)
 
-		if display_name:find("JSFX Sound") then
+		if display_name:find("JSFX Sound") or display_name:find("FX Constellation Sound Generator") then
 			goto continue
 		end
 
@@ -581,16 +586,19 @@ function FXManagerUI.drawFXChain(header_font)
 			FXManagerUI.r.ImGui_EndDragDropSource(FXManagerUI.ctx)
 		end
 
-		local drop_y_min, drop_y_max = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
-		local drop_width = FXManagerUI.r.ImGui_GetItemRectSize(FXManagerUI.ctx)
-		local drop_y_mid = drop_y_min + (drop_y_max - drop_y_min) / 2
+		local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
+		local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
+		local item_y_mid = item_y_min + (item_y_max - item_y_min) / 2
 
 		if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
 			local mouse_x, mouse_y = FXManagerUI.r.ImGui_GetMousePos(FXManagerUI.ctx)
-			local insert_before = mouse_y < drop_y_mid
+			local insert_before = mouse_y < item_y_mid
 			local target_pos = insert_before and fx_idx or (fx_idx + 1)
 
 			FXManagerUI.core.state.fxchain_drag_target = target_pos
+			FXManagerUI.core.state.fxchain_drag_y = insert_before and item_y_min or item_y_max
+			FXManagerUI.core.state.fxchain_drag_x_min = item_x_min
+			FXManagerUI.core.state.fxchain_drag_x_max = item_x_max
 
 			local ret_add, payload_add = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
 			if ret_add then
@@ -631,19 +639,22 @@ function FXManagerUI.drawFXChain(header_font)
 			FXManagerUI.core.state.fxchain_drag_target = -1
 		end
 
-		if FXManagerUI.core.state.fxchain_drag_target == fx_idx then
-			local draw_list = FXManagerUI.r.ImGui_GetWindowDrawList(FXManagerUI.ctx)
-			FXManagerUI.r.ImGui_DrawList_AddLine(draw_list, drop_y_min, drop_y_min, drop_y_min + drop_width, drop_y_min, 0xFFFFFFFF, 2)
-		elseif FXManagerUI.core.state.fxchain_drag_target == fx_idx + 1 then
-			local draw_list = FXManagerUI.r.ImGui_GetWindowDrawList(FXManagerUI.ctx)
-			FXManagerUI.r.ImGui_DrawList_AddLine(draw_list, drop_y_min, drop_y_max, drop_y_min + drop_width, drop_y_max, 0xFFFFFFFF, 2)
-		end
 
 		FXManagerUI.r.ImGui_PopID(FXManagerUI.ctx)
 		::continue::
 	end
 
-	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx, 3)
+	if FXManagerUI.core.state.fxchain_drag_target and FXManagerUI.core.state.fxchain_drag_target >= 0 then
+		if FXManagerUI.core.state.fxchain_drag_y and FXManagerUI.core.state.fxchain_drag_x_min and FXManagerUI.core.state.fxchain_drag_x_max then
+			local draw_list = FXManagerUI.r.ImGui_GetWindowDrawList(FXManagerUI.ctx)
+			local y = FXManagerUI.core.state.fxchain_drag_y
+			local x1 = FXManagerUI.core.state.fxchain_drag_x_min
+			local x2 = FXManagerUI.core.state.fxchain_drag_x_max
+			FXManagerUI.r.ImGui_DrawList_AddLine(draw_list, x1, y, x2, y, 0xFFFFFFFF, 2)
+		end
+	end
+
+	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx, 4)
 end
 
 return FXManagerUI

@@ -627,7 +627,7 @@ function FXManager.addFXByName(fx_name, open_ui, insert_at_end)
 	if not FXManager.core.isTrackValid() then return false end
 	if not fx_name or fx_name == "" then return false end
 
-	if open_ui == nil then open_ui = true end
+	if open_ui == nil then open_ui = false end
 	if insert_at_end == nil then insert_at_end = true end
 
 	FXManager.r.Undo_BeginBlock()
@@ -664,8 +664,10 @@ function FXManager.addRandomFX(count, favorites_only)
 
 	for _, plugin in ipairs(plugins) do
 		local fx_name = FXManager.buildFXName(plugin)
+		local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
 		local recFX = false
-		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, -1000)
+		local insert_pos = -1000 - fx_count
+		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, insert_pos)
 		if fx_id >= 0 then
 			added_count = added_count + 1
 		end
