@@ -519,7 +519,6 @@ function FXManagerUI.drawFXChain(header_font)
 			end
 		end
 
-		FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx, 4)
 		return
 	end
 
