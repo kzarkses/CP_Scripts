@@ -353,6 +353,22 @@ function FXManagerUI.drawPluginsList(header_font)
 					end
 				end
 			end
+			if FXManagerUI.r.ImGui_MenuItem(FXManagerUI.ctx, "Remove from Favorites") then
+				local selected_plugins = {}
+				for _, p in ipairs(plugins) do
+					if FXManagerUI.core.state.fxdb_selected_plugins[p.name] then
+						table.insert(selected_plugins, p)
+					end
+				end
+				if #selected_plugins == 0 then
+					table.insert(selected_plugins, plugin)
+				end
+				for _, p in ipairs(selected_plugins) do
+					if FXManagerUI.fxdatabase.isFavorite(p.name) then
+						FXManagerUI.fxdatabase.toggleFavorite(p.name)
+					end
+				end
+			end
 			FXManagerUI.r.ImGui_EndPopup(FXManagerUI.ctx)
 		end
 
@@ -510,29 +526,45 @@ function FXManagerUI.drawFXChain(header_font)
 	end
 
 	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-	local header_font_size = FXManagerUI.getStyleValue("fonts.header.size", 16)
-	local clear_button_size = header_font_size + 6
+	local item_spacing_x = FXManagerUI.getStyleValue("spacing.item_spacing_x", 6)
 	local window_width = FXManagerUI.r.ImGui_GetWindowWidth(FXManagerUI.ctx)
-	local cursor_x = window_width - clear_button_size - 10
+	local text_width = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, "Clear")
+	local cursor_x = window_width - text_width - item_spacing_x * 2
 	FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, cursor_x)
-	if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "C", clear_button_size, clear_button_size) then
-		if FXManagerUI.core.isTrackValid() then
-			local track = FXManagerUI.core.state.track
-			local fx_count = FXManagerUI.r.TrackFX_GetCount(track)
-			FXManagerUI.r.Undo_BeginBlock()
-			for fx_idx = fx_count - 1, 0, -1 do
-				local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
-				local display_name = FXManagerUI.core.extractFXName(fx_name)
-				if not (display_name:find("JSFX Sound") or display_name:find("FX Constellation Sound Generator") or display_name:find("FX Constellation Bridge")) then
-					FXManagerUI.r.TrackFX_Delete(track, fx_idx)
-				end
-			end
-			FXManagerUI.r.Undo_EndBlock("Clear FX Chain", -1)
-			FXManagerUI.core.state.fxchain_selected_fx = {}
-		end
-	end
+
+	local text_color = 0xAAAAAAFF
+	local is_hovered = false
+	local text_pos_x, text_pos_y = FXManagerUI.r.ImGui_GetCursorScreenPos(FXManagerUI.ctx)
+
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), text_color)
+	FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Clear")
+	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)
+
 	if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
-		FXManagerUI.r.ImGui_SetTooltip(FXManagerUI.ctx, "Clear FX Chain")
+		is_hovered = true
+		local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
+		local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
+		FXManagerUI.r.ImGui_SetCursorScreenPos(FXManagerUI.ctx, text_pos_x, text_pos_y)
+		FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), 0xFFFFFFFF)
+		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Clear")
+		FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)
+
+		if FXManagerUI.r.ImGui_IsMouseClicked(FXManagerUI.ctx, 0) then
+			if FXManagerUI.core.isTrackValid() then
+				local track = FXManagerUI.core.state.track
+				local fx_count = FXManagerUI.r.TrackFX_GetCount(track)
+				FXManagerUI.r.Undo_BeginBlock()
+				for fx_idx = fx_count - 1, 0, -1 do
+					local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
+					local display_name = FXManagerUI.core.extractFXName(fx_name)
+					if not (display_name:find("Sound Generator") or display_name:find("FX Constellation Bridge")) then
+						FXManagerUI.r.TrackFX_Delete(track, fx_idx)
+					end
+				end
+				FXManagerUI.r.Undo_EndBlock("Clear FX Chain", -1)
+				FXManagerUI.core.state.fxchain_selected_fx = {}
+			end
+		end
 	end
 
 	FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
@@ -628,7 +660,7 @@ function FXManagerUI.drawFXChain(header_font)
 		local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
 		local display_name = FXManagerUI.core.extractFXName(fx_name)
 
-		if display_name:find("JSFX Sound") or display_name:find("FX Constellation Sound Generator") then
+		if display_name:find("Sound Generator") or display_name:find("FX Constellation Bridge") then
 			goto continue
 		end
 
@@ -661,8 +693,15 @@ function FXManagerUI.drawFXChain(header_font)
 
 			if FXManagerUI.r.ImGui_IsMouseDoubleClicked(FXManagerUI.ctx, 0) then
 				FXManagerUI.r.TrackFX_Show(track, fx_idx, 3)
-			elseif shift_down then
-				FXManagerUI.r.TrackFX_SetEnabled(track, fx_idx, not is_enabled)
+			elseif shift_down and FXManagerUI.core.state.fxchain_last_clicked_fx then
+				local start_idx = FXManagerUI.core.state.fxchain_last_clicked_fx
+				local end_idx = fx_idx
+				if start_idx > end_idx then
+					start_idx, end_idx = end_idx, start_idx
+				end
+				for idx = start_idx, end_idx do
+					FXManagerUI.core.state.fxchain_selected_fx[idx] = true
+				end
 			elseif ctrl_down then
 				FXManagerUI.core.state.fxchain_selected_fx[fx_idx] = not is_selected
 			else

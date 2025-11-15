@@ -555,13 +555,34 @@ function PresetSystem.showAllFloatingFX()
 	local target_track = PresetSystem.core.state.track_locked and PresetSystem.core.state.locked_track or PresetSystem.core.state.track
 	if not target_track or not PresetSystem.r.ValidatePtr(target_track, "MediaTrack*") then return end
 
-	local command_id = PresetSystem.r.NamedCommandLookup("_S&M_WNTSHW3")
-	if command_id > 0 then
-		local current_track = PresetSystem.r.GetSelectedTrack(0, 0)
-		PresetSystem.r.SetOnlyTrackSelected(target_track)
-		PresetSystem.r.Main_OnCommand(command_id, 0)
-		if current_track and current_track ~= target_track then
-			PresetSystem.r.SetOnlyTrackSelected(current_track)
+	local fx_count = PresetSystem.r.TrackFX_GetCount(target_track)
+	local window_offset_x = 0
+	local window_offset_y = 0
+	local window_spacing = 10
+
+	for fx_idx = 0, fx_count - 1 do
+		local _, fx_name = PresetSystem.r.TrackFX_GetFXName(target_track, fx_idx, "")
+		local display_name = PresetSystem.core.extractFXName(fx_name)
+
+		if not (display_name:find("Sound Generator") or display_name:find("FX Constellation Bridge")) then
+			PresetSystem.r.TrackFX_Show(target_track, fx_idx, 3)
+
+			local fx_window = PresetSystem.r.TrackFX_GetFloatingWindow(target_track, fx_idx)
+			if fx_window then
+				local retval, left, top, right, bottom = PresetSystem.r.JS_Window_GetRect(fx_window)
+				if retval then
+					local window_width = right - left
+					local window_height = bottom - top
+
+					PresetSystem.r.JS_Window_Move(fx_window, window_offset_x, window_offset_y)
+
+					window_offset_x = window_offset_x + window_width + window_spacing
+					if window_offset_x > 1920 then
+						window_offset_x = 0
+						window_offset_y = window_offset_y + window_height + window_spacing
+					end
+				end
+			end
 		end
 	end
 end
