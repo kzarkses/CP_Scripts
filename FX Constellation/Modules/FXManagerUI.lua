@@ -473,9 +473,7 @@ function FXManagerUI.drawFXChain(header_font)
 
 		FXManagerUI.r.ImGui_Dummy(FXManagerUI.ctx, available_width, drop_height)
 
-		local is_dragging = FXManagerUI.r.ImGui_IsDragDropActive(FXManagerUI.ctx)
-
-		if is_dragging and FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+		if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
 			local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
 			local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
 
@@ -483,11 +481,7 @@ function FXManagerUI.drawFXChain(header_font)
 			FXManagerUI.core.state.fxchain_drag_y = item_y_min
 			FXManagerUI.core.state.fxchain_drag_x_min = item_x_min
 			FXManagerUI.core.state.fxchain_drag_x_max = item_x_max
-		elseif not is_dragging then
-			FXManagerUI.core.state.fxchain_drag_target = -1
-		end
 
-		if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
 			local ret_add, payload_add = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
 			if ret_add then
 				local plugins_data = {}
@@ -511,6 +505,8 @@ function FXManagerUI.drawFXChain(header_font)
 				FXManagerUI.core.state.fxchain_drag_target = -1
 			end
 			FXManagerUI.r.ImGui_EndDragDropTarget(FXManagerUI.ctx)
+		else
+			FXManagerUI.core.state.fxchain_drag_target = -1
 		end
 
 		if FXManagerUI.core.state.fxchain_drag_target and FXManagerUI.core.state.fxchain_drag_target >= 0 then
@@ -642,26 +638,15 @@ function FXManagerUI.drawFXChain(header_font)
 		local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
 		local item_y_mid = item_y_min + (item_y_max - item_y_min) / 2
 
-		local is_dragging = FXManagerUI.r.ImGui_IsDragDropActive(FXManagerUI.ctx)
-
-		if is_dragging then
-			local mouse_x, mouse_y = FXManagerUI.r.ImGui_GetMousePos(FXManagerUI.ctx)
-
-			if mouse_y >= item_y_min and mouse_y <= item_y_max then
-				local insert_before = mouse_y < item_y_mid
-				local target_pos = insert_before and fx_idx or (fx_idx + 1)
-
-				FXManagerUI.core.state.fxchain_drag_target = target_pos
-				FXManagerUI.core.state.fxchain_drag_y = insert_before and item_y_min or item_y_max
-				FXManagerUI.core.state.fxchain_drag_x_min = item_x_min
-				FXManagerUI.core.state.fxchain_drag_x_max = item_x_max
-			end
-		end
-
 		if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
 			local mouse_x, mouse_y = FXManagerUI.r.ImGui_GetMousePos(FXManagerUI.ctx)
 			local insert_before = mouse_y < item_y_mid
 			local target_pos = insert_before and fx_idx or (fx_idx + 1)
+
+			FXManagerUI.core.state.fxchain_drag_target = target_pos
+			FXManagerUI.core.state.fxchain_drag_y = insert_before and item_y_min or item_y_max
+			FXManagerUI.core.state.fxchain_drag_x_min = item_x_min
+			FXManagerUI.core.state.fxchain_drag_x_max = item_x_max
 
 			local ret_add, payload_add = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
 			if ret_add then
@@ -705,9 +690,7 @@ function FXManagerUI.drawFXChain(header_font)
 			end
 
 			FXManagerUI.r.ImGui_EndDragDropTarget(FXManagerUI.ctx)
-		end
-
-		if not is_dragging then
+		else
 			FXManagerUI.core.state.fxchain_drag_target = -1
 		end
 
@@ -721,9 +704,7 @@ function FXManagerUI.drawFXChain(header_font)
 
 	FXManagerUI.r.ImGui_Dummy(FXManagerUI.ctx, available_width, drop_height)
 
-	local is_dragging = FXManagerUI.r.ImGui_IsDragDropActive(FXManagerUI.ctx)
-
-	if is_dragging and FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+	if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
 		local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
 		local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
 
@@ -731,9 +712,6 @@ function FXManagerUI.drawFXChain(header_font)
 		FXManagerUI.core.state.fxchain_drag_y = item_y_min
 		FXManagerUI.core.state.fxchain_drag_x_min = item_x_min
 		FXManagerUI.core.state.fxchain_drag_x_max = item_x_max
-	end
-
-	if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
 		local ret_add, payload_add = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
 		if ret_add then
 			local plugins_data = {}
@@ -766,9 +744,7 @@ function FXManagerUI.drawFXChain(header_font)
 			FXManagerUI.core.state.fxchain_drag_target = -1
 		end
 		FXManagerUI.r.ImGui_EndDragDropTarget(FXManagerUI.ctx)
-	end
-
-	if not is_dragging then
+	else
 		FXManagerUI.core.state.fxchain_drag_target = -1
 	end
 
