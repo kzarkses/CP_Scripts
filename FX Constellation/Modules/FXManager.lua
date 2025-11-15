@@ -623,16 +623,23 @@ function FXManager.buildFXName(plugin)
 	return fx_name
 end
 
-function FXManager.addFXByName(fx_name, open_ui)
+function FXManager.addFXByName(fx_name, open_ui, insert_at_end)
 	if not FXManager.core.isTrackValid() then return false end
 	if not fx_name or fx_name == "" then return false end
 
-	if open_ui == nil then open_ui = true end
+	if open_ui == nil then open_ui = false end
+	if insert_at_end == nil then insert_at_end = true end
 
 	FXManager.r.Undo_BeginBlock()
 	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
 	local recFX = false
-	local new_fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, -1000 - (open_ui and 1 or 0))
+	local insert_pos
+	if insert_at_end then
+		insert_pos = open_ui and fx_count or (-1000 - fx_count)
+	else
+		insert_pos = open_ui and 0 or -1000
+	end
+	local new_fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, insert_pos)
 
 	if new_fx_id >= 0 then
 		FXManager.r.Undo_EndBlock("Add FX: " .. fx_name, -1)
@@ -657,8 +664,10 @@ function FXManager.addRandomFX(count, favorites_only)
 
 	for _, plugin in ipairs(plugins) do
 		local fx_name = FXManager.buildFXName(plugin)
+		local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
 		local recFX = false
-		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, -1000)
+		local insert_pos = -1000 - fx_count
+		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, insert_pos)
 		if fx_id >= 0 then
 			added_count = added_count + 1
 		end
