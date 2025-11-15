@@ -367,6 +367,7 @@ function SoundGenerator.createGenerator()
 
 	local fx_index = SoundGenerator.r.TrackFX_AddByName(SoundGenerator.core.state.track, "FX Constellation - Sound Generator", false, -1000)
 	if fx_index >= 0 then
+		SoundGenerator.r.TrackFX_Show(SoundGenerator.core.state.track, fx_index, 2)
 		sg.enabled = true
 		sg.jsfx_index = 0
 		SoundGenerator.r.TrackFX_SetEnabled(SoundGenerator.core.state.track, 0, true)

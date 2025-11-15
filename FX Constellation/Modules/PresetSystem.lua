@@ -405,6 +405,7 @@ function PresetSystem.loadPreset(name)
 		if not fx_preset.name:find("FX Constellation Bridge") then
 			local new_fx_id = PresetSystem.r.TrackFX_AddByName(PresetSystem.core.state.track, fx_preset.name, false, -1)
 			if new_fx_id >= 0 then
+				PresetSystem.r.TrackFX_Show(PresetSystem.core.state.track, new_fx_id, 2)
 				PresetSystem.r.TrackFX_SetEnabled(PresetSystem.core.state.track, new_fx_id, fx_preset.enabled)
 				if fx_preset.preset and fx_preset.preset ~= "" then
 					PresetSystem.r.TrackFX_SetPreset(PresetSystem.core.state.track, new_fx_id, fx_preset.preset)

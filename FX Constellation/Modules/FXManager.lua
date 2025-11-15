@@ -635,13 +635,18 @@ function FXManager.addFXByName(fx_name, open_ui, insert_at_end)
 	local recFX = false
 	local insert_pos
 	if insert_at_end then
-		insert_pos = open_ui and fx_count or (-1000 - fx_count)
+		insert_pos = -1000 - fx_count
 	else
-		insert_pos = open_ui and 0 or -1000
+		insert_pos = -1000
 	end
 	local new_fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, insert_pos)
 
 	if new_fx_id >= 0 then
+		if open_ui then
+			FXManager.r.TrackFX_Show(FXManager.core.state.track, new_fx_id, 3)
+		else
+			FXManager.r.TrackFX_Show(FXManager.core.state.track, new_fx_id, 2)
+		end
 		FXManager.r.Undo_EndBlock("Add FX: " .. fx_name, -1)
 		FXManager.scanTrackFX()
 		return true
@@ -669,6 +674,7 @@ function FXManager.addRandomFX(count, favorites_only)
 		local insert_pos = -1000 - fx_count
 		local fx_id = FXManager.r.TrackFX_AddByName(FXManager.core.state.track, fx_name, recFX, insert_pos)
 		if fx_id >= 0 then
+			FXManager.r.TrackFX_Show(FXManager.core.state.track, fx_id, 2)
 			added_count = added_count + 1
 		end
 	end

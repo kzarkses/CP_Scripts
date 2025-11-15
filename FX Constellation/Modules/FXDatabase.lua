@@ -174,11 +174,16 @@ function FXDatabase.loadDatabase()
 end
 
 function FXDatabase.toggleFavorite(plugin_name)
-	FXDatabase.favorites[plugin_name] = not FXDatabase.favorites[plugin_name] or nil
+	local current_state = FXDatabase.favorites[plugin_name]
+	if current_state then
+		FXDatabase.favorites[plugin_name] = nil
+	else
+		FXDatabase.favorites[plugin_name] = true
+	end
 
 	for _, plugin in ipairs(FXDatabase.plugins) do
 		if plugin.name == plugin_name then
-			plugin.favorite = FXDatabase.favorites[plugin_name] or false
+			plugin.favorite = FXDatabase.favorites[plugin_name] == true
 			break
 		end
 	end
