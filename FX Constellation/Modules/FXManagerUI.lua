@@ -136,26 +136,62 @@ function FXManagerUI.drawWindow()
 
 		FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
 
-		local categories_width = content_width * 0.20
-		local fxchain_width = content_width * 0.25
-		local plugins_width = content_width - categories_width - fxchain_width - item_spacing_x * 2
-		local child_height = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx) - 80
+		-- Initialize column widths if they don't exist
+		if not FXManagerUI.core.state.fxmanager_categories_width then
+			FXManagerUI.core.state.fxmanager_categories_width = 160
+		end
+		if not FXManagerUI.core.state.fxmanager_fxchain_width then
+			FXManagerUI.core.state.fxmanager_fxchain_width = 200
+		end
+
+		local categories_width = FXManagerUI.core.state.fxmanager_categories_width
+		local fxchain_width = FXManagerUI.core.state.fxmanager_fxchain_width
+		local splitter_width = 4
+		local plugins_width = content_width - categories_width - fxchain_width - splitter_width * 2 - item_spacing_x * 2
+		local child_height = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx)
 
 		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "Categories", categories_width, child_height) then
 			FXManagerUI.drawCategories(header_font)
 			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
 		end
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, 0)
+
+		-- Vertical splitter for categories/plugins
+		FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "##splitter1", splitter_width, child_height)
+		if FXManagerUI.r.ImGui_IsItemActive(FXManagerUI.ctx) then
+			local delta_x, _ = FXManagerUI.r.ImGui_GetMouseDelta(FXManagerUI.ctx)
+			FXManagerUI.core.state.fxmanager_categories_width = math.max(100, FXManagerUI.core.state.fxmanager_categories_width + delta_x)
+		end
+		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+			FXManagerUI.r.ImGui_SetMouseCursor(FXManagerUI.ctx, FXManagerUI.r.ImGui_MouseCursor_ResizeEW())
+		end
+
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, 0)
+
+		-- Recalculate plugins_width after potential resize
+		plugins_width = content_width - FXManagerUI.core.state.fxmanager_categories_width - fxchain_width - splitter_width * 2 - item_spacing_x * 2
 
 		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "PluginsList", plugins_width, child_height) then
 			FXManagerUI.drawPluginsList(header_font)
 			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
 		end
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, 0)
 
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "FXChain", fxchain_width, child_height) then
+		-- Vertical splitter for plugins/fxchain
+		FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "##splitter2", splitter_width, child_height)
+		if FXManagerUI.r.ImGui_IsItemActive(FXManagerUI.ctx) then
+			local delta_x, _ = FXManagerUI.r.ImGui_GetMouseDelta(FXManagerUI.ctx)
+			FXManagerUI.core.state.fxmanager_fxchain_width = math.max(150, FXManagerUI.core.state.fxmanager_fxchain_width - delta_x)
+		end
+		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+			FXManagerUI.r.ImGui_SetMouseCursor(FXManagerUI.ctx, FXManagerUI.r.ImGui_MouseCursor_ResizeEW())
+		end
+
+		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, 0)
+
+		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "FXChain", FXManagerUI.core.state.fxmanager_fxchain_width, child_height) then
 			FXManagerUI.drawFXChain(header_font)
 			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
 		end
@@ -658,23 +694,56 @@ function FXManagerUI.drawFXChain(header_font)
 	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
 	local item_spacing_x = FXManagerUI.getStyleValue("spacing.item_spacing_x", 6)
 	local window_width = FXManagerUI.r.ImGui_GetWindowWidth(FXManagerUI.ctx)
-	local text_width = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, "Clear")
-	local cursor_x = window_width - text_width - item_spacing_x * 2
+	local bypass_text_width = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, "Bypass All")
+	local clear_text_width = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, "Clear")
+	local cursor_x = window_width - bypass_text_width - clear_text_width - item_spacing_x * 4
 	FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, cursor_x)
 
 	local text_color = 0xAAAAAAFF
-	local is_hovered = false
-	local text_pos_x, text_pos_y = FXManagerUI.r.ImGui_GetCursorScreenPos(FXManagerUI.ctx)
 
+	-- Bypass All button
+	local bypass_text_pos_x, bypass_text_pos_y = FXManagerUI.r.ImGui_GetCursorScreenPos(FXManagerUI.ctx)
+	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), text_color)
+	FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Bypass All")
+	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)
+
+	if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
+		local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
+		local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
+		FXManagerUI.r.ImGui_SetCursorScreenPos(FXManagerUI.ctx, bypass_text_pos_x, bypass_text_pos_y)
+		FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), 0xFFFFFFFF)
+		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Bypass All")
+		FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)
+
+		if FXManagerUI.r.ImGui_IsMouseClicked(FXManagerUI.ctx, 0) then
+			if FXManagerUI.core.isTrackValid() then
+				local track = FXManagerUI.core.state.track
+				local fx_count = FXManagerUI.r.TrackFX_GetCount(track)
+				FXManagerUI.r.Undo_BeginBlock()
+				for fx_idx = 0, fx_count - 1 do
+					local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
+					local display_name = FXManagerUI.core.extractFXName(fx_name)
+					if not (display_name:find("Sound Generator") or display_name:find("FX Constellation Bridge")) then
+						FXManagerUI.r.TrackFX_SetEnabled(track, fx_idx, false)
+					end
+				end
+				FXManagerUI.r.Undo_EndBlock("Bypass All FX", -1)
+			end
+		end
+	end
+
+	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+
+	-- Clear button
+	local clear_text_pos_x, clear_text_pos_y = FXManagerUI.r.ImGui_GetCursorScreenPos(FXManagerUI.ctx)
 	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), text_color)
 	FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Clear")
 	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)
 
 	if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
-		is_hovered = true
 		local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
 		local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
-		FXManagerUI.r.ImGui_SetCursorScreenPos(FXManagerUI.ctx, text_pos_x, text_pos_y)
+		FXManagerUI.r.ImGui_SetCursorScreenPos(FXManagerUI.ctx, clear_text_pos_x, clear_text_pos_y)
 		FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Text(), 0xFFFFFFFF)
 		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Clear")
 		FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx)

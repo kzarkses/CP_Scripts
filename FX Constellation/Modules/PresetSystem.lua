@@ -434,9 +434,9 @@ function PresetSystem.loadPreset(name)
 
 	PresetSystem.core.state.gesture_x = preset.gesture_x or 0.5
 	PresetSystem.core.state.gesture_y = preset.gesture_y or 0.5
-	PresetSystem.gesture.updateJSFXFromGesture()
 	PresetSystem.core.state.gesture_base_x = preset.gesture_base_x or 0.5
 	PresetSystem.core.state.gesture_base_y = preset.gesture_base_y or 0.5
+	-- Don't call updateJSFXFromGesture() here as parameter values will be restored directly from preset
 
 	for saved_fx_id, fx_preset in pairs(preset.fx_chain or {}) do
 		for current_fx_id, fx_data in pairs(PresetSystem.core.state.fx_data) do
@@ -466,36 +466,41 @@ function PresetSystem.loadPreset(name)
 
 	if preset.sound_generator then
 		local sg = PresetSystem.core.state.sound_generator
-		if preset.sound_generator.enabled then
-			sg.mode = preset.sound_generator.mode or 0
-			sg.waveform = preset.sound_generator.waveform or 0
-			sg.frequency = preset.sound_generator.frequency or 440
-			sg.rhythmic = preset.sound_generator.rhythmic or false
-			sg.tick_rate = preset.sound_generator.tick_rate or 4
-			sg.duty_cycle = preset.sound_generator.duty_cycle or 0.5
-			sg.noise_color = preset.sound_generator.noise_color or 0.5
-			sg.base_freq = preset.sound_generator.base_freq or 440
-			sg.use_adsr = preset.sound_generator.use_adsr ~= false
-			sg.attack = preset.sound_generator.attack or 0.01
-			sg.decay = preset.sound_generator.decay or 0.1
-			sg.sustain = preset.sound_generator.sustain or 0.7
-			sg.release = preset.sound_generator.release or 0.2
-			sg.midi_mode = preset.sound_generator.midi_mode ~= false
-			sg.amplitude = preset.sound_generator.amplitude or 0.5
-			sg.stereo_width = preset.sound_generator.stereo_width or 1.0
-			if not sg.enabled then
-				PresetSystem.soundgen.createGenerator()
-			else
-				PresetSystem.soundgen.updateJSFXParams()
-			end
-		elseif sg.enabled then
+		-- Always restore all sound generator parameters
+		sg.mode = preset.sound_generator.mode or 0
+		sg.waveform = preset.sound_generator.waveform or 0
+		sg.frequency = preset.sound_generator.frequency or 440
+		sg.rhythmic = preset.sound_generator.rhythmic or false
+		sg.tick_rate = preset.sound_generator.tick_rate or 4
+		sg.duty_cycle = preset.sound_generator.duty_cycle or 0.5
+		sg.noise_color = preset.sound_generator.noise_color or 0.5
+		sg.base_freq = preset.sound_generator.base_freq or 440
+		sg.use_adsr = preset.sound_generator.use_adsr ~= false
+		sg.attack = preset.sound_generator.attack or 0.01
+		sg.decay = preset.sound_generator.decay or 0.1
+		sg.sustain = preset.sound_generator.sustain or 0.7
+		sg.release = preset.sound_generator.release or 0.2
+		sg.midi_mode = preset.sound_generator.midi_mode ~= false
+		sg.amplitude = preset.sound_generator.amplitude or 0.5
+		sg.stereo_width = preset.sound_generator.stereo_width or 1.0
+
+		-- Handle enabled state
+		local was_enabled = sg.enabled
+		local should_be_enabled = preset.sound_generator.enabled
+
+		if should_be_enabled and not was_enabled then
+			PresetSystem.soundgen.createGenerator()
+		elseif should_be_enabled and was_enabled then
+			PresetSystem.soundgen.updateJSFXParams()
+		elseif not should_be_enabled and was_enabled then
 			PresetSystem.soundgen.removeGenerator()
 		end
 	end
 
 	PresetSystem.r.Undo_EndBlock("Load FX Constellation preset: " .. name, -1)
 	PresetSystem.fxmanager.updateSelectedCount()
-	PresetSystem.fxmanager.captureBaseValues()
+	-- Don't call captureBaseValues() here as it would overwrite the restored base_values
+	-- The base_values have already been restored from the preset
 	PresetSystem.core.state.current_loaded_preset = name
 	PresetSystem.core.state.preset_base_name = name
 	PresetSystem.core.state.initial_fx_chain_state = PresetSystem.captureFXChainState()
