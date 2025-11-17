@@ -432,6 +432,8 @@ function PresetSystem.loadPreset(name)
 		PresetSystem.core.state.fx_collapsed[fx_id] = false
 	end
 
+	-- Restore gesture positions without applying them yet
+	-- The actual parameter values will be restored individually below
 	PresetSystem.core.state.gesture_x = preset.gesture_x or 0.5
 	PresetSystem.core.state.gesture_y = preset.gesture_y or 0.5
 	PresetSystem.core.state.gesture_base_x = preset.gesture_base_x or 0.5
@@ -464,9 +466,11 @@ function PresetSystem.loadPreset(name)
 		end
 	end
 
+	-- Restore sound generator state
 	if preset.sound_generator then
 		local sg = PresetSystem.core.state.sound_generator
-		-- Always restore all sound generator parameters
+
+		-- Always restore ALL sound generator parameters
 		sg.mode = preset.sound_generator.mode or 0
 		sg.waveform = preset.sound_generator.waveform or 0
 		sg.frequency = preset.sound_generator.frequency or 440
@@ -499,8 +503,8 @@ function PresetSystem.loadPreset(name)
 
 	PresetSystem.r.Undo_EndBlock("Load FX Constellation preset: " .. name, -1)
 	PresetSystem.fxmanager.updateSelectedCount()
-	-- Don't call captureBaseValues() here as it would overwrite the restored base_values
-	-- The base_values have already been restored from the preset
+	-- DON'T call captureBaseValues() here - it would overwrite the base_values we just restored!
+	-- The base_values have already been restored from the preset data (line 451)
 	PresetSystem.core.state.current_loaded_preset = name
 	PresetSystem.core.state.preset_base_name = name
 	PresetSystem.core.state.initial_fx_chain_state = PresetSystem.captureFXChainState()

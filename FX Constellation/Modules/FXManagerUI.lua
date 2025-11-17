@@ -148,7 +148,7 @@ function FXManagerUI.drawWindow()
 		local fxchain_width = FXManagerUI.core.state.fxmanager_fxchain_width
 		local splitter_width = 4
 		local plugins_width = content_width - categories_width - fxchain_width - splitter_width * 2 - item_spacing_x * 2
-		local child_height = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx)
+		local _, child_height = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx)
 
 		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "Categories", categories_width, child_height) then
 			FXManagerUI.drawCategories(header_font)
@@ -161,7 +161,7 @@ function FXManagerUI.drawWindow()
 		FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "##splitter1", splitter_width, child_height)
 		if FXManagerUI.r.ImGui_IsItemActive(FXManagerUI.ctx) then
 			local delta_x, _ = FXManagerUI.r.ImGui_GetMouseDelta(FXManagerUI.ctx)
-			FXManagerUI.core.state.fxmanager_categories_width = math.max(100, FXManagerUI.core.state.fxmanager_categories_width + delta_x)
+			FXManagerUI.core.state.fxmanager_categories_width = math.max(0, FXManagerUI.core.state.fxmanager_categories_width + delta_x)
 		end
 		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
 			FXManagerUI.r.ImGui_SetMouseCursor(FXManagerUI.ctx, FXManagerUI.r.ImGui_MouseCursor_ResizeEW())
@@ -691,14 +691,8 @@ function FXManagerUI.drawFXChain(header_font)
 		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Track FX Chain")
 	end
 
-	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+	-- Bypass All and Clear buttons on a new line
 	local item_spacing_x = FXManagerUI.getStyleValue("spacing.item_spacing_x", 6)
-	local window_width = FXManagerUI.r.ImGui_GetWindowWidth(FXManagerUI.ctx)
-	local bypass_text_width = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, "Bypass All")
-	local clear_text_width = FXManagerUI.r.ImGui_CalcTextSize(FXManagerUI.ctx, "Clear")
-	local cursor_x = window_width - bypass_text_width - clear_text_width - item_spacing_x * 4
-	FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, cursor_x)
-
 	local text_color = 0xAAAAAAFF
 
 	-- Bypass All button
