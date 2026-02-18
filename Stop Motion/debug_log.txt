@@ -1,0 +1,124 @@
+=== Stop Motion Debug Log ===
+Started: 25-01-26 16:15:52
+
+[16:15:52] Script initialized
+[16:15:52] Temp dir: C:\Users\Cedric\AppData\Local\Temp
+[16:15:52] === ScanAvailableCameras START ===
+[16:15:52] temp_file: C:\Users\Cedric\AppData\Local\Temp\ffmpeg_devices.txt
+[16:15:52] batch_file: C:\Users\Cedric\AppData\Local\Temp\scan_cameras.bat
+[16:15:52] Creating batch file...
+[16:15:52] Batch file created
+[16:15:52] Executing FFmpeg via ExecProcess...
+[16:15:53] ExecProcess returned: 0
+
+[16:15:53] Checking for output file...
+[16:15:53] Output file exists
+[16:15:53] Output file size: 1285 bytes
+[16:15:53] Output preview: [dshow @ 00000236726b39c0] "USB2.0 HD UVC WebCam" (video)
+[dshow @ 00000236726b39c0]   Alternative name "@device_pnp_\\?\usb#vid_13d3&pid_5463&mi_00#6&2d27d791&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c922
+[16:15:53] Parsing output...
+[16:15:53] Line: [dshow @ 00000236726b39c0] "USB2.0 HD UVC WebCam" (video)
+[16:15:53]   device_name: USB2.0 HD UVC WebCam, type: video
+[16:15:53] Found video device: USB2.0 HD UVC WebCam
+[16:15:53] Line: [dshow @ 00000236726b39c0]   Alternative name "@device_pnp_\\?\usb#vid_13d3&pid_
+[16:15:53]   device_name: @device_pnp_\\?\usb#vid_13d3&pid_5463&mi_00#6&2d27d791&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global, type: nil
+[16:15:53] Line: [dshow @ 00000236726b39c0] "DroidCam Video" (video)
+[16:15:53]   device_name: DroidCam Video, type: video
+[16:15:53] Found video device: DroidCam Video
+[16:15:53] Line: [dshow @ 00000236726b39c0]   Alternative name "@device_pnp_\\?\root#media#0001#{
+[16:15:53]   device_name: @device_pnp_\\?\root#media#0001#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global, type: nil
+[16:15:53] Line: [dshow @ 00000236726b39c0] "OBS Virtual Camera" (none)
+[16:15:53]   device_name: OBS Virtual Camera, type: none
+[16:15:53] Found video device: OBS Virtual Camera
+[16:15:53] Line: [dshow @ 00000236726b39c0]   Alternative name "@device_sw_{860BB310-5D01-11D0-BD
+[16:15:53]   device_name: @device_sw_{860BB310-5D01-11D0-BD3B-00A0C911CE86}\{A3FCE0F5-3493-419F-958A-ABA1250EC20B}, type: nil
+[16:15:53] Line: [dshow @ 00000236726b39c0] "Réseau de microphones (Technologie Intel® Smart So
+[16:15:53]   device_name: Réseau de microphones (Technologie Intel® Smart Sound pour microphones numériques), type: audio
+[16:15:53] Line: [dshow @ 00000236726b39c0]   Alternative name "@device_cm_{33D9A762-90C8-11D0-BD
+[16:15:53]   device_name: @device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{0BD4D152-4ECD-4CB0-8E68-34E2495F89FB}, type: nil
+[16:15:53] Line: [dshow @ 00000236726b39c0] "virtual-audio-capturer" (audio)
+[16:15:53]   device_name: virtual-audio-capturer, type: audio
+[16:15:53] Line: [dshow @ 00000236726b39c0]   Alternative name "@device_sw_{33D9A762-90C8-11D0-BD
+[16:15:53]   device_name: @device_sw_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\{8E146464-DB61-4309-AFA1-3578E927E935}, type: nil
+[16:15:53] Line: [dshow @ 00000236726b39c0] "Microphone (DroidCam Audio)" (audio)
+[16:15:53]   device_name: Microphone (DroidCam Audio), type: audio
+[16:15:53] Line: [dshow @ 00000236726b39c0]   Alternative name "@device_cm_{33D9A762-90C8-11D0-BD
+[16:15:53]   device_name: @device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\wave_{82C3C6A1-B13A-4C18-8668-CA987F7772FD}, type: nil
+[16:15:53] Total cameras found: 3
+[16:15:53] === ScanAvailableCameras END ===
+[16:16:02] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:02] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:02] Applied FPS to 30 items at 12 fps
+[16:16:02] Applied FPS to project: 14 fps, grid=0.017857142857143
+[16:16:02] Applied FPS to project: 14 fps, grid=0.017857142857143
+[16:16:02] Applied FPS to 30 items at 14 fps
+[16:16:02] Applied FPS to project: 17 fps, grid=0.014705882352941
+[16:16:02] Applied FPS to project: 17 fps, grid=0.014705882352941
+[16:16:02] Applied FPS to 30 items at 17 fps
+[16:16:02] Applied FPS to project: 19 fps, grid=0.013157894736842
+[16:16:02] Applied FPS to project: 19 fps, grid=0.013157894736842
+[16:16:02] Applied FPS to 30 items at 19 fps
+[16:16:02] Applied FPS to project: 20 fps, grid=0.0125
+[16:16:02] Applied FPS to project: 20 fps, grid=0.0125
+[16:16:02] Applied FPS to 30 items at 20 fps
+[16:16:02] Applied FPS to project: 21 fps, grid=0.011904761904762
+[16:16:02] Applied FPS to project: 21 fps, grid=0.011904761904762
+[16:16:02] Applied FPS to 30 items at 21 fps
+[16:16:03] Applied FPS to project: 19 fps, grid=0.013157894736842
+[16:16:03] Applied FPS to project: 19 fps, grid=0.013157894736842
+[16:16:03] Applied FPS to 30 items at 19 fps
+[16:16:03] Applied FPS to project: 14 fps, grid=0.017857142857143
+[16:16:03] Applied FPS to project: 14 fps, grid=0.017857142857143
+[16:16:03] Applied FPS to 30 items at 14 fps
+[16:16:03] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:03] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:03] Applied FPS to 30 items at 12 fps
+[16:16:03] Applied FPS to project: 7 fps, grid=0.035714285714286
+[16:16:03] Applied FPS to project: 7 fps, grid=0.035714285714286
+[16:16:03] Applied FPS to 30 items at 7 fps
+[16:16:04] Applied FPS to project: 6 fps, grid=0.041666666666667
+[16:16:04] Applied FPS to project: 6 fps, grid=0.041666666666667
+[16:16:04] Applied FPS to 30 items at 6 fps
+[16:16:04] Applied FPS to project: 5 fps, grid=0.05
+[16:16:04] Applied FPS to project: 5 fps, grid=0.05
+[16:16:04] Applied FPS to 30 items at 5 fps
+[16:16:04] Applied FPS to project: 1 fps, grid=0.25
+[16:16:04] Applied FPS to project: 1 fps, grid=0.25
+[16:16:04] Applied FPS to 30 items at 1 fps
+[16:16:05] Applied FPS to project: 2 fps, grid=0.125
+[16:16:05] Applied FPS to project: 2 fps, grid=0.125
+[16:16:05] Applied FPS to 30 items at 2 fps
+[16:16:05] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:05] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:05] Applied FPS to 30 items at 12 fps
+[16:16:05] Applied FPS to project: 17 fps, grid=0.014705882352941
+[16:16:05] Applied FPS to project: 17 fps, grid=0.014705882352941
+[16:16:05] Applied FPS to 30 items at 17 fps
+[16:16:05] Applied FPS to project: 19 fps, grid=0.013157894736842
+[16:16:05] Applied FPS to project: 19 fps, grid=0.013157894736842
+[16:16:05] Applied FPS to 30 items at 19 fps
+[16:16:06] Applied FPS to project: 18 fps, grid=0.013888888888889
+[16:16:06] Applied FPS to project: 18 fps, grid=0.013888888888889
+[16:16:06] Applied FPS to 30 items at 18 fps
+[16:16:06] Applied FPS to project: 14 fps, grid=0.017857142857143
+[16:16:06] Applied FPS to project: 14 fps, grid=0.017857142857143
+[16:16:06] Applied FPS to 30 items at 14 fps
+[16:16:06] Applied FPS to project: 13 fps, grid=0.019230769230769
+[16:16:06] Applied FPS to project: 13 fps, grid=0.019230769230769
+[16:16:06] Applied FPS to 30 items at 13 fps
+[16:16:06] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:06] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:06] Applied FPS to 30 items at 12 fps
+[16:16:06] Applied FPS to project: 11 fps, grid=0.022727272727273
+[16:16:06] Applied FPS to project: 11 fps, grid=0.022727272727273
+[16:16:06] Applied FPS to 30 items at 11 fps
+[16:16:07] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:07] Applied FPS to project: 12 fps, grid=0.020833333333333
+[16:16:07] Applied FPS to 30 items at 12 fps
+[16:16:07] Applied FPS to project: 15 fps, grid=0.016666666666667
+[16:16:07] Applied FPS to project: 15 fps, grid=0.016666666666667
+[16:16:07] Applied FPS to 30 items at 15 fps
+[16:16:07] Applied FPS to project: 16 fps, grid=0.015625
+[16:16:07] Applied FPS to project: 16 fps, grid=0.015625
+[16:16:07] Applied FPS to 30 items at 16 fps
+[16:29:14] Script exited cleanly

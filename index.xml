@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="CP_Scripts">
+  <category name="Colors">
+    <reapack name="CP_AutoColorRegionFromTrack.lua" type="script" desc="AutoColorRegionFromTrack">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Colors/CP_AutoColorRegionFromTrack.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_AutoColorTrackHierarchy_Darken.lua" type="script" desc="AutoColorTrackHierarchy - Darken">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Colors/CP_AutoColorTrackHierarchy_Darken.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_AutoColorTrackHierarchy_Lighten.lua" type="script" desc="AutoColorTrackHierarchy - Lighten">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Colors/CP_AutoColorTrackHierarchy_Lighten.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Projects">
+    <reapack name="CP_CreateProjectAlternativeVersion.lua" type="script" desc="CreateProjectAlternativeVersion">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Projects/CP_CreateProjectAlternativeVersion.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_CreateProjectAndSubprojectAlternativeVersion.lua" type="script" desc="CreateProjectAndSubprojectAlternativeVersion">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Projects/CP_CreateProjectAndSubprojectAlternativeVersion.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_CreateProjectVersion.lua" type="script" desc="CreateProjectVersion">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Projects/CP_CreateProjectVersion.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_IncrementVersionAndSync.lua" type="script" desc="IncrementVersionAndSync">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Projects/CP_IncrementVersionAndSync.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Track Navigator">
+    <reapack name="CP_TrackNavigator.lua" type="script" desc="TrackNavigator">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Track%20Navigator/CP_TrackNavigator.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_TrackNavigator_OFF.lua" type="script" desc="TrackNavigator - OFF">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Track%20Navigator/CP_TrackNavigator_OFF.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_TrackNavigator_ON.lua" type="script" desc="TrackNavigator - ON">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Track%20Navigator/CP_TrackNavigator_ON.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_TrackNavigator_Settings.lua" type="script" desc="TrackNavigator - Settings">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Track%20Navigator/CP_TrackNavigator_Settings.lua</source>
+      </version>
+      <version name="1.0.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Track%20Navigator/CP_TrackNavigator_Settings.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Various">
+    <reapack name="CP_AutoArmVSTiTrack.lua" type="script" desc="AutoArmVSTiTrack">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_AutoArmVSTiTrack.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_BounceAndSendCopyToRX.lua" type="script" desc="BounceAndSendCopyToRX">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_BounceAndSendCopyToRX.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_CopySourceWithTakeName.lua" type="script" desc="CopySourceWithTakeName">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_CopySourceWithTakeName.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_CopySourceWithTakeName_RX.lua" type="script" desc="CopySourceWithTakeName RX">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_CopySourceWithTakeName_RX.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_DeleteUnderMouse.lua" type="script" desc="DeleteUnderMouse">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_DeleteUnderMouse.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_DuplicateTrackRearrange.lua" type="script" desc="DuplicateTrackRearrange">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_DuplicateTrackRearrange.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_FXRack.lua" type="script" desc="FXRack">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_FXRack.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_ImGuiStyleLoader.lua" type="script" desc="ImGuiStyleLoader">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_ImGuiStyleLoader.lua</source>
+      </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_ImGuiStyleLoader.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_ImGuiStyleLoader.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_ImGuiStyleManager.lua" type="script" desc="ImGuiStyleManager - GUI">
+      <version name="1.1" author="Cedric Pamalio" time="2025-11-08T21:37:48Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/6ac9d786f6d6e19b66309e5bfbe1867622a0c0ac/Various/CP_ImGuiStyleManager.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_ProjectNoteEditor.lua" type="script" desc="ProjectNoteEditor">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_ProjectNoteEditor.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_ProjectNoteEditor_Settings.lua" type="script" desc="ProjectNoteEditor - Settings">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_ProjectNoteEditor_Settings.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_ProjectSoundboard.lua" type="script" desc="ProjectSoundboard">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_ProjectSoundboard.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_SoundGenerator.lua" type="script" desc="SoundGenerator">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_SoundGenerator.lua</source>
+      </version>
+      <version name="1.0.3" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_SoundGenerator.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_SoundGenerator.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_TimeSelectionSync.lua" type="script" desc="TimeSelectionSync">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_TimeSelectionSync.lua</source>
+      </version>
+      <version name="1.0.2" author="Cedric Pamalio" time="2025-07-13T15:29:45Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/d69b15577ce098822e00d85904a8d95333795e4e/Various/CP_TimeSelectionSync.lua</source>
+      </version>
+      <version name="1.0.3" author="Cedric Pamalio" time="2025-10-19T20:55:11Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/b3d653ebd11e53c17daeceb0f78dd09d1d46ffd6/Various/CP_TimeSelectionSync.lua</source>
+      </version>
+      <version name="1.1" author="Cedric Pamalio" time="2025-10-19T22:00:24Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/fe36bb1060a13a20aa8457dee55f9179b2644582/Various/CP_TimeSelectionSync.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_UpdateMediaSource_Next.lua" type="script" desc="UpdateMediaSource Next">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_UpdateMediaSource_Next.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_UpdateMediaSource_Previous.lua" type="script" desc="UpdateMediaSource Previous">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_UpdateMediaSource_Previous.lua</source>
+      </version>
+    </reapack>
+    <reapack name="CP_UpdateMediaSource_Rename.lua" type="script" desc="UpdateMediaSource Rename">
+      <version name="1.0" author="Cedric Pamalio" time="2025-07-03T14:37:19Z">
+        <source main="main">https://github.com/kzarkses/CP_Scripts/raw/747ad2e7960398e5a98938910bd31a000ce1ca8c/Various/CP_UpdateMediaSource_Rename.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <metadata>
+    <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 \outlinelevel0 \b \fs36 CP Scripts\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 Free REAPER Scripts by Cedric Pamalio.\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 ReaPack URL: https://github.com/kzarkses/CP_Scripts/raw/master/index.xml\par}
+}
+]]></description>
+  </metadata>
+</index>

@@ -1,0 +1,211 @@
+desc: CP_FrequencyAnalyzer_JSFX
+author: Cedric Pelletier
+version: 1.0
+
+slider1:fft_size_idx=3<0,5,1{256,512,1024,2048,4096,8192}>FFT Size
+slider2:smoothing=50<0,100,1>Smoothing (ms)
+slider3:floor_db=-132<-132,-12,1>Floor (dB)
+slider4:slope=0<-6,6,0.5>Slope (dB/octave)
+slider5:fft_skip=0<0,3,1{Every Frame,Skip 1/2,Skip 2/3,Skip 3/4}>FFT Rate
+
+options:gmem=CP_FrequencyAnalyzer
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+
+function init_fft()
+(
+  fft_sizes = 0;
+  fft_sizes[0] = 256;
+  fft_sizes[1] = 512;
+  fft_sizes[2] = 1024;
+  fft_sizes[3] = 2048;
+  fft_sizes[4] = 4096;
+  fft_sizes[5] = 8192;
+  
+  fft_size = fft_sizes[fft_size_idx];
+  fft_size != old_fft_size ? (
+    old_fft_size = fft_size;
+    
+    buffer_size = fft_size * 2;
+    buffer = 0;
+    fft_buffer = buffer + buffer_size;
+    window_buffer = fft_buffer + buffer_size;
+    magnitude_buffer = window_buffer + fft_size;
+    smooth_buffer = magnitude_buffer + fft_size/2;
+    peak_buffer = smooth_buffer + fft_size/2;
+    
+    i = 0;
+    loop(fft_size,
+      window_buffer[i] = 0.5 * (1 - cos(2 * $pi * i / (fft_size - 1)));
+      i += 1;
+    );
+    
+    i = 0;
+    loop(fft_size/2,
+      smooth_buffer[i] = -96;
+      peak_buffer[i] = -96;
+      i += 1;
+    );
+    
+    write_pos = 0;
+    samples_collected = 0;
+    need_fft = 0;
+  );
+);
+
+init_fft();
+
+gmem_offset = 0;
+
+peak_decay_rate = 0.995;
+
+reference_freq = 1000;
+
+fft_skip_counter = 0;
+
+@slider
+
+init_fft();
+
+fft_time = fft_size / srate;
+
+smoothing > 0 ? (
+  smoothing_coeff = pow(0.5, fft_time / (smoothing / 1000));
+) : (
+  smoothing_coeff = 0;
+);
+
+min_magnitude = pow(10, floor_db / 20);
+
+@sample
+
+mono_sample = (spl0 + spl1) * 0.5;
+
+buffer[write_pos] = mono_sample;
+write_pos = (write_pos + 1) % fft_size;
+samples_collected += 1;
+
+samples_collected >= fft_size ? (
+  samples_collected = 0;
+  need_fft = 1;
+);
+
+@block
+
+// FFT Skip logic
+fft_skip > 0 ? (
+  fft_skip_counter += 1;
+  fft_skip_counter > fft_skip ? (
+    fft_skip_counter = 0;
+  ) : (
+    need_fft = 0;  // Skip this FFT calculation
+  );
+);
+
+need_fft ? (
+  need_fft = 0;
+  
+  read_pos = write_pos;
+  i = 0;
+  loop(fft_size,
+    idx = (read_pos + i) % fft_size;
+    fft_buffer[i * 2] = buffer[idx] * window_buffer[i];
+    fft_buffer[i * 2 + 1] = 0;
+    i += 1;
+  );
+  
+  fft(fft_buffer, fft_size);
+  fft_permute(fft_buffer, fft_size);
+  
+  i = 0;
+  loop(fft_size / 2,
+    real = fft_buffer[i * 2];
+    imag = fft_buffer[i * 2 + 1];
+    mag = sqrt(real * real + imag * imag) * (2.0 / fft_size);
+    
+    mag < min_magnitude ? mag = min_magnitude;
+    
+    mag_db = 20 * log10(mag);
+    
+    bin_freq = (i / (fft_size / 2)) * (srate / 2);
+    bin_freq < 20 ? bin_freq = 20;
+    
+    slope != 0 ? (
+      slope_compensation = log(bin_freq / reference_freq) / log(2) * slope;
+      mag_db += slope_compensation;
+    );
+    
+    smoothing > 0 ? (
+      smooth_buffer[i] = smooth_buffer[i] * smoothing_coeff + mag_db * (1 - smoothing_coeff);
+    ) : (
+      smooth_buffer[i] = mag_db;
+    );
+    
+    smooth_buffer[i] > peak_buffer[i] ? (
+      peak_buffer[i] = smooth_buffer[i];
+    ) : (
+      peak_buffer[i] *= peak_decay_rate;
+      peak_buffer[i] < floor_db ? peak_buffer[i] = floor_db;
+    );
+    
+    i += 1;
+  );
+  
+  num_bins = fft_size / 2;
+  
+  gmem[gmem_offset] = fft_size;
+  gmem[gmem_offset + 1] = srate;
+  gmem[gmem_offset + 2] = num_bins;
+  
+  i = 0;
+  loop(num_bins,
+    gmem[gmem_offset + 3 + i] = smooth_buffer[i];
+    gmem[gmem_offset + 3 + num_bins + i] = peak_buffer[i];
+    i += 1;
+  );
+);
+
+@gfx 400 200
+
+gfx_r = gfx_g = gfx_b = 1;
+gfx_a = 1;
+
+gfx_x = 10;
+gfx_y = 10;
+gfx_drawstr("=== JSFX DEBUG ===");
+
+gfx_x = 10;
+gfx_y = 30;
+gfx_drawnumber(fft_size_idx, 0);
+gfx_drawstr(" <- fft_size_idx (slider)");
+
+gfx_x = 10;
+gfx_y = 50;
+gfx_drawnumber(fft_size, 0);
+gfx_drawstr(" <- fft_size variable");
+
+gfx_x = 10;
+gfx_y = 70;
+gfx_drawnumber(num_bins, 0);
+gfx_drawstr(" <- num_bins");
+
+gfx_x = 10;
+gfx_y = 90;
+gfx_drawstr("gmem[0] = ");
+gfx_drawnumber(gmem[gmem_offset], 1);
+
+gfx_x = 10;
+gfx_y = 110;
+gfx_drawstr("gmem[2] = ");
+gfx_drawnumber(gmem[gmem_offset + 2], 1);
+
+gfx_x = 10;
+gfx_y = 130;
+gfx_drawstr("buffer_size = ");
+gfx_drawnumber(buffer_size, 0);
+

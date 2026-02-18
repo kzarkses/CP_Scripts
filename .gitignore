@@ -1,0 +1,21 @@
+# IDE
+.vs
+.vscode
+
+# Dev files
+WIP
+OLD
+tokeep
+FX_Modules
+ActionsSequences
+.claude/
+
+# Sensitive / Private
+ClaudeInstruction
+CONTEXT.md
+ROADMAP.md
+
+# Paid scripts (source code not public)
+FX Constellation/
+Custom Toolbars/
+Media Properties Toolbar/

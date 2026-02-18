@@ -1,0 +1,85 @@
+desc: CP_Goniometer_JSFX
+author: Vladimir Belov (modified by Claude)
+version: 1.01
+
+options:gmem=CP_Goniometer, no_meter
+
+in_pin:left input
+in_pin:right input
+out_pin:none
+
+@init
+k=sqrt(2);
+gfx_clear=-1;
+p=$PI/180;
+c=1;
+s=0;
+i=0;
+Corr=1;
+Indicar=1;
+attack = exp(-1/(3/1000*srate));
+release = exp(-1/(1000/1000*srate));
+decay = 1/srate/0.6;
+
+gmem_offset = 1000;
+buffer_size = 4096;
+write_pos = 0;
+
+@sample
+in=sqrt(sqr(spl0)+sqr(spl1));
+in*c>0.35 ? (c*=attack) : (c/=release); c=min(100000,c);
+inl=spl0;
+inr=spl1;
+
+Lr=inl-inr;
+Rr=inl+inr;
+
+0[s]=Lr*c;
+1[s]=Rr*c;
+s+=2;
+
+As=abs(Lr);
+Am=abs(Rr);
+Am>=As ? Corr=1 : Corr=-1;
+Am==As && Am>0.001 ? Corr=0;
+
+Indicor=Indicor-(Indicor-corr)*decay;
+
+gmem[gmem_offset + write_pos * 2] = Lr;
+gmem[gmem_offset + write_pos * 2 + 1] = Rr;
+
+write_pos = (write_pos + 1) % buffer_size;
+gmem[gmem_offset - 1] = write_pos;
+gmem[gmem_offset - 2] = Indicor;
+
+@gfx 500 500
+function GFXClear () (
+  gfx_x=gfx_y=gfx_r=gfx_g=gfx_b=0; gfx_a=1;
+  gfx_rectto(gfx_w,gfx_h)
+);
+
+mouse_cap==1 && mm==0 ? (mm=1; GFXClear();); 
+mouse_cap==0 ? mm=0;
+gfx_w!=w && gfx_h!=h ? (GFXClear(); w=gfx_w; h=gfx_h); 
+
+size = min(gfx_w,gfx_h);
+gx0=gfx_w/2;
+sizeH = size/2;
+i=0;
+
+gfx_x=gx0;
+gfx_y=sizeH;
+gfx_r=c/20;
+gfx_g=1-c/600;
+gfx_b=-c/40+0.8;
+gfx_a=0.1;
+while(
+  gfx_lineto(gx0-sizeH*0[i]+0.5,sizeH*(1-1[i]),1);
+  (i+=2)<s;
+);
+
+s=0;
+
+gfx_r=gfx_g=gfx_b=gfx_x=gfx_y=0;
+gfx_a=0.05;
+gfx_rectto(gfx_w,gfx_h);
