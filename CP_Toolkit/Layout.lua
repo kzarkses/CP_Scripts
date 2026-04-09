@@ -409,4 +409,439 @@ function Layout.Separator(theme)
     Layout.AdvanceCursor(w, 5)
 end
 
+-- ============================================================================
+-- COLUMNS (proportional or fixed widths)
+-- ============================================================================
+-- ratios = {0.3, 0.7} for 30%/70%, or {120, 0} for 120px fixed + fill rest
+-- Negative values = fixed pixel, positive <= 1 = ratio, > 1 = fixed pixel
+local column_stack = {}
+
+function Layout.BeginColumns(id, ratios, opts)
+    opts = opts or {}
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    -- Flush pending SameLine
+    if c.sameline_pending then
+        c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
+        c.cursor_x = c.pad_x + c.indent_x
+        c.sameline_pending = false
+        c.max_row_h = 0
+    end
+
+    local avail_w = c.w - c.cursor_x - c.pad_x
+    local gap = opts.gap or c.spacing
+
+    -- Calculate column widths
+    local col_widths = {}
+    local total_fixed = 0
+    local total_ratio = 0
+    local gaps_total = (#ratios - 1) * gap
+
+    for i, r in ipairs(ratios) do
+        if r > 1 then
+            col_widths[i] = r  -- fixed pixel
+            total_fixed = total_fixed + r
+        elseif r > 0 then
+            col_widths[i] = r  -- ratio (will be resolved)
+            total_ratio = total_ratio + r
+        else
+            col_widths[i] = 0  -- auto-fill
+            total_ratio = total_ratio + 1
+        end
+    end
+
+    local remaining = avail_w - total_fixed - gaps_total
+    for i, r in ipairs(ratios) do
+        if r <= 1 then
+            local share = (r > 0) and r or 1
+            col_widths[i] = math.floor(remaining * share / total_ratio)
+        end
+    end
+
+    -- Calculate absolute X positions
+    local col_positions = {}
+    local abs_x = c.x + c.cursor_x
+    local abs_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
+    for i = 1, #col_widths do
+        col_positions[i] = abs_x
+        abs_x = abs_x + col_widths[i] + gap
+    end
+
+    local cols = {
+        id = id,
+        count = #ratios,
+        widths = col_widths,
+        positions = col_positions,
+        gap = gap,
+        current = 1,
+        start_y = c.cursor_y,
+        max_h = 0,  -- tallest column content
+        parent_cursor_x = c.cursor_x,
+        parent_cursor_y = c.cursor_y,
+    }
+
+    column_stack[#column_stack + 1] = cols
+
+    -- Push first column as a child container (no border, no scroll)
+    local col_x = col_positions[1]
+    local col_w = col_widths[1]
+    local col_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
+    local col_h = c.h - c.cursor_y - c.pad_y  -- max height from current pos
+
+    local col_c = {
+        id = id .. "_col1",
+        x = col_x, y = col_y, w = col_w, h = col_h,
+        pad_x = 0, pad_y = 0,
+        cursor_x = 0, cursor_y = 0,
+        content_h = 0, scroll_y = 0,
+        scrollable = false,
+        same_line = false, same_line_x = 0,
+        max_row_h = 0, spacing = c.spacing,
+        indent_x = 0, sameline_pending = false,
+        last_widget_end_x = 0, last_widget_y = 0, last_widget_h = 0,
+    }
+
+    Core.PushContainer(col_c)
+    Core.PushClipRect(col_x, col_y, col_w, col_h)
+end
+
+function Layout.NextColumn()
+    local cols = column_stack[#column_stack]
+    if not cols then return end
+
+    -- Pop current column container
+    local old_c = Core.CurrentContainer()
+    if old_c then
+        local col_content_h = old_c.cursor_y + old_c.max_row_h
+        if old_c.sameline_pending then
+            col_content_h = old_c.cursor_y + old_c.max_row_h + old_c.spacing
+        end
+        cols.max_h = math.max(cols.max_h, col_content_h)
+    end
+    Core.PopClipRect()
+    Core.PopContainer()
+
+    -- Advance to next column
+    cols.current = cols.current + 1
+    if cols.current > cols.count then return end
+
+    local parent = Core.CurrentContainer()
+    if not parent then return end
+
+    local col_x = cols.positions[cols.current]
+    local col_w = cols.widths[cols.current]
+    local col_y = parent.y + cols.start_y - (parent.scrollable and parent.scroll_y or 0)
+    local col_h = parent.h - cols.start_y - parent.pad_y
+
+    local col_c = {
+        id = cols.id .. "_col" .. cols.current,
+        x = col_x, y = col_y, w = col_w, h = col_h,
+        pad_x = 0, pad_y = 0,
+        cursor_x = 0, cursor_y = 0,
+        content_h = 0, scroll_y = 0,
+        scrollable = false,
+        same_line = false, same_line_x = 0,
+        max_row_h = 0, spacing = parent.spacing,
+        indent_x = 0, sameline_pending = false,
+        last_widget_end_x = 0, last_widget_y = 0, last_widget_h = 0,
+    }
+
+    Core.PushContainer(col_c)
+    Core.PushClipRect(col_x, col_y, col_w, col_h)
+end
+
+function Layout.EndColumns()
+    local cols = column_stack[#column_stack]
+    if not cols then return end
+
+    -- Pop last column
+    local old_c = Core.CurrentContainer()
+    if old_c then
+        local col_content_h = old_c.cursor_y + old_c.max_row_h
+        if old_c.sameline_pending then
+            col_content_h = old_c.cursor_y + old_c.max_row_h + old_c.spacing
+        end
+        cols.max_h = math.max(cols.max_h, col_content_h)
+    end
+    Core.PopClipRect()
+    Core.PopContainer()
+
+    column_stack[#column_stack] = nil
+
+    -- Advance parent cursor past the tallest column
+    local parent = Core.CurrentContainer()
+    if parent then
+        parent.cursor_y = cols.start_y + cols.max_h + parent.spacing
+        parent.cursor_x = parent.pad_x + parent.indent_x
+        parent.max_row_h = 0
+    end
+end
+
+-- ============================================================================
+-- WEIGHTED ROW (responsive, auto-hide narrow columns)
+-- ============================================================================
+-- weights = { {key="name", weight=2.5, min_w=60}, {key="vol", weight=1.0, min_w=40}, ... }
+-- Returns: widths table {key = pixel_width}, visible table {key = bool}
+function Layout.BeginWeightedRow(id, weights, opts)
+    opts = opts or {}
+    local c = Core.CurrentContainer()
+    if not c then return {}, {} end
+
+    -- Flush pending SameLine
+    if c.sameline_pending then
+        c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
+        c.cursor_x = c.pad_x + c.indent_x
+        c.sameline_pending = false
+        c.max_row_h = 0
+    end
+
+    local avail_w = c.w - c.cursor_x - c.pad_x
+    local gap = opts.gap or c.spacing
+    local row_h = opts.height or 0  -- 0 = auto
+
+    -- First pass: determine which columns are visible
+    local total_weight = 0
+    local visible = {}
+    local visible_list = {}
+    for _, w in ipairs(weights) do
+        visible[w.key] = true
+        visible_list[#visible_list + 1] = w
+        total_weight = total_weight + w.weight
+    end
+
+    -- Remove columns that don't fit (starting from rightmost low-weight)
+    local gaps_needed = math.max(0, #visible_list - 1)
+    local function calc_total_min()
+        local total = gaps_needed * gap
+        for _, w in ipairs(visible_list) do
+            if visible[w.key] then total = total + (w.min_w or 40) end
+        end
+        return total
+    end
+
+    -- Auto-hide from right if too narrow
+    for i = #weights, 1, -1 do
+        if calc_total_min() <= avail_w then break end
+        if #visible_list > 1 then
+            visible[weights[i].key] = false
+        end
+    end
+
+    -- Second pass: calculate widths for visible columns
+    total_weight = 0
+    local visible_count = 0
+    for _, w in ipairs(weights) do
+        if visible[w.key] then
+            total_weight = total_weight + w.weight
+            visible_count = visible_count + 1
+        end
+    end
+
+    local gaps_total = math.max(0, visible_count - 1) * gap
+    local distributable = avail_w - gaps_total
+    local widths = {}
+    for _, w in ipairs(weights) do
+        if visible[w.key] then
+            widths[w.key] = math.max(w.min_w or 40,
+                math.floor(distributable * w.weight / total_weight))
+        else
+            widths[w.key] = 0
+        end
+    end
+
+    -- Store row state for cell placement
+    local abs_x = c.x + c.cursor_x
+    local abs_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
+
+    local row_data = {
+        id = id,
+        widths = widths,
+        visible = visible,
+        weights = weights,
+        gap = gap,
+        start_x = abs_x,
+        start_y = abs_y,
+        current_x = abs_x,
+        height = row_h,
+        parent_cursor_y = c.cursor_y,
+    }
+
+    Core.SetWidgetData("wrow_" .. id, row_data)
+    return widths, visible
+end
+
+-- Get position and size for a specific cell in the weighted row
+-- Returns: x, y, w, h (screen coords), or nil if not visible
+function Layout.WeightedCell(id, key)
+    local row = Core.GetWidgetData("wrow_" .. id, nil)
+    if not row or not row.visible[key] then return nil end
+
+    -- Find X position by summing previous visible columns
+    local cell_x = row.start_x
+    for _, w in ipairs(row.weights) do
+        if w.key == key then break end
+        if row.visible[w.key] then
+            cell_x = cell_x + row.widths[w.key] + row.gap
+        end
+    end
+
+    return cell_x, row.start_y, row.widths[key], row.height
+end
+
+function Layout.EndWeightedRow(id)
+    local row = Core.GetWidgetData("wrow_" .. id, nil)
+    if not row then return end
+
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    local h = row.height > 0 and row.height or c.spacing
+    c.cursor_y = row.parent_cursor_y + h + c.spacing
+    c.cursor_x = c.pad_x + c.indent_x
+    c.max_row_h = h
+end
+
+-- ============================================================================
+-- GRID LAYOUT (auto-wrapping cells)
+-- ============================================================================
+-- Returns: cell_count visible in current row
+function Layout.BeginGrid(id, opts)
+    opts = opts or {}
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    -- Flush pending SameLine
+    if c.sameline_pending then
+        c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
+        c.cursor_x = c.pad_x + c.indent_x
+        c.sameline_pending = false
+        c.max_row_h = 0
+    end
+
+    local cell_w = opts.cell_w or 60
+    local cell_h = opts.cell_h or 60
+    local gap = opts.gap or c.spacing
+    local avail_w = c.w - c.cursor_x - c.pad_x
+
+    local cols = math.max(1, math.floor((avail_w + gap) / (cell_w + gap)))
+
+    local grid = {
+        id = id,
+        cell_w = cell_w,
+        cell_h = cell_h,
+        gap = gap,
+        cols = cols,
+        index = 0,
+        start_cursor_y = c.cursor_y,
+    }
+
+    Core.SetWidgetData("grid_" .. id, grid)
+end
+
+-- Call for each cell. Returns x, y, w, h in screen coords.
+function Layout.GridCell(id)
+    local grid = Core.GetWidgetData("grid_" .. id, nil)
+    if not grid then return 0, 0, 0, 0 end
+
+    local c = Core.CurrentContainer()
+    if not c then return 0, 0, 0, 0 end
+
+    local col = grid.index % grid.cols
+    local row = math.floor(grid.index / grid.cols)
+
+    local cell_x = c.x + c.pad_x + c.indent_x + col * (grid.cell_w + grid.gap)
+    local cell_y = c.y + grid.start_cursor_y + row * (grid.cell_h + grid.gap)
+           - (c.scrollable and c.scroll_y or 0)
+
+    grid.index = grid.index + 1
+    Core.SetWidgetData("grid_" .. id, grid)
+
+    return cell_x, cell_y, grid.cell_w, grid.cell_h
+end
+
+function Layout.EndGrid(id)
+    local grid = Core.GetWidgetData("grid_" .. id, nil)
+    if not grid then return end
+
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    local total_rows = math.ceil(grid.index / grid.cols)
+    local total_h = total_rows * (grid.cell_h + grid.gap) - grid.gap
+
+    c.cursor_y = grid.start_cursor_y + total_h + c.spacing
+    c.cursor_x = c.pad_x + c.indent_x
+    c.max_row_h = 0
+end
+
+-- ============================================================================
+-- SPLITTER (horizontal or vertical resizable divider)
+-- ============================================================================
+-- Returns: size_a (pixels for the first panel)
+function Layout.Splitter(id, direction, total_size, default_ratio, opts)
+    opts = opts or {}
+    local c = Core.CurrentContainer()
+    if not c then return math.floor(total_size * (default_ratio or 0.5)) end
+
+    local thickness = opts.thickness or 6
+    local min_a = opts.min_a or 50
+    local min_b = opts.min_b or 50
+
+    local data = Core.GetWidgetData("splitter_" .. id, {
+        ratio = default_ratio or 0.5
+    })
+
+    local size_a = math.floor(total_size * data.ratio)
+    size_a = math.max(min_a, math.min(total_size - min_b - thickness, size_a))
+
+    -- Splitter bar position
+    local x, y = Layout.GetCursorPos()
+    local bar_x, bar_y, bar_w, bar_h
+
+    if direction == "horizontal" then
+        bar_x = x + size_a
+        bar_y = y
+        bar_w = thickness
+        bar_h = opts.length or Layout.GetAvailableHeight()
+    else
+        bar_x = x
+        bar_y = y + size_a
+        bar_w = opts.length or Layout.GetAvailableWidth()
+        bar_h = thickness
+    end
+
+    -- Interaction
+    local hovered = Core.MouseInRect(bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4)
+    local drag_id = "splitter_drag_" .. id
+
+    if hovered and Core.MouseClicked(1) then
+        Core.SetActive(drag_id)
+    end
+
+    if Core.IsActive(drag_id) then
+        if Core.MouseDown(1) then
+            local dx, dy = Core.MouseDelta()
+            local delta = (direction == "horizontal") and dx or dy
+            if delta ~= 0 then
+                data.ratio = data.ratio + delta / total_size
+                data.ratio = math.max(min_a / total_size,
+                    math.min(1 - (min_b + thickness) / total_size, data.ratio))
+                size_a = math.floor(total_size * data.ratio)
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+
+    -- Draw splitter bar
+    if Core.IsVisible(bar_x, bar_y, bar_w, bar_h) then
+        local color = (hovered or Core.IsActive(drag_id)) and 0.45 or 0.25
+        Core.DrawRect(bar_x, bar_y, bar_w, bar_h, color, color, color, 0.5)
+    end
+
+    Core.SetWidgetData("splitter_" .. id, data)
+    return size_a
+end
+
 return Layout

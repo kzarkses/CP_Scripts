@@ -2337,4 +2337,786 @@ function Widgets.InputText(id, label, text, theme, opts)
     return changed, changed and new_text or text
 end
 
+-- ============================================================================
+-- CANVAS / DRAW AREA (free drawing zone)
+-- ============================================================================
+-- Returns: x, y, w, h of the canvas area + interaction state
+-- The caller draws whatever they want inside using Core.DrawRect/Line/Text
+function Widgets.Canvas(id, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+    local avail_w = Layout.GetAvailableWidth()
+    local w = opts.width or avail_w
+    local h = opts.height or 200
+
+    local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local mouse_x, mouse_y = Core.GetMousePos()
+
+    -- Normalize mouse position to 0-1 within canvas
+    local norm_x = hovered and math.max(0, math.min(1, (mouse_x - x) / w)) or nil
+    local norm_y = hovered and math.max(0, math.min(1, (mouse_y - y) / h)) or nil
+
+    local clicked = hovered and Core.MouseClicked(1)
+    local dragging = false
+    local right_clicked = hovered and Core.MouseClicked(2)
+
+    if hovered then Core.SetHot(id) end
+
+    if clicked then Core.SetActive(id) end
+
+    if Core.IsActive(id) then
+        if Core.MouseDown(1) then
+            dragging = true
+        else
+            Core.ClearActive()
+        end
+    end
+
+    -- Draw background
+    if Core.IsVisible(x, y, w, h) then
+        local bg = opts.bg or theme.colors.frame_bg
+        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+
+        -- Border
+        local bc = opts.border_color or theme.colors.border
+        Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], bc[4] or 0.4, false)
+
+        -- Crosshairs if option set
+        if opts.crosshair then
+            local sc = theme.colors.separator
+            Core.DrawLine(x + w/2, y, x + w/2, y + h, sc[1], sc[2], sc[3], 0.2)
+            Core.DrawLine(x, y + h/2, x + w, y + h/2, sc[1], sc[2], sc[3], 0.2)
+        end
+
+        -- Grid if option set
+        if opts.grid and opts.grid > 1 then
+            local sc = theme.colors.separator
+            local step_x = w / opts.grid
+            local step_y = h / opts.grid
+            for i = 1, opts.grid - 1 do
+                Core.DrawLine(x + i * step_x, y, x + i * step_x, y + h, sc[1], sc[2], sc[3], 0.1)
+                Core.DrawLine(x, y + i * step_y, x + w, y + i * step_y, sc[1], sc[2], sc[3], 0.1)
+            end
+        end
+    end
+
+    Layout.AdvanceCursor(w, h)
+
+    return {
+        x = x, y = y, w = w, h = h,
+        hovered = hovered,
+        clicked = clicked,
+        right_clicked = right_clicked,
+        dragging = dragging,
+        norm_x = norm_x,
+        norm_y = norm_y,
+        mouse_x = mouse_x,
+        mouse_y = mouse_y,
+    }
+end
+
+-- ============================================================================
+-- TOGGLE BUTTON (ON/OFF visual, distinct from checkbox)
+-- ============================================================================
+function Widgets.ToggleButton(id, label, is_on, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+
+    local tw, th = Core.MeasureText(label)
+    local fp_x = theme.frame_padding_x
+    local fp_y = theme.frame_padding_y
+    local w = opts.width or (tw + fp_x * 2)
+    local h = opts.height or (th + fp_y * 2)
+
+    local toggled = false
+    local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then
+            toggled = true
+        end
+    end
+
+    local new_on = (toggled and (not is_on)) or ((not toggled) and is_on)
+
+    -- Draw
+    if Core.IsVisible(x, y, w, h) then
+        local bg
+        if new_on then
+            bg = hovered and theme.colors.accent_hovered or theme.colors.accent
+        else
+            bg = hovered and theme.colors.button_hovered or theme.colors.button
+        end
+        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+
+        -- Text
+        local tc = new_on and { 1, 1, 1, 1 } or theme.colors.text
+        local tx = x + math.floor((w - tw) / 2)
+        local ty = y + math.floor((h - th) / 2)
+        Core.DrawText(label, tx, ty, tc[1], tc[2], tc[3], tc[4])
+    end
+
+    Layout.AdvanceCursor(w, h)
+    return toggled, new_on
+end
+
+-- ============================================================================
+-- RANGE SLIDER (dual thumb for min/max)
+-- ============================================================================
+function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+    local avail_w = Layout.GetAvailableWidth()
+
+    local tw, th = 0, 0
+    if label and label ~= "" then
+        tw, th = Core.MeasureText(label)
+    end
+
+    local slider_w = opts.width or math.max(100, avail_w - tw - 12)
+    local h = theme.slider_height
+    local total_w = slider_w + (tw > 0 and (tw + 8) or 0)
+
+    local sx = x + (tw > 0 and (tw + 8) or 0)
+    local sy = y + math.floor((math.max(h, th) - h) / 2)
+
+    local changed = false
+    local new_min = val_min
+    local new_max = val_max
+
+    -- Two grab handles
+    local range = range_max - range_min
+    local ratio_min = (val_min - range_min) / range
+    local ratio_max = (val_max - range_min) / range
+    local grab_w = 8
+
+    local min_px = sx + math.floor(ratio_min * slider_w)
+    local max_px = sx + math.floor(ratio_max * slider_w)
+
+    local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h) and not Core.HasPopup()
+    if hovered then Core.SetHot(id) end
+
+    -- Determine which handle to drag
+    local drag_id_min = id .. "_min"
+    local drag_id_max = id .. "_max"
+
+    if hovered and Core.MouseClicked(1) then
+        local mx = Core.GetState().mouse_x
+        local dist_min = math.abs(mx - min_px)
+        local dist_max = math.abs(mx - max_px)
+        if dist_min <= dist_max then
+            Core.SetActive(drag_id_min)
+        else
+            Core.SetActive(drag_id_max)
+        end
+    end
+
+    -- Drag min handle
+    if Core.IsActive(drag_id_min) then
+        if Core.MouseDown(1) then
+            local mx = Core.GetState().mouse_x
+            local ratio = math.max(0, math.min(ratio_max, (mx - sx) / slider_w))
+            new_min = range_min + ratio * range
+            if new_min ~= val_min then changed = true end
+        else
+            Core.ClearActive()
+        end
+    end
+
+    -- Drag max handle
+    if Core.IsActive(drag_id_max) then
+        if Core.MouseDown(1) then
+            local mx = Core.GetState().mouse_x
+            local ratio = math.max(ratio_min, math.min(1, (mx - sx) / slider_w))
+            new_max = range_min + ratio * range
+            if new_max ~= val_max then changed = true end
+        else
+            Core.ClearActive()
+        end
+    end
+
+    -- Recalc positions after potential change
+    if changed then
+        ratio_min = (new_min - range_min) / range
+        ratio_max = (new_max - range_min) / range
+        min_px = sx + math.floor(ratio_min * slider_w)
+        max_px = sx + math.floor(ratio_max * slider_w)
+    end
+
+    -- Draw
+    if Core.IsVisible(x, y, total_w, math.max(h, th)) then
+        -- Label
+        if tw > 0 then
+            local tc = theme.colors.text
+            local ly = y + math.floor((math.max(h, th) - th) / 2)
+            Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
+        end
+
+        -- Track
+        local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
+        Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
+
+        -- Filled range between handles
+        local ac = theme.colors.accent
+        local fill_x = min_px
+        local fill_w = max_px - min_px
+        if fill_w > 0 then
+            Core.DrawRect(fill_x, sy, fill_w, h, ac[1], ac[2], ac[3], 0.5)
+        end
+
+        -- Min handle
+        local min_grab_x = math.max(sx, min_px - grab_w / 2)
+        local mc = Core.IsActive(drag_id_min) and theme.colors.accent_active or
+                   (hovered and theme.colors.accent_hovered or theme.colors.accent)
+        Core.DrawRect(min_grab_x, sy, grab_w, h, mc[1], mc[2], mc[3], mc[4])
+
+        -- Max handle
+        local max_grab_x = math.min(sx + slider_w - grab_w, max_px - grab_w / 2)
+        local xc = Core.IsActive(drag_id_max) and theme.colors.accent_active or
+                   (hovered and theme.colors.accent_hovered or theme.colors.accent)
+        Core.DrawRect(max_grab_x, sy, grab_w, h, xc[1], xc[2], xc[3], xc[4])
+
+        -- Value display
+        local format = opts.format or "%.1f"
+        local val_str = string.format(format .. " - " .. format, changed and new_min or val_min, changed and new_max or val_max)
+        local vw, vh = Core.MeasureText(val_str)
+        local vx = sx + math.floor((slider_w - vw) / 2)
+        local vy = sy + math.floor((h - vh) / 2)
+        local tc = theme.colors.text
+        Core.DrawText(val_str, vx, vy, tc[1], tc[2], tc[3], tc[4])
+    end
+
+    Layout.AdvanceCursor(total_w, math.max(h, th))
+    return changed, changed and new_min or val_min, changed and new_max or val_max
+end
+
+-- ============================================================================
+-- ACTION LIST (scrollable list with per-row action buttons)
+-- ============================================================================
+-- items = { {label="Preset 1", data=...}, {label="Preset 2"}, ... }
+-- actions = { {icon="X", tooltip="Delete"}, {icon="E", tooltip="Edit"} }
+-- Returns: clicked_item_index, clicked_action_index (both nil if no click)
+function Widgets.ActionList(id, items, actions, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+    local avail_w = Layout.GetAvailableWidth()
+    local w = opts.width or avail_w
+    local item_h = opts.item_height or theme.combo_height
+    local max_visible = opts.max_visible or 8
+    local visible_count = math.min(#items, max_visible)
+    local h = visible_count * item_h
+    local selected = opts.selected
+
+    local data = Core.GetWidgetData("alist_" .. id, { scroll = 0 })
+
+    local clicked_item, clicked_action = nil, nil
+
+    -- Calculate action buttons total width
+    local action_total_w = 0
+    if actions then
+        for _, act in ipairs(actions) do
+            local aw = Core.MeasureText(act.icon or "?") + theme.frame_padding_x * 2
+            action_total_w = action_total_w + aw + 2
+        end
+    end
+
+    if Core.IsVisible(x, y, w, h) then
+        -- Background
+        local bg = theme.colors.frame_bg
+        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+
+        -- Border
+        local bc = theme.colors.border
+        Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], 0.3, false)
+
+        -- Items
+        local scroll_offset = math.floor(data.scroll)
+        for i = 1 + scroll_offset, math.min(#items, visible_count + scroll_offset) do
+            local item = items[i]
+            local iy = y + (i - 1 - scroll_offset) * item_h
+            local is_selected = (i == selected)
+
+            local row_hovered = Core.MouseInRect(x, iy, w, item_h) and not Core.HasPopup()
+
+            -- Hover highlight
+            if row_hovered then
+                local hc = theme.colors.header_hovered
+                Core.DrawRect(x + 1, iy, w - 2, item_h, hc[1], hc[2], hc[3], 0.4)
+            end
+
+            -- Selection highlight
+            if is_selected then
+                local ac = theme.colors.accent
+                Core.DrawRect(x + 1, iy, w - 2, item_h, ac[1], ac[2], ac[3], 0.2)
+            end
+
+            -- Label
+            local tc = theme.colors.text
+            local _, lh = Core.MeasureText(item.label)
+            local ly = iy + math.floor((item_h - lh) / 2)
+            Core.DrawText(item.label, x + 6, ly, tc[1], tc[2], tc[3], tc[4])
+
+            -- Click on label area
+            if row_hovered and Core.MouseClicked(1) then
+                -- Check if click is on action buttons or label
+                local mx = Core.GetState().mouse_x
+                if mx < x + w - action_total_w - 4 then
+                    clicked_item = i
+                end
+            end
+
+            -- Action buttons (right-aligned)
+            if actions and (row_hovered or is_selected) then
+                local btn_x = x + w - action_total_w - 4
+                for ai, act in ipairs(actions) do
+                    local aw = Core.MeasureText(act.icon or "?") + theme.frame_padding_x * 2
+                    local btn_hovered = Core.MouseInRect(btn_x, iy + 2, aw, item_h - 4)
+
+                    -- Button background
+                    if btn_hovered then
+                        local hbc = theme.colors.button_hovered
+                        Core.DrawRect(btn_x, iy + 2, aw, item_h - 4, hbc[1], hbc[2], hbc[3], hbc[4])
+                    end
+
+                    -- Button label
+                    local atc = btn_hovered and theme.colors.text or theme.colors.text_disabled
+                    local atw, ath = Core.MeasureText(act.icon or "?")
+                    Core.DrawText(act.icon or "?",
+                        btn_x + math.floor((aw - atw) / 2),
+                        iy + math.floor((item_h - ath) / 2),
+                        atc[1], atc[2], atc[3], atc[4])
+
+                    -- Click action button
+                    if btn_hovered and Core.MouseClicked(1) then
+                        clicked_item = i
+                        clicked_action = ai
+                    end
+
+                    btn_x = btn_x + aw + 2
+                end
+            end
+
+            -- Row separator
+            local sc = theme.colors.separator
+            Core.DrawLine(x, iy + item_h - 1, x + w, iy + item_h - 1, sc[1], sc[2], sc[3], 0.1)
+        end
+
+        -- Scroll
+        if #items > max_visible then
+            local in_list = Core.MouseInRect(x, y, w, h)
+            if in_list and not Core.HasPopup() then
+                local wheel = Core.GetState().mouse_wheel
+                if wheel ~= 0 then
+                    data.scroll = data.scroll - wheel * 2
+                    data.scroll = math.max(0, math.min(data.scroll, #items - visible_count))
+                end
+            end
+        else
+            data.scroll = 0
+        end
+    end
+
+    Core.SetWidgetData("alist_" .. id, data)
+    Layout.AdvanceCursor(w, h)
+    return clicked_item, clicked_action
+end
+
+-- ============================================================================
+-- COLLAPSIBLE PANEL (horizontal, with vertical text when collapsed)
+-- ============================================================================
+-- Returns: is_open (bool)
+function Widgets.CollapsiblePanel(id, label, is_open, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+
+    local expanded_w = opts.width or 160
+    local collapsed_w = opts.collapsed_width or 20
+    local panel_h = opts.height or Layout.GetAvailableHeight()
+    local w = is_open and expanded_w or collapsed_w
+
+    local toggled = false
+
+    -- Click to toggle
+    if not is_open then
+        -- Collapsed: click on the thin bar
+        local hovered = Core.MouseInClippedRect(x, y, collapsed_w, panel_h) and not Core.HasPopup()
+        if hovered then Core.SetHot(id) end
+        if hovered and Core.MouseClicked(1) then toggled = true end
+    end
+
+    local new_open = (toggled and (not is_open)) or ((not toggled) and is_open)
+
+    if Core.IsVisible(x, y, w, panel_h) then
+        if not new_open then
+            -- Collapsed: draw vertical text
+            local bg = theme.colors.header
+            local hovered = Core.MouseInRect(x, y, collapsed_w, panel_h)
+            if hovered then bg = theme.colors.header_hovered end
+            Core.DrawRect(x, y, collapsed_w, panel_h, bg[1], bg[2], bg[3], bg[4])
+
+            -- Vertical text (character by character)
+            local tc = theme.colors.text
+            local _, char_h = Core.MeasureText("M")
+            local text_start_y = y + 8
+            for ci = 1, #label do
+                local ch = label:sub(ci, ci)
+                local cw = Core.MeasureText(ch)
+                local cx = x + math.floor((collapsed_w - cw) / 2)
+                if text_start_y + char_h < y + panel_h then
+                    Core.DrawText(ch, cx, text_start_y, tc[1], tc[2], tc[3], tc[4])
+                    text_start_y = text_start_y + char_h + 1
+                end
+            end
+        else
+            -- Expanded: draw header with close button
+            local header_h = theme.tab_height
+            local hbg = theme.colors.header
+            Core.DrawRect(x, y, expanded_w, header_h, hbg[1], hbg[2], hbg[3], hbg[4])
+
+            -- Label
+            local tc = theme.colors.text
+            local ltw, lth = Core.MeasureText(label)
+            Core.DrawText(label, x + 6, y + math.floor((header_h - lth) / 2), tc[1], tc[2], tc[3], tc[4])
+
+            -- Collapse button (< arrow)
+            local btn_x = x + expanded_w - header_h
+            local btn_hovered = Core.MouseInRect(btn_x, y, header_h, header_h)
+            if btn_hovered then
+                local bhc = theme.colors.header_hovered
+                Core.DrawRect(btn_x, y, header_h, header_h, bhc[1], bhc[2], bhc[3], bhc[4])
+            end
+            if Icons then
+                Icons.ChevronLeft(btn_x, y, header_h, tc[1], tc[2], tc[3], 0.7)
+            end
+            if btn_hovered and Core.MouseClicked(1) then
+                toggled = true
+                new_open = false
+            end
+
+            -- Panel body background
+            local pbg = theme.colors.popup_bg
+            Core.DrawRect(x, y + header_h, expanded_w, panel_h - header_h, pbg[1], pbg[2], pbg[3], 0.5)
+        end
+    end
+
+    -- If expanded, push a child container for panel content
+    if new_open then
+        local header_h = theme.tab_height
+        local content_x = x
+        local content_y = y + header_h
+        local content_w = expanded_w
+        local content_h = panel_h - header_h
+
+        local c = {
+            id = "cpanel_" .. id,
+            x = content_x, y = content_y, w = content_w, h = content_h,
+            pad_x = 4, pad_y = 4,
+            cursor_x = 4, cursor_y = 4,
+            content_h = 0, scroll_y = 0,
+            scrollable = false,
+            same_line = false, same_line_x = 0,
+            max_row_h = 0, spacing = theme.item_spacing,
+            indent_x = 0, sameline_pending = false,
+            last_widget_end_x = 4, last_widget_y = 4, last_widget_h = 0,
+        }
+        Core.PushContainer(c)
+        Core.PushClipRect(content_x, content_y, content_w, content_h)
+    end
+
+    -- Don't advance cursor here - the caller manages the panel width
+    -- The EndCollapsiblePanel will handle cleanup
+    return new_open, w
+end
+
+function Widgets.EndCollapsiblePanel()
+    -- Pop the content container if it was pushed
+    Core.PopClipRect()
+    Core.PopContainer()
+end
+
+-- ============================================================================
+-- REORDERABLE LIST (drag to sort)
+-- ============================================================================
+-- items = list of strings or {label=..., data=...}
+-- Returns: changed (bool), new_order (table of indices), dragging_index
+function Widgets.ReorderableList(id, items, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+    local avail_w = Layout.GetAvailableWidth()
+    local w = opts.width or avail_w
+    local item_h = opts.item_height or theme.combo_height
+    local h = #items * item_h
+
+    local data = Core.GetWidgetData("reorder_" .. id, {
+        drag_index = nil,
+        drag_y = 0,
+        order = nil,
+    })
+
+    -- Initialize order if needed
+    if not data.order or #data.order ~= #items then
+        data.order = {}
+        for i = 1, #items do data.order[i] = i end
+    end
+
+    local changed = false
+    local selected = opts.selected
+
+    if Core.IsVisible(x, y, w, h) then
+        local bg = theme.colors.frame_bg
+        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+
+        for display_i, real_i in ipairs(data.order) do
+            local item = items[real_i]
+            local label = type(item) == "table" and item.label or tostring(item)
+            local iy = y + (display_i - 1) * item_h
+            local is_dragging = (data.drag_index == display_i)
+
+            -- Skip drawing the dragged item in its original position
+            if not is_dragging then
+                local row_hovered = Core.MouseInRect(x, iy, w, item_h) and not Core.HasPopup()
+
+                if row_hovered then
+                    local hc = theme.colors.header_hovered
+                    Core.DrawRect(x + 1, iy, w - 2, item_h, hc[1], hc[2], hc[3], 0.3)
+                end
+
+                if display_i == selected then
+                    local ac = theme.colors.accent
+                    Core.DrawRect(x + 1, iy, w - 2, item_h, ac[1], ac[2], ac[3], 0.2)
+                end
+
+                -- Drag handle (left side)
+                local handle_w = 16
+                local tc_dim = theme.colors.text_disabled
+                Core.DrawText("=", x + 4, iy + math.floor((item_h - 14) / 2),
+                    tc_dim[1], tc_dim[2], tc_dim[3], tc_dim[4])
+
+                -- Label
+                local tc = theme.colors.text
+                local _, lh = Core.MeasureText(label)
+                Core.DrawText(label, x + handle_w + 4, iy + math.floor((item_h - lh) / 2),
+                    tc[1], tc[2], tc[3], tc[4])
+
+                -- Start drag
+                if row_hovered and Core.MouseClicked(1) and Core.MouseInRect(x, iy, 20, item_h) then
+                    data.drag_index = display_i
+                    data.drag_y = Core.GetState().mouse_y
+                end
+
+                -- Row separator
+                local sc = theme.colors.separator
+                Core.DrawLine(x, iy + item_h - 1, x + w, iy + item_h - 1, sc[1], sc[2], sc[3], 0.1)
+            end
+        end
+
+        -- Draw dragged item on top
+        if data.drag_index then
+            if Core.MouseDown(1) then
+                local my = Core.GetState().mouse_y
+                local drag_display_y = my - item_h / 2
+                local real_i = data.order[data.drag_index]
+                local item = items[real_i]
+                local label = type(item) == "table" and item.label or tostring(item)
+
+                -- Draw dragged item
+                local ac = theme.colors.accent
+                Core.DrawRect(x, drag_display_y, w, item_h, ac[1], ac[2], ac[3], 0.3)
+                local tc = theme.colors.text
+                local _, lh = Core.MeasureText(label)
+                Core.DrawText(label, x + 20, drag_display_y + math.floor((item_h - lh) / 2),
+                    tc[1], tc[2], tc[3], tc[4])
+
+                -- Calculate drop position
+                local target_i = math.max(1, math.min(#items,
+                    math.floor((my - y) / item_h) + 1))
+
+                -- Draw insertion indicator
+                local ind_y = y + (target_i - 1) * item_h
+                if target_i > data.drag_index then ind_y = ind_y + item_h end
+                Core.DrawRect(x + 2, ind_y - 1, w - 4, 2, ac[1], ac[2], ac[3], ac[4])
+            else
+                -- Drop: reorder
+                local my = Core.GetState().mouse_y
+                local target_i = math.max(1, math.min(#items,
+                    math.floor((my - y) / item_h) + 1))
+
+                if target_i ~= data.drag_index then
+                    local moving = table.remove(data.order, data.drag_index)
+                    local insert_at = target_i
+                    if target_i > data.drag_index then insert_at = insert_at end
+                    insert_at = math.max(1, math.min(#data.order + 1, insert_at))
+                    table.insert(data.order, insert_at, moving)
+                    changed = true
+                end
+
+                data.drag_index = nil
+            end
+        end
+
+        -- Border
+        local bc = theme.colors.border
+        Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], 0.3, false)
+    end
+
+    Core.SetWidgetData("reorder_" .. id, data)
+    Layout.AdvanceCursor(w, h)
+    return changed, data.order, data.drag_index
+end
+
+-- ============================================================================
+-- INTERACTIVE TABLE v2 (custom cell render via callback)
+-- ============================================================================
+-- columns = { {key="name", header="Name", width=120 or nil (auto), weight=2.5}, ... }
+-- row_count = number of rows
+-- cell_render = function(row, col_key, x, y, w, h, theme) — draw cell content
+-- header_render = function(col_key, x, y, w, h, theme) — optional custom header (nil = default text)
+-- Returns: clicked_row, clicked_col_key, hovered_row
+function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+    local avail_w = Layout.GetAvailableWidth()
+    local row_h = opts.row_height or theme.combo_height
+    local header_h = opts.header ~= false and row_h or 0
+    local max_visible = opts.max_rows or row_count
+    local visible_rows = math.min(row_count, max_visible)
+    local total_h = header_h + visible_rows * row_h
+    local gap = opts.col_gap or 0
+    local selected_row = opts.selected
+    local header_render = opts.header_render
+
+    -- Calculate column widths (weight-based)
+    local total_weight = 0
+    local total_fixed = 0
+    for _, col in ipairs(columns) do
+        if col.width then
+            total_fixed = total_fixed + col.width
+        else
+            total_weight = total_weight + (col.weight or 1)
+        end
+    end
+
+    local gaps_total = math.max(0, #columns - 1) * gap
+    local distributable = avail_w - total_fixed - gaps_total
+    local col_widths = {}
+    local col_positions = {}
+    local cx = x
+    for i, col in ipairs(columns) do
+        col_positions[i] = cx
+        if col.width then
+            col_widths[i] = col.width
+        else
+            col_widths[i] = math.floor(distributable * (col.weight or 1) / total_weight)
+        end
+        cx = cx + col_widths[i] + gap
+    end
+
+    -- Scroll
+    local data = Core.GetWidgetData("itable_" .. id, { scroll = 0 })
+    local scroll_offset = math.floor(data.scroll)
+
+    local clicked_row, clicked_col_key, hovered_row = nil, nil, nil
+
+    if Core.IsVisible(x, y, avail_w, total_h) then
+        -- Header
+        if header_h > 0 then
+            local hbg = theme.colors.header
+            Core.DrawRect(x, y, avail_w, header_h, hbg[1], hbg[2], hbg[3], hbg[4])
+
+            for i, col in ipairs(columns) do
+                if header_render then
+                    header_render(col.key or col.header, col_positions[i], y, col_widths[i], header_h, theme)
+                else
+                    local tc = theme.colors.text
+                    local hw, hh = Core.MeasureText(col.header or "")
+                    Core.DrawText(col.header or "",
+                        col_positions[i] + 4,
+                        y + math.floor((header_h - hh) / 2),
+                        tc[1], tc[2], tc[3], tc[4])
+                end
+
+                -- Column separator
+                if i < #columns then
+                    local sep_x = col_positions[i] + col_widths[i]
+                    local sc = theme.colors.separator
+                    Core.DrawLine(sep_x, y, sep_x, y + header_h, sc[1], sc[2], sc[3], 0.3)
+                end
+            end
+        end
+
+        -- Rows
+        local draw_y = y + header_h
+        for row_idx = 1 + scroll_offset, math.min(row_count, visible_rows + scroll_offset) do
+            local ry = draw_y + (row_idx - 1 - scroll_offset) * row_h
+            local is_selected = (row_idx == selected_row)
+            local row_hovered = Core.MouseInClippedRect(x, ry, avail_w, row_h) and not Core.HasPopup()
+
+            if row_hovered then
+                hovered_row = row_idx
+                local hc = theme.colors.header_hovered
+                Core.DrawRect(x, ry, avail_w, row_h, hc[1], hc[2], hc[3], 0.3)
+            end
+
+            if is_selected then
+                local ac = theme.colors.accent
+                Core.DrawRect(x, ry, avail_w, row_h, ac[1], ac[2], ac[3], 0.15)
+            end
+
+            -- Alternating row
+            if not is_selected and not row_hovered and row_idx % 2 == 0 then
+                Core.DrawRect(x, ry, avail_w, row_h, 1, 1, 1, 0.015)
+            end
+
+            -- Cells
+            for i, col in ipairs(columns) do
+                local col_key = col.key or col.header
+                -- Custom cell render callback
+                cell_render(row_idx, col_key, col_positions[i], ry, col_widths[i], row_h, theme)
+
+                -- Click detection per cell
+                if row_hovered and Core.MouseClicked(1) then
+                    if Core.MouseInRect(col_positions[i], ry, col_widths[i], row_h) then
+                        clicked_row = row_idx
+                        clicked_col_key = col_key
+                    end
+                end
+
+                -- Column separator
+                if i < #columns then
+                    local sep_x = col_positions[i] + col_widths[i]
+                    local sc = theme.colors.separator
+                    Core.DrawLine(sep_x, ry, sep_x, ry + row_h, sc[1], sc[2], sc[3], 0.1)
+                end
+            end
+
+            -- Row separator
+            local sc = theme.colors.separator
+            Core.DrawLine(x, ry + row_h - 1, x + avail_w, ry + row_h - 1, sc[1], sc[2], sc[3], 0.08)
+        end
+
+        -- Scroll with wheel
+        if row_count > max_visible then
+            local in_table = Core.MouseInRect(x, y, avail_w, total_h)
+            if in_table and not Core.HasPopup() then
+                local wheel = Core.GetState().mouse_wheel
+                if wheel ~= 0 then
+                    data.scroll = data.scroll - wheel * 2
+                    data.scroll = math.max(0, math.min(data.scroll, row_count - visible_rows))
+                end
+            end
+        else
+            data.scroll = 0
+        end
+
+        -- Border
+        local bc = theme.colors.border
+        Core.DrawRect(x, y, avail_w, total_h, bc[1], bc[2], bc[3], 0.3, false)
+    end
+
+    Core.SetWidgetData("itable_" .. id, data)
+    Layout.AdvanceCursor(avail_w, total_h)
+    return clicked_row, clicked_col_key, hovered_row
+end
+
 return Widgets

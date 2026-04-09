@@ -294,6 +294,45 @@ function UI.HMeter(id, peak_l, peak_r, opts)
     return Widgets.HMeter(id, peak_l, peak_r, UI._theme, opts)
 end
 
+-- Canvas
+function UI.Canvas(id, opts)
+    return Widgets.Canvas(id, UI._theme, opts)
+end
+
+-- Toggle Button
+function UI.ToggleButton(id, label, is_on, opts)
+    return Widgets.ToggleButton(id, label, is_on, UI._theme, opts)
+end
+
+-- Range Slider
+function UI.RangeSlider(id, label, val_min, val_max, range_min, range_max, opts)
+    return Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, UI._theme, opts)
+end
+
+-- Action List
+function UI.ActionList(id, items, actions, opts)
+    return Widgets.ActionList(id, items, actions, UI._theme, opts)
+end
+
+-- Collapsible Panel
+function UI.CollapsiblePanel(id, label, is_open, opts)
+    return Widgets.CollapsiblePanel(id, label, is_open, UI._theme, opts)
+end
+
+function UI.EndCollapsiblePanel()
+    Widgets.EndCollapsiblePanel()
+end
+
+-- Reorderable List
+function UI.ReorderableList(id, items, opts)
+    return Widgets.ReorderableList(id, items, UI._theme, opts)
+end
+
+-- Interactive Table v2
+function UI.InteractiveTable(id, columns, row_count, cell_render, opts)
+    return Widgets.InteractiveTable(id, columns, row_count, cell_render, UI._theme, opts)
+end
+
 -- ============================================================================
 -- LAYOUT SHORTCUTS
 -- ============================================================================
@@ -325,6 +364,50 @@ end
 
 function UI.EndChild()
     Layout.EndChild()
+end
+
+-- Columns
+function UI.BeginColumns(id, ratios, opts)
+    Layout.BeginColumns(id, ratios, opts)
+end
+
+function UI.NextColumn()
+    Layout.NextColumn()
+end
+
+function UI.EndColumns()
+    Layout.EndColumns()
+end
+
+-- Weighted Row
+function UI.BeginWeightedRow(id, weights, opts)
+    return Layout.BeginWeightedRow(id, weights, opts)
+end
+
+function UI.WeightedCell(id, key)
+    return Layout.WeightedCell(id, key)
+end
+
+function UI.EndWeightedRow(id)
+    Layout.EndWeightedRow(id)
+end
+
+-- Grid
+function UI.BeginGrid(id, opts)
+    Layout.BeginGrid(id, opts)
+end
+
+function UI.GridCell(id)
+    return Layout.GridCell(id)
+end
+
+function UI.EndGrid(id)
+    Layout.EndGrid(id)
+end
+
+-- Splitter
+function UI.Splitter(id, direction, total_size, default_ratio, opts)
+    return Layout.Splitter(id, direction, total_size, default_ratio, opts)
 end
 
 return UI
