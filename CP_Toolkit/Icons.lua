@@ -1,252 +1,458 @@
--- CP_Toolkit Icons — Vector icons drawn with gfx primitives
--- All icons take (x, y, size, r, g, b, a) and draw centered in a size x size box.
--- Scale-independent: just pass a bigger size.
+-- CP_Toolkit Icons — Vector icons drawn with native gfx primitives
+-- All icons: (x, y, size, r, g, b, a) — centered in a size x size box
+-- Uses gfx.circle, gfx.triangle, gfx.arc, gfx.line for clean rendering
 
 local Icons = {}
 
 -- ============================================================================
--- ARROWS
+-- HELPERS
+-- ============================================================================
+local function set_color(r, g, b, a)
+    gfx.set(r, g, b, a or 1)
+end
+
+local function center(x, y, size)
+    return x + size / 2, y + size / 2
+end
+
+local function scale(size, factor)
+    return math.floor(size * factor + 0.5)
+end
+
+-- ============================================================================
+-- ARROWS / CHEVRONS
 -- ============================================================================
 function Icons.ChevronDown(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local s = math.floor(size * 0.3)
-    -- V shape
-    gfx.line(cx - s, cy - s * 0.4, cx, cy + s * 0.4)
-    gfx.line(cx, cy + s * 0.4, cx + s, cy - s * 0.4)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.22)
+    gfx.line(cx - s, cy - s * 0.5, cx, cy + s * 0.5, 1)
+    gfx.line(cx, cy + s * 0.5, cx + s, cy - s * 0.5, 1)
 end
 
 function Icons.ChevronUp(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local s = math.floor(size * 0.3)
-    gfx.line(cx - s, cy + s * 0.4, cx, cy - s * 0.4)
-    gfx.line(cx, cy - s * 0.4, cx + s, cy + s * 0.4)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.22)
+    gfx.line(cx - s, cy + s * 0.5, cx, cy - s * 0.5, 1)
+    gfx.line(cx, cy - s * 0.5, cx + s, cy + s * 0.5, 1)
 end
 
 function Icons.ChevronRight(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local s = math.floor(size * 0.3)
-    gfx.line(cx - s * 0.4, cy - s, cx + s * 0.4, cy)
-    gfx.line(cx + s * 0.4, cy, cx - s * 0.4, cy + s)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.22)
+    gfx.line(cx - s * 0.5, cy - s, cx + s * 0.5, cy, 1)
+    gfx.line(cx + s * 0.5, cy, cx - s * 0.5, cy + s, 1)
 end
 
 function Icons.ChevronLeft(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local s = math.floor(size * 0.3)
-    gfx.line(cx + s * 0.4, cy - s, cx - s * 0.4, cy)
-    gfx.line(cx - s * 0.4, cy, cx + s * 0.4, cy + s)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.22)
+    gfx.line(cx + s * 0.5, cy - s, cx - s * 0.5, cy, 1)
+    gfx.line(cx - s * 0.5, cy, cx + s * 0.5, cy + s, 1)
 end
 
--- Filled triangles (for dropdowns, tree nodes)
+-- Filled triangles (dropdowns, tree nodes)
 function Icons.TriangleDown(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local s = math.floor(size * 0.25)
-    local top = y + size / 2 - s * 0.5
-    local bot = y + size / 2 + s * 0.5
-    for row = 0, s do
-        local ratio = row / s
-        local half_w = math.floor(s * (1 - ratio))
-        gfx.line(cx - half_w, top + row, cx + half_w, top + row)
-    end
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    gfx.triangle(cx - s, cy - s * 0.5, cx + s, cy - s * 0.5, cx, cy + s * 0.5)
 end
 
 function Icons.TriangleRight(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cy = y + size / 2
-    local s = math.floor(size * 0.25)
-    local left = x + size / 2 - s * 0.5
-    for col = 0, s do
-        local ratio = col / s
-        local half_h = math.floor(s * (1 - ratio))
-        gfx.line(left + col, cy - half_h, left + col, cy + half_h)
-    end
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    gfx.triangle(cx - s * 0.5, cy - s, cx - s * 0.5, cy + s, cx + s * 0.5, cy)
+end
+
+function Icons.TriangleLeft(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    gfx.triangle(cx + s * 0.5, cy - s, cx + s * 0.5, cy + s, cx - s * 0.5, cy)
+end
+
+function Icons.TriangleUp(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    gfx.triangle(cx - s, cy + s * 0.5, cx + s, cy + s * 0.5, cx, cy - s * 0.5)
 end
 
 -- ============================================================================
 -- COMMON UI ICONS
 -- ============================================================================
-function Icons.Check(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local s = math.floor(size * 0.3)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    -- Short leg (down-left to bottom)
-    gfx.line(cx - s, cy, cx - s * 0.3, cy + s * 0.7)
-    gfx.line(cx - s + 1, cy, cx - s * 0.3 + 1, cy + s * 0.7)
-    -- Long leg (bottom to up-right)
-    gfx.line(cx - s * 0.3, cy + s * 0.7, cx + s, cy - s * 0.5)
-    gfx.line(cx - s * 0.3 + 1, cy + s * 0.7, cx + s + 1, cy - s * 0.5)
+function Icons.Close(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local m = scale(size, 0.3)
+    -- Double lines for thickness
+    gfx.line(x + m, y + m, x + size - m, y + size - m, 1)
+    gfx.line(x + m + 1, y + m, x + size - m + 1, y + size - m, 1)
+    gfx.line(x + size - m, y + m, x + m, y + size - m, 1)
+    gfx.line(x + size - m - 1, y + m, x + m - 1, y + size - m, 1)
 end
 
-function Icons.Close(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local m = math.floor(size * 0.3)
-    gfx.line(x + m, y + m, x + size - m, y + size - m)
-    gfx.line(x + m + 1, y + m, x + size - m + 1, y + size - m)
-    gfx.line(x + size - m, y + m, x + m, y + size - m)
-    gfx.line(x + size - m - 1, y + m, x + m - 1, y + size - m)
+function Icons.Check(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    -- Short leg + long leg (double lines for thickness)
+    gfx.line(cx - s, cy, cx - s * 0.2, cy + s * 0.7, 1)
+    gfx.line(cx - s + 1, cy, cx - s * 0.2 + 1, cy + s * 0.7, 1)
+    gfx.line(cx - s * 0.2, cy + s * 0.7, cx + s, cy - s * 0.5, 1)
+    gfx.line(cx - s * 0.2 + 1, cy + s * 0.7, cx + s + 1, cy - s * 0.5, 1)
 end
 
 function Icons.Plus(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local m = math.floor(size * 0.25)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    gfx.line(cx, y + m, cx, y + size - m)
-    gfx.line(x + m, cy, x + size - m, cy)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    gfx.line(cx, cy - s, cx, cy + s, 1)
+    gfx.line(cx - s, cy, cx + s, cy, 1)
 end
 
 function Icons.Minus(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local m = math.floor(size * 0.25)
-    local cy = y + size / 2
-    gfx.line(x + m, cy, x + size - m, cy)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    gfx.line(cx - s, cy, cx + s, cy, 1)
 end
 
+-- ============================================================================
+-- TRANSPORT
+-- ============================================================================
 function Icons.Play(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local s = math.floor(size * 0.3)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local left = cx - s * 0.5
-    for col = 0, s do
-        local ratio = col / s
-        local half_h = math.floor(s * (1 - ratio))
-        gfx.line(left + col, cy - half_h, left + col, cy + half_h)
-    end
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    gfx.triangle(cx - s * 0.6, cy - s, cx - s * 0.6, cy + s, cx + s, cy)
 end
 
 function Icons.Pause(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local m = math.floor(size * 0.28)
-    local bar_w = math.max(2, math.floor(size * 0.12))
-    gfx.rect(x + m, y + m, bar_w, size - m * 2, 1)
-    gfx.rect(x + size - m - bar_w, y + m, bar_w, size - m * 2, 1)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    local bar_w = math.max(2, scale(size, 0.08))
+    local gap = scale(size, 0.08)
+    gfx.rect(cx - gap - bar_w, cy - s, bar_w, s * 2, 1)
+    gfx.rect(cx + gap, cy - s, bar_w, s * 2, 1)
 end
 
 function Icons.Stop(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local m = math.floor(size * 0.3)
-    gfx.rect(x + m, y + m, size - m * 2, size - m * 2, 1)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.22)
+    gfx.rect(cx - s, cy - s, s * 2, s * 2, 1)
+end
+
+function Icons.Record(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    gfx.circle(cx, cy, s, 1, 1)
+end
+
+function Icons.SkipForward(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    gfx.triangle(cx - s, cy - s, cx - s, cy + s, cx + s * 0.3, cy)
+    local bar_w = math.max(2, scale(size, 0.06))
+    gfx.rect(cx + s * 0.5, cy - s, bar_w, s * 2, 1)
+end
+
+function Icons.SkipBackward(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    gfx.triangle(cx + s, cy - s, cx + s, cy + s, cx - s * 0.3, cy)
+    local bar_w = math.max(2, scale(size, 0.06))
+    gfx.rect(cx - s * 0.5 - bar_w, cy - s, bar_w, s * 2, 1)
+end
+
+function Icons.Loop(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.28)
+    -- Two arcs forming a loop
+    gfx.arc(cx, cy, s, 0, math.pi, 1)
+    gfx.arc(cx, cy, s, math.pi, math.pi * 2, 1)
+    -- Arrow heads
+    local aw = scale(size, 0.08)
+    gfx.triangle(cx + s - aw, cy - aw * 2, cx + s + aw, cy - aw * 2, cx + s, cy)
+    gfx.triangle(cx - s - aw, cy + aw * 2, cx - s + aw, cy + aw * 2, cx - s, cy)
+end
+
+-- ============================================================================
+-- ACTIONS / EDITING
+-- ============================================================================
+function Icons.Settings(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local outer = scale(size, 0.32)
+    local inner = scale(size, 0.15)
+    -- Gear teeth (using arc segments)
+    local teeth = 6
+    for i = 0, teeth - 1 do
+        local angle = (i / teeth) * math.pi * 2
+        local a1 = angle - 0.25
+        local a2 = angle + 0.25
+        gfx.arc(cx, cy, outer, a1, a2, 1)
+        gfx.arc(cx, cy, outer - 2, a1, a2, 1)
+    end
+    -- Inner circle
+    gfx.circle(cx, cy, inner, 0, 1)
 end
 
 function Icons.Search(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cr = math.floor(size * 0.25)
+    set_color(r, g, b, a)
+    local s = scale(size, 0.22)
     local cx = x + size * 0.4
     local cy = y + size * 0.4
-    -- Circle (approximate with lines)
-    local segs = 12
-    for i = 0, segs - 1 do
-        local a1 = (i / segs) * math.pi * 2
-        local a2 = ((i + 1) / segs) * math.pi * 2
-        gfx.line(
-            cx + math.cos(a1) * cr, cy + math.sin(a1) * cr,
-            cx + math.cos(a2) * cr, cy + math.sin(a2) * cr)
-    end
+    -- Circle (magnifying glass)
+    gfx.circle(cx, cy, s, 0, 1)
     -- Handle
-    local hx = cx + cr * 0.7
-    local hy = cy + cr * 0.7
-    gfx.line(hx, hy, x + size * 0.78, y + size * 0.78)
-    gfx.line(hx + 1, hy, x + size * 0.78 + 1, y + size * 0.78)
-end
-
-function Icons.Settings(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local outer = math.floor(size * 0.35)
-    local inner = math.floor(size * 0.18)
-    -- Gear teeth (outer circle with notches)
-    local segs = 16
-    for i = 0, segs - 1 do
-        local a1 = (i / segs) * math.pi * 2
-        local a2 = ((i + 1) / segs) * math.pi * 2
-        local rad = (i % 2 == 0) and outer or (outer - 3)
-        local rad2 = ((i + 1) % 2 == 0) and outer or (outer - 3)
-        gfx.line(
-            cx + math.cos(a1) * rad, cy + math.sin(a1) * rad,
-            cx + math.cos(a2) * rad2, cy + math.sin(a2) * rad2)
-    end
-    -- Inner circle
-    for i = 0, 11 do
-        local a1 = (i / 12) * math.pi * 2
-        local a2 = ((i + 1) / 12) * math.pi * 2
-        gfx.line(
-            cx + math.cos(a1) * inner, cy + math.sin(a1) * inner,
-            cx + math.cos(a2) * inner, cy + math.sin(a2) * inner)
-    end
+    local hx = cx + s * 0.7
+    local hy = cy + s * 0.7
+    gfx.line(hx, hy, x + size * 0.78, y + size * 0.78, 1)
+    gfx.line(hx + 1, hy, x + size * 0.78 + 1, y + size * 0.78, 1)
 end
 
 function Icons.Refresh(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local rad = math.floor(size * 0.3)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.28)
     -- 3/4 circle
-    local segs = 12
-    for i = 0, segs - 2 do
-        local a1 = (i / segs) * math.pi * 2 - math.pi * 0.5
-        local a2 = ((i + 1) / segs) * math.pi * 2 - math.pi * 0.5
-        gfx.line(
-            cx + math.cos(a1) * rad, cy + math.sin(a1) * rad,
-            cx + math.cos(a2) * rad, cy + math.sin(a2) * rad)
-    end
-    -- Arrow head at the end
-    local ax = cx + math.cos(-math.pi * 0.5) * rad
-    local ay = cy + math.sin(-math.pi * 0.5) * rad
-    local s = math.floor(size * 0.12)
-    gfx.line(ax, ay, ax + s, ay + s)
-    gfx.line(ax, ay, ax - s, ay + s)
+    gfx.arc(cx, cy, s, -math.pi * 0.5, math.pi, 1)
+    -- Arrow head
+    local ax = cx + math.cos(-math.pi * 0.5) * s
+    local ay = cy + math.sin(-math.pi * 0.5) * s
+    local aw = scale(size, 0.1)
+    gfx.triangle(ax, ay, ax + aw, ay + aw, ax - aw, ay + aw)
 end
 
+function Icons.Undo(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    gfx.arc(cx + s * 0.3, cy, s, math.pi * 0.5, math.pi * 1.5, 1)
+    -- Arrow
+    local aw = scale(size, 0.1)
+    gfx.triangle(cx + s * 0.3 - s, cy - aw, cx + s * 0.3 - s, cy + aw, cx + s * 0.3 - s - aw, cy)
+end
+
+function Icons.Redo(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    gfx.arc(cx - s * 0.3, cy, s, -math.pi * 0.5, math.pi * 0.5, 1)
+    local aw = scale(size, 0.1)
+    gfx.triangle(cx - s * 0.3 + s, cy - aw, cx - s * 0.3 + s, cy + aw, cx - s * 0.3 + s + aw, cy)
+end
+
+function Icons.Delete(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    -- Trash can body
+    gfx.rect(cx - s, cy - s * 0.3, s * 2, s * 1.5, 0)
+    -- Lid
+    gfx.line(cx - s - 2, cy - s * 0.3, cx + s + 2, cy - s * 0.3, 1)
+    gfx.line(cx - s * 0.5, cy - s * 0.3, cx - s * 0.5, cy - s * 0.7, 1)
+    gfx.line(cx - s * 0.5, cy - s * 0.7, cx + s * 0.5, cy - s * 0.7, 1)
+    gfx.line(cx + s * 0.5, cy - s * 0.7, cx + s * 0.5, cy - s * 0.3, 1)
+end
+
+function Icons.Copy(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local s = scale(size, 0.2)
+    local ox = x + size * 0.3
+    local oy = y + size * 0.25
+    -- Back page
+    gfx.rect(ox + s * 0.3, oy, s * 1.5, s * 2, 0)
+    -- Front page
+    gfx.rect(ox, oy + s * 0.3, s * 1.5, s * 2, 0)
+    gfx.rect(ox + 1, oy + s * 0.3 + 1, s * 1.5 - 2, s * 2 - 2, 1)
+end
+
+function Icons.Save(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    -- Floppy body
+    gfx.rect(cx - s, cy - s, s * 2, s * 2, 0)
+    -- Label area
+    gfx.rect(cx - s * 0.6, cy - s, s * 1.2, s * 0.8, 1)
+    -- Bottom slot
+    gfx.rect(cx - s * 0.5, cy + s * 0.2, s, s * 0.6, 1)
+end
+
+-- ============================================================================
+-- STATE / STATUS
+-- ============================================================================
 function Icons.Lock(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local bw = math.floor(size * 0.5)
-    local bh = math.floor(size * 0.35)
-    local bx = x + (size - bw) / 2
-    local by = y + size * 0.5
-    gfx.rect(bx, by, bw, bh, 1)
-    -- Shackle
-    local sr = math.floor(size * 0.18)
-    local cx = x + size / 2
-    local top = by - sr
-    for i = 0, 8 do
-        local a1 = math.pi + (i / 8) * math.pi
-        local a2 = math.pi + ((i + 1) / 8) * math.pi
-        gfx.line(
-            cx + math.cos(a1) * sr, top + sr + math.sin(a1) * sr,
-            cx + math.cos(a2) * sr, top + sr + math.sin(a2) * sr)
-    end
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    -- Body
+    gfx.rect(cx - s, cy, s * 2, s * 1.3, 1)
+    -- Shackle (arc)
+    gfx.arc(cx, cy, s * 0.7, math.pi, math.pi * 2, 1)
+end
+
+function Icons.Unlock(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.2)
+    gfx.rect(cx - s, cy, s * 2, s * 1.3, 1)
+    gfx.arc(cx, cy, s * 0.7, math.pi, math.pi * 1.7, 1)
 end
 
 function Icons.Eye(x, y, size, r, g, b, a)
-    gfx.set(r, g, b, a or 1)
-    local cx = x + size / 2
-    local cy = y + size / 2
-    local w = math.floor(size * 0.38)
-    local h = math.floor(size * 0.2)
-    -- Eye shape (two arcs)
-    local segs = 10
-    for i = 0, segs - 1 do
-        local a1 = (i / segs) * math.pi
-        local a2 = ((i + 1) / segs) * math.pi
-        gfx.line(cx - w + math.cos(math.pi - a1) * w, cy - math.sin(a1) * h,
-                 cx - w + math.cos(math.pi - a2) * w, cy - math.sin(a2) * h)
-        gfx.line(cx - w + math.cos(math.pi - a1) * w, cy + math.sin(a1) * h,
-                 cx - w + math.cos(math.pi - a2) * w, cy + math.sin(a2) * h)
-    end
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.3)
+    -- Eye outline (two arcs)
+    gfx.arc(cx, cy - s * 0.15, s, 0.3, math.pi - 0.3, 1)
+    gfx.arc(cx, cy + s * 0.15, s, math.pi + 0.3, math.pi * 2 - 0.3, 1)
     -- Pupil
-    local pr = math.floor(size * 0.06)
-    gfx.rect(cx - pr, cy - pr, pr * 2, pr * 2, 1)
+    gfx.circle(cx, cy, scale(size, 0.08), 1, 1)
+end
+
+function Icons.EyeOff(x, y, size, r, g, b, a)
+    Icons.Eye(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    -- Diagonal strike
+    local m = scale(size, 0.2)
+    gfx.line(x + m, y + size - m, x + size - m, y + m, 1)
+    gfx.line(x + m + 1, y + size - m, x + size - m + 1, y + m, 1)
+end
+
+function Icons.Mute(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.15)
+    -- Speaker body
+    gfx.rect(cx - s * 1.5, cy - s * 0.6, s, s * 1.2, 1)
+    -- Cone
+    gfx.triangle(cx - s * 0.5, cy - s * 0.6, cx - s * 0.5, cy + s * 0.6, cx + s, cy - s * 1.2)
+    gfx.triangle(cx - s * 0.5, cy + s * 0.6, cx + s, cy + s * 1.2, cx + s, cy - s * 1.2)
+end
+
+function Icons.Volume(x, y, size, r, g, b, a)
+    Icons.Mute(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.15)
+    -- Sound waves
+    gfx.arc(cx + s * 1.3, cy, s * 0.7, -0.6, 0.6, 1)
+    gfx.arc(cx + s * 1.3, cy, s * 1.2, -0.5, 0.5, 1)
+end
+
+function Icons.Solo(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    gfx.setfont(1, "Arial", math.floor(size * 0.5), 66) -- bold
+    local tw, th = gfx.measurestr("S")
+    gfx.x = cx - tw / 2
+    gfx.y = cy - th / 2
+    gfx.drawstr("S")
+end
+
+-- ============================================================================
+-- AUDIO / MUSIC
+-- ============================================================================
+function Icons.Waveform(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cy = y + size / 2
+    local bars = 7
+    local bar_w = math.max(1, math.floor(size / (bars * 2)))
+    local gap = math.floor((size - bars * bar_w) / (bars + 1))
+    local heights = { 0.3, 0.6, 0.9, 1.0, 0.7, 0.5, 0.2 }
+    for i = 1, bars do
+        local bx = x + gap + (i - 1) * (bar_w + gap)
+        local bh = math.floor(size * 0.35 * heights[i])
+        gfx.rect(bx, cy - bh, bar_w, bh * 2, 1)
+    end
+end
+
+function Icons.MIDI(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    -- MIDI connector (circle with pins)
+    gfx.circle(cx, cy, s, 0, 1)
+    local pin_r = math.max(1, scale(size, 0.04))
+    for i = 0, 4 do
+        local angle = math.pi * 0.3 + (i / 4) * math.pi * 1.4
+        local px = cx + math.cos(angle) * s * 0.55
+        local py = cy + math.sin(angle) * s * 0.55
+        gfx.circle(px, py, pin_r, 1, 1)
+    end
+end
+
+function Icons.Folder(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local s = scale(size, 0.22)
+    local fx = x + size * 0.2
+    local fy = y + size * 0.25
+    -- Tab
+    gfx.rect(fx, fy, s * 0.8, s * 0.4, 1)
+    -- Body
+    gfx.rect(fx, fy + s * 0.4, s * 2, s * 1.4, 0)
+end
+
+function Icons.File(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local s = scale(size, 0.2)
+    local fx = x + size * 0.3
+    local fy = y + size * 0.2
+    gfx.rect(fx, fy, s * 1.5, s * 2.2, 0)
+    -- Corner fold
+    gfx.line(fx + s, fy, fx + s * 1.5, fy + s * 0.5, 1)
+    gfx.line(fx + s, fy, fx + s, fy + s * 0.5, 1)
+    gfx.line(fx + s, fy + s * 0.5, fx + s * 1.5, fy + s * 0.5, 1)
+end
+
+function Icons.FX(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    gfx.setfont(1, "Arial", math.floor(size * 0.4), 66)
+    local tw, th = gfx.measurestr("fx")
+    gfx.x = cx - tw / 2
+    gfx.y = cy - th / 2
+    gfx.drawstr("fx")
+end
+
+function Icons.Crosshair(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.3)
+    local gap = scale(size, 0.08)
+    -- Cross lines with center gap
+    gfx.line(cx - s, cy, cx - gap, cy, 1)
+    gfx.line(cx + gap, cy, cx + s, cy, 1)
+    gfx.line(cx, cy - s, cx, cy - gap, 1)
+    gfx.line(cx, cy + gap, cx, cy + s, 1)
+    -- Center circle
+    gfx.circle(cx, cy, scale(size, 0.04), 1, 1)
+end
+
+function Icons.Pipette(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    -- Dropper body (diagonal)
+    gfx.line(cx - s, cy + s, cx + s * 0.3, cy - s * 0.3, 1)
+    gfx.line(cx - s + 1, cy + s, cx + s * 0.3 + 1, cy - s * 0.3, 1)
+    -- Bulb top
+    gfx.circle(cx + s * 0.5, cy - s * 0.5, scale(size, 0.1), 1, 1)
+    -- Tip
+    gfx.circle(cx - s * 0.8, cy + s * 0.8, scale(size, 0.05), 1, 1)
 end
 
 return Icons

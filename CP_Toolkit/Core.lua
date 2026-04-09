@@ -201,8 +201,41 @@ end
 
 function Core.SetFont(size, face, flags)
     -- flags: 0=normal, 66=bold ('B'), 73=italic ('I')
-    gfx.setfont(1, face or "Arial", size or 14, flags or 0)
+    gfx.setfont(1, face or "Tahoma", size or 12, flags or 0)
 end
+
+-- ============================================================================
+-- FONT SLOTS (pre-loaded for instant switching)
+-- ============================================================================
+-- Slot 1=Title(bold), 2=H1, 3=H2, 4=Body(default), 5=Caption, 6=Mono, 7=H2Bold
+local font_slots_loaded = false
+
+function Core.LoadFontSlots(theme)
+    local f = theme.fonts
+    gfx.setfont(1, f.face, f.title, 66)          -- Title (bold)
+    gfx.setfont(2, f.face, f.h1, 0)              -- H1 (section headers)
+    gfx.setfont(3, f.face, f.h2, 0)              -- H2 (sub-headers)
+    gfx.setfont(4, f.face, f.body, 0)            -- Body (default)
+    gfx.setfont(5, f.face, f.caption, 0)         -- Caption (small/hints)
+    gfx.setfont(6, f.mono_face, f.mono_size, 0)  -- Mono (values)
+    gfx.setfont(7, f.face, f.h2, 66)             -- H2 Bold
+    font_slots_loaded = true
+    gfx.setfont(4)  -- restore to Body
+end
+
+function Core.SetFontTitle()    if font_slots_loaded then gfx.setfont(1) end end
+function Core.SetFontH1()       if font_slots_loaded then gfx.setfont(2) end end
+function Core.SetFontH2()       if font_slots_loaded then gfx.setfont(3) end end
+function Core.SetFontBody()     if font_slots_loaded then gfx.setfont(4) end end
+function Core.SetFontCaption()  if font_slots_loaded then gfx.setfont(5) end end
+function Core.SetFontMono()     if font_slots_loaded then gfx.setfont(6) end end
+function Core.SetFontH2Bold()   if font_slots_loaded then gfx.setfont(7) end end
+
+-- Legacy aliases
+function Core.SetFontPrimary()      Core.SetFontH1() end
+function Core.SetFontSecondary()    Core.SetFontBody() end
+function Core.SetFontTertiary()     Core.SetFontCaption() end
+function Core.SetFontPrimaryBold()  Core.SetFontTitle() end
 
 -- ============================================================================
 -- CLIPPING (software-based scissor via off-screen buffer)
@@ -421,6 +454,227 @@ function Core.UpdateAnchor()
     reaper.JS_Window_Move(win_hwnd, target_x, target_y)
 end
 
+-- ============================================================================
+-- CURSOR SYSTEM
+-- ============================================================================
+-- Set cursor for current frame. Reset to default at end of frame.
+local cursor_this_frame = nil
+
+function Core.SetCursor(cursor_type)
+    cursor_this_frame = cursor_type
+end
+
+-- Apply cursor at end of frame (called by Core.Run)
+local function apply_cursor()
+    if cursor_this_frame then
+        -- gfx.setcursor(resource_id, name)
+        -- Common Windows cursor resource IDs:
+        -- 32512 = arrow, 32513 = ibeam, 32514 = wait, 32515 = cross
+        -- 32516 = uparrow, 32642 = sizenwse, 32643 = sizenesw
+        -- 32644 = sizewe (horizontal resize), 32645 = sizens (vertical resize)
+        -- 32646 = sizeall (move), 32649 = hand
+        local cursors = {
+            arrow    = 32512,
+            ibeam    = 32513,
+            wait     = 32514,
+            cross    = 32515,
+            hand     = 32649,
+            size_we  = 32644,  -- horizontal resize ↔
+            size_ns  = 32645,  -- vertical resize ↕
+            size_all = 32646,  -- move ✥
+            size_nwse = 32642, -- diagonal ↘
+            size_nesw = 32643, -- diagonal ↗
+        }
+        local cid = cursors[cursor_this_frame]
+        if cid then gfx.setcursor(cid) end
+    else
+        gfx.setcursor(32512)  -- default arrow
+    end
+    cursor_this_frame = nil  -- reset for next frame
+end
+
+-- ============================================================================
+-- ANIMATION SYSTEM
+-- ============================================================================
+-- Interpolates values over time. Call each frame, returns current value.
+local animations = {}
+
+function Core.Animate(id, target, speed, dt)
+    speed = speed or 8  -- higher = faster
+    dt = dt or 0.033    -- ~30fps default
+
+    if not animations[id] then
+        animations[id] = target  -- snap on first call
+    end
+
+    local current = animations[id]
+    local diff = target - current
+
+    if math.abs(diff) < 0.001 then
+        animations[id] = target
+        return target
+    end
+
+    -- Exponential ease-out
+    animations[id] = current + diff * math.min(1, speed * dt)
+    return animations[id]
+end
+
+function Core.AnimateColor(id, target_color, speed, dt)
+    speed = speed or 8
+    dt = dt or 0.033
+
+    if not animations[id] then
+        animations[id] = { target_color[1], target_color[2], target_color[3], target_color[4] or 1 }
+    end
+
+    local c = animations[id]
+
+    for i = 1, 4 do
+        local t = target_color[i] or (i == 4 and 1 or 0)
+        local diff = t - c[i]
+        if math.abs(diff) > 0.001 then
+            c[i] = c[i] + diff * math.min(1, speed * dt)
+        else
+            c[i] = t
+        end
+    end
+
+    return c[1], c[2], c[3], c[4]
+end
+
+function Core.GetAnimValue(id)
+    return animations[id]
+end
+
+function Core.SetAnimValue(id, value)
+    animations[id] = value
+end
+
+-- ============================================================================
+-- FOCUS CHAIN (Tab navigation between widgets)
+-- ============================================================================
+local focus_chain = {}
+local focus_chain_index = 0
+
+function Core.RegisterFocusable(id)
+    -- Add to chain if not already present
+    for _, fid in ipairs(focus_chain) do
+        if fid == id then return end
+    end
+    focus_chain[#focus_chain + 1] = id
+end
+
+function Core.FocusNext()
+    if #focus_chain == 0 then return end
+    focus_chain_index = focus_chain_index + 1
+    if focus_chain_index > #focus_chain then focus_chain_index = 1 end
+    state.focus = focus_chain[focus_chain_index]
+end
+
+function Core.FocusPrev()
+    if #focus_chain == 0 then return end
+    focus_chain_index = focus_chain_index - 1
+    if focus_chain_index < 1 then focus_chain_index = #focus_chain end
+    state.focus = focus_chain[focus_chain_index]
+end
+
+function Core.ClearFocusChain()
+    focus_chain = {}
+    focus_chain_index = 0
+end
+
+-- ============================================================================
+-- PERSISTENT LAYOUT (save/load window state, splitter positions, etc.)
+-- ============================================================================
+function Core.SaveWindowState(script_id)
+    local dock_state = gfx.dock(-1)
+    local x, y, w, h
+    if dock_state == 0 then
+        -- Undocked: save position/size
+        local _, wx, wy, ww, wh = gfx.dock(-1, 0, 0, 0, 0)
+        x, y, w, h = wx, wy, ww, wh
+    end
+
+    reaper.SetExtState(script_id, "win_dock", tostring(dock_state), true)
+    if x then
+        reaper.SetExtState(script_id, "win_x", tostring(x), true)
+        reaper.SetExtState(script_id, "win_y", tostring(y), true)
+        reaper.SetExtState(script_id, "win_w", tostring(w), true)
+        reaper.SetExtState(script_id, "win_h", tostring(h), true)
+    end
+end
+
+function Core.LoadWindowState(script_id)
+    local dock = tonumber(reaper.GetExtState(script_id, "win_dock")) or 0
+    local x = tonumber(reaper.GetExtState(script_id, "win_x"))
+    local y = tonumber(reaper.GetExtState(script_id, "win_y"))
+    local w = tonumber(reaper.GetExtState(script_id, "win_w"))
+    local h = tonumber(reaper.GetExtState(script_id, "win_h"))
+    return { dock = dock, x = x, y = y, w = w, h = h }
+end
+
+-- Save/load arbitrary persistent values (splitter positions, collapsing states, etc.)
+function Core.SavePersistent(script_id, key, value)
+    reaper.SetExtState(script_id, "layout_" .. key, tostring(value), true)
+end
+
+function Core.LoadPersistent(script_id, key, default)
+    local val = reaper.GetExtState(script_id, "layout_" .. key)
+    if val == "" then return default end
+    if default and type(default) == "number" then return tonumber(val) or default end
+    if default and type(default) == "boolean" then return val == "true" end
+    return val
+end
+
+-- ============================================================================
+-- NATIVE GFX DRAWING (exposed for toolkit use)
+-- ============================================================================
+function Core.DrawRoundRect(x, y, w, h, radius, r, g, b, a, antialias)
+    gfx.set(r, g, b, a or 1)
+    gfx.roundrect(x, y, w, h, radius, antialias ~= false and 1 or 0)
+end
+
+function Core.DrawCircle(x, y, radius, r, g, b, a, filled, antialias)
+    gfx.set(r, g, b, a or 1)
+    gfx.circle(x, y, radius, filled and 1 or 0, antialias ~= false and 1 or 0)
+end
+
+function Core.DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a)
+    gfx.set(r, g, b, a or 1)
+    gfx.triangle(x1, y1, x2, y2, x3, y3)
+end
+
+function Core.DrawArc(x, y, radius, ang1, ang2, r, g, b, a, antialias)
+    gfx.set(r, g, b, a or 1)
+    gfx.arc(x, y, radius, ang1, ang2, antialias ~= false and 1 or 0)
+end
+
+function Core.DrawGradientRect(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2, vertical)
+    gfx.set(r1, g1, b1, a1)
+    if vertical then
+        local dr = (r2 - r1) / h
+        local dg = (g2 - g1) / h
+        local db = (b2 - b1) / h
+        local da = (a2 - a1) / h
+        gfx.gradrect(x, y, w, h, r1, g1, b1, a1, 0, 0, 0, 0, dr, dg, db, da)
+    else
+        local dr = (r2 - r1) / w
+        local dg = (g2 - g1) / w
+        local db = (b2 - b1) / w
+        local da = (a2 - a1) / w
+        gfx.gradrect(x, y, w, h, r1, g1, b1, a1, dr, dg, db, da, 0, 0, 0, 0)
+    end
+end
+
+function Core.ClientToScreen(x, y)
+    return gfx.clienttoscreen(x, y)
+end
+
+function Core.ScreenToClient(x, y)
+    return gfx.screentoclient(x, y)
+end
+
 -- Get the gfx window handle
 function Core.GetHWND()
     if not win_hwnd and reaper.JS_Window_Find then
@@ -489,6 +743,9 @@ function Core.Run(loop_fn)
             Log.EndFrame(state)
             Log.DrawOverlay()
         end
+
+        -- Apply mouse cursor for this frame
+        apply_cursor()
 
         -- End frame
         gfx.update()

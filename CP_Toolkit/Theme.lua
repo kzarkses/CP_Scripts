@@ -44,15 +44,37 @@ function Theme.Default()
             tab             = { 0.20, 0.20, 0.22, 1.0 },
             tab_hovered     = { 0.30, 0.30, 0.33, 1.0 },
             tab_active      = { 0.26, 0.26, 0.29, 1.0 },
+
+            -- Window chrome (custom header bar)
+            title_bar       = { 0.10, 0.10, 0.11, 1.0 },
+            title_text      = { 0.70, 0.70, 0.72, 1.0 },
+            close_btn       = { 0.80, 0.25, 0.25, 1.0 },
+            close_btn_hover = { 0.95, 0.30, 0.30, 1.0 },
         },
 
         -- Font settings (sizes are scaled)
         fonts = {
-            default_face = "Arial",
-            default_size = 14,
-            header_size  = 16,
-            small_size   = 12,
+            face      = "Tahoma",     -- main font face for everything
+            title     = 16,           -- window title (bold)
+            h1        = 14,           -- section header ("Sliders", "Buttons")
+            h2        = 12,           -- sub-section header, collapsing headers
+            body      = 12,           -- default body text, widget labels
+            caption   = 10,           -- hints, small labels, disabled text
+            mono_face = "Consolas",   -- monospaced font face
+            mono_size = 12,           -- monospaced size (values, time, dB)
+
+            -- Legacy aliases (backward compat)
+            default_face = "Tahoma",
+            default_size = 12,
+            header_size  = 14,
+            small_size   = 10,
+            primary      = 14,
+            secondary    = 12,
+            tertiary     = 10,
         },
+
+        -- Window chrome
+        header_height = 28,           -- custom title bar height
 
         -- Spacing / layout (all scaled)
         window_padding  = 10,
@@ -88,9 +110,19 @@ function Theme.ApplyScale(t, scale)
     local function s(v) return math.floor(v * scale + 0.5) end
 
     -- Fonts
-    t.fonts.default_size = s(t.fonts.default_size)
-    t.fonts.header_size  = s(t.fonts.header_size)
-    t.fonts.small_size   = s(t.fonts.small_size)
+    t.fonts.title    = s(t.fonts.title)
+    t.fonts.h1       = s(t.fonts.h1)
+    t.fonts.h2       = s(t.fonts.h2)
+    t.fonts.body     = s(t.fonts.body)
+    t.fonts.caption  = s(t.fonts.caption)
+    t.fonts.mono_size = s(t.fonts.mono_size)
+    -- Sync legacy aliases
+    t.fonts.primary = t.fonts.h1
+    t.fonts.secondary = t.fonts.body
+    t.fonts.tertiary = t.fonts.caption
+    t.fonts.default_size = t.fonts.body
+    t.fonts.header_size = t.fonts.h1
+    t.fonts.small_size = t.fonts.caption
 
     -- Spacing
     t.window_padding  = s(t.window_padding)
@@ -106,6 +138,7 @@ function Theme.ApplyScale(t, scale)
     t.button_height   = s(t.button_height)
     t.tab_height      = s(t.tab_height)
     t.combo_height    = s(t.combo_height)
+    t.header_height   = s(t.header_height)
 
     return t
 end
@@ -198,83 +231,259 @@ function Theme.Lerp(c1, c2, t)
 end
 
 -- ============================================================================
--- SAVE / LOAD TOOLKIT THEME (own ExtState, separate from ImGui styles)
+-- SERIALIZATION (Lua table → string → file)
 -- ============================================================================
-local EXTSTATE_SECTION = "CP_Toolkit_Theme"
-
-function Theme.Save(t)
-    -- Serialize colors
-    local data = { colors = {}, spacing = {}, fonts = {}, sizes = {} }
-
-    for key, c in pairs(t.colors) do
-        data.colors[key] = string.format("%.3f,%.3f,%.3f,%.3f", c[1], c[2], c[3], c[4] or 1)
-    end
-
-    data.spacing.window_padding = t.window_padding
-    data.spacing.frame_padding_x = t.frame_padding_x
-    data.spacing.frame_padding_y = t.frame_padding_y
-    data.spacing.item_spacing = t.item_spacing
-    data.spacing.indent = t.indent
-
-    data.fonts.default_face = t.fonts.default_face
-    data.fonts.default_size = t.fonts.default_size
-    data.fonts.header_size = t.fonts.header_size
-    data.fonts.small_size = t.fonts.small_size
-
-    data.sizes.checkbox_size = t.checkbox_size
-    data.sizes.slider_height = t.slider_height
-    data.sizes.button_height = t.button_height
-    data.sizes.tab_height = t.tab_height
-    data.sizes.combo_height = t.combo_height
-    data.sizes.scrollbar_width = t.scrollbar_width
-
-    -- Serialize to string
-    local parts = {}
-    for section, values in pairs(data) do
-        for key, val in pairs(values) do
-            parts[#parts + 1] = section .. "." .. key .. "=" .. tostring(val)
+local function serialize_value(v, indent)
+    indent = indent or ""
+    local t = type(v)
+    if t == "number" then
+        return string.format("%.6g", v)
+    elseif t == "string" then
+        return string.format("%q", v)
+    elseif t == "boolean" then
+        return tostring(v)
+    elseif t == "table" then
+        local parts = {}
+        local next_indent = indent .. "  "
+        -- Check if it's an array (sequential integer keys)
+        local is_array = true
+        local count = 0
+        for _ in pairs(v) do count = count + 1 end
+        for i = 1, count do
+            if v[i] == nil then is_array = false break end
+        end
+        if is_array and count > 0 and count <= 4 then
+            -- Short array on one line (for colors)
+            local items = {}
+            for i = 1, count do items[i] = serialize_value(v[i]) end
+            return "{ " .. table.concat(items, ", ") .. " }"
+        else
+            for k, val in pairs(v) do
+                local key_str
+                if type(k) == "number" then
+                    key_str = "[" .. k .. "]"
+                else
+                    key_str = k
+                end
+                parts[#parts + 1] = next_indent .. key_str .. " = " .. serialize_value(val, next_indent)
+            end
+            return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "}"
         end
     end
-
-    reaper.SetExtState(EXTSTATE_SECTION, "theme", table.concat(parts, ";"), true)
+    return "nil"
 end
 
-function Theme.LoadSaved()
-    local saved = reaper.GetExtState(EXTSTATE_SECTION, "theme")
-    if saved == "" then return nil end
+-- ============================================================================
+-- CONFIG FILE PATH
+-- ============================================================================
+local function get_config_dir()
+    return reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Config/"
+end
+
+local function get_theme_path(name)
+    return get_config_dir() .. (name or "theme") .. ".lua"
+end
+
+local function ensure_config_dir()
+    local dir = get_config_dir()
+    reaper.RecursiveCreateDirectory(dir, 0)
+end
+
+-- ============================================================================
+-- SAVE / LOAD THEME (file-based, Lua native serialization)
+-- ============================================================================
+function Theme.Save(t, name)
+    ensure_config_dir()
+    local path = get_theme_path(name)
+
+    -- Build saveable data (exclude runtime/computed fields)
+    local data = {
+        colors = {},
+        fonts = {
+            face = t.fonts.face,
+            title = t.fonts.title,
+            h1 = t.fonts.h1,
+            h2 = t.fonts.h2,
+            body = t.fonts.body,
+            caption = t.fonts.caption,
+            mono_face = t.fonts.mono_face,
+            mono_size = t.fonts.mono_size,
+        },
+        window_padding = t.window_padding,
+        frame_padding_x = t.frame_padding_x,
+        frame_padding_y = t.frame_padding_y,
+        item_spacing = t.item_spacing,
+        indent = t.indent,
+        header_height = t.header_height,
+        checkbox_size = t.checkbox_size,
+        slider_height = t.slider_height,
+        button_height = t.button_height,
+        tab_height = t.tab_height,
+        combo_height = t.combo_height,
+        scrollbar_width = t.scrollbar_width,
+    }
+
+    for key, c in pairs(t.colors) do
+        data.colors[key] = { c[1], c[2], c[3], c[4] or 1 }
+    end
+
+    local file = io.open(path, "w")
+    if not file then return false end
+    file:write("-- CP_Toolkit Theme: " .. (name or "theme") .. "\n")
+    file:write("return " .. serialize_value(data) .. "\n")
+    file:close()
+    return true
+end
+
+function Theme.LoadSaved(name)
+    local path = get_theme_path(name)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    file:close()
+
+    local ok, data = pcall(dofile, path)
+    if not ok or not data then return nil end
 
     local t = Theme.Default()
 
-    for entry in saved:gmatch("[^;]+") do
-        local path, val = entry:match("^(.-)=(.+)$")
-        if path and val then
-            local section, key = path:match("^(.-)%.(.+)$")
-            if section == "colors" then
-                local r, g, b, a = val:match("([%d%.]+),([%d%.]+),([%d%.]+),([%d%.]+)")
-                if r then
-                    t.colors[key] = { tonumber(r), tonumber(g), tonumber(b), tonumber(a) }
-                end
-            elseif section == "spacing" then
-                if key == "window_padding" then t.window_padding = tonumber(val)
-                elseif key == "frame_padding_x" then t.frame_padding_x = tonumber(val)
-                elseif key == "frame_padding_y" then t.frame_padding_y = tonumber(val)
-                elseif key == "item_spacing" then t.item_spacing = tonumber(val)
-                elseif key == "indent" then t.indent = tonumber(val)
-                end
-            elseif section == "fonts" then
-                if key == "default_face" then t.fonts.default_face = val
-                elseif key == "default_size" then t.fonts.default_size = tonumber(val)
-                elseif key == "header_size" then t.fonts.header_size = tonumber(val)
-                elseif key == "small_size" then t.fonts.small_size = tonumber(val)
-                end
-            elseif section == "sizes" then
-                local num = tonumber(val)
-                if num then t[key] = num end
-            end
+    -- Apply loaded data
+    if data.colors then
+        for key, c in pairs(data.colors) do
+            if t.colors[key] then t.colors[key] = c end
         end
     end
 
+    if data.fonts then
+        t.fonts.face      = data.fonts.face or t.fonts.face
+        t.fonts.title     = data.fonts.title or t.fonts.title
+        t.fonts.h1        = data.fonts.h1 or t.fonts.h1
+        t.fonts.h2        = data.fonts.h2 or t.fonts.h2
+        t.fonts.body      = data.fonts.body or t.fonts.body
+        t.fonts.caption   = data.fonts.caption or t.fonts.caption
+        t.fonts.mono_face = data.fonts.mono_face or t.fonts.mono_face
+        t.fonts.mono_size = data.fonts.mono_size or t.fonts.mono_size
+        -- Sync legacy aliases
+        t.fonts.default_face = t.fonts.face
+        t.fonts.primary      = t.fonts.h1
+        t.fonts.secondary    = t.fonts.body
+        t.fonts.tertiary     = t.fonts.caption
+        t.fonts.default_size = t.fonts.body
+        t.fonts.header_size  = t.fonts.h1
+        t.fonts.small_size   = t.fonts.caption
+    end
+
+    t.window_padding = data.window_padding or t.window_padding
+    t.frame_padding_x = data.frame_padding_x or t.frame_padding_x
+    t.frame_padding_y = data.frame_padding_y or t.frame_padding_y
+    t.item_spacing = data.item_spacing or t.item_spacing
+    t.indent = data.indent or t.indent
+    t.header_height = data.header_height or t.header_height
+    t.checkbox_size = data.checkbox_size or t.checkbox_size
+    t.slider_height = data.slider_height or t.slider_height
+    t.button_height = data.button_height or t.button_height
+    t.tab_height = data.tab_height or t.tab_height
+    t.combo_height = data.combo_height or t.combo_height
+    t.scrollbar_width = data.scrollbar_width or t.scrollbar_width
+
     return t
+end
+
+-- ============================================================================
+-- THEME PRESETS
+-- ============================================================================
+function Theme.Presets()
+    return {
+        { name = "Default Dark", key = "default_dark" },
+        { name = "REAPER Classic", key = "reaper_classic" },
+        { name = "Light", key = "light" },
+        { name = "Midnight", key = "midnight" },
+    }
+end
+
+function Theme.GetPreset(key)
+    if key == "default_dark" then
+        return Theme.Default()
+
+    elseif key == "reaper_classic" then
+        local t = Theme.Default()
+        t.colors.window_bg       = { 0.18, 0.18, 0.18, 1.0 }
+        t.colors.text            = { 0.78, 0.78, 0.78, 1.0 }
+        t.colors.accent          = { 0.40, 0.55, 0.40, 1.0 }
+        t.colors.accent_hovered  = { 0.50, 0.65, 0.50, 1.0 }
+        t.colors.accent_active   = { 0.30, 0.45, 0.30, 1.0 }
+        t.colors.button          = { 0.28, 0.28, 0.28, 1.0 }
+        t.colors.button_hovered  = { 0.35, 0.35, 0.35, 1.0 }
+        t.colors.header          = { 0.22, 0.22, 0.22, 1.0 }
+        t.colors.title_bar       = { 0.14, 0.14, 0.14, 1.0 }
+        t.colors.frame_bg        = { 0.22, 0.22, 0.22, 1.0 }
+        t.colors.tab_active      = { 0.30, 0.30, 0.30, 1.0 }
+        return t
+
+    elseif key == "light" then
+        local t = Theme.Default()
+        t.colors.window_bg       = { 0.92, 0.92, 0.93, 1.0 }
+        t.colors.text            = { 0.15, 0.15, 0.17, 1.0 }
+        t.colors.text_disabled   = { 0.50, 0.50, 0.52, 1.0 }
+        t.colors.border          = { 0.72, 0.72, 0.74, 0.5 }
+        t.colors.accent          = { 0.20, 0.45, 0.75, 1.0 }
+        t.colors.accent_hovered  = { 0.30, 0.55, 0.85, 1.0 }
+        t.colors.accent_active   = { 0.15, 0.35, 0.65, 1.0 }
+        t.colors.button          = { 0.82, 0.82, 0.84, 1.0 }
+        t.colors.button_hovered  = { 0.75, 0.75, 0.78, 1.0 }
+        t.colors.button_active   = { 0.68, 0.68, 0.72, 1.0 }
+        t.colors.frame_bg        = { 0.85, 0.85, 0.87, 1.0 }
+        t.colors.frame_hovered   = { 0.80, 0.80, 0.83, 1.0 }
+        t.colors.frame_active    = { 0.75, 0.75, 0.78, 1.0 }
+        t.colors.header          = { 0.82, 0.82, 0.84, 1.0 }
+        t.colors.header_hovered  = { 0.76, 0.76, 0.79, 1.0 }
+        t.colors.separator       = { 0.70, 0.70, 0.72, 0.5 }
+        t.colors.popup_bg        = { 0.95, 0.95, 0.96, 0.98 }
+        t.colors.tab             = { 0.85, 0.85, 0.87, 1.0 }
+        t.colors.tab_hovered     = { 0.78, 0.78, 0.81, 1.0 }
+        t.colors.tab_active      = { 0.90, 0.90, 0.92, 1.0 }
+        t.colors.title_bar       = { 0.82, 0.82, 0.84, 1.0 }
+        t.colors.title_text      = { 0.25, 0.25, 0.27, 1.0 }
+        t.colors.close_btn       = { 0.80, 0.25, 0.25, 1.0 }
+        return t
+
+    elseif key == "midnight" then
+        local t = Theme.Default()
+        t.colors.window_bg       = { 0.08, 0.08, 0.12, 1.0 }
+        t.colors.text            = { 0.80, 0.82, 0.90, 1.0 }
+        t.colors.accent          = { 0.40, 0.50, 0.90, 1.0 }
+        t.colors.accent_hovered  = { 0.50, 0.60, 1.00, 1.0 }
+        t.colors.accent_active   = { 0.30, 0.40, 0.80, 1.0 }
+        t.colors.button          = { 0.15, 0.15, 0.22, 1.0 }
+        t.colors.button_hovered  = { 0.22, 0.22, 0.32, 1.0 }
+        t.colors.frame_bg        = { 0.12, 0.12, 0.18, 1.0 }
+        t.colors.header          = { 0.12, 0.12, 0.18, 1.0 }
+        t.colors.title_bar       = { 0.06, 0.06, 0.09, 1.0 }
+        t.colors.popup_bg        = { 0.10, 0.10, 0.16, 0.98 }
+        t.colors.tab             = { 0.12, 0.12, 0.18, 1.0 }
+        t.colors.tab_active      = { 0.18, 0.18, 0.28, 1.0 }
+        t.colors.separator       = { 0.20, 0.20, 0.30, 0.5 }
+        t.colors.border          = { 0.20, 0.20, 0.30, 0.5 }
+        return t
+    end
+
+    return Theme.Default()
+end
+
+-- List saved theme files in config dir
+function Theme.ListSaved()
+    local dir = get_config_dir()
+    local themes = {}
+    local idx = 0
+    while true do
+        local filename = reaper.EnumerateFiles(dir, idx)
+        if not filename then break end
+        if filename:match("%.lua$") then
+            local name = filename:match("^(.-)%.lua$")
+            themes[#themes + 1] = name
+        end
+        idx = idx + 1
+    end
+    return themes
 end
 
 -- ============================================================================

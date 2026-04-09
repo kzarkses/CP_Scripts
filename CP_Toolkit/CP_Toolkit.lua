@@ -56,7 +56,10 @@ function UI.Init(title, width, height, opts)
     local sh = math.floor(height * scale + 0.5)
 
     Core.Init(title, sw, sh, opts.dock, opts.x, opts.y)
-    Core.SetFont(UI._theme.fonts.default_size, UI._theme.fonts.default_face)
+
+    -- Load font slots (title, h1, h2, body, caption, mono)
+    Core.LoadFontSlots(UI._theme)
+    Core.SetFontBody()  -- default to body text
 
     -- Frameless overlay mode (requires JS_ReaScriptAPI)
     if opts.frameless then
@@ -70,6 +73,8 @@ function UI.Run(loop_fn)
         Layout.Begin("root", UI._theme)
         loop_fn(UI._theme)
         Layout.End()
+        -- Update eyedropper if active (runs before tooltip layer in Core)
+        Widgets.UpdateEyedropper(UI._theme)
     end)
 end
 
@@ -77,14 +82,29 @@ function UI.OnClose(fn)
     Core.OnClose(fn)
 end
 
-function UI.SaveTheme()
-    ThemeMod.Save(UI._theme)
+function UI.SaveTheme(name)
+    ThemeMod.Save(UI._theme, name)
+end
+
+function UI.LoadTheme(name)
+    local t = ThemeMod.LoadSaved(name)
+    if t then
+        UI._theme = t
+        Core.LoadFontSlots(UI._theme)
+        Core.SetFontSecondary()
+    end
 end
 
 function UI.ResetTheme()
     UI._theme = ThemeMod.Default()
-    ThemeMod.ApplyScale(UI._theme, UI._theme.scale)
-    Core.SetFont(UI._theme.fonts.default_size, UI._theme.fonts.default_face)
+    Core.LoadFontSlots(UI._theme)
+    Core.SetFontSecondary()
+end
+
+function UI.ApplyPreset(preset_key)
+    UI._theme = ThemeMod.GetPreset(preset_key)
+    Core.LoadFontSlots(UI._theme)
+    Core.SetFontSecondary()
 end
 
 function UI.GetTheme()
@@ -98,6 +118,31 @@ end
 -- ============================================================================
 -- WIDGET SHORTCUTS (so user writes UI.Button instead of UI.Widgets.Button)
 -- ============================================================================
+
+-- Custom Window Chrome
+-- Returns: closed (bool), settings_clicked (bool)
+function UI.BeginWindow(title, opts)
+    return Widgets.BeginWindow(title, UI._theme, opts)
+end
+
+function UI.EndWindow()
+    Widgets.EndWindow()
+end
+
+-- Font switching (new hierarchy)
+function UI.SetFontTitle()      Core.SetFontTitle() end      -- Window title, biggest bold
+function UI.SetFontH1()         Core.SetFontH1() end         -- Section headers
+function UI.SetFontH2()         Core.SetFontH2() end         -- Sub-section headers
+function UI.SetFontH2Bold()     Core.SetFontH2Bold() end     -- Sub-section bold
+function UI.SetFontBody()       Core.SetFontBody() end       -- Default body text
+function UI.SetFontCaption()    Core.SetFontCaption() end    -- Small/hints
+function UI.SetFontMono()       Core.SetFontMono() end       -- Values, numbers
+
+-- Legacy aliases
+function UI.SetFontPrimary()    Core.SetFontH1() end
+function UI.SetFontSecondary()  Core.SetFontBody() end
+function UI.SetFontTertiary()   Core.SetFontCaption() end
+function UI.SetFontPrimaryBold() Core.SetFontTitle() end
 
 -- Text
 function UI.Text(text, opts)
@@ -202,6 +247,15 @@ function UI.ColorPicker(id, label, color, opts)
     return Widgets.ColorPicker(id, label, color, UI._theme, opts)
 end
 
+-- Eyedropper (screen color sampler)
+function UI.StartEyedropper(callback)
+    return Widgets.StartEyedropper(callback)
+end
+
+function UI.IsEyedropperActive()
+    return Widgets.IsEyedropperActive()
+end
+
 -- Number Input
 function UI.NumberInput(id, label, value, min_val, max_val, opts)
     return Widgets.NumberInput(id, label, value, min_val, max_val, UI._theme, opts)
@@ -232,6 +286,30 @@ end
 function UI.IsDocked()
     return Core.IsDocked()
 end
+
+-- Cursor
+function UI.SetCursor(cursor_type) Core.SetCursor(cursor_type) end
+
+-- Animation
+function UI.Animate(id, target, speed) return Core.Animate(id, target, speed) end
+function UI.AnimateColor(id, color, speed) return Core.AnimateColor(id, color, speed) end
+
+-- Focus chain (Tab navigation)
+function UI.FocusNext() Core.FocusNext() end
+function UI.FocusPrev() Core.FocusPrev() end
+
+-- Persistent layout
+function UI.SaveWindowState(script_id) Core.SaveWindowState(script_id) end
+function UI.LoadWindowState(script_id) return Core.LoadWindowState(script_id) end
+function UI.SavePersistent(script_id, key, value) Core.SavePersistent(script_id, key, value) end
+function UI.LoadPersistent(script_id, key, default) return Core.LoadPersistent(script_id, key, default) end
+
+-- Native GFX drawing
+function UI.DrawRoundRect(x, y, w, h, radius, r, g, b, a) Core.DrawRoundRect(x, y, w, h, radius, r, g, b, a) end
+function UI.DrawCircle(x, y, radius, r, g, b, a, filled) Core.DrawCircle(x, y, radius, r, g, b, a, filled) end
+function UI.DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a) Core.DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a) end
+function UI.DrawArc(x, y, radius, a1, a2, r, g, b, a) Core.DrawArc(x, y, radius, a1, a2, r, g, b, a) end
+function UI.DrawGradientRect(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2, vertical) Core.DrawGradientRect(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2, vertical) end
 
 -- Frameless / Overlay
 function UI.SetPosition(x, y)

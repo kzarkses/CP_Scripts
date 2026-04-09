@@ -23,6 +23,146 @@ function Widgets.SetIcons(icons_mod)
 end
 
 -- ============================================================================
+-- CUSTOM WINDOW CHROME (BeginWindow / EndWindow)
+-- ============================================================================
+-- Draws a custom title bar with drag-to-move and close button.
+-- Use with frameless=true in UI.Init for full effect.
+-- opts: closable (true), draggable (true), title_align ("left"|"center")
+local window_chrome = { dragging = false }
+
+function Widgets.BeginWindow(title, theme, opts)
+    opts = opts or {}
+    local closable = opts.closable ~= false
+    local draggable = opts.draggable ~= false
+    local title_align = opts.title_align or "left"
+
+    local win_w, win_h = Core.GetWindowSize()
+    local h = theme.header_height
+    local closed = false
+
+    -- Title bar background
+    local tb = theme.colors.title_bar
+    Core.DrawRect(0, 0, win_w, h, tb[1], tb[2], tb[3], tb[4])
+
+    -- Bottom border line
+    local ac = theme.colors.accent
+    Core.DrawRect(0, h - 1, win_w, 1, ac[1], ac[2], ac[3], 0.4)
+
+    -- Title text
+    Core.SetFontPrimaryBold()
+    local tw, th = Core.MeasureText(title)
+    local tc = theme.colors.title_text
+    local tx
+    if title_align == "center" then
+        tx = math.floor((win_w - tw) / 2)
+    else
+        tx = theme.window_padding
+    end
+    local ty = math.floor((h - th) / 2)
+    Core.DrawText(title, tx, ty, tc[1], tc[2], tc[3], tc[4])
+    Core.SetFontSecondary()  -- restore default font
+
+    -- Settings button (before close, if requested)
+    local settings_clicked = false
+    if opts.on_settings then
+        local sbtn_size = h
+        local sbtn_x = win_w - (closable and h * 2 or h)
+        local sbtn_hovered = Core.MouseInRect(sbtn_x, 0, sbtn_size, h)
+
+        if sbtn_hovered then
+            Core.DrawRect(sbtn_x, 0, sbtn_size, h, 1, 1, 1, 0.08)
+        end
+
+        if Icons then
+            local ic = sbtn_hovered and { 1, 1, 1, 0.9 } or theme.colors.title_text
+            Icons.Settings(sbtn_x, 0, sbtn_size, ic[1], ic[2], ic[3], ic[4])
+        end
+
+        if sbtn_hovered and Core.MouseClicked(1) then
+            settings_clicked = true
+        end
+    end
+
+    -- Close button (right side)
+    if closable then
+        local btn_size = h
+        local btn_x = win_w - btn_size
+        local btn_hovered = Core.MouseInRect(btn_x, 0, btn_size, h)
+
+        if btn_hovered then
+            local hc = theme.colors.close_btn_hover
+            Core.DrawRect(btn_x, 0, btn_size, h, hc[1], hc[2], hc[3], hc[4])
+        end
+
+        -- X icon
+        if Icons then
+            local ic = btn_hovered and { 1, 1, 1, 1 } or theme.colors.title_text
+            Icons.Close(btn_x, 0, btn_size, ic[1], ic[2], ic[3], ic[4])
+        else
+            local xc = btn_hovered and { 1, 1, 1, 1 } or theme.colors.title_text
+            local xw = Core.MeasureText("X")
+            Core.DrawText("X", btn_x + math.floor((btn_size - xw) / 2), ty, xc[1], xc[2], xc[3], xc[4])
+        end
+
+        if btn_hovered and Core.MouseClicked(1) then
+            closed = true
+        end
+    end
+
+    -- Drag to move (on title bar area, excluding close button)
+    -- Uses JS_Window_ClientToScreen for accurate screen coordinates
+    if draggable and reaper.JS_Window_ClientToScreen then
+        local drag_w = closable and (win_w - h) or win_w
+        if opts.on_settings then drag_w = drag_w - h end
+        local title_hovered = Core.MouseInRect(0, 0, drag_w, h)
+
+        if title_hovered and Core.MouseClicked(1) then
+            Core.SetActive("_window_drag")
+            local hwnd = Core.GetHWND()
+            if hwnd then
+                -- Convert gfx mouse to screen coords (precise, no approximation)
+                local smx, smy = reaper.JS_Window_ClientToScreen(hwnd, gfx.mouse_x, gfx.mouse_y)
+                local ok, wl, wt = reaper.JS_Window_GetRect(hwnd)
+                if ok then
+                    window_chrome.start_smx = smx
+                    window_chrome.start_smy = smy
+                    window_chrome.start_wx = wl
+                    window_chrome.start_wy = wt
+                end
+            end
+        end
+
+        if Core.IsActive("_window_drag") then
+            if Core.MouseDown(1) then
+                local hwnd = Core.GetHWND()
+                if hwnd and window_chrome.start_smx then
+                    local smx, smy = reaper.JS_Window_ClientToScreen(hwnd, gfx.mouse_x, gfx.mouse_y)
+                    local new_x = window_chrome.start_wx + (smx - window_chrome.start_smx)
+                    local new_y = window_chrome.start_wy + (smy - window_chrome.start_smy)
+                    reaper.JS_Window_Move(hwnd, new_x, new_y)
+                end
+            else
+                Core.ClearActive()
+                window_chrome.start_smx = nil
+            end
+        end
+    end
+
+    -- Offset the layout container to start below the title bar
+    local c = Core.CurrentContainer()
+    if c and c.cursor_y < h then
+        c.cursor_y = h + theme.window_padding
+        c.pad_y = h + theme.window_padding
+    end
+
+    return closed, settings_clicked
+end
+
+function Widgets.EndWindow()
+    -- Nothing to clean up (the container is managed by Layout.Begin/End)
+end
+
+-- ============================================================================
 -- TEXT
 -- ============================================================================
 function Widgets.Text(text, theme, opts)
@@ -685,61 +825,77 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         changed = true
     end
 
+    -- Cursor
+    if hovered then Core.SetCursor("size_ns") end
+
     -- Draw
     if Core.IsVisible(x, y, size, size + 14) then
         local cx, cy = x + radius, y + radius
         local display_val = changed and new_value or value
 
-        -- Background circle
-        local bg = theme.colors.frame_bg
-        Core.DrawRect(cx - radius, cy - radius, size, size, bg[1], bg[2], bg[3], bg[4])
-
-        -- Arc angles
+        -- Angle range: 135° to 405° (270° sweep, gap at bottom)
         local angle_min = math.pi * 0.75
         local angle_max = math.pi * 2.25
-        local segments = 20
-
-        -- Track arc (full range, dim)
-        local track_c = theme.colors.border
+        local angle_val = angle_min + (angle_max - angle_min) * display_val
         local ar = radius - 4
-        for i = 0, segments - 1 do
-            local a1 = angle_min + (angle_max - angle_min) * (i / segments)
-            local a2 = angle_min + (angle_max - angle_min) * ((i + 1) / segments)
-            Core.DrawLine(
-                cx + math.cos(a1) * ar, cy + math.sin(a1) * ar,
-                cx + math.cos(a2) * ar, cy + math.sin(a2) * ar,
-                track_c[1], track_c[2], track_c[3], 0.4)
+        local track_w = math.max(2, math.floor(radius * 0.12))
+
+        -- Background circle (filled)
+        local bg = theme.colors.frame_bg
+        gfx.set(bg[1], bg[2], bg[3], bg[4])
+        gfx.circle(cx, cy, radius, 1, 1)
+
+        -- Track arc (full range, dim) — native gfx.arc
+        local track_c = theme.colors.border
+        gfx.set(track_c[1], track_c[2], track_c[3], 0.3)
+        for w = 0, track_w - 1 do
+            gfx.arc(cx, cy, ar - w, angle_min, angle_max, 1)
         end
 
-        -- Value arc (bright)
-        local angle_val = angle_min + (angle_max - angle_min) * display_val
-        local val_segments = math.max(1, math.floor(segments * display_val))
+        -- Value arc (bright, accent color)
         if display_val > 0.01 then
             local ac = theme.colors.accent
-            for i = 0, val_segments - 1 do
-                local a1 = angle_min + (angle_val - angle_min) * (i / val_segments)
-                local a2 = angle_min + (angle_val - angle_min) * ((i + 1) / val_segments)
-                Core.DrawLine(
-                    cx + math.cos(a1) * ar, cy + math.sin(a1) * ar,
-                    cx + math.cos(a2) * ar, cy + math.sin(a2) * ar,
-                    ac[1], ac[2], ac[3], ac[4])
+            -- Animate color on active
+            if Core.IsActive(id) then
+                ac = theme.colors.accent_active
+            elseif hovered then
+                ac = theme.colors.accent_hovered
+            end
+            gfx.set(ac[1], ac[2], ac[3], ac[4])
+            for w = 0, track_w - 1 do
+                gfx.arc(cx, cy, ar - w, angle_min, angle_val, 1)
             end
         end
 
-        -- Indicator line
-        local ind_len = radius - 7
-        local ind_x = cx + math.cos(angle_val) * ind_len
-        local ind_y = cy + math.sin(angle_val) * ind_len
+        -- Indicator dot (not line — cleaner)
+        local ind_r = math.max(2, math.floor(radius * 0.1))
+        local ind_dist = ar - track_w - 3
+        local ind_x = cx + math.cos(angle_val) * ind_dist
+        local ind_y = cy + math.sin(angle_val) * ind_dist
         local lc = theme.colors.text
-        Core.DrawLine(cx, cy, ind_x, ind_y, lc[1], lc[2], lc[3], 0.9)
+        gfx.set(lc[1], lc[2], lc[3], 0.9)
+        gfx.circle(ind_x, ind_y, ind_r, 1, 1)
+
+        -- Center dot
+        gfx.set(lc[1], lc[2], lc[3], 0.3)
+        gfx.circle(cx, cy, math.max(1, math.floor(radius * 0.08)), 1, 1)
+
+        -- Value text (small, below knob center)
+        Core.SetFontCaption()
+        local val_str = string.format("%d%%", math.floor(display_val * 100))
+        local vw, vh = Core.MeasureText(val_str)
+        local tc = theme.colors.text_disabled
+        Core.DrawText(val_str, cx - vw / 2, cy + radius * 0.15, tc[1], tc[2], tc[3], tc[4])
+        Core.SetFontBody()
 
         -- Label below
         if label then
-            local lw, lh = Core.MeasureText(label)
+            Core.SetFontCaption()
+            local lw = Core.MeasureText(label)
             local lx = x + math.floor((size - lw) / 2)
             local ly = y + size + 1
-            local tc = theme.colors.text_disabled
             Core.DrawText(label, lx, ly, tc[1], tc[2], tc[3], tc[4])
+            Core.SetFontBody()
         end
     end
 
@@ -961,6 +1117,90 @@ local function hsv_to_rgb(h_val, s, v)
     elseif i == 3 then return p, q, v
     elseif i == 4 then return t, p, v
     else return v, p, q end
+end
+
+-- ============================================================================
+-- EYEDROPPER (screen color picker)
+-- ============================================================================
+local eyedropper = { active = false, callback = nil }
+
+function Widgets.StartEyedropper(callback)
+    if not reaper.JS_Window_GetRect then return false end
+    eyedropper.active = true
+    eyedropper.callback = callback
+    return true
+end
+
+-- Helper: get screen mouse position using window rect + gfx.mouse
+local function get_screen_mouse()
+    local hwnd = Core.GetHWND()
+    if hwnd and reaper.JS_Window_GetRect then
+        local ok, wl, wt = reaper.JS_Window_GetRect(hwnd)
+        if ok then
+            return wl + gfx.mouse_x, wt + gfx.mouse_y
+        end
+    end
+    return nil, nil
+end
+
+-- Called each frame from UI.Run
+function Widgets.UpdateEyedropper(theme)
+    if not eyedropper.active then return end
+
+    -- Draw hint
+    Core.SetTooltip(function()
+        local mx, my = Core.GetMousePos()
+        local tc = theme.colors.text
+        Core.DrawText("Click to pick color (right-click cancel)", mx + 14, my + 14, tc[1], tc[2], tc[3], 0.8)
+    end)
+
+    -- On click, sample the screen pixel
+    if Core.MouseClicked(1) then
+        local sx, sy = get_screen_mouse()
+
+        if sx and reaper.JS_GDI_GetPixel then
+            -- Try to get pixel from screen DC
+            local dc = reaper.JS_GDI_GetScreenDC and reaper.JS_GDI_GetScreenDC()
+            if not dc then
+                -- Fallback: get DC from desktop window
+                local desktop = reaper.JS_Window_GetDesktop and reaper.JS_Window_GetDesktop()
+                if desktop then
+                    dc = reaper.JS_Window_GetDC and reaper.JS_Window_GetDC(desktop)
+                end
+            end
+
+            if dc then
+                local pixel = reaper.JS_GDI_GetPixel(dc, sx, sy)
+                if reaper.JS_GDI_ReleaseDC then
+                    reaper.JS_GDI_ReleaseDC(nil, dc)
+                end
+
+                if pixel and pixel >= 0 then
+                    local cr = pixel & 0xFF
+                    local cg = (pixel >> 8) & 0xFF
+                    local cb = (pixel >> 16) & 0xFF
+                    local color = { cr / 255, cg / 255, cb / 255 }
+
+                    if eyedropper.callback then
+                        eyedropper.callback(color)
+                    end
+                end
+            end
+        end
+
+        eyedropper.active = false
+        eyedropper.callback = nil
+    end
+
+    -- Cancel on right-click or Escape
+    if Core.MouseClicked(2) or Core.GetChar() == 27 then
+        eyedropper.active = false
+        eyedropper.callback = nil
+    end
+end
+
+function Widgets.IsEyedropperActive()
+    return eyedropper.active
 end
 
 -- color = {r, g, b} in 0-1 range
@@ -1216,6 +1456,19 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
                 end
             else
                 Core.ClearActive()
+            end
+        end
+
+        -- Mouse wheel to increment/decrement
+        if hovered and not Core.HasPopup() then
+            local wheel = Core.GetState().mouse_wheel
+            if wheel ~= 0 then
+                local dir = wheel > 0 and 1 or -1
+                new_value = value + dir * step
+                if min_val then new_value = math.max(min_val, new_value) end
+                if max_val then new_value = math.min(max_val, new_value) end
+                if step >= 1 then new_value = math.floor(new_value + 0.5) end
+                if new_value ~= value then changed = true end
             end
         end
     end
