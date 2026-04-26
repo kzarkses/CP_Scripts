@@ -1,0 +1,84 @@
+desc: CP - Ring Mod (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Ring modulator with multiple waveform shapes.
+  Designed for FX Constellation XY gesture control.
+
+slider1:mod_freq=440<1,5000,0.1:log>Frequency (Hz)
+slider2:waveform=0<0,3,1{Sine,Triangle,Square,Saw}>Waveform
+slider3:stereo_offset=0<0,100,1>Stereo Offset (%)
+slider4:mix=100<0,100,1>Mix (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+pi2 = 2 * $pi;
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+phase_l = 0;
+phase_r = 0;
+
+s_freq = 440;
+s_offset = 0;
+s_mix = 1;
+
+@slider
+target_freq = mod_freq;
+target_offset = stereo_offset / 100;
+target_mix = mix / 100;
+
+@sample
+// Smooth parameters
+s_freq = s_freq * smooth_coeff + target_freq * (1 - smooth_coeff);
+s_offset = s_offset * smooth_coeff + target_offset * (1 - smooth_coeff);
+s_mix = s_mix * smooth_coeff + target_mix * (1 - smooth_coeff);
+
+// Phase increment
+phase_inc = s_freq / srate;
+
+// Generate modulator waveforms for left channel
+waveform < 0.5 ? (
+  // Sine
+  mod_l = sin(phase_l * pi2);
+) : waveform < 1.5 ? (
+  // Triangle
+  mod_l = 4 * abs(phase_l - 0.5) - 1;
+) : waveform < 2.5 ? (
+  // Square
+  mod_l = phase_l < 0.5 ? 1 : -1;
+) : (
+  // Saw
+  mod_l = 2 * phase_l - 1;
+);
+
+// Right channel with stereo offset
+phase_r_shifted = phase_r + s_offset * 0.5;
+phase_r_shifted >= 1 ? phase_r_shifted -= 1;
+
+waveform < 0.5 ? (
+  mod_r = sin(phase_r_shifted * pi2);
+) : waveform < 1.5 ? (
+  mod_r = 4 * abs(phase_r_shifted - 0.5) - 1;
+) : waveform < 2.5 ? (
+  mod_r = phase_r_shifted < 0.5 ? 1 : -1;
+) : (
+  mod_r = 2 * phase_r_shifted - 1;
+);
+
+// Ring modulation (multiply input by modulator)
+ring_l = spl0 * mod_l;
+ring_r = spl1 * mod_r;
+
+// Advance phases
+phase_l += phase_inc;
+phase_r += phase_inc;
+phase_l >= 1 ? phase_l -= 1;
+phase_r >= 1 ? phase_r -= 1;
+
+// Wet/dry mix
+spl0 = spl0 * (1 - s_mix) + ring_l * s_mix;
+spl1 = spl1 * (1 - s_mix) + ring_r * s_mix;

@@ -1,0 +1,645 @@
+reaper.Llm_Do()
+Do. Call this function to run one ReaLlm cycle. Use this function to run ReaLlm on arbitrary time intervals e.g. from a deferred script.
+
+string pathString = reaper.Llm_GetPaths(boolean includeFx, MediaTrack startIn, MediaTrack endIn)
+Get paths. Returns a string of the form "start:fx#1.fx#2...;track:fxs;...;end:fxs" where track is the track number and fx is the fx index. The string is truncated to pathStringOut_sz. 1-based indexing is used. If no MediaTrack* start is provided, all monitored input tracks are used. If no MediaTrack* end is provided, all hardware output tracks are used. If includeFx is true, the fx indices are included.
+
+string safeString = reaper.Llm_GetSafed()
+Get safed. Returns a string of the form "track:fx;track:fx;..." where track is the track number and fx is the fx index. The string is truncated to safeStringOut_sz. 1-based indexing is used. The string is followed by a | delimited list of fx names that have been set safed.
+
+integer major, integer minor, integer patch, integer build, string commit = reaper.Llm_GetVersion()
+Get version. Returns the version of the plugin as integers and the commit hash as a string. The string is truncated to commitOut_sz.
+
+reaper.Llm_SetClearSafe(boolean clear_manually_safed_fx)
+Set clear safe. Set clear_manually_safed_fx = true to clear manually safed fx
+
+reaper.Llm_SetKeepPdc(boolean enable)
+Set keep pdc
+
+reaper.Llm_SetMonitoringFX(boolean enable)
+Set to include MonitoringFX. In REAPER land this means the fx on the master track record fx chain. Indexed as fx# + 0x1000000, 0-based.
+
+reaper.Llm_SetParameterChange(string fx_name, integer parameter_index, number val1, number val2)
+Set parameter change. Set val1 = val2 to clear change. Set parameter_index = -666 to clear all changes. Use this function to set parameter changes between values val1 and val2 for fx_name and parameter_index instead of disabling the effect. Use custom fx names to identify individual fx.
+
+reaper.Llm_SetPdcLimit(number pdc_factor)
+Set pdc limit as factor of audio buffer size.
+
+string fx_name = reaper.Llm_SetSafed(string fx_name, boolean isSet)
+Set safed. Set isSet = true to safe fx name. Set isSet = false to unsafe fx name.
+
+integer reaper.MCULive_GetButtonValue(integer device, integer button)
+Get current button state.
+
+integer reaper.MCULive_GetDevice(integer device, integer type)
+Get MIDI input or output dev ID. type 0 is input dev, type 1 is output dev. device < 0 returns number of MCULive devices.
+
+number reaper.MCULive_GetEncoderValue(integer device, integer encIdx, integer param)
+Returns zero-indexed encoder parameter value. 0 = lastpos, 1 = lasttouch
+
+number reaper.MCULive_GetFaderValue(integer device, integer faderIdx, integer param)
+Returns zero-indexed fader parameter value. 0 = lastpos, 1 = lasttouch, 2 = lastmove (any fader)
+
+integer retval, integer status, integer data1, integer data2, integer frame_offset, optional string msg = reaper.MCULive_GetMIDIMessage(integer device, integer msgIdx)
+Gets MIDI message from input buffer/queue. Gets (pops/pulls) indexed message (status, data1, data2 and frame_offset) from queue and retval is total size/length left in queue. E.g. continuously read all indiviual messages with deferred script. Frame offset resolution is 1/1024000 seconds, not audio samples. Long messages are returned as optional strings of byte characters. msgIdx -1 returns size (length) of buffer. Read also non-MCU devices by creating MCULive device with their input.
+
+integer reaper.MCULive_Map(integer device, integer button, integer command_id, boolean isRemap)
+Maps MCU Live device# button# to REAPER command ID. E.g. reaper.MCULive_Map(0,0x5b, 40340) maps MCU Rewind to "Track: Unsolo all tracks". Or remap button to another button if your MCU button layout doesnt play nicely with default MCULive mappings. By default range 0x00 .. 0x2d is in use. Button numbers are second column (prefixed with 0x) e.g. '90 5e' 0x5e for 'transport : play', roughly.
+mcu documentation:
+mcu=>pc:
+the mcu seems to send, when it boots (or is reset) f0 00 00 66 14 01 58 59 5a 57 18 61 05 57 18 61 05 f7
+ex vv vv : volume fader move, x=0..7, 8=master, vv vv is int14
+b0 1x vv : pan fader move, x=0..7, vv has 40 set if negative, low bits 0-31 are move amount
+b0 3c vv : jog wheel move, 01 or 41
+to the extent the buttons below have leds, you can set them by sending these messages, with 7f for on, 1 for blink, 0 for off.
+90 0x vv : rec arm push x=0..7 (vv:..)
+90 0x vv : solo push x=8..f (vv:..)
+90 1x vv : mute push x=0..7 (vv:..)
+90 1x vv : selected push x=8..f (vv:..)
+90 2x vv : pan knob push, x=0..7 (vv:..)
+90 28 vv : assignment track
+90 29 vv : assignment send
+90 2a vv : assignment pan/surround
+90 2b vv : assignment plug-in
+90 2c vv : assignment eq
+90 2d vv : assignment instrument
+90 2e vv : bank down button (vv: 00=release, 7f=push)
+90 2f vv : channel down button (vv: ..)
+90 30 vv : bank up button (vv:..)
+90 31 vv : channel up button (vv:..)
+90 32 vv : flip button
+90 33 vv : global view button
+90 34 vv : name/value display button
+90 35 vv : smpte/beats mode switch (vv:..)
+90 36 vv : f1
+90 37 vv : f2
+90 38 vv : f3
+90 39 vv : f4
+90 3a vv : f5
+90 3b vv : f6
+90 3c vv : f7
+90 3d vv : f8
+90 3e vv : global view : midi tracks
+90 3f vv : global view : inputs
+90 40 vv : global view : audio tracks
+90 41 vv : global view : audio instrument
+90 42 vv : global view : aux
+90 43 vv : global view : busses
+90 44 vv : global view : outputs
+90 45 vv : global view : user
+90 46 vv : shift modifier (vv:..)
+90 47 vv : option modifier
+90 48 vv : control modifier
+90 49 vv : alt modifier
+90 4a vv : automation read/off
+90 4b vv : automation write
+90 4c vv : automation trim
+90 4d vv : automation touch
+90 4e vv : automation latch
+90 4f vv : automation group
+90 50 vv : utilities save
+90 51 vv : utilities undo
+90 52 vv : utilities cancel
+90 53 vv : utilities enter
+90 54 vv : marker
+90 55 vv : nudge
+90 56 vv : cycle
+90 57 vv : drop
+90 58 vv : replace
+90 59 vv : click
+90 5a vv : solo
+90 5b vv : transport rewind (vv:..)
+90 5c vv : transport ffwd (vv:..)
+90 5d vv : transport pause (vv:..)
+90 5e vv : transport play (vv:..)
+90 5f vv : transport record (vv:..)
+90 60 vv : up arrow button (vv:..)
+90 61 vv : down arrow button 1 (vv:..)
+90 62 vv : left arrow button 1 (vv:..)
+90 63 vv : right arrow button 1 (vv:..)
+90 64 vv : zoom button (vv:..)
+90 65 vv : scrub button (vv:..)
+90 6x vv : fader touch x=8..f
+90 70 vv : master fader touch
+pc=>mcu:
+f0 00 00 66 14 12 xx <data> f7 : update lcd. xx=offset (0-112), string. display is 55 chars wide, second line begins at 56, though.
+f0 00 00 66 14 08 00 f7 : reset mcu
+f0 00 00 66 14 20 0x 03 f7 : put track in vu meter mode, x=track
+90 73 vv : rude solo light (vv: 7f=on, 00=off, 01=blink)
+b0 3x vv : pan display, x=0..7, vv=1..17 (hex) or so
+b0 4x vv : right to left of leds. if 0x40 set in vv, dot below char is set (x=0..11)
+d0 yx : update vu meter, y=track, x=0..d=volume, e=clip on, f=clip off
+ex vv vv : set volume fader, x=track index, 8=master
+integer reaper.MCULive_Reset(integer device)
+Reset device. device < 0 resets all and returns number of devices.
+
+integer reaper.MCULive_SendMIDIMessage(integer device, integer status, integer data1, integer data2, optional string msgIn)
+Sends MIDI message to device. If string is provided, individual bytes are not sent. Returns number of sent bytes.
+
+integer reaper.MCULive_SetButtonPassthrough(integer device, integer button, boolean isSet)
+Set button as MIDI passthrough.
+
+integer reaper.MCULive_SetButtonPressOnly(integer device, integer button, boolean isSet)
+Buttons function as press only by default. Set false for press and release function.
+
+integer reaper.MCULive_SetButtonValue(integer device, integer button, integer value)
+Set button led/mode/state. Value 0 = off,1 = blink, 0x7f = on, usually.
+
+reaper.MCULive_SetDefault(integer device, boolean isSet)
+Enables/disables default out-of-the-box operation.
+
+reaper.MCULive_SetDisplay(integer device, integer pos, string message, integer pad)
+Write to display. 112 characters, 56 per row.
+
+integer reaper.MCULive_SetEncoderValue(integer device, integer encIdx, number val, integer type)
+Set encoder to value 0 ... 1.0. Type 0 = linear, 1 = track volume, 2 = pan. Returns scaled value.
+
+integer reaper.MCULive_SetFaderValue(integer device, integer faderIdx, number val, integer type)
+Set fader to value 0 ... 1.0. Type 0 = linear, 1 = track volume, 2 = pan. Returns scaled value.
+
+integer reaper.MCULive_SetMeterValue(integer device, integer meterIdx, number val, integer type)
+Set meter value 0 ... 1.0. Type 0 = linear, 1 = track volume (with decay).
+
+reaper.MCULive_SetOption(integer option, integer value)
+1 : surface split point device index
+2 : 'mode-is-global' bitmask/flags, first 6 bits
+
+integer reaper.MRP_CalculateEnvelopeHash(TrackEnvelope env)
+This function isn't really correct... it calculates a 64 bit hash but returns it as a 32 bit int. Should reimplement this. Or rather, even more confusingly : The hash will be 32 bit when building for 32 bit architecture and 64 bit when building for 64 bit architecture! It comes down to how size_t is of different size between the 32 and 64 bit architectures.
+
+integer reaper.MRP_CastDoubleToInt(number n1, number n2)
+add two numbers
+
+MRP_Array reaper.MRP_CreateArray(integer size)
+Create an array of 64 bit floating point numbers. Note that these will leak memory if they are not later destroyed with MRP_DestroyArray!
+
+MRP_Window reaper.MRP_CreateWindow(string title)
+Create window
+
+reaper.MRP_DestroyArray(MRP_Array array)
+Destroy a previously created MRP_Array
+
+reaper.MRP_DestroyWindow(MRP_Window window)
+Destroy window
+
+reaper.MRP_DoNothing()
+do nothing, return null
+
+number reaper.MRP_DoublePointer(number n1, number n2)
+add two numbers
+
+integer reaper.MRP_DoublePointerAsInt(number n1, number n2)
+add two numbers
+
+reaper.MRP_GenerateSine(MRP_Array array, number samplerate, number frequency)
+Generate a sine wave into a MRP_Array
+
+number reaper.MRP_GetArrayValue(MRP_Array array, integer index)
+Get MRP_Array element value. No safety checks done for array or index validity, so use at your own peril!
+
+number reaper.MRP_GetControlFloatNumber(MRP_Window window, string controlname, integer which)
+Get a floating point number associated with control. Meaning of 'which' depends on the control targeted.
+
+integer reaper.MRP_GetControlIntNumber(MRP_Window window, string controlname, integer which)
+Get an integer point number associated with control. Meaning of 'which' depends on the control targeted.
+
+boolean reaper.MRP_GetWindowDirty(MRP_Window window, integer whichdirty)
+Get window dirty state (ie, if something was changed in the window). which : 0 window size
+
+integer reaper.MRP_GetWindowPosSizeValue(MRP_Window window, integer which)
+Get window geometry values. which : 0 x, 1 y, 2 w, 3 h
+
+integer reaper.MRP_IntPointer(integer n1, integer n2)
+add two numbers
+
+reaper.MRP_MultiplyArrays(MRP_Array array1, MRP_Array array2, MRP_Array array3)
+Multiply 2 MRP_Arrays of same length. Result is written to 3rd array.
+
+reaper.MRP_MultiplyArraysMT(MRP_Array array1, MRP_Array array2, MRP_Array array3)
+Multiply 2 MRP_Arrays of same length. Result is written to 3rd array. Uses multiple threads.
+
+MediaItem reaper.MRP_ReturnMediaItem()
+return media item
+
+reaper.MRP_SendCommandString(MRP_Window window, string controlname, string commandtext)
+Send a command message to control. Currently only the envelope control understands some messages.
+
+reaper.MRP_SetArrayValue(MRP_Array array, integer index, number value)
+Set MRP_Array element value. No safety checks done for array or index validity, so use at your own peril!
+
+reaper.MRP_SetControlBounds(MRP_Window window, string name, number x, number y, number w, number h)
+Set MRP control position and size
+
+reaper.MRP_SetControlFloatNumber(MRP_Window window, string controlname, integer which, number value)
+Set a floating point number associated with control. Meaning of 'which' depends on the control targeted.
+
+reaper.MRP_SetControlIntNumber(MRP_Window window, string controlname, integer which, integer value)
+Set an integer point number associated with control. Meaning of 'which' depends on the control targeted.
+
+reaper.MRP_SetControlString(MRP_Window window, string controlname, integer which, string text)
+Set a text property associated with control. Meaning of 'which' depends on the control targeted.
+
+reaper.MRP_SetWindowDirty(MRP_Window window, integer which, boolean state)
+Set window dirty state (ie, if something was changed in the controls)
+
+reaper.MRP_WindowAddControl(MRP_Window window, string controltypename, string objectname)
+Add a control to window. Controltypename is the type of control to create. Objectname must be a unique id
+
+reaper.MRP_WindowClearDirtyControls(MRP_Window window)
+Clears the dirty states of the controls in a window.
+
+boolean reaper.MRP_WindowIsClosed(MRP_Window window)
+Returns if the window has been closed and the ReaScript defer loop should likely be exited
+
+boolean reaper.MRP_WindowIsDirtyControl(MRP_Window window, string controlname)
+Returns true if control was manipulated
+
+reaper.MRP_WindowSetTitle(MRP_Window window, string title)
+Set window title
+
+reaper.MRP_WriteArrayToFile(MRP_Array array, string filename, number samplerate)
+Write MRP_Array to disk as a 32 bit floating point mono wav file
+
+boolean reaper.NF_AnalyzeMediaItemPeakAndRMS(MediaItem item, number windowSize, identifier reaper.array_peaks, identifier reaper.array_peakpositions, identifier reaper.array_RMSs, identifier reaper.array_RMSpositions)
+This function combines all other NF_Peak/RMS functions in a single one and additionally returns peak RMS positions. Lua example code here. Note: It's recommended to use this function with ReaScript/Lua as it provides reaper.array objects. If using this function with other scripting languages, you must provide arrays in the reaper.array format.
+
+boolean retval, number lufsIntegrated, number range, number truePeak, number truePeakPos, number shortTermMax, number momentaryMax = reaper.NF_AnalyzeTakeLoudness(MediaItem_Take take, boolean analyzeTruePeak)
+Full loudness analysis. retval: returns true on successful analysis, false on MIDI take or when analysis failed for some reason. analyzeTruePeak=true: Also do true peak analysis. Returns true peak value in dBTP and true peak position (relative to item position). Considerably slower than without true peak analysis (since it uses oversampling). Note: Short term uses a time window of 3 sec. for calculation. So for items shorter than this shortTermMaxOut can't be calculated correctly. Momentary uses a time window of 0.4 sec.
+
+boolean retval, number lufsIntegrated, number range, number truePeak, number truePeakPos, number shortTermMax, number momentaryMax, number shortTermMaxPos, number momentaryMaxPos = reaper.NF_AnalyzeTakeLoudness2(MediaItem_Take take, boolean analyzeTruePeak)
+Same as NF_AnalyzeTakeLoudness but additionally returns shortTermMaxPos and momentaryMaxPos (in absolute project time). Note: shortTermMaxPos and momentaryMaxPos indicate the beginning of time intervalls, (3 sec. and 0.4 sec. resp.).
+
+boolean retval, number lufsIntegrated = reaper.NF_AnalyzeTakeLoudness_IntegratedOnly(MediaItem_Take take)
+Does LUFS integrated analysis only. Faster than full loudness analysis (NF_AnalyzeTakeLoudness) . Use this if only LUFS integrated is required. Take vol. env. is taken into account. See: Signal flow
+
+boolean retval, string decodedStr = reaper.NF_Base64_Decode(string base64Str)
+Returns true on success.
+
+string encodedStr = reaper.NF_Base64_Encode(string str, boolean usePadding)
+Input string may contain null bytes in REAPER 6.44 or newer. Note: Doesn't allow padding in the middle (e.g. concatenated encoded strings), doesn't allow newlines.
+
+boolean reaper.NF_ClearGlobalStartupAction()
+Returns true if global startup action was cleared successfully.
+
+boolean reaper.NF_ClearProjectStartupAction()
+Returns true if project startup action was cleared successfully.
+
+boolean reaper.NF_ClearProjectTrackSelectionAction()
+Returns true if project track selection action was cleared successfully.
+
+boolean reaper.NF_DeleteTakeFromItem(MediaItem item, integer takeIdx)
+Deletes a take from an item. takeIdx is zero-based. Returns true on success.
+
+boolean retval, string desc, string cmdId = reaper.NF_GetGlobalStartupAction()
+Gets action description and command ID number (for native actions) or named command IDs / identifier strings (for extension actions /ReaScripts) if global startup action is set, otherwise empty string. Returns false on failure.
+
+number reaper.NF_GetMediaItemAverageRMS(MediaItem item)
+Returns the average overall (non-windowed) dB RMS level of active channels of an audio item active take, post item gain, post take volume envelope, post-fade, pre fader, pre item FX.
+Returns -150.0 if MIDI take or empty item.
+
+number reaper.NF_GetMediaItemMaxPeak(MediaItem item)
+Returns the greatest max. peak value in dBFS of all active channels of an audio item active take, post item gain, post take volume envelope, post-fade, pre fader, pre item FX.
+Returns -150.0 if MIDI take or empty item.
+
+number retval, number maxPeakPos = reaper.NF_GetMediaItemMaxPeakAndMaxPeakPos(MediaItem item)
+See NF_GetMediaItemMaxPeak, additionally returns maxPeakPos (relative to item position).
+
+number reaper.NF_GetMediaItemPeakRMS_NonWindowed(MediaItem item)
+Returns the greatest overall (non-windowed) dB RMS peak level of all active channels of an audio item active take, post item gain, post take volume envelope, post-fade, pre fader, pre item FX.
+Returns -150.0 if MIDI take or empty item.
+
+number reaper.NF_GetMediaItemPeakRMS_Windowed(MediaItem item)
+Returns the average dB RMS peak level of all active channels of an audio item active take, post item gain, post take volume envelope, post-fade, pre fader, pre item FX.
+Obeys 'Window size for peak RMS' setting in 'SWS: Set RMS analysis/normalize options' for calculation. Returns -150.0 if MIDI take or empty item.
+
+boolean retval, string desc, string cmdId = reaper.NF_GetProjectStartupAction()
+Gets action description and command ID number (for native actions) or named command IDs / identifier strings (for extension actions /ReaScripts) if project startup action is set, otherwise empty string. Returns false on failure.
+
+boolean retval, string desc, string cmdId = reaper.NF_GetProjectTrackSelectionAction()
+Gets action description and command ID number (for native actions) or named command IDs / identifier strings (for extension actions /ReaScripts) if project track selection action is set, otherwise empty string. Returns false on failure.
+
+string reaper.NF_GetSWSMarkerRegionSub(integer markerRegionIdx)
+Returns SWS/S&M marker/region subtitle. markerRegionIdx: Refers to index that can be passed to EnumProjectMarkers (not displayed marker/region index). Returns empty string if marker/region with specified index not found or marker/region subtitle not set. Lua code example here.
+
+string reaper.NF_GetSWSTrackNotes(MediaTrack track)
+number target, number windowSize = reaper.NF_GetSWS_RMSoptions()
+Get SWS analysis/normalize options. See NF_SetSWS_RMSoptions.
+
+integer supercollapsed, integer collapsed, integer small, integer recarm = reaper.NF_GetThemeDefaultTCPHeights()
+integer reaper.NF_ReadAudioFileBitrate(string fn)
+Returns the bitrate of an audio file in kb/s if available (0 otherwise). For supported filetypes see TagLib::AudioProperties::bitrate.
+
+reaper.NF_ScrollHorizontallyByPercentage(integer amount)
+100 means scroll one page. Negative values scroll left.
+
+boolean reaper.NF_SetGlobalStartupAction(string str)
+Returns true if global startup action was set successfully (i.e. valid action ID). Note: For SWS / S&M actions and macros / scripts, you must use identifier strings (e.g. "_SWS_ABOUT", "_f506bc780a0ab34b8fdedb67ed5d3649"), not command IDs (e.g. "47145").
+Tip: to copy such identifiers, right-click the action in the Actions window > Copy selected action cmdID / identifier string.
+NOnly works for actions / scripts from Main action section.
+
+boolean reaper.NF_SetProjectStartupAction(string str)
+Returns true if project startup action was set successfully (i.e. valid action ID). Note: For SWS / S&M actions and macros / scripts, you must use identifier strings (e.g. "_SWS_ABOUT", "_f506bc780a0ab34b8fdedb67ed5d3649"), not command IDs (e.g. "47145").
+Tip: to copy such identifiers, right-click the action in the Actions window > Copy selected action cmdID / identifier string.
+Only works for actions / scripts from Main action section. Project must be saved after setting project startup action to be persistent.
+
+boolean reaper.NF_SetProjectTrackSelectionAction(string str)
+Returns true if project track selection action was set successfully (i.e. valid action ID). Note: For SWS / S&M actions and macros / scripts, you must use identifier strings (e.g. "_SWS_ABOUT", "_f506bc780a0ab34b8fdedb67ed5d3649"), not command IDs (e.g. "47145").
+Tip: to copy such identifiers, right-click the action in the Actions window > Copy selected action cmdID / identifier string.
+Only works for actions / scripts from Main action section. Project must be saved after setting project track selection action to be persistent.
+
+boolean reaper.NF_SetSWSMarkerRegionSub(string markerRegionSub, integer markerRegionIdx)
+Set SWS/S&M marker/region subtitle. markerRegionIdx: Refers to index that can be passed to EnumProjectMarkers (not displayed marker/region index). Returns true if subtitle is set successfully (i.e. marker/region with specified index is present in project). Lua code example here.
+
+reaper.NF_SetSWSTrackNotes(MediaTrack track, string str)
+boolean reaper.NF_SetSWS_RMSoptions(number targetLevel, number windowSize)
+Set SWS analysis/normalize options (same as running action 'SWS: Set RMS analysis/normalize options'). targetLevel: target RMS normalize level (dB), windowSize: window size for peak RMS (sec.)
+
+boolean retval, string name = reaper.NF_TakeFX_GetFXModuleName(MediaItem item, integer fx)
+Deprecated, see TakeFX_GetNamedConfigParm/'fx_ident' (v6.37+). See BR_TrackFX_GetFXModuleName. fx: counted consecutively across all takes (zero-based).
+
+reaper.NF_UpdateSWSMarkerRegionSubWindow()
+Redraw the Notes window (call if you've changed a subtitle via NF_SetSWSMarkerRegionSub which is currently displayed in the Notes window and you want to appear the new subtitle immediately.)
+
+integer reaper.NF_Win32_GetSystemMetrics(integer nIndex)
+Equivalent to win32 API GetSystemMetrics(). Note: Only SM_C[XY]SCREEN, SM_C[XY][HV]SCROLL and SM_CYMENU are currently supported on macOS and Linux as of REAPER 6.68. Check the SWELL source code for up-to-date support information (swell-wnd.mm, swell-wnd-generic.cpp).
+
+boolean reaper.ReaPack_AboutInstalledPackage(PackageEntry entry)
+Show the about dialog of the given package entry.
+The repository index is downloaded asynchronously if the cached copy doesn't exist or is older than one week.
+
+boolean reaper.ReaPack_AboutRepository(string repoName)
+Show the about dialog of the given repository. Returns true if the repository exists in the user configuration.
+The repository index is downloaded asynchronously if the cached copy doesn't exist or is older than one week.
+
+boolean retval, string error = reaper.ReaPack_AddSetRepository(string name, string url, boolean enable, integer autoInstall)
+Add or modify a repository. Set url to nullptr (or empty string in Lua) to keep the existing URL. Call ReaPack_ProcessQueue(true) when done to process the new list and update the GUI.
+
+autoInstall: usually set to 2 (obey user setting).
+
+reaper.ReaPack_BrowsePackages(string filter)
+Opens the package browser with the given filter string.
+
+integer retval, string error = reaper.ReaPack_CompareVersions(string ver1, string ver2)
+Returns 0 if both versions are equal, a positive value if ver1 is higher than ver2 and a negative value otherwise.
+
+boolean retval, string path, integer sections, integer type = reaper.ReaPack_EnumOwnedFiles(PackageEntry entry, integer index)
+Enumerate the files owned by the given package. Returns false when there is no more data.
+
+sections: 0=not in action list, &1=main, &2=midi editor, &4=midi inline editor
+type: see ReaPack_GetEntryInfo.
+
+boolean reaper.ReaPack_FreeEntry(PackageEntry entry)
+Free resources allocated for the given package entry.
+
+boolean retval, string repo, string cat, string pkg, string desc, integer type, string ver, string author, integer flags, integer fileCount = reaper.ReaPack_GetEntryInfo(PackageEntry entry)
+Get the repository name, category, package name, package description, package type, the currently installed version, author name, flags (&1=Pinned, &2=BleedingEdge) and how many files are owned by the given package entry.
+
+type: 1=script, 2=extension, 3=effect, 4=data, 5=theme, 6=langpack, 7=webinterface
+
+PackageEntry retval, string error = reaper.ReaPack_GetOwner(string fn)
+Returns the package entry owning the given file.
+Delete the returned object from memory after use with ReaPack_FreeEntry.
+
+boolean retval, string url, boolean enabled, integer autoInstall = reaper.ReaPack_GetRepositoryInfo(string name)
+Get the infos of the given repository.
+
+autoInstall: 0=manual, 1=when sychronizing, 2=obey user setting
+
+reaper.ReaPack_ProcessQueue(boolean refreshUI)
+Run pending operations and save the configuration file. If refreshUI is true the browser and manager windows are guaranteed to be refreshed (otherwise it depends on which operations are in the queue).
+
+boolean reaper.SNM_AddReceive(MediaTrack src, MediaTrack dest, integer type)
+[S&M] Deprecated, see CreateTrackSend (v5.15pre1+). Adds a receive. Returns false if nothing updated.
+type -1=Default type (user preferences), 0=Post-Fader (Post-Pan), 1=Pre-FX, 2=deprecated, 3=Pre-Fader (Post-FX).
+Note: obeys default sends preferences, supports frozen tracks, etc..
+
+boolean reaper.SNM_AddTCPFXParm(MediaTrack tr, integer fxId, integer prmId)
+[S&M] Add an FX parameter knob in the TCP. Returns false if nothing updated (invalid parameters, knob already present, etc..)
+
+WDL_FastString reaper.SNM_CreateFastString(string str)
+[S&M] Instantiates a new "fast string". You must delete this string, see SNM_DeleteFastString.
+
+reaper.SNM_DeleteFastString(WDL_FastString str)
+[S&M] Deletes a "fast string" instance.
+
+number reaper.SNM_GetDoubleConfigVar(string varname, number errvalue)
+[S&M] Returns a floating-point preference (look in project prefs first, then in general prefs). Returns errvalue if failed (e.g. varname not found).
+
+number reaper.SNM_GetDoubleConfigVarEx(ReaProject proj, string varname, number errvalue)
+[S&M] See SNM_GetDoubleConfigVar.
+
+string reaper.SNM_GetFastString(WDL_FastString str)
+[S&M] Gets the "fast string" content.
+
+integer reaper.SNM_GetFastStringLength(WDL_FastString str)
+[S&M] Gets the "fast string" length.
+
+integer reaper.SNM_GetIntConfigVar(string varname, integer errvalue)
+[S&M] Returns an integer preference (look in project prefs first, then in general prefs). Returns errvalue if failed (e.g. varname not found).
+
+integer reaper.SNM_GetIntConfigVarEx(ReaProject proj, string varname, integer errvalue)
+[S&M] See SNM_GetIntConfigVar.
+
+boolean retval, integer high, integer low = reaper.SNM_GetLongConfigVar(string varname)
+[S&M] Reads a 64-bit integer preference split in two 32-bit integers (look in project prefs first, then in general prefs). Returns false if failed (e.g. varname not found).
+
+boolean retval, integer high, integer low = reaper.SNM_GetLongConfigVarEx(ReaProject proj, string varname)
+[S&M] See SNM_GetLongConfigVar.
+
+MediaItem_Take reaper.SNM_GetMediaItemTakeByGUID(ReaProject project, string guid)
+[S&M] Gets a take by GUID as string. The GUID must be enclosed in braces {}. To get take GUID as string, see BR_GetMediaItemTakeGUID
+
+boolean reaper.SNM_GetProjectMarkerName(ReaProject proj, integer num, boolean isrgn, WDL_FastString name)
+[S&M] Gets a marker/region name. Returns true if marker/region found.
+
+boolean reaper.SNM_GetSetObjectState(identifier obj, WDL_FastString state, boolean setnewvalue, boolean wantminimalstate)
+[S&M] Gets or sets the state of a track, an item or an envelope. The state chunk size is unlimited. Returns false if failed.
+When getting a track state (and when you are not interested in FX data), you can use wantminimalstate=true to radically reduce the length of the state. Do not set such minimal states back though, this is for read-only applications!
+Note: unlike the native GetSetObjectState, calling to FreeHeapPtr() is not required.
+
+boolean reaper.SNM_GetSetSourceState(MediaItem item, integer takeidx, WDL_FastString state, boolean setnewvalue)
+[S&M] Gets or sets a take source state. Returns false if failed. Use takeidx=-1 to get/alter the active take.
+Note: this function does not use a MediaItem_Take* param in order to manage empty takes (i.e. takes with MediaItem_Take*==NULL), see SNM_GetSetSourceState2.
+
+boolean reaper.SNM_GetSetSourceState2(MediaItem_Take take, WDL_FastString state, boolean setnewvalue)
+[S&M] Gets or sets a take source state. Returns false if failed.
+Note: this function cannot deal with empty takes, see SNM_GetSetSourceState.
+
+boolean reaper.SNM_GetSourceType(MediaItem_Take take, WDL_FastString type)
+[S&M] Deprecated, see GetMediaSourceType. Gets the source type of a take. Returns false if failed (e.g. take with empty source, etc..)
+
+boolean reaper.SNM_MoveOrRemoveTrackFX(MediaTrack tr, integer fxId, integer what)
+[S&M] Deprecated, see TrackFX_{CopyToTrack,Delete} (v5.95+). Move or removes a track FX. Returns true if tr has been updated.
+fxId: fx index in chain or -1 for the selected fx. what: 0 to remove, -1 to move fx up in chain, 1 to move fx down in chain.
+
+boolean retval, string tagval = reaper.SNM_ReadMediaFileTag(string fn, string tag)
+[S&M] Reads a media file tag. Supported tags: "artist", "album", "genre", "comment", "title", "track" (track number) or "year". Returns false if tag was not found. See SNM_TagMediaFile.
+
+boolean reaper.SNM_RemoveReceive(MediaTrack tr, integer rcvidx)
+[S&M] Deprecated, see RemoveTrackSend (v5.15pre1+). Removes a receive. Returns false if nothing updated.
+
+boolean reaper.SNM_RemoveReceivesFrom(MediaTrack tr, MediaTrack srctr)
+[S&M] Removes all receives from srctr. Returns false if nothing updated.
+
+integer reaper.SNM_SelectResourceBookmark(string name)
+[S&M] Select a bookmark of the Resources window. Returns the related bookmark id (or -1 if failed).
+
+boolean reaper.SNM_SetDoubleConfigVar(string varname, number newvalue)
+[S&M] Sets a floating-point preference (look in project prefs first, then in general prefs). Returns false if failed (e.g. varname not found or newvalue out of range).
+
+boolean reaper.SNM_SetDoubleConfigVarEx(ReaProject proj, string varname, number newvalue)
+[S&M] See SNM_SetDoubleConfigVar.
+
+WDL_FastString reaper.SNM_SetFastString(WDL_FastString str, string newstr)
+[S&M] Sets the "fast string" content. Returns str for facility.
+
+boolean reaper.SNM_SetIntConfigVar(string varname, integer newvalue)
+[S&M] Sets an integer preference (look in project prefs first, then in general prefs). Returns false if failed (e.g. varname not found or newvalue out of range).
+
+boolean reaper.SNM_SetIntConfigVarEx(ReaProject proj, string varname, integer newvalue)
+[S&M] See SNM_SetIntConfigVar.
+
+boolean reaper.SNM_SetLongConfigVar(string varname, integer newHighValue, integer newLowValue)
+[S&M] Sets a 64-bit integer preference from two 32-bit integers (look in project prefs first, then in general prefs). Returns false if failed (e.g. varname not found).
+
+boolean reaper.SNM_SetLongConfigVarEx(ReaProject proj, string varname, integer newHighValue, integer newLowValue)
+[S&M] SNM_SetLongConfigVar.
+
+boolean reaper.SNM_SetProjectMarker(ReaProject proj, integer num, boolean isrgn, number pos, number rgnend, string name, integer color)
+[S&M] Deprecated, see SetProjectMarker4 -- Same function as SetProjectMarker3() except it can set empty names "".
+
+boolean reaper.SNM_SetStringConfigVar(string varname, string newvalue)
+[S&M] Sets a string preference (general prefs only). Returns false if failed (e.g. varname not found or value too long). See get_config_var_string.
+
+boolean reaper.SNM_TagMediaFile(string fn, string tag, string tagval)
+[S&M] Tags a media file thanks to TagLib. Supported tags: "artist", "album", "genre", "comment", "title", "track" (track number) or "year". Use an empty tagval to clear a tag. When a file is opened in REAPER, turn it offline before using this function. Returns false if nothing updated. See SNM_ReadMediaFileTag.
+
+reaper.SNM_TieResourceSlotActions(integer bookmarkId)
+[S&M] Attach Resources slot actions to a given bookmark.
+
+reaper.SN_FocusMIDIEditor()
+Focuses the active/open MIDI editor.
+
+string reaper.ULT_GetMediaItemNote(MediaItem item)
+[ULT] Deprecated, see GetSetMediaItemInfo_String (v5.95+). Get item notes.
+
+reaper.ULT_SetMediaItemNote(MediaItem item, string note)
+[ULT] Deprecated, see GetSetMediaItemInfo_String (v5.95+). Set item notes.
+
+AudioWriter reaper.Xen_AudioWriter_Create(string filename, integer numchans, integer samplerate)
+Creates writer for 32 bit floating point WAV
+
+reaper.Xen_AudioWriter_Destroy(AudioWriter writer)
+Destroys writer
+
+integer reaper.Xen_AudioWriter_Write(AudioWriter writer, integer numframes, identifier data, integer offset)
+Write interleaved audio data to disk
+
+integer reaper.Xen_GetMediaSourceSamples(PCM_source src, identifier destbuf, integer destbufoffset, integer numframes, integer numchans, number samplerate, number sourceposition)
+Get interleaved audio data from media source
+
+integer reaper.Xen_StartSourcePreview(PCM_source source, number gain, boolean loop, optional integer outputchanindexIn)
+Start audio preview of a PCM_source. Returns id of a preview handle that can be provided to Xen_StopSourcePreview.
+If the given PCM_source does not belong to an existing MediaItem/Take, it will be deleted by the preview system when the preview is stopped.
+
+integer reaper.Xen_StopSourcePreview(integer preview_id)
+Stop audio preview. id -1 stops all.
+
+reaper.rcw_BeginFrame(identifier compositor)
+(MIDI Razor Edits only, private) Begin a frame - defers updateLayers until EndFrame (macOS only, private).
+
+reaper.rcw_ClearBitmap(identifier bitmap, number x, number y, number width, number height)
+(MIDI Razor Edits only, private) Clear a region of a bitmap to transparent.
+
+boolean reaper.rcw_Composite(identifier compositor, number x, number y, number width, number height, identifier bitmap, number srcX, number srcY, number srcW, number srcH)
+(MIDI Razor Edits only, private) Composite a bitmap onto the overlay window.
+
+identifier reaper.rcw_CreateBitmap(number width, number height)
+(MIDI Razor Edits only, private) Create a drawable bitmap.
+
+identifier reaper.rcw_CreateCompositingOverlayForHWND(identifier parentHWND, string title)
+(MIDI Razor Edits only, private) Create a compositing overlay window above an existing window.
+
+boolean reaper.rcw_DestroyBitmap(identifier bitmap)
+(MIDI Razor Edits only, private) Destroy a bitmap.
+
+boolean reaper.rcw_DestroyCompositingOverlay(identifier compositor)
+(MIDI Razor Edits only, private) Destroy an overlay created by rcw_CreateCompositingOverlayForHWND.
+
+reaper.rcw_DrawCircleWithAlpha(identifier bitmap, number x, number y, number radius, integer color, number alpha)
+(MIDI Razor Edits only, private) Draw a circle outline on a bitmap.
+
+reaper.rcw_DrawCurveWithAlpha(identifier bitmap, number x1, number y1, number x2, number y2, integer shape, number beztension, number segmentPx, number clipX, number clipY, number clipW, number clipH, integer color, number alpha, number thickness)
+(MIDI Razor Edits only, private) Draw a curve with optional clipping. shape: 0=step,1=linear,2=smoothstep,3=easeout,4=easein,5=bezier. clipW/clipH=0 to disable clipping.
+
+reaper.rcw_DrawDashedLineWithAlpha(identifier bitmap, number x1, number y1, number x2, number y2, integer color, number alpha, number thickness, number dashLen, number gapLen)
+(MIDI Razor Edits only, private) Draw a dashed line on a bitmap.
+
+reaper.rcw_DrawLineWithAlpha(identifier bitmap, number x1, number y1, number x2, number y2, integer color, number alpha, number thickness)
+(MIDI Razor Edits only, private) Draw a line on a bitmap.
+
+reaper.rcw_DrawRectWithAlpha(identifier bitmap, number x, number y, number width, number height, integer color, number alpha, boolean filled)
+(MIDI Razor Edits only, private) Draw a rectangle on a bitmap.
+
+reaper.rcw_EndFrame(identifier compositor)
+(MIDI Razor Edits only, private) End a frame and flush all pending layer updates (macOS only, private).
+
+reaper.rcw_FillCircleWithAlpha(identifier bitmap, number x, number y, number radius, integer color, number alpha)
+(MIDI Razor Edits only, private) Draw a filled circle on a bitmap.
+
+reaper.rcw_FillTriangleWithAlpha(identifier bitmap, number x1, number y1, number x2, number y2, number x3, number y3, integer color, number alpha)
+(MIDI Razor Edits only, private) Draw a filled triangle on a bitmap.
+
+number reaper.rcw_GetBitmapHeight(identifier bitmap)
+(MIDI Razor Edits only, private) Get the height of a bitmap.
+
+number reaper.rcw_GetBitmapWidth(identifier bitmap)
+(MIDI Razor Edits only, private) Get the width of a bitmap.
+
+string reaper.rcw_GetVersion()
+Returns the version of the reaper_childwindow extension.
+
+reaper.rcw_SetPixelWithAlpha(identifier bitmap, number x, number y, integer color, number alpha)
+(MIDI Razor Edits only, private) Set a single pixel on a bitmap.
+
+integer reaper.rcw_ShowMenu(string menuStr, integer x, integer y)
+Show native popup menu. menuStr: pipe-delimited items (# grayed, ! checked, > submenu, < end submenu, empty=separator). x,y: screen coords (-1,-1 for cursor). Returns 1-based index or 0 if cancelled.
+
+reaper.rcw_VKeys_ClearState()
+(MIDI Razor Edits only, private) Clear all key state tracking.
+
+string state = reaper.rcw_VKeys_GetDown(number cutoffTime)
+(MIDI Razor Edits only, private) Get keys pressed since cutoffTime. stateOut: 255-byte buffer.
+
+string state = reaper.rcw_VKeys_GetState(number cutoffTime)
+(MIDI Razor Edits only, private) Get current key state. cutoffTime: keys pressed after this time (negative=relative to now). stateOut: 255-byte buffer.
+
+string state = reaper.rcw_VKeys_GetUp(number cutoffTime)
+(MIDI Razor Edits only, private)Get keys released since cutoffTime. stateOut: 255-byte buffer.
+
+integer reaper.rcw_VKeys_Intercept(integer keyCode, integer intercept)
+(MIDI Razor Edits only, private) Intercept a key. keyCode: 0-255 or -1 for all. intercept: >0 add, <0 remove, 0 query. Returns intercept count.
+
+ReaScript/Lua Built-In Function List
+reaper.atexit(function)
+Adds code to be executed when the script finishes or is ended by the user. Typically used to clean up after the user terminates defer() or runloop() code.
+
+reaper.defer(function)
+Adds code to be called back by REAPER. Used to create persistent ReaScripts that continue to run and respond to input, while the user does other tasks. Identical to runloop().
+Note that no undo point will be automatically created when the script finishes, unless you create it explicitly.
+
+reaper.get_action_context()
+is_new_value,filename,sectionID,cmdID,mode,resolution,val,contextstr = reaper.get_action_context()
+Returns contextual information about the script, typically MIDI/OSC input values.
+val will be set to a relative or absolute value depending on mode (=0: absolute mode, >0: relative modes).
+resolution=127 for 7-bit resolution, =16383 for 14-bit resolution.
+sectionID, and cmdID will be set to -1 if the script is not part of the action list.
+mode, resolution and val will be set to -1 if the script was not triggered via MIDI/OSC.
+contextstr may be empty or one of:
+
+midi:XX[:YY] (one or two bytes hex)
+[wheel|hwheel|mtvert|mthorz|mtzoom|mtrot|mediakbd]:flags
+key:flags:keycode
+osc:/msg[:f=FloatValue|:s=StringValue]
+KBD_OnMainActionEx
+(flags may include V=virtkey, S=shift, A=alt/option, C=control/command, W=win/control)

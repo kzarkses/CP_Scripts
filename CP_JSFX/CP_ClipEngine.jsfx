@@ -1,0 +1,548 @@
+desc: CP_ClipEngine
+author: Cedric Pamalio
+version: 0.4
+
+// Multi-channel clip sampler for CP_ClipLauncher
+// Audio data loaded via gmem from Lua script
+// Sample-accurate beat-synced playback + recording (resampling)
+// 16 columns x 8 clips, 32 output channels (16 stereo pairs)
+
+options:gmem=CP_ClipLauncher
+options:maxmem=134217728
+
+in_pin:Col 1L
+in_pin:Col 1R
+in_pin:Col 2L
+in_pin:Col 2R
+in_pin:Col 3L
+in_pin:Col 3R
+in_pin:Col 4L
+in_pin:Col 4R
+in_pin:Col 5L
+in_pin:Col 5R
+in_pin:Col 6L
+in_pin:Col 6R
+in_pin:Col 7L
+in_pin:Col 7R
+in_pin:Col 8L
+in_pin:Col 8R
+in_pin:Col 9L
+in_pin:Col 9R
+in_pin:Col 10L
+in_pin:Col 10R
+in_pin:Col 11L
+in_pin:Col 11R
+in_pin:Col 12L
+in_pin:Col 12R
+in_pin:Col 13L
+in_pin:Col 13R
+in_pin:Col 14L
+in_pin:Col 14R
+in_pin:Col 15L
+in_pin:Col 15R
+in_pin:Col 16L
+in_pin:Col 16R
+out_pin:Col 1L
+out_pin:Col 1R
+out_pin:Col 2L
+out_pin:Col 2R
+out_pin:Col 3L
+out_pin:Col 3R
+out_pin:Col 4L
+out_pin:Col 4R
+out_pin:Col 5L
+out_pin:Col 5R
+out_pin:Col 6L
+out_pin:Col 6R
+out_pin:Col 7L
+out_pin:Col 7R
+out_pin:Col 8L
+out_pin:Col 8R
+out_pin:Col 9L
+out_pin:Col 9R
+out_pin:Col 10L
+out_pin:Col 10R
+out_pin:Col 11L
+out_pin:Col 11R
+out_pin:Col 12L
+out_pin:Col 12R
+out_pin:Col 13L
+out_pin:Col 13R
+out_pin:Col 14L
+out_pin:Col 14R
+out_pin:Col 15L
+out_pin:Col 15R
+out_pin:Col 16L
+out_pin:Col 16R
+
+@init
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+MAX_COLUMNS = 16;
+MAX_CLIPS = 8;
+MAX_CLIP_SAMPLES = 480000;  // 10 sec @ 48kHz per channel
+NUM_CHANNELS = 32;          // 16 stereo pairs
+
+// ============================================================
+// MEMORY LAYOUT (heap)
+// ============================================================
+// Column playback state: COL_STATE + col * 12
+//   +0 = play_pos (fractional samples)
+//   +1 = clip_index (-1 = none)
+//   +2 = is_playing (0/1)
+//   +3 = is_looping (0/1)
+//   +4 = clip_length (samples)
+//   +5 = pending_clip (-1 = none)
+//   +6 = pending_quantize (0=imm, 1=beat, 2=bar)
+//   +7 = volume (0-1)
+//   +8 = loop_count (number of completed loops since play start)
+COL_STATE = 0;
+
+// Fade state: FADE_STATE + col * 4
+//   +0 = fade_gain (0-1, current)
+//   +1 = fade_target (0 or 1)
+//   +2 = fade_speed (per-sample increment)
+//   +3 = reserved
+FADE_STATE = 200;
+FADE_SAMPLES = 128;  // ~2.7ms at 48kHz, avoids clicks
+
+// Audio data starts here (stereo: L then R per clip)
+CLIP_DATA_BASE = 1000;
+// clip address = CLIP_DATA_BASE + (col * MAX_CLIPS + clip) * MAX_CLIP_SAMPLES * 2
+// Left channel:  clip_base + pos
+// Right channel: clip_base + MAX_CLIP_SAMPLES + pos
+
+// Request enough memory (stereo = 2x)
+total_mem = CLIP_DATA_BASE + MAX_COLUMNS * MAX_CLIPS * MAX_CLIP_SAMPLES * 2;
+freembuf(total_mem);
+
+// ============================================================
+// GMEM LAYOUT
+// ============================================================
+// Commands (Lua -> JSFX)
+GMEM_CMD       = 0;   // 0=none, 1=play, 2=stop_col, 3=stop_all
+GMEM_CMD_COL   = 1;
+GMEM_CMD_CLIP  = 2;
+GMEM_CMD_MODE  = 3;   // 0=oneshot, 1=loop
+GMEM_CMD_QUANT = 4;   // 0=immediate, 1=beat, 2=bar
+GMEM_CMD_SEQ   = 5;   // sequence number (increments)
+
+// Clip load (Lua -> JSFX)
+GMEM_LOAD_CMD    = 10;  // 0=idle, 1=transfer_ready, 3=done (JSFX sets)
+GMEM_LOAD_COL    = 11;
+GMEM_LOAD_CLIP   = 12;
+GMEM_LOAD_OFFSET = 13;  // offset in clip (samples)
+GMEM_LOAD_CHUNK  = 14;  // chunk size
+
+// Clip metadata (Lua -> JSFX)
+// Base: 500 + (col * MAX_CLIPS + clip) * 4
+//   +0 = loaded (0/1)
+//   +1 = length_samples
+//   +2 = sample_rate
+//   +3 = channels
+GMEM_META_BASE = 500;
+
+// Volume per column (Lua -> JSFX)
+// gmem[1000 + col] = volume (0-1)
+GMEM_VOLUME_BASE = 1000;
+
+// Audio data transfer buffer
+GMEM_AUDIO_BUF = 20000;
+
+// Playback state (JSFX -> Lua)
+// Base: 2000 + col * 12
+//   +0 = is_playing
+//   +1 = clip_index
+//   +2 = play_pos (samples)
+//   +3 = pending_clip
+//   +4 = clip_length
+//   +5 = loop_count
+GMEM_PB_BASE = 2000;
+
+// Recording (Lua -> JSFX, JSFX -> Lua)
+// gmem[800 + col] = rec state (0=off, 1=recording, 2=done)
+// gmem[832 + col] = rec target clip slot (0-indexed)
+// gmem[864 + col] = rec position (samples recorded, JSFX -> Lua)
+GMEM_REC_STATE = 800;
+GMEM_REC_SLOT  = 832;
+GMEM_REC_POS   = 864;
+
+// Reverse transfer: JSFX heap -> gmem (for WAV export)
+// Lua sets cmd=1, JSFX copies chunk to GMEM_AUDIO_BUF, sets cmd=3
+GMEM_READ_CMD    = 15;  // 0=idle, 1=read_request, 3=data_ready
+GMEM_READ_COL    = 16;
+GMEM_READ_CLIP   = 17;
+GMEM_READ_OFFSET = 18;
+GMEM_READ_CHUNK  = 19;
+
+// Transport (JSFX -> Lua)
+GMEM_TRANSPORT = 3000;
+
+
+// Pre-capture buffer for recording input (saved before clearing spl())
+// Stereo: REC_INPUT_BUF[col * 2] = L, REC_INPUT_BUF[col * 2 + 1] = R
+REC_INPUT_BUF = 350;
+
+// ============================================================
+// RECORDING STATE (heap)
+// ============================================================
+// REC_STATE_BASE + col * 2:
+//   +0 = rec_pos (current recording position in samples)
+//   +1 = rec_clip (target clip index)
+REC_STATE_BASE = 400;
+
+// ============================================================
+// INIT COLUMN STATE
+// ============================================================
+col = 0;
+loop(MAX_COLUMNS,
+  COL_STATE[col * 12 + 0] = 0;      // play_pos
+  COL_STATE[col * 12 + 1] = -1;     // clip_index
+  COL_STATE[col * 12 + 2] = 0;      // is_playing
+  COL_STATE[col * 12 + 3] = 1;      // is_looping
+  COL_STATE[col * 12 + 4] = 0;      // clip_length
+  COL_STATE[col * 12 + 5] = -1;     // pending_clip
+  COL_STATE[col * 12 + 6] = 0;      // pending_quantize
+  COL_STATE[col * 12 + 7] = 1.0;    // volume
+  COL_STATE[col * 12 + 8] = 0;      // loop_count
+
+  FADE_STATE[col * 4 + 0] = 0;     // fade_gain
+  FADE_STATE[col * 4 + 1] = 0;     // fade_target
+  FADE_STATE[col * 4 + 2] = 1.0 / FADE_SAMPLES;
+
+  REC_STATE_BASE[col * 2 + 0] = 0;  // rec_pos
+  REC_STATE_BASE[col * 2 + 1] = -1; // rec_clip
+  col += 1;
+);
+
+last_cmd_seq = -1;
+
+// Version marker for Lua auto-reload detection
+GMEM_VERSION = 3099;
+gmem[GMEM_VERSION] = 10;
+
+// Init counter: increments each @init so Lua can detect heap reset
+GMEM_INIT_COUNT = 3095;
+gmem[GMEM_INIT_COUNT] = gmem[GMEM_INIT_COUNT] + 1;
+
+@block
+
+// ============================================================
+// TRANSPORT INFO -> GMEM
+// ============================================================
+gmem[GMEM_TRANSPORT + 0] = tempo;
+gmem[GMEM_TRANSPORT + 1] = play_state;
+gmem[GMEM_TRANSPORT + 2] = beat_position;
+gmem[GMEM_TRANSPORT + 3] = srate * 60.0 / max(tempo, 1);
+gmem[GMEM_TRANSPORT + 4] = ts_num;
+gmem[GMEM_TRANSPORT + 5] = ts_denom;
+gmem[GMEM_TRANSPORT + 6] = srate;
+
+// ============================================================
+// PROCESS AUDIO DATA TRANSFER
+// ============================================================
+gmem[GMEM_LOAD_CMD] == 1 ? (
+  ld_col    = gmem[GMEM_LOAD_COL];
+  ld_clip   = gmem[GMEM_LOAD_CLIP];
+  ld_offset = gmem[GMEM_LOAD_OFFSET];
+  ld_chunk  = gmem[GMEM_LOAD_CHUNK];
+
+  // Destination in heap (stereo layout: L then R per clip)
+  dest = CLIP_DATA_BASE + (ld_col * MAX_CLIPS + ld_clip) * MAX_CLIP_SAMPLES * 2 + ld_offset;
+
+  // Copy from gmem to heap
+  i = 0;
+  loop(ld_chunk,
+    dest[i] = gmem[GMEM_AUDIO_BUF + i];
+    i += 1;
+  );
+
+  // Signal done
+  gmem[GMEM_LOAD_CMD] = 3;
+);
+
+// ============================================================
+// PROCESS REVERSE TRANSFER (heap -> gmem for WAV export)
+// ============================================================
+gmem[GMEM_READ_CMD] == 1 ? (
+  rd_col    = gmem[GMEM_READ_COL];
+  rd_clip   = gmem[GMEM_READ_CLIP];
+  rd_offset = gmem[GMEM_READ_OFFSET];
+  rd_chunk  = gmem[GMEM_READ_CHUNK];
+
+  // Source in heap (stereo layout)
+  src_addr = CLIP_DATA_BASE + (rd_col * MAX_CLIPS + rd_clip) * MAX_CLIP_SAMPLES * 2 + rd_offset;
+
+  // Copy from heap to gmem
+  i = 0;
+  loop(rd_chunk,
+    gmem[GMEM_AUDIO_BUF + i] = src_addr[i];
+    i += 1;
+  );
+
+  // Signal data ready
+  gmem[GMEM_READ_CMD] = 3;
+);
+
+// ============================================================
+// PROCESS RECORDING COMMANDS (from gmem)
+// ============================================================
+col = 0;
+loop(MAX_COLUMNS,
+  rec_state = gmem[GMEM_REC_STATE + col];
+
+  rec_state == 1 ? (
+    // Recording active: sync position to gmem
+    gmem[GMEM_REC_POS + col] = REC_STATE_BASE[col * 2 + 0];
+    // Store target clip
+    REC_STATE_BASE[col * 2 + 1] = gmem[GMEM_REC_SLOT + col];
+  );
+
+  rec_state == 0 ? (
+    // Recording stopped: sync final position before resetting
+    REC_STATE_BASE[col * 2 + 0] > 0 ? (
+      gmem[GMEM_REC_POS + col] = REC_STATE_BASE[col * 2 + 0];
+    );
+    REC_STATE_BASE[col * 2 + 0] = 0;
+    REC_STATE_BASE[col * 2 + 1] = -1;
+  );
+
+  col += 1;
+);
+
+// ============================================================
+// PROCESS PLAY/STOP COMMANDS
+// ============================================================
+cmd_seq = gmem[GMEM_CMD_SEQ];
+cmd_seq != last_cmd_seq ? (
+  last_cmd_seq = cmd_seq;
+  cmd = gmem[GMEM_CMD];
+
+  cmd == 1 ? ( // PLAY
+    cc = gmem[GMEM_CMD_COL];
+    ci = gmem[GMEM_CMD_CLIP];
+    cm = gmem[GMEM_CMD_MODE];
+    cq = gmem[GMEM_CMD_QUANT];
+
+    cq == 0 ? (
+      // Immediate: start with fade-in
+      COL_STATE[cc * 12 + 0] = 0;
+      COL_STATE[cc * 12 + 1] = ci;
+      COL_STATE[cc * 12 + 2] = 1;
+      COL_STATE[cc * 12 + 3] = cm;
+      COL_STATE[cc * 12 + 8] = 0;  // Reset loop count
+      // Get clip length from metadata
+      meta = GMEM_META_BASE + (cc * MAX_CLIPS + ci) * 4;
+      COL_STATE[cc * 12 + 4] = gmem[meta + 1];
+      // Fade in
+      FADE_STATE[cc * 4 + 0] = 0;
+      FADE_STATE[cc * 4 + 1] = 1;
+    ) : (
+      // Schedule for beat/bar
+      COL_STATE[cc * 12 + 5] = ci;
+      COL_STATE[cc * 12 + 6] = cq;
+      COL_STATE[cc * 12 + 3] = cm;
+    );
+  );
+
+  cmd == 2 ? ( // STOP column
+    cc = gmem[GMEM_CMD_COL];
+    // Fade out then stop
+    FADE_STATE[cc * 4 + 1] = 0;
+    COL_STATE[cc * 12 + 5] = -1;
+  );
+
+  cmd == 3 ? ( // STOP ALL
+    col = 0;
+    loop(MAX_COLUMNS,
+      FADE_STATE[col * 4 + 1] = 0;
+      COL_STATE[col * 12 + 5] = -1;
+      col += 1;
+    );
+  );
+
+  gmem[GMEM_CMD] = 0;
+);
+
+// ============================================================
+// HANDLE QUANTIZED PENDING CLIPS
+// ============================================================
+spb = srate * 60.0 / max(tempo, 1);
+block_beats = samplesblock / spb;
+
+col = 0;
+loop(MAX_COLUMNS,
+  pending = COL_STATE[col * 12 + 5];
+  pending >= 0 ? (
+    qmode = COL_STATE[col * 12 + 6];
+    trigger = 0;
+
+    qmode == 1 ? ( // Next beat
+      beat_frac = beat_position - floor(beat_position);
+      beat_frac < block_beats ? trigger = 1;
+    );
+
+    qmode == 2 ? ( // Next bar
+      bar_beat = beat_position - floor(beat_position / max(ts_num, 1)) * max(ts_num, 1);
+      bar_beat < block_beats ? trigger = 1;
+    );
+
+    trigger ? (
+      COL_STATE[col * 12 + 0] = 0;
+      COL_STATE[col * 12 + 1] = pending;
+      COL_STATE[col * 12 + 2] = 1;
+      meta = GMEM_META_BASE + (col * MAX_CLIPS + pending) * 4;
+      COL_STATE[col * 12 + 4] = gmem[meta + 1];
+      COL_STATE[col * 12 + 5] = -1;
+      COL_STATE[col * 12 + 8] = 0;  // Reset loop count
+      // Fade in
+      FADE_STATE[col * 4 + 0] = 0;
+      FADE_STATE[col * 4 + 1] = 1;
+    );
+  );
+  col += 1;
+);
+
+// ============================================================
+// UPDATE PLAYBACK STATE -> GMEM
+// ============================================================
+col = 0;
+loop(MAX_COLUMNS,
+  pb = GMEM_PB_BASE + col * 12;
+  gmem[pb + 0] = COL_STATE[col * 12 + 2];  // is_playing
+  gmem[pb + 1] = COL_STATE[col * 12 + 1];  // clip_index
+  gmem[pb + 2] = COL_STATE[col * 12 + 0];  // play_pos
+  gmem[pb + 3] = COL_STATE[col * 12 + 5];  // pending
+  gmem[pb + 4] = COL_STATE[col * 12 + 4];  // clip_length
+  gmem[pb + 5] = COL_STATE[col * 12 + 8];  // loop_count
+  col += 1;
+);
+
+// ============================================================
+// READ VOLUME FROM GMEM
+// ============================================================
+col = 0;
+loop(MAX_COLUMNS,
+  COL_STATE[col * 12 + 7] = gmem[GMEM_VOLUME_BASE + col];
+  col += 1;
+);
+
+@sample
+
+// ============================================================
+// AUDIO OUTPUT + RECORDING
+// ============================================================
+
+// Pre-capture input samples for recording BEFORE clearing channels
+// (spl() is a unified input/output buffer; clearing destroys input data)
+col = 0;
+loop(MAX_COLUMNS,
+  gmem[GMEM_REC_STATE + col] == 1 ? (
+    REC_INPUT_BUF[col * 2]     = spl(col * 2);      // Left
+    REC_INPUT_BUF[col * 2 + 1] = spl(col * 2 + 1);  // Right
+  ) : (
+    REC_INPUT_BUF[col * 2]     = 0;
+    REC_INPUT_BUF[col * 2 + 1] = 0;
+  );
+  col += 1;
+);
+
+// Clear all output channels
+ch = 0;
+loop(NUM_CHANNELS,
+  spl(ch) = 0;
+  ch += 1;
+);
+
+col = 0;
+loop(MAX_COLUMNS,
+  is_playing = COL_STATE[col * 12 + 2];
+  rec_active = gmem[GMEM_REC_STATE + col] == 1;
+
+  // ---- RECORDING: use pre-captured input (saved before spl clear) ----
+  rec_active ? (
+    rec_clip = REC_STATE_BASE[col * 2 + 1];
+    rec_pos  = REC_STATE_BASE[col * 2 + 0];
+
+    rec_clip >= 0 ? (
+      rec_pos < MAX_CLIP_SAMPLES ? (
+        // Destination in heap (stereo layout)
+        rec_dest = CLIP_DATA_BASE + (col * MAX_CLIPS + rec_clip) * MAX_CLIP_SAMPLES * 2;
+        // Write L and R channels separately
+        rec_dest[rec_pos] = REC_INPUT_BUF[col * 2];                          // Left
+        rec_dest[MAX_CLIP_SAMPLES + rec_pos] = REC_INPUT_BUF[col * 2 + 1];   // Right
+        REC_STATE_BASE[col * 2 + 0] = rec_pos + 1;
+      ) : (
+        // Max length reached, auto-stop
+        gmem[GMEM_REC_STATE + col] = 2;
+        gmem[GMEM_REC_POS + col] = REC_STATE_BASE[col * 2 + 0];
+      );
+    );
+    // else: rec_clip not yet set by @block, skip this sample
+  );
+
+  // ---- PLAYBACK (skip if recording on this column to avoid feedback) ----
+  !rec_active ? (
+
+    // Process fade
+    fade_gain = FADE_STATE[col * 4 + 0];
+    fade_target = FADE_STATE[col * 4 + 1];
+    fade_speed = FADE_STATE[col * 4 + 2];
+
+    fade_gain != fade_target ? (
+      fade_target > fade_gain ? (
+        fade_gain = min(fade_gain + fade_speed, 1);
+      ) : (
+        fade_gain = max(fade_gain - fade_speed, 0);
+      );
+      FADE_STATE[col * 4 + 0] = fade_gain;
+
+      // Stop playback when fade-out completes
+      fade_gain <= 0 && fade_target == 0 ? (
+        COL_STATE[col * 12 + 2] = 0;
+        COL_STATE[col * 12 + 1] = -1;
+        is_playing = 0;
+      );
+    );
+
+    is_playing ? (
+      play_pos = COL_STATE[col * 12 + 0];
+      clip_idx = COL_STATE[col * 12 + 1];
+      clip_len = COL_STATE[col * 12 + 4];
+      volume   = COL_STATE[col * 12 + 7];
+
+      clip_len > 0 && clip_idx >= 0 ? (
+        src = CLIP_DATA_BASE + (col * MAX_CLIPS + clip_idx) * MAX_CLIP_SAMPLES * 2;
+        pos_int = floor(play_pos);
+
+        pos_int < clip_len ? (
+          gain = volume * fade_gain;
+
+          // Output stereo (L then R in heap)
+          spl(col * 2)     = src[pos_int] * gain;                          // Left
+          spl(col * 2 + 1) = src[MAX_CLIP_SAMPLES + pos_int] * gain;       // Right
+
+          // Advance
+          play_pos += 1;
+
+          play_pos >= clip_len ? (
+            COL_STATE[col * 12 + 3] ? (
+              play_pos = 0;  // Loop
+              COL_STATE[col * 12 + 8] += 1;  // Increment loop count
+            ) : (
+              // One-shot ended: fade out
+              FADE_STATE[col * 4 + 1] = 0;
+            );
+          );
+
+          COL_STATE[col * 12 + 0] = play_pos;
+        );
+      );
+    );
+
+  ); // end !rec_active
+
+  col += 1;
+);

@@ -1,0 +1,63 @@
+desc: CP - Gain (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Utility gain, pan, stereo width, and phase control.
+  Designed for FX Constellation XY gesture control.
+
+slider1:gain_db=0<-48,24,0.1>Gain (dB)
+slider2:pan=0<-100,100,1>Pan (L/R)
+slider3:width=100<0,200,1>Stereo Width (%)
+slider4:invert_phase=0<0,1,1{Off,On}>Invert Phase
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+s_gain = 1;
+s_pan = 0;
+s_width = 1;
+
+@slider
+target_gain = 10 ^ (gain_db / 20);
+target_pan = pan / 100;
+target_width = width / 100;
+phase_mult = invert_phase > 0.5 ? -1 : 1;
+
+@sample
+// Smooth parameters
+s_gain = s_gain * smooth_coeff + target_gain * (1 - smooth_coeff);
+s_pan = s_pan * smooth_coeff + target_pan * (1 - smooth_coeff);
+s_width = s_width * smooth_coeff + target_width * (1 - smooth_coeff);
+
+// Apply gain
+out_l = spl0 * s_gain;
+out_r = spl1 * s_gain;
+
+// Stereo width (Mid/Side processing)
+mid = (out_l + out_r) * 0.5;
+side = (out_l - out_r) * 0.5;
+
+// Adjust width: 0% = mono, 100% = normal, 200% = extra wide
+out_l = mid + side * s_width;
+out_r = mid - side * s_width;
+
+// Pan (constant power)
+// pan: -1 = full left, 0 = center, +1 = full right
+pan_angle = (s_pan + 1) * 0.25 * $pi;
+pan_l = cos(pan_angle);
+pan_r = sin(pan_angle);
+
+out_l *= pan_l;
+out_r *= pan_r;
+
+// Phase invert
+out_l *= phase_mult;
+out_r *= phase_mult;
+
+spl0 = out_l;
+spl1 = out_r;

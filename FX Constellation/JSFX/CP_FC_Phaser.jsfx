@@ -1,0 +1,178 @@
+desc: CP - Phaser (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Multi-stage allpass phaser with LFO modulation.
+  Designed for FX Constellation XY gesture control.
+
+slider1:rate=0.5<0.01,10,0.01:log>Rate (Hz)
+slider2:depth=70<0,100,1>Depth (%)
+slider3:feedback=50<0,95,1>Feedback (%)
+slider4:stages=4<2,8,1>Stages
+slider5:mix=100<0,100,1>Mix (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+pi2 = 2 * $pi;
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+// Allpass filter state (max 8 stages per channel)
+// ap_l[stage], ap_r[stage]
+ap_l_0 = 0; ap_l_1 = 0; ap_l_2 = 0; ap_l_3 = 0;
+ap_l_4 = 0; ap_l_5 = 0; ap_l_6 = 0; ap_l_7 = 0;
+ap_r_0 = 0; ap_r_1 = 0; ap_r_2 = 0; ap_r_3 = 0;
+ap_r_4 = 0; ap_r_5 = 0; ap_r_6 = 0; ap_r_7 = 0;
+
+lfo_phase = 0;
+fb_l = 0;
+fb_r = 0;
+
+s_rate = 0.5;
+s_depth = 0.7;
+s_feedback = 0.5;
+s_mix = 1;
+
+// Frequency range for allpass sweep (Hz)
+min_freq = 200;
+max_freq = 4000;
+
+@slider
+target_rate = rate;
+target_depth = depth / 100;
+target_feedback = feedback / 100;
+target_mix = mix / 100;
+
+@sample
+// Smooth parameters
+s_rate = s_rate * smooth_coeff + target_rate * (1 - smooth_coeff);
+s_depth = s_depth * smooth_coeff + target_depth * (1 - smooth_coeff);
+s_feedback = s_feedback * smooth_coeff + target_feedback * (1 - smooth_coeff);
+s_mix = s_mix * smooth_coeff + target_mix * (1 - smooth_coeff);
+
+// LFO (left and right slightly offset for stereo)
+lfo_l = (sin(lfo_phase * pi2) + 1) * 0.5;
+lfo_r = (sin((lfo_phase + 0.1) * pi2) + 1) * 0.5;
+
+// Map LFO to frequency range
+sweep_freq_l = min_freq * pow(max_freq / min_freq, lfo_l * s_depth);
+sweep_freq_r = min_freq * pow(max_freq / min_freq, lfo_r * s_depth);
+
+// Allpass coefficient from frequency
+coeff_l = (1 - tan($pi * sweep_freq_l / srate)) / (1 + tan($pi * sweep_freq_l / srate));
+coeff_r = (1 - tan($pi * sweep_freq_r / srate)) / (1 + tan($pi * sweep_freq_r / srate));
+
+// Input with feedback
+in_l = spl0 + fb_l * s_feedback;
+in_r = spl1 + fb_r * s_feedback;
+
+// Process allpass stages - left channel
+tmp_l = in_l;
+
+// Stage 0
+new_l = coeff_l * tmp_l + ap_l_0;
+ap_l_0 = tmp_l - coeff_l * new_l;
+tmp_l = new_l;
+
+// Stage 1
+new_l = coeff_l * tmp_l + ap_l_1;
+ap_l_1 = tmp_l - coeff_l * new_l;
+tmp_l = new_l;
+
+stages >= 3 ? (
+  new_l = coeff_l * tmp_l + ap_l_2;
+  ap_l_2 = tmp_l - coeff_l * new_l;
+  tmp_l = new_l;
+);
+
+stages >= 4 ? (
+  new_l = coeff_l * tmp_l + ap_l_3;
+  ap_l_3 = tmp_l - coeff_l * new_l;
+  tmp_l = new_l;
+);
+
+stages >= 5 ? (
+  new_l = coeff_l * tmp_l + ap_l_4;
+  ap_l_4 = tmp_l - coeff_l * new_l;
+  tmp_l = new_l;
+);
+
+stages >= 6 ? (
+  new_l = coeff_l * tmp_l + ap_l_5;
+  ap_l_5 = tmp_l - coeff_l * new_l;
+  tmp_l = new_l;
+);
+
+stages >= 7 ? (
+  new_l = coeff_l * tmp_l + ap_l_6;
+  ap_l_6 = tmp_l - coeff_l * new_l;
+  tmp_l = new_l;
+);
+
+stages >= 8 ? (
+  new_l = coeff_l * tmp_l + ap_l_7;
+  ap_l_7 = tmp_l - coeff_l * new_l;
+  tmp_l = new_l;
+);
+
+// Process allpass stages - right channel
+tmp_r = in_r;
+
+new_r = coeff_r * tmp_r + ap_r_0;
+ap_r_0 = tmp_r - coeff_r * new_r;
+tmp_r = new_r;
+
+new_r = coeff_r * tmp_r + ap_r_1;
+ap_r_1 = tmp_r - coeff_r * new_r;
+tmp_r = new_r;
+
+stages >= 3 ? (
+  new_r = coeff_r * tmp_r + ap_r_2;
+  ap_r_2 = tmp_r - coeff_r * new_r;
+  tmp_r = new_r;
+);
+
+stages >= 4 ? (
+  new_r = coeff_r * tmp_r + ap_r_3;
+  ap_r_3 = tmp_r - coeff_r * new_r;
+  tmp_r = new_r;
+);
+
+stages >= 5 ? (
+  new_r = coeff_r * tmp_r + ap_r_4;
+  ap_r_4 = tmp_r - coeff_r * new_r;
+  tmp_r = new_r;
+);
+
+stages >= 6 ? (
+  new_r = coeff_r * tmp_r + ap_r_5;
+  ap_r_5 = tmp_r - coeff_r * new_r;
+  tmp_r = new_r;
+);
+
+stages >= 7 ? (
+  new_r = coeff_r * tmp_r + ap_r_6;
+  ap_r_6 = tmp_r - coeff_r * new_r;
+  tmp_r = new_r;
+);
+
+stages >= 8 ? (
+  new_r = coeff_r * tmp_r + ap_r_7;
+  ap_r_7 = tmp_r - coeff_r * new_r;
+  tmp_r = new_r;
+);
+
+// Store feedback (from output of allpass chain)
+fb_l = tmp_l;
+fb_r = tmp_r;
+
+// Advance LFO
+lfo_phase += s_rate / srate;
+lfo_phase >= 1 ? lfo_phase -= 1;
+
+// Wet/dry mix
+spl0 = spl0 * (1 - s_mix) + tmp_l * s_mix;
+spl1 = spl1 * (1 - s_mix) + tmp_r * s_mix;

@@ -39,6 +39,20 @@ function Theme.Default()
             scrollbar_bg    = { 0.15, 0.15, 0.16, 0.3 },
             scrollbar_grab  = { 0.40, 0.40, 0.42, 0.5 },
 
+            -- List/table rendering (matches REAPER's "Window list" color layer)
+            list_bg           = { 0.18, 0.18, 0.20, 1.0 },  -- list container background
+            list_alt_bg       = { 0.16, 0.16, 0.18, 1.0 },  -- alternating row (every other)
+            list_text         = { 0.85, 0.85, 0.85, 1.0 },  -- text inside lists
+            list_grid         = { 0.25, 0.25, 0.27, 0.3 },  -- grid lines between rows/cols
+            list_selected     = { 0.25, 0.50, 0.80, 1.0 },  -- selected row background
+            list_selected_text = { 1.00, 1.00, 1.00, 1.0 }, -- selected row text
+            list_hover        = { 0.22, 0.22, 0.25, 1.0 },  -- hovered row highlight
+
+            -- Value coloring (for property displays, meters, etc.)
+            value_normal    = { 0.75, 0.75, 0.75, 1.0 },
+            value_modified  = { 0.00, 0.80, 0.60, 1.0 },
+            value_negative  = { 0.80, 0.40, 0.60, 1.0 },
+
             popup_bg        = { 0.16, 0.16, 0.18, 0.97 },
 
             tab             = { 0.20, 0.20, 0.22, 1.0 },
@@ -82,6 +96,12 @@ function Theme.Default()
         frame_padding_y = 4,
         item_spacing    = 5,
         indent          = 16,
+        separator_pad   = 4,    -- vertical padding above AND below a separator line
+
+        -- Widget visual style:
+        --   "flat"    — modern minimal (default for dark themes)
+        --   "windows" — classic Win32 look: bevel buttons, framed inputs, raised tabs
+        widget_style    = "flat",
 
         -- Rounding
         rounding = 0,
@@ -139,6 +159,7 @@ function Theme.ApplyScale(t, scale)
     t.tab_height      = s(t.tab_height)
     t.combo_height    = s(t.combo_height)
     t.header_height   = s(t.header_height)
+    t.separator_pad   = s(t.separator_pad)
 
     return t
 end
@@ -292,6 +313,26 @@ end
 -- ============================================================================
 -- SAVE / LOAD THEME (file-based, Lua native serialization)
 -- ============================================================================
+-- Cross-script theme version stamp.
+-- ExtState section "CP_Toolkit", key "theme_version" — incremented on every
+-- save so other running scripts can detect changes and reload (see
+-- UI.CheckThemeUpdates). persist=false: in-memory only, zero disk I/O for
+-- the bump itself. The theme file is the persistent source of truth.
+local THEME_EXTSTATE_SECTION = "CP_Toolkit"
+local THEME_VERSION_KEY = "theme_version"
+
+function Theme.GetVersion()
+    local v = reaper.GetExtState(THEME_EXTSTATE_SECTION, THEME_VERSION_KEY)
+    return tonumber(v) or 0
+end
+
+function Theme.BumpVersion()
+    local v = Theme.GetVersion() + 1
+    -- persist=false: cross-script visible immediately, but no disk write
+    reaper.SetExtState(THEME_EXTSTATE_SECTION, THEME_VERSION_KEY, tostring(v), false)
+    return v
+end
+
 function Theme.Save(t, name)
     ensure_config_dir()
     local path = get_theme_path(name)
@@ -314,6 +355,7 @@ function Theme.Save(t, name)
         frame_padding_y = t.frame_padding_y,
         item_spacing = t.item_spacing,
         indent = t.indent,
+        separator_pad = t.separator_pad,
         header_height = t.header_height,
         checkbox_size = t.checkbox_size,
         slider_height = t.slider_height,
@@ -321,6 +363,7 @@ function Theme.Save(t, name)
         tab_height = t.tab_height,
         combo_height = t.combo_height,
         scrollbar_width = t.scrollbar_width,
+        widget_style = t.widget_style,
     }
 
     for key, c in pairs(t.colors) do
@@ -332,6 +375,11 @@ function Theme.Save(t, name)
     file:write("-- CP_Toolkit Theme: " .. (name or "theme") .. "\n")
     file:write("return " .. serialize_value(data) .. "\n")
     file:close()
+
+    -- Broadcast change to other running scripts (only for the active "theme")
+    if (name or "theme") == "theme" then
+        Theme.BumpVersion()
+    end
     return true
 end
 
@@ -377,6 +425,7 @@ function Theme.LoadSaved(name)
     t.frame_padding_y = data.frame_padding_y or t.frame_padding_y
     t.item_spacing = data.item_spacing or t.item_spacing
     t.indent = data.indent or t.indent
+    t.separator_pad = data.separator_pad or t.separator_pad
     t.header_height = data.header_height or t.header_height
     t.checkbox_size = data.checkbox_size or t.checkbox_size
     t.slider_height = data.slider_height or t.slider_height
@@ -384,6 +433,7 @@ function Theme.LoadSaved(name)
     t.tab_height = data.tab_height or t.tab_height
     t.combo_height = data.combo_height or t.combo_height
     t.scrollbar_width = data.scrollbar_width or t.scrollbar_width
+    t.widget_style = data.widget_style or t.widget_style
 
     return t
 end
@@ -393,10 +443,11 @@ end
 -- ============================================================================
 function Theme.Presets()
     return {
-        { name = "Default Dark", key = "default_dark" },
+        { name = "Default Dark",  key = "default_dark" },
         { name = "REAPER Classic", key = "reaper_classic" },
-        { name = "Light", key = "light" },
-        { name = "Midnight", key = "midnight" },
+        { name = "REAPER Light",  key = "reaper_light" },
+        { name = "Light",         key = "light" },
+        { name = "Midnight",      key = "midnight" },
     }
 end
 
@@ -417,6 +468,81 @@ function Theme.GetPreset(key)
         t.colors.title_bar       = { 0.14, 0.14, 0.14, 1.0 }
         t.colors.frame_bg        = { 0.22, 0.22, 0.22, 1.0 }
         t.colors.tab_active      = { 0.30, 0.30, 0.30, 1.0 }
+        return t
+
+    elseif key == "reaper_light" then
+        -- Matches REAPER's native Windows classic look (Actions list, FX browser,
+        -- Media Explorer). Critical insight: the WINDOW background is a medium
+        -- gray, NOT white. Only INNER CONTAINERS (lists, inputs, group boxes)
+        -- are white. This creates the layered "panel" hierarchy that defines
+        -- the Win32 look. Use UI.BeginPanel("filled") to wrap content properly.
+        local t = Theme.Default()
+        t.widget_style = "windows"
+
+        -- LEVEL 1: window bg (gray) — what you see between/around panels
+        t.colors.window_bg       = { 0.85, 0.85, 0.86, 1.0 }
+        -- Text on the window_bg (labels outside panels): dark
+        t.colors.text            = { 0.10, 0.10, 0.10, 1.0 }
+        t.colors.text_disabled   = { 0.50, 0.50, 0.52, 1.0 }
+        t.colors.border          = { 0.55, 0.55, 0.56, 1.0 }
+        t.colors.separator       = { 0.65, 0.65, 0.66, 1.0 }
+
+        -- Microsoft Windows accent blue for selection / focus
+        t.colors.accent          = { 0.20, 0.45, 0.85, 1.0 }
+        t.colors.accent_hovered  = { 0.30, 0.55, 0.92, 1.0 }
+        t.colors.accent_active   = { 0.12, 0.35, 0.72, 1.0 }
+
+        -- LEVEL 2: panels / frame backgrounds (containers, inputs)
+        --   filled panel bg = white
+        --   inset panel bg  = slightly darker (sunken)
+        t.colors.frame_bg        = { 1.00, 1.00, 1.00, 1.0 }
+        t.colors.frame_hovered   = { 0.96, 0.98, 1.00, 1.0 }
+        t.colors.frame_active    = { 0.92, 0.96, 1.00, 1.0 }
+
+        -- Buttons: classic 3D bevel — light gray base, light top/left edge,
+        -- dark bottom/right edge. The Button widget reads widget_style and
+        -- adds the bevel automatically when set to "windows".
+        t.colors.button          = { 0.93, 0.93, 0.94, 1.0 }
+        t.colors.button_hovered  = { 0.96, 0.97, 1.00, 1.0 }
+        t.colors.button_active   = { 0.85, 0.88, 0.95, 1.0 }
+
+        -- Headers (column headers, collapsing headers): same gray as window
+        t.colors.header          = { 0.88, 0.88, 0.89, 1.0 }
+        t.colors.header_hovered  = { 0.92, 0.94, 0.98, 1.0 }
+        t.colors.header_active   = { 0.86, 0.90, 0.96, 1.0 }
+
+        -- Popups (dropdown menus): white with thin border
+        t.colors.popup_bg        = { 1.00, 1.00, 1.00, 1.0 }
+
+        -- Tabs: gray inactive, white active (raised look)
+        t.colors.tab             = { 0.85, 0.85, 0.86, 1.0 }
+        t.colors.tab_hovered     = { 0.92, 0.92, 0.93, 1.0 }
+        t.colors.tab_active      = { 1.00, 1.00, 1.00, 1.0 }
+
+        -- Custom title bar (when frameless)
+        t.colors.title_bar       = { 0.78, 0.78, 0.80, 1.0 }
+        t.colors.title_text      = { 0.10, 0.10, 0.10, 1.0 }
+        t.colors.close_btn       = { 0.80, 0.20, 0.20, 1.0 }
+        t.colors.close_btn_hover = { 1.00, 0.30, 0.30, 1.0 }
+
+        -- Scrollbar: subtle gray
+        t.colors.scrollbar_bg    = { 0.78, 0.78, 0.79, 0.6 }
+        t.colors.scrollbar_grab  = { 0.55, 0.55, 0.56, 0.8 }
+
+        -- Lists: white bg, subtle grid, blue selection (sampled from REAPER
+        -- Actions list + Browse FX + Contextual Toolbars screenshots)
+        t.colors.list_bg           = { 1.00, 1.00, 1.00, 1.0 }
+        t.colors.list_alt_bg       = { 0.96, 0.96, 0.97, 1.0 }
+        t.colors.list_text         = { 0.10, 0.10, 0.10, 1.0 }
+        t.colors.list_grid         = { 0.80, 0.80, 0.82, 0.5 }
+        t.colors.list_selected     = { 0.20, 0.45, 0.85, 1.0 }
+        t.colors.list_selected_text = { 1.00, 1.00, 1.00, 1.0 }
+        t.colors.list_hover        = { 0.88, 0.93, 1.00, 1.0 }
+
+        -- Value coloring on white frame_bg backgrounds
+        t.colors.value_normal    = { 0.15, 0.15, 0.16, 1.0 }
+        t.colors.value_modified  = { 0.10, 0.55, 0.25, 1.0 }
+        t.colors.value_negative  = { 0.80, 0.15, 0.25, 1.0 }
         return t
 
     elseif key == "light" then
@@ -497,6 +623,8 @@ function Theme.GetColorGroups()
         { name = "Buttons",  keys = { "button", "button_hovered", "button_active" } },
         { name = "Frames",   keys = { "frame_bg", "frame_hovered", "frame_active" } },
         { name = "Headers",  keys = { "header", "header_hovered", "header_active" } },
+        { name = "Lists",    keys = { "list_bg", "list_alt_bg", "list_text", "list_grid",
+                                      "list_selected", "list_selected_text", "list_hover" } },
         { name = "Tabs",     keys = { "tab", "tab_hovered", "tab_active" } },
         { name = "Popups",   keys = { "popup_bg", "scrollbar_bg", "scrollbar_grab" } },
     }
@@ -511,6 +639,9 @@ function Theme.GetColorLabel(key)
         button = "Button", button_hovered = "Button Hover", button_active = "Button Active",
         frame_bg = "Frame BG", frame_hovered = "Frame Hover", frame_active = "Frame Active",
         header = "Header", header_hovered = "Header Hover", header_active = "Header Active",
+        list_bg = "List BG", list_alt_bg = "List Alt Row", list_text = "List Text",
+        list_grid = "List Grid", list_selected = "List Selected", list_selected_text = "List Sel Text",
+        list_hover = "List Hover",
         tab = "Tab", tab_hovered = "Tab Hover", tab_active = "Tab Active",
         popup_bg = "Popup BG", scrollbar_bg = "Scroll BG", scrollbar_grab = "Scroll Grab",
     }

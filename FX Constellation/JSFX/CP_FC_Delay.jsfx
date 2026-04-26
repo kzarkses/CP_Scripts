@@ -1,0 +1,93 @@
+desc: CP - Delay (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Stereo delay with ping-pong mode and filtering.
+  Designed for FX Constellation XY gesture control.
+
+slider1:delay_time=250<1,2000,1>Delay Time (ms)
+slider2:feedback=40<0,95,1>Feedback (%)
+slider3:tone=70<0,100,1>Tone (%)
+slider4:ping_pong=0<0,1,1{Off,On}>Ping Pong
+slider5:mix=30<0,100,1>Mix (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+pi2 = 2 * $pi;
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+// Delay buffer (max 2s at 192kHz)
+max_delay_samples = ceil(2.0 * 192000);
+buf_l = 0;
+buf_r = buf_l + max_delay_samples;
+write_pos = 0;
+
+memset(buf_l, 0, max_delay_samples);
+memset(buf_r, 0, max_delay_samples);
+
+// Tone filter state
+tone_l = 0;
+tone_r = 0;
+
+s_delay = 0.250;
+s_feedback = 0.4;
+s_tone = 0.7;
+s_mix = 0.3;
+
+@slider
+target_delay = delay_time / 1000;
+target_feedback = feedback / 100;
+target_tone = tone / 100;
+target_mix = mix / 100;
+
+@sample
+// Smooth parameters
+s_delay = s_delay * smooth_coeff + target_delay * (1 - smooth_coeff);
+s_feedback = s_feedback * smooth_coeff + target_feedback * (1 - smooth_coeff);
+s_tone = s_tone * smooth_coeff + target_tone * (1 - smooth_coeff);
+s_mix = s_mix * smooth_coeff + target_mix * (1 - smooth_coeff);
+
+// Delay in samples
+delay_smp = s_delay * srate;
+delay_smp = max(1, min(max_delay_samples - 1, delay_smp));
+
+// Read from delay buffers (linear interpolation)
+read_pos = write_pos - delay_smp;
+read_pos < 0 ? read_pos += max_delay_samples;
+idx = floor(read_pos);
+frac = read_pos - idx;
+
+wet_l = buf_l[idx % max_delay_samples] * (1 - frac) + buf_l[(idx + 1) % max_delay_samples] * frac;
+wet_r = buf_r[idx % max_delay_samples] * (1 - frac) + buf_r[(idx + 1) % max_delay_samples] * frac;
+
+// Tone filter on feedback path
+tone_freq = 200 + s_tone * s_tone * 19800;
+tone_coeff = exp(-pi2 * tone_freq / srate);
+
+tone_l = tone_l * tone_coeff + wet_l * (1 - tone_coeff);
+tone_r = tone_r * tone_coeff + wet_r * (1 - tone_coeff);
+
+// Blend filtered/direct based on tone
+filtered_l = tone_l * (1 - s_tone) + wet_l * s_tone;
+filtered_r = tone_r * (1 - s_tone) + wet_r * s_tone;
+
+// Write to delay buffer
+ping_pong > 0.5 ? (
+  // Ping pong: L feedback goes to R buffer and vice versa
+  buf_l[write_pos] = spl0 + filtered_r * s_feedback;
+  buf_r[write_pos] = spl1 + filtered_l * s_feedback;
+) : (
+  // Normal stereo delay
+  buf_l[write_pos] = spl0 + filtered_l * s_feedback;
+  buf_r[write_pos] = spl1 + filtered_r * s_feedback;
+);
+
+write_pos = (write_pos + 1) % max_delay_samples;
+
+// Mix
+spl0 = spl0 * (1 - s_mix) + wet_l * s_mix;
+spl1 = spl1 * (1 - s_mix) + wet_r * s_mix;

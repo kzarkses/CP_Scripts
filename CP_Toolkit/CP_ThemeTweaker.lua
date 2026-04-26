@@ -10,13 +10,52 @@ local UI = dofile(script_path .. "CP_Toolkit.lua")
 
 UI.Init("CP Theme Tweaker", 380, 700, {
     scale = 1.0,
+    persist = "CP_ThemeTweaker",
 })
+
+-- Mark the theme dirty when the user changes anything; throttled save +
+-- broadcast (matches the Inspector Settings pattern). Other running CP_
+-- scripts call UI.CheckThemeUpdates() each frame and pick up the changes.
+local dirty = false
+local last_save_time = 0
+
+-- Active preset tracking. Persisted via UI.SavePersistent so the tweaker
+-- remembers which preset the user picked across sessions. Set to nil when
+-- the theme has been mutated away from any preset (→ "custom" state).
+local active_preset_key = UI.LoadPersistent("CP_ThemeTweaker", "active_preset", "")
+if active_preset_key == "" then active_preset_key = nil end
+
+-- First-launch detection: if nothing is persisted AND there's no theme.lua
+-- yet on disk, the UI.Init fell back to Theme.Default() (== default_dark),
+-- so highlight that. Avoids the confusing "Custom" label on a fresh install.
+if active_preset_key == nil then
+    local theme_file = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Config/theme.lua"
+    local f = io.open(theme_file, "r")
+    if not f then
+        active_preset_key = "default_dark"
+        UI.SavePersistent("CP_ThemeTweaker", "active_preset", active_preset_key)
+    else
+        f:close()
+    end
+end
+
+local function set_active_preset(key)
+    active_preset_key = key
+    UI.SavePersistent("CP_ThemeTweaker", "active_preset", key or "")
+end
+
+-- Any theme mutation moves us to "custom" state
+local function mark_dirty()
+    dirty = true
+    if active_preset_key ~= nil then
+        set_active_preset(nil)
+    end
+end
 
 -- State
 local active_tab = 1
 local tabs = { "Presets", "Colors", "Layout", "Fonts", "Preview" }
 local group_states = {}
-local active_preset = 1
 local save_name = "theme"
 local eyedropper_target = nil  -- color key to set when eyedropper picks
 
@@ -44,24 +83,30 @@ UI.Run(function()
     -- PRESETS TAB
     -- ================================================================
     if active_tab == 1 then
+        -- Active preset indicator row
         UI.Text("Built-in Presets")
+        UI.SameLine()
+        if active_preset_key == nil then
+            local ac = t.colors.accent
+            UI.TextColored("  — Custom (unsaved)", ac[1], ac[2], ac[3], 0.9)
+        end
         UI.Separator()
-        UI.Spacing(4)
 
         local presets = UI.Theme.Presets()
-        for i, preset in ipairs(presets) do
-            local is_active = (i == active_preset)
-            local toggled, _ = UI.ToggleButton("tw_preset_" .. i, preset.name, is_active)
+        for _, preset in ipairs(presets) do
+            local is_active = (preset.key == active_preset_key)
+            local toggled, _ = UI.ToggleButton("tw_preset_" .. preset.key, preset.name, is_active)
             if toggled and not is_active then
                 UI.ApplyPreset(preset.key)
-                active_preset = i
+                set_active_preset(preset.key)
+                -- Persist immediately + broadcast to other running scripts
+                UI.SaveTheme("theme")
             end
         end
 
         UI.Spacing(8)
         UI.Text("Save / Load")
         UI.Separator()
-        UI.Spacing(4)
 
         -- Theme name input
         local nc, nv = UI.InputText("tw_savename", "Name  ", save_name, { hint = "theme name" })
@@ -69,15 +114,22 @@ UI.Run(function()
 
         UI.Spacing(4)
 
-        -- Save / Save As
-        if UI.Button("tw_save", "Save") then
+        -- Save / Save As — saves under `save_name` AND also updates the
+        -- active theme.lua so the save becomes the current "active preset"
+        -- and other running CP_ scripts pick it up live.
+        if UI.Button("tw_save", "Save") and save_name ~= "" then
             UI.SaveTheme(save_name)
+            UI.SaveTheme("theme")  -- mirror as active
+            set_active_preset("@" .. save_name)  -- "@name" = user preset (not built-in)
+            dirty = false  -- just saved, not dirty anymore
         end
         UI.SameLine()
         if UI.Button("tw_saveas", "Save As...") then
-            -- Save with current name (user changes name above first)
             if save_name ~= "" then
                 UI.SaveTheme(save_name)
+                UI.SaveTheme("theme")
+                set_active_preset("@" .. save_name)
+                dirty = false
             end
         end
 
@@ -90,23 +142,33 @@ UI.Run(function()
             UI.Spacing(2)
 
             local items = {}
+            local selected_idx = nil
             for i, name in ipairs(saved) do
                 items[i] = { label = name }
+                if active_preset_key == "@" .. name then
+                    selected_idx = i
+                end
             end
 
-            local clicked, action = UI.ActionList("tw_saved_list", items,
-                { { icon = ">" }, { icon = "X" } },
-                { max_visible = 6 })
+            local clicked, action, activated = UI.ActionList("tw_saved_list", items,
+                { { icon = "X" } },
+                { max_visible = 6, selected = selected_idx })
 
-            if clicked then
-                if action == 1 then
-                    -- Load
-                    UI.LoadTheme(saved[clicked])
-                    save_name = saved[clicked]
-                elseif action == 2 then
-                    -- Delete
-                    local path = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Config/" .. saved[clicked] .. ".lua"
-                    os.remove(path)
+            -- Double-click → load theme
+            if activated then
+                UI.LoadTheme(saved[activated])
+                UI.SaveTheme("theme")  -- mirror so others pick it up
+                save_name = saved[activated]
+                set_active_preset("@" .. saved[activated])
+                dirty = false
+            end
+
+            -- "X" button → delete
+            if clicked and action == 1 then
+                local path = reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Config/" .. saved[clicked] .. ".lua"
+                os.remove(path)
+                if active_preset_key == "@" .. saved[clicked] then
+                    set_active_preset(nil)
                 end
             end
         end
@@ -142,14 +204,16 @@ UI.Run(function()
                         local changed, new_c = UI.ColorPicker("twc_" .. key, label, c)
                         if changed then
                             t.colors[key] = { new_c[1], new_c[2], new_c[3], c[4] or 1 }
+                            mark_dirty()
                         end
 
                         -- Pipette button next to each color
                         UI.SameLine()
-                        if UI.Button("twp_" .. key, "?") then
+                        if UI.Button("twp_" .. key, "Pick") then
                             eyedropper_target = key
                             UI.StartEyedropper(function(color)
                                 t.colors[key] = { color[1], color[2], color[3], c[4] or 1 }
+                                mark_dirty()
                             end)
                         end
                     end
@@ -162,47 +226,57 @@ UI.Run(function()
     -- LAYOUT TAB
     -- ================================================================
     elseif active_tab == 3 then
+        -- Widget style toggle (flat vs windows)
+        UI.Text("Widget Style")
+        UI.Separator()
+        local styles = { "flat", "windows" }
+        local style_idx = t.widget_style == "windows" and 2 or 1
+        local wsc, wsn = UI.Combo("tw_wstyle", "Style  ", style_idx, styles, { width = 140 })
+        if wsc then t.widget_style = styles[wsn]; mark_dirty() end
+        UI.Spacing(6)
+
         UI.Text("Spacing")
         UI.Separator()
-        UI.Spacing(4)
 
         local sc1, sv1 = UI.NumberInput("tw_winpad", "Window Pad  ", t.window_padding, 0, 40, { step = 1 })
-        if sc1 then t.window_padding = sv1 end
+        if sc1 then t.window_padding = sv1; mark_dirty() end
 
         local sc2, sv2 = UI.NumberInput("tw_itemsp", "Item Space  ", t.item_spacing, 0, 20, { step = 1 })
-        if sc2 then t.item_spacing = sv2 end
+        if sc2 then t.item_spacing = sv2; mark_dirty() end
 
         local sc3, sv3 = UI.NumberInput("tw_fpx", "Frame Pad X ", t.frame_padding_x, 0, 20, { step = 1 })
-        if sc3 then t.frame_padding_x = sv3 end
+        if sc3 then t.frame_padding_x = sv3; mark_dirty() end
 
         local sc4, sv4 = UI.NumberInput("tw_fpy", "Frame Pad Y ", t.frame_padding_y, 0, 20, { step = 1 })
-        if sc4 then t.frame_padding_y = sv4 end
+        if sc4 then t.frame_padding_y = sv4; mark_dirty() end
 
         local sc5, sv5 = UI.NumberInput("tw_indent", "Indent      ", t.indent, 4, 40, { step = 1 })
-        if sc5 then t.indent = sv5 end
+        if sc5 then t.indent = sv5; mark_dirty() end
+
+        local sc12, sv12 = UI.NumberInput("tw_seppad", "Separator Pad", t.separator_pad or 4, 0, 16, { step = 1 })
+        if sc12 then t.separator_pad = sv12; mark_dirty() end
 
         UI.Spacing(8)
         UI.Text("Widget Sizes")
         UI.Separator()
-        UI.Spacing(4)
 
         local sc6, sv6 = UI.NumberInput("tw_cbsize", "Checkbox    ", t.checkbox_size, 8, 30, { step = 1 })
-        if sc6 then t.checkbox_size = sv6 end
+        if sc6 then t.checkbox_size = sv6; mark_dirty() end
 
         local sc7, sv7 = UI.NumberInput("tw_slh", "Slider H    ", t.slider_height, 10, 40, { step = 1 })
-        if sc7 then t.slider_height = sv7 end
+        if sc7 then t.slider_height = sv7; mark_dirty() end
 
         local sc8, sv8 = UI.NumberInput("tw_btnh", "Button H    ", t.button_height, 14, 40, { step = 1 })
-        if sc8 then t.button_height = sv8 end
+        if sc8 then t.button_height = sv8; mark_dirty() end
 
         local sc9, sv9 = UI.NumberInput("tw_tabh", "Tab H       ", t.tab_height, 16, 40, { step = 1 })
-        if sc9 then t.tab_height = sv9 end
+        if sc9 then t.tab_height = sv9; mark_dirty() end
 
         local sc10, sv10 = UI.NumberInput("tw_cmbh", "Combo H     ", t.combo_height, 14, 40, { step = 1 })
-        if sc10 then t.combo_height = sv10 end
+        if sc10 then t.combo_height = sv10; mark_dirty() end
 
         local sc11, sv11 = UI.NumberInput("tw_hdrh", "Header H    ", t.header_height, 20, 50, { step = 1 })
-        if sc11 then t.header_height = sv11 end
+        if sc11 then t.header_height = sv11; mark_dirty() end
 
     -- ================================================================
     -- FONTS TAB
@@ -212,33 +286,31 @@ UI.Run(function()
         UI.Text("Font Sizes")
         UI.SetFontBody()
         UI.Separator()
-        UI.Spacing(4)
 
         UI.Text("Scroll or drag to adjust, double-click to type", { disabled = true })
         UI.Spacing(4)
 
         local fc0, fv0 = UI.NumberInput("tw_ftitle", "Title      ", t.fonts.title, 10, 36, { step = 1 })
-        if fc0 then t.fonts.title = fv0; UI.Core.LoadFontSlots(t) end
+        if fc0 then t.fonts.title = fv0; UI.Core.LoadFontSlots(t); mark_dirty() end
 
         local fc1, fv1 = UI.NumberInput("tw_fh1", "H1         ", t.fonts.h1, 8, 32, { step = 1 })
-        if fc1 then t.fonts.h1 = fv1; t.fonts.primary = fv1; UI.Core.LoadFontSlots(t) end
+        if fc1 then t.fonts.h1 = fv1; t.fonts.primary = fv1; UI.Core.LoadFontSlots(t); mark_dirty() end
 
         local fc2, fv2 = UI.NumberInput("tw_fh2", "H2         ", t.fonts.h2, 8, 28, { step = 1 })
-        if fc2 then t.fonts.h2 = fv2; UI.Core.LoadFontSlots(t) end
+        if fc2 then t.fonts.h2 = fv2; UI.Core.LoadFontSlots(t); mark_dirty() end
 
         local fc3, fv3 = UI.NumberInput("tw_fbody", "Body       ", t.fonts.body, 8, 24, { step = 1 })
-        if fc3 then t.fonts.body = fv3; t.fonts.secondary = fv3; UI.Core.LoadFontSlots(t) end
+        if fc3 then t.fonts.body = fv3; t.fonts.secondary = fv3; UI.Core.LoadFontSlots(t); mark_dirty() end
 
         local fc4, fv4 = UI.NumberInput("tw_fcapt", "Caption    ", t.fonts.caption, 6, 20, { step = 1 })
-        if fc4 then t.fonts.caption = fv4; t.fonts.tertiary = fv4; UI.Core.LoadFontSlots(t) end
+        if fc4 then t.fonts.caption = fv4; t.fonts.tertiary = fv4; UI.Core.LoadFontSlots(t); mark_dirty() end
 
         local fc5, fv5 = UI.NumberInput("tw_fmono", "Mono       ", t.fonts.mono_size, 8, 24, { step = 1 })
-        if fc5 then t.fonts.mono_size = fv5; UI.Core.LoadFontSlots(t) end
+        if fc5 then t.fonts.mono_size = fv5; UI.Core.LoadFontSlots(t); mark_dirty() end
 
         UI.Spacing(8)
         UI.Text("Font Faces")
         UI.Separator()
-        UI.Spacing(4)
 
         local faces = { "Tahoma", "Arial", "Verdana", "Segoe UI", "Calibri", "Consolas" }
         local current_face_idx = 1
@@ -251,6 +323,7 @@ UI.Run(function()
             t.fonts.face = faces[fci]
             t.fonts.default_face = faces[fci]
             UI.Core.LoadFontSlots(t)
+            mark_dirty()
         end
 
         local mono_faces = { "Consolas", "Courier New", "Lucida Console" }
@@ -263,6 +336,7 @@ UI.Run(function()
         if mcc then
             t.fonts.mono_face = mono_faces[mci]
             UI.Core.LoadFontSlots(t)
+            mark_dirty()
         end
 
     -- ================================================================
@@ -273,7 +347,6 @@ UI.Run(function()
         UI.Text("Font Hierarchy")
         UI.SetFontBody()
         UI.Separator()
-        UI.Spacing(4)
 
         UI.SetFontTitle()
         UI.Text("Title — CP Inspector")
@@ -294,7 +367,6 @@ UI.Run(function()
         UI.Spacing(6)
         UI.Text("Widgets")
         UI.Separator()
-        UI.Spacing(4)
 
         UI.Button("tw_btn1", "Button")
         UI.SameLine()
@@ -327,7 +399,6 @@ UI.Run(function()
         UI.Spacing(6)
         UI.Text("Color Palette")
         UI.Separator()
-        UI.Spacing(4)
 
         local palette = { "window_bg", "text", "accent", "button", "frame_bg", "header", "tab_active", "popup_bg", "border" }
         UI.BeginGrid("tw_palette", { cell_w = 80, cell_h = 22, gap = 4 })
@@ -347,4 +418,18 @@ UI.Run(function()
         UI.EndGrid("tw_palette")
     end
 
+    -- Throttled auto-save: bumps theme version → other running CP_ scripts
+    -- pick up the change via UI.CheckThemeUpdates() within ~100ms.
+    if dirty then
+        local now = reaper.time_precise()
+        if now - last_save_time > 0.10 then
+            UI.SaveTheme("theme")
+            last_save_time = now
+            dirty = false
+        end
+    end
+end)
+
+UI.OnClose(function()
+    if dirty then UI.SaveTheme("theme") end
 end)

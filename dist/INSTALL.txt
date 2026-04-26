@@ -1,0 +1,18 @@
+CP Scripts - Paid Package
+=========================
+
+Installation:
+1. Close REAPER
+2. Copy all folders into your REAPER Scripts folder:
+   [REAPER Resource Path]/Scripts/CP_Scripts/
+3. Restart REAPER
+4. Scripts appear in Actions > Show action list
+
+FX Constellation License:
+- Run the script, click the License button
+- Enter your license key (received from Gumroad)
+
+Requirements:
+- REAPER 7.0+
+- ReaImGui extension (install via ReaPack)
+- SWS Extension

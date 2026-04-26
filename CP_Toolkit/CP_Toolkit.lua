@@ -16,6 +16,7 @@ local LogMod   = dofile(script_path .. "Log.lua")
 
 -- Wire dependencies
 Core.SetLog(LogMod)
+LogMod.SetStatsSource(Core.GetStats)  -- F12 overlay shows live perf stats
 Layout.Init(Core)
 Widgets.Init(Core, Layout, ThemeMod)
 Widgets.SetLog(LogMod)
@@ -46,6 +47,8 @@ function UI.Init(title, width, height, opts)
     opts = opts or {}
     -- Try to load saved toolkit theme, then ImGui styles, then default
     UI._theme = ThemeMod.LoadSaved() or ThemeMod.LoadFromExtState() or ThemeMod.Default()
+    -- Sync local version stamp so CheckThemeUpdates only fires on real changes
+    UI._theme_version = ThemeMod.GetVersion()
 
     -- Apply scale (from opts, or auto-detect, or default 1.0)
     local scale = opts.scale or 1.0
@@ -55,7 +58,23 @@ function UI.Init(title, width, height, opts)
     local sw = math.floor(width * scale + 0.5)
     local sh = math.floor(height * scale + 0.5)
 
-    Core.Init(title, sw, sh, opts.dock, opts.x, opts.y)
+    -- Persist window state across sessions (dock + position + size)
+    -- Pass opts.persist = "your_script_id" to opt-in.
+    UI._persist_id = opts.persist
+    local dock = opts.dock or 0
+    local x, y = opts.x, opts.y
+    if UI._persist_id then
+        local saved = Core.LoadWindowState(UI._persist_id)
+        if saved then
+            if saved.dock then dock = saved.dock end
+            if saved.x then x = saved.x end
+            if saved.y then y = saved.y end
+            if saved.w and saved.w > 0 then sw = saved.w end
+            if saved.h and saved.h > 0 then sh = saved.h end
+        end
+    end
+
+    Core.Init(title, sw, sh, dock, x, y)
 
     -- Load font slots (title, h1, h2, body, caption, mono)
     Core.LoadFontSlots(UI._theme)
@@ -66,11 +85,41 @@ function UI.Init(title, width, height, opts)
         Core.SetFrameless()
         if opts.topmost then Core.SetTopMost(true) end
     end
+
+    -- Disable window-level scrollbar (toolbar/status-bar mode)
+    UI._scrollable = opts.scrollable ~= false
+
+    -- Override window padding (overrides theme.window_padding for this script)
+    if opts.padding ~= nil then
+        UI._theme.window_padding = opts.padding
+    end
+
+    -- Idle throttle: by default, frames where nothing changed are skipped to
+    -- save CPU. Scripts with continuously animated content (live meters,
+    -- waveforms, playback cursors) can opt out by passing idle_throttle=false.
+    -- Granular alternative: call UI.RequestRedraw() each frame an animation runs.
+    if opts.idle_throttle == false then
+        Core.SetIdleThrottle(false)
+    end
+
+    -- Register a default OnClose so persist works even if the user never
+    -- calls UI.OnClose. UI.OnClose() will replace this with a wrapped version.
+    if UI._persist_id then
+        Core.OnClose(function()
+            pcall(Core.SaveWindowState, UI._persist_id)
+        end)
+    end
+end
+
+-- Live setter for the window padding (cells/labels are placed relative to it).
+function UI.SetWindowPadding(n)
+    if UI._theme then UI._theme.window_padding = n end
 end
 
 function UI.Run(loop_fn)
+    local root_opts = { scrollable = UI._scrollable }
     Core.Run(function()
-        Layout.Begin("root", UI._theme)
+        Layout.Begin("root", UI._theme, root_opts)
         loop_fn(UI._theme)
         Layout.End()
         -- Update eyedropper if active (runs before tooltip layer in Core)
@@ -79,11 +128,24 @@ function UI.Run(loop_fn)
 end
 
 function UI.OnClose(fn)
-    Core.OnClose(fn)
+    -- Wrap user callback so we always save window state first when persist is on
+    Core.OnClose(function()
+        if UI._persist_id then
+            pcall(Core.SaveWindowState, UI._persist_id)
+        end
+        if fn then fn() end
+    end)
 end
 
 function UI.SaveTheme(name)
     ThemeMod.Save(UI._theme, name)
+    -- CRITICAL: update our local version stamp to match the one Theme.Save
+    -- just bumped. Without this, the next frame's CheckThemeUpdates would
+    -- see a mismatch and RELOAD theme.lua, stomping any unsaved mutations
+    -- still sitting in UI._theme. That was the "my font sizes don't stick"
+    -- bug: user changes title (auto-save), then changes h1 (waiting for
+    -- throttle), reload fires in between and the h1 change is lost.
+    UI._theme_version = ThemeMod.GetVersion()
 end
 
 function UI.LoadTheme(name)
@@ -92,7 +154,28 @@ function UI.LoadTheme(name)
         UI._theme = t
         Core.LoadFontSlots(UI._theme)
         Core.SetFontSecondary()
+        -- Sync our local version stamp with the on-disk one
+        UI._theme_version = ThemeMod.GetVersion()
     end
+end
+
+-- Cross-script theme hot-reload. Call once per frame from your main loop;
+-- if the theme tweaker (or another script) has saved a new theme since
+-- last frame, we re-load the file and the next frame paints with the new
+-- theme. Returns true if a reload happened.
+function UI.CheckThemeUpdates()
+    local v = ThemeMod.GetVersion()
+    if v == 0 then return false end
+    if v == UI._theme_version then return false end
+
+    local t = ThemeMod.LoadSaved("theme")
+    if t then
+        UI._theme = t
+        Core.LoadFontSlots(UI._theme)
+        UI._theme_version = v
+        return true
+    end
+    return false
 end
 
 function UI.ResetTheme()
@@ -127,6 +210,17 @@ end
 
 function UI.EndWindow()
     Widgets.EndWindow()
+end
+
+-- Panel — Windows-style content container with auto-fit content height.
+-- Three styles via opts.style: "filled" (default) | "groupbox" | "inset".
+-- Other opts: { title="Group", padding=8, width=nil, bg=nil, border=true }
+function UI.BeginPanel(id, opts)
+    Widgets.BeginPanel(id, UI._theme, opts)
+end
+
+function UI.EndPanel()
+    Widgets.EndPanel(UI._theme)
 end
 
 -- Font switching (new hierarchy)
@@ -294,14 +388,30 @@ function UI.SetCursor(cursor_type) Core.SetCursor(cursor_type) end
 function UI.Animate(id, target, speed) return Core.Animate(id, target, speed) end
 function UI.AnimateColor(id, color, speed) return Core.AnimateColor(id, color, speed) end
 
+-- Idle throttle escape hatch — call each frame to keep the UI redrawing.
+-- Use this when displaying live data (peak meters, playback time, etc.) so
+-- the toolkit doesn't enter idle mode and freeze the visual.
+function UI.RequestRedraw() Core.RequestRedraw() end
+function UI.SetIdleThrottle(enabled) Core.SetIdleThrottle(enabled) end
+
 -- Focus chain (Tab navigation)
 function UI.FocusNext() Core.FocusNext() end
 function UI.FocusPrev() Core.FocusPrev() end
+
+-- Programmatic focus: pass an InputText / TextEdit widget id to give it
+-- keyboard focus on the next frame. Pass nil to clear focus.
+function UI.SetFocus(id) Core.SetFocus(id) end
+function UI.IsFocused(id) return Core.IsFocused(id) end
 
 -- Persistent layout
 function UI.SaveWindowState(script_id) Core.SaveWindowState(script_id) end
 function UI.LoadWindowState(script_id) return Core.LoadWindowState(script_id) end
 function UI.SavePersistent(script_id, key, value) Core.SavePersistent(script_id, key, value) end
+
+-- Config files (CP_Config/<script_id>.lua) — preferred over ExtState for
+-- non-trivial app state. One file per script, one disk write per save.
+function UI.SaveConfig(script_id, data) return Core.SaveConfig(script_id, data) end
+function UI.LoadConfig(script_id) return Core.LoadConfig(script_id) end
 function UI.LoadPersistent(script_id, key, default) return Core.LoadPersistent(script_id, key, default) end
 
 -- Native GFX drawing
@@ -442,6 +552,19 @@ end
 
 function UI.EndChild()
     Layout.EndChild()
+end
+
+-- Wrap (auto-flow like CSS flex-wrap)
+function UI.BeginWrap(id, opts)
+    Layout.BeginWrap(id, opts)
+end
+
+function UI.WrapItem(w, h)
+    Layout.WrapItem(w, h)
+end
+
+function UI.EndWrap()
+    Layout.EndWrap()
 end
 
 -- Columns

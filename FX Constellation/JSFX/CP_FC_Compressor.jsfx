@@ -1,0 +1,70 @@
+desc: CP - Compressor (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Simple feed-forward compressor with auto makeup gain.
+  Designed for FX Constellation XY gesture control.
+
+slider1:threshold=-20<-60,0,0.1>Threshold (dB)
+slider2:ratio=4<1,20,0.1>Ratio
+slider3:attack=10<0.1,100,0.1>Attack (ms)
+slider4:release=100<10,1000,1>Release (ms)
+slider5:makeup=0<0,1,1{Off,On}>Auto Makeup
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+env = 0;
+gain_db = 0;
+
+s_threshold = -20;
+s_ratio = 4;
+
+@slider
+target_threshold = threshold;
+target_ratio = ratio;
+
+attack_coeff = exp(-1 / (attack / 1000 * srate));
+release_coeff = exp(-1 / (release / 1000 * srate));
+
+@sample
+// Smooth parameters
+s_threshold = s_threshold * smooth_coeff + target_threshold * (1 - smooth_coeff);
+s_ratio = s_ratio * smooth_coeff + target_ratio * (1 - smooth_coeff);
+
+// Peak detection (stereo linked)
+input_abs = max(abs(spl0), abs(spl1));
+input_abs < 0.0000001 ? input_abs = 0.0000001;
+input_db = 20 * log10(input_abs);
+
+// Envelope follower (peak with separate attack/release)
+input_db > env ? (
+  env = attack_coeff * env + (1 - attack_coeff) * input_db;
+) : (
+  env = release_coeff * env + (1 - release_coeff) * input_db;
+);
+
+// Gain computation
+env > s_threshold ? (
+  gain_db = s_threshold + (env - s_threshold) / s_ratio - env;
+) : (
+  gain_db = 0;
+);
+
+// Auto makeup gain
+makeup > 0.5 ? (
+  makeup_db = -s_threshold * (1 - 1 / s_ratio) * 0.5;
+  gain_db += makeup_db;
+);
+
+// Convert to linear gain
+gain_lin = 10 ^ (gain_db / 20);
+
+// Apply gain
+spl0 *= gain_lin;
+spl1 *= gain_lin;

@@ -1,0 +1,76 @@
+desc: CP - Bitcrusher (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Bit depth reduction and sample rate decimation for lo-fi and glitch effects.
+  Designed for FX Constellation XY gesture control.
+
+slider1:bit_depth=16<1,16,0.1>Bit Depth
+slider2:downsample=1<1,100,0.1:log>Downsample Factor
+slider3:jitter=0<0,100,1>Jitter (%)
+slider4:mix=100<0,100,1>Mix (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+// Sample & hold state
+hold_l = 0;
+hold_r = 0;
+hold_counter = 0;
+
+// Smoothed params
+s_bits = 16;
+s_downsample = 1;
+s_jitter = 0;
+s_mix = 1;
+
+@slider
+target_bits = bit_depth;
+target_downsample = downsample;
+target_jitter = jitter / 100;
+target_mix = mix / 100;
+
+@sample
+// Smooth parameters
+s_bits = s_bits * smooth_coeff + target_bits * (1 - smooth_coeff);
+s_downsample = s_downsample * smooth_coeff + target_downsample * (1 - smooth_coeff);
+s_jitter = s_jitter * smooth_coeff + target_jitter * (1 - smooth_coeff);
+s_mix = s_mix * smooth_coeff + target_mix * (1 - smooth_coeff);
+
+// Bit depth quantization
+levels = pow(2, s_bits);
+half_step = 1 / levels;
+
+// Quantize
+quant_l = floor(spl0 * levels + 0.5) / levels;
+quant_r = floor(spl1 * levels + 0.5) / levels;
+
+// Add jitter (randomize quantization slightly)
+s_jitter > 0.001 ? (
+  quant_l += (rand() * 2 - 1) * half_step * s_jitter;
+  quant_r += (rand() * 2 - 1) * half_step * s_jitter;
+);
+
+// Sample rate reduction (sample & hold)
+hold_step = s_downsample;
+
+// Add jitter to hold time
+s_jitter > 0.001 ? (
+  hold_step += rand() * s_jitter * s_downsample * 0.5;
+);
+
+hold_counter += 1;
+hold_counter >= hold_step ? (
+  hold_l = quant_l;
+  hold_r = quant_r;
+  hold_counter -= hold_step;
+);
+
+// Wet/dry mix
+spl0 = spl0 * (1 - s_mix) + hold_l * s_mix;
+spl1 = spl1 * (1 - s_mix) + hold_r * s_mix;

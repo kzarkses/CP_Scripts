@@ -13,6 +13,7 @@ LicenseManager.PRODUCTS = {
 	FX_CONSTELLATION = "CP_FXCON",
 	CUSTOM_TOOLBARS = "CP_CTOOL",
 	MEDIA_PROPERTIES = "CP_MPTBR",
+	CP_STUDIO = "CP_STUD",
 }
 
 -- ExtState sections for storing keys
@@ -21,6 +22,7 @@ LicenseManager.EXT_SECTIONS = {
 	FX_CONSTELLATION = "CP_FXConstellation",
 	CUSTOM_TOOLBARS = "CP_CustomToolbars",
 	MEDIA_PROPERTIES = "CP_MediaPropertiesToolbar",
+	CP_STUDIO = "CP_Studio",
 }
 
 local r = nil

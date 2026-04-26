@@ -1,0 +1,182 @@
+gfx VARIABLES
+The following global variables are special and will be used by the graphics system:
+
+gfx.r - current red component (0..1) used by drawing operations.
+gfx.g - current green component (0..1) used by drawing operations.
+gfx.b - current blue component (0..1) used by drawing operations.
+gfx.a2 - current alpha component (0..1) used by drawing operations when writing solid colors (normally ignored but useful when creating transparent images).
+gfx.a - alpha for drawing (1=normal).
+gfx.mode - blend mode for drawing. Set mode to 0 for default options. Add 1.0 for additive blend mode (if you wish to do subtractive, set gfx.a to negative and use gfx.mode as additive). Add 2.0 to disable source alpha for gfx.blit(). Add 4.0 to disable filtering for gfx.blit().
+gfx.w - width of the UI framebuffer.
+gfx.h - height of the UI framebuffer.
+gfx.x - current graphics position X. Some drawing functions use as start position and update.
+gfx.y - current graphics position Y. Some drawing functions use as start position and update.
+gfx.clear - if greater than -1.0, framebuffer will be cleared to that color. the color for this one is packed RGB (0..255), i.e. red+green*256+blue*65536. The default is 0 (black).
+gfx.dest - destination for drawing operations, -1 is main framebuffer, set to 0..1024-1 to have drawing operations go to an offscreen buffer (or loaded image).
+gfx.texth - the (READ-ONLY) height of a line of text in the current font. Do not modify this variable.
+gfx.ext_retina - to support hidpi/retina, callers should set to 1.0 on initialization, this value will be updated to value greater than 1.0 (such as 2.0) if retina/hidpi. On macOS gfx.w/gfx.h/etc will be doubled, but on other systems gfx.w/gfx.h will remain the same and gfx.ext_retina is a scaling hint for drawing.
+gfx.mouse_x - current X coordinate of the mouse relative to the graphics window.
+gfx.mouse_y - current Y coordinate of the mouse relative to the graphics window.
+gfx.mouse_wheel - wheel position, will change typically by 120 or a multiple thereof, the caller should clear the state to 0 after reading it.
+gfx.mouse_hwheel - horizontal wheel positions, will change typically by 120 or a multiple thereof, the caller should clear the state to 0 after reading it.
+gfx.mouse_cap - a bitfield of mouse and keyboard modifier state. Note that a script must call gfx.getchar() at least once in order to get modifier state when the mouse is not captured by the window. Bitfield bits:
+1: left mouse button
+2: right mouse button
+4: Control (Windows) or Command (macOS) key
+8: Shift key
+16: Alt (Windows) or Option (macOS) key
+32: Windows (Windows) or Control (macOS) key
+64: middle mouse button
+gfx.arc(x,y,r,ang1,ang2[,antialias])
+Draws an arc of the circle centered at x,y, with ang1/ang2 being specified in radians.
+
+gfx.blit(source[, scale, rotation, srcx, srcy, srcw, srch, destx, desty, destw, desth, rotxoffs, rotyoffs])
+Copies from source (-1 = main framebuffer, or an image from gfx.loadimg() etc), using current opacity and copy mode (set with gfx.a, gfx.mode).
+If destx/desty are not specified, gfx.x/gfx.y will be used as the destination position.
+scale (1.0 is unscaled) will be used only if destw/desth are not specified.
+rotation is an angle in radians
+srcx/srcy/srcw/srch specify the source rectangle (if omitted srcw/srch default to image size)
+destx/desty/destw/desth specify destination rectangle (if not specified destw/desth default to srcw/srch * scale).
+
+gfx.blitext(source,coordinatelist,rotation)
+Deprecated, use gfx.blit instead.
+
+gfx.blurto(x,y)
+Blurs the region of the screen between gfx.x,gfx.y and x,y, and updates gfx.x,gfx.y to x,y.
+
+gfx.circle(x,y,r[,fill,antialias])
+Draws a circle, optionally filling/antialiasing.
+
+gfx.clienttoscreen(x,y)
+Converts the coordinates x,y to screen coordinates, returns those values.
+
+gfx.deltablit(srcimg,srcs,srct,srcw,srch,destx,desty,destw,desth,dsdx,dtdx,dsdy,dtdy,dsdxdy,dtdxdy[,usecliprect=1])
+Blits from srcimg(srcx,srcy,srcw,srch) to destination (destx,desty,destw,desth). Source texture coordinates are s/t, dsdx represents the change in s coordinate for each x pixel, dtdy represents the change in t coordinate for each y pixel, etc. dsdxdy represents the change in dsdx for each line. If usecliprect is specified and 0, then srcw/srch are ignored.
+
+gfx.dock(v[,wx,wy,ww,wh])
+Call with v=-1 to query docked state, otherwise v>=0 to set docked state. State is &1 if docked, second byte is docker index (or last docker index if undocked). If wx-wh specified, additional values will be returned with the undocked window position/size
+
+gfx.drawchar(char)
+Draws the character (can be a numeric ASCII code as well), to gfx.x, gfx.y, and moves gfx.x over by the size of the character.
+
+gfx.drawnumber(n,ndigits)
+Draws the number n with ndigits of precision to gfx.x, gfx.y, and updates gfx.x to the right side of the drawing. The text height is gfx.texth.
+
+gfx.drawstr("str"[,flags,right,bottom])
+Draws a string at gfx.x, gfx.y, and updates gfx.x/gfx.y so that subsequent draws will occur in a similar place.
+
+If flags, right ,bottom passed in:
+
+flags&1: center horizontally
+flags&2: right justify
+flags&4: center vertically
+flags&8: bottom justify
+flags&256: ignore right/bottom, otherwise text is clipped to (gfx.x, gfx.y, right, bottom)
+gfx.getchar([char, unichar])
+If char is 0 or omitted, returns a character from the keyboard queue, or 0 if no character is available, or -1 if the graphics window is not open. If char is specified and nonzero, that character's status will be checked, and the function will return greater than 0 if it is pressed. Note that calling gfx.getchar() at least once causes gfx.mouse_cap to reflect keyboard modifiers even when the mouse is not captured.
+
+Common values are standard ASCII, such as 'a', 'A', '=' and '1', but for many keys multi-byte values are used, including 'home', 'up', 'down', 'left', 'rght', 'f1'.. 'f12', 'pgup', 'pgdn', 'ins', and 'del'.
+
+Modified and special keys can also be returned, including:
+
+Ctrl/Cmd+A..Ctrl+Z as 1..26
+Ctrl/Cmd+Alt+A..Z as 257..282
+Alt+A..Z as 'A'+256..'Z'+256
+27 for ESC
+13 for Enter
+' ' for space
+65536 for query of special flags, returns: &1 (supported), &2=window has focus, &4=window is visible, &8=mouse click would hit window. 65537 queries special flags but does not do the mouse click hit testing (faster).
+If unichar is specified, it will be set to the unicode value of the key if available (and the return value may be the unicode value or a raw key value as described above, depending). If unichar is not specified, unicode codepoints greater than 255 will be returned as 'u'<<24 + value
+gfx.getdropfile(idx)
+Returns success,string for dropped file index idx. call gfx.dropfile(-1) to clear the list when finished.
+
+gfx.getfont()
+Returns current font index, and the actual font face used by this font (if available).
+
+gfx.getimgdim(handle)
+Retreives the dimensions of an image specified by handle, returns w, h pair.
+
+gfx.getpixel()
+Returns r,g,b values [0..1] of the pixel at (gfx.x,gfx.y)
+
+gfx.gradrect(x,y,w,h, r,g,b,a[, drdx, dgdx, dbdx, dadx, drdy, dgdy, dbdy, dady])
+Fills a gradient rectangle with the color and alpha specified. drdx-dadx reflect the adjustment (per-pixel) applied for each pixel moved to the right, drdy-dady are the adjustment applied for each pixel moved toward the bottom. Normally drdx=adjustamount/w, drdy=adjustamount/h, etc.
+
+gfx.init("name"[,width,height,dockstate,xpos,ypos])
+Initializes the graphics window with title name. Suggested width and height can be specified. If window is already open, a non-empty name will re-title window, or an empty title will resize window.
+
+Once the graphics window is open, gfx.update() should be called periodically.
+
+gfx.line(x,y,x2,y2[,aa])
+Draws a line from x,y to x2,y2, and if aa is not specified or 0.5 or greater, it will be antialiased.
+
+gfx.lineto(x,y[,aa])
+Draws a line from gfx.x,gfx.y to x,y. If aa is 0.5 or greater, then antialiasing is used. Updates gfx.x and gfx.y to x,y.
+
+gfx.loadimg(image,"filename")
+Load image from filename into slot 0..1024-1 specified by image. Returns the image index if success, otherwise -1 if failure. The image will be resized to the dimensions of the image file.
+
+gfx.measurechar(codepoint)
+Measures the drawing dimensions of a character (for example, ascii code point 97 is 'a') with the current font (as set by gfx.setfont). Returns width and height of character.
+
+gfx.measurestr("str")
+Measures the drawing dimensions of a string with the current font (as set by gfx.setfont). Returns width and height of string.
+
+gfx.muladdrect(x,y,w,h,mul_r,mul_g,mul_b[,mul_a,add_r,add_g,add_b,add_a])
+Multiplies each pixel by mul_* and adds add_*, and updates in-place. Useful for changing brightness/contrast, or other effects.
+
+gfx.printf("format"[, ...])
+Formats and draws a string at gfx.x, gfx.y, and updates gfx.x/gfx.y accordingly (the latter only if the formatted string contains newline). For more information on format strings, see sprintf()
+
+gfx.quit()
+Closes the graphics window.
+
+gfx.rect(x,y,w,h[,filled])
+Fills a rectangle at x,y, w,h pixels in dimension, filled by default.
+
+gfx.rectto(x,y)
+Fills a rectangle from gfx.x,gfx.y to x,y. Updates gfx.x,gfx.y to x,y.
+
+gfx.roundrect(x,y,w,h,radius[,antialias])
+Draws a rectangle with rounded corners.
+
+gfx.screentoclient(x,y)
+Converts the screen coordinates x,y to client coordinates, returns those values.
+
+gfx.set(r[,g,b,a,mode,dest,a2])
+Sets gfx.r/gfx.g/gfx.b/gfx.a/gfx.mode/gfx.a2, sets gfx.dest if final parameter specified
+
+gfx.setcursor(resource_id,custom_cursor_name)
+Sets the mouse cursor to resource_id and/or custom_cursor_name.
+
+gfx.setfont(idx[,"fontface", sz, flags])
+Can select a font and optionally configure it. idx=0 for default bitmapped font, no configuration is possible for this font. idx=1..16 for a configurable font, specify fontface such as "Arial", sz of 8-100, and optionally specify flags, which is a multibyte character, which can include 'i' for italics, 'u' for underline, or 'b' for bold. These flags may or may not be supported depending on the font and OS. After calling gfx.setfont(), gfx.texth may be updated to reflect the new average line height.
+
+gfx.setimgdim(image,w,h)
+Resize image referenced by index 0..1024-1, width and height must be 0-8192. The contents of the image will be undefined after the resize.
+
+gfx.setpixel(r,g,b)
+Writes a pixel of r,g,b to gfx.x,gfx.y.
+
+gfx.showmenu("str")
+Shows a popup menu at gfx.x,gfx.y. str is a list of fields separated by | characters. Each field represents a menu item.
+Fields can start with special characters:
+
+# : grayed out
+! : checked
+> : this menu item shows a submenu
+< : last item in the current submenu
+
+An empty field will appear as a separator in the menu. gfx.showmenu returns 0 if the user selected nothing from the menu, 1 if the first field is selected, etc.
+Example:
+
+gfx.showmenu("first item, followed by separator||!second item, checked|>third item which spawns a submenu|#first item in submenu, grayed out|<second and last item in submenu|fourth item in top menu")
+
+gfx.transformblit(srcimg,destx,desty,destw,desth,div_w,div_h,table)
+Blits to destination at (destx,desty), size (destw,desth). div_w and div_h should be 2..64, and table should point to a table of 2*div_w*div_h values (table can be a regular table or (for less overhead) a reaper.array). Each pair in the table represents a S,T coordinate in the source image, and the table is treated as a left-right, top-bottom list of texture coordinates, which will then be rendered to the destination.
+
+gfx.triangle(x1,y1,x2,y2,x3,y3[x4,y4...])
+Draws a filled triangle, or any convex polygon.
+
+gfx.update()
+Updates the graphics display, if opened

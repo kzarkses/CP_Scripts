@@ -209,6 +209,15 @@ function Log.CursorAdvance(container_id, widget_w, widget_h, new_cx, new_cy, sam
 end
 
 -- ============================================================================
+-- STATS SOURCE (set by Core)
+-- ============================================================================
+local stats_source = nil  -- function returning the stats table
+
+function Log.SetStatsSource(fn)
+    stats_source = fn
+end
+
+-- ============================================================================
 -- OVERLAY RENDERING
 -- ============================================================================
 function Log.DrawOverlay()
@@ -216,7 +225,8 @@ function Log.DrawOverlay()
 
     local w, h = gfx.w, gfx.h
     local line_h = 14
-    local panel_h = config.overlay_lines * line_h + 30
+    local stats_h = stats_source and 18 or 0
+    local panel_h = config.overlay_lines * line_h + 30 + stats_h
     local panel_y = h - panel_h
     local pad = 6
 
@@ -233,6 +243,52 @@ function Log.DrawOverlay()
     local title = string.format("LOG [F12:toggle F11:console F1,F2,F4-F8:filters] Frame:%d Entries:%d",
         current_frame, math.min(entry_count, config.max_entries))
     gfx.drawstr(title)
+
+    -- Stats line (frame timing, allocations, draw calls, idle mode)
+    if stats_source then
+        local s = stats_source()
+        local stats_y = panel_y + 18
+        gfx.set(0.08, 0.08, 0.12, 1)
+        gfx.rect(0, stats_y, w, stats_h, 1)
+        gfx.setfont(1, "Consolas", 11, 0)
+
+        -- Mode indicator (active = green, idle = dim blue)
+        if s.mode == "idle" then
+            gfx.set(0.4, 0.6, 0.9, 1)
+        else
+            gfx.set(0.4, 0.9, 0.5, 1)
+        end
+        gfx.x, gfx.y = pad, stats_y + 3
+        gfx.drawstr(string.format("[%s]", s.mode:upper()))
+
+        -- Frame ms (color-coded: green<2 yellow<5 red>=5)
+        local ms = s.frame_ms_avg or 0
+        if ms < 2 then gfx.set(0.5, 0.9, 0.5, 1)
+        elseif ms < 5 then gfx.set(0.95, 0.85, 0.3, 1)
+        else gfx.set(1.0, 0.4, 0.4, 1) end
+        gfx.x = pad + 70
+        gfx.drawstr(string.format("frame: %.2fms (peak %.2f)", ms, s.frame_ms_peak or 0))
+
+        -- Alloc KB (color-coded: green=0 yellow<5 red>=5)
+        local kb = s.alloc_kb_avg or 0
+        if kb < 0.5 then gfx.set(0.5, 0.9, 0.5, 1)
+        elseif kb < 5 then gfx.set(0.95, 0.85, 0.3, 1)
+        else gfx.set(1.0, 0.4, 0.4, 1) end
+        gfx.x = pad + 280
+        gfx.drawstr(string.format("alloc: %.1f KB/f", kb))
+
+        -- Draw count
+        gfx.set(0.7, 0.8, 0.9, 1)
+        gfx.x = pad + 410
+        gfx.drawstr(string.format("draws: %d", math.floor(s.draws_avg or 0)))
+
+        -- Idle skip count (visible benefit indicator)
+        if s.mode == "idle" and (s.idle_skips or 0) > 0 then
+            gfx.set(0.5, 0.7, 0.9, 0.8)
+            gfx.x = pad + 520
+            gfx.drawstr(string.format("skipped: %d", s.idle_skips))
+        end
+    end
 
     -- Filter indicators
     local fx = w - 300
@@ -254,7 +310,8 @@ function Log.DrawOverlay()
     local start_idx = math.max(1, total - config.overlay_lines - scroll_offset + 1)
     local end_idx = math.min(total, start_idx + config.overlay_lines - 1)
 
-    local draw_y = panel_y + 22
+    local entries_top = panel_y + 22 + stats_h
+    local draw_y = entries_top
     for i = start_idx, end_idx do
         local real_idx = ((entry_count - total + i - 1) % config.max_entries) + 1
         local e = entries[real_idx]
@@ -291,15 +348,15 @@ function Log.DrawOverlay()
 
     -- Scroll indicator
     if total > config.overlay_lines then
-        local bar_h = panel_h - 22
+        local bar_h = panel_h - 22 - stats_h
         local ratio = config.overlay_lines / total
         local thumb_h = math.max(10, bar_h * ratio)
         local scroll_max = total - config.overlay_lines
         local scroll_ratio = scroll_max > 0 and (scroll_offset / scroll_max) or 0
-        local thumb_y = panel_y + 22 + (bar_h - thumb_h) * (1 - scroll_ratio)
+        local thumb_y = entries_top + (bar_h - thumb_h) * (1 - scroll_ratio)
 
         gfx.set(0.3, 0.3, 0.4, 0.5)
-        gfx.rect(w - 6, panel_y + 22, 4, bar_h, 1)
+        gfx.rect(w - 6, entries_top, 4, bar_h, 1)
         gfx.set(0.6, 0.6, 0.8, 0.7)
         gfx.rect(w - 6, thumb_y, 4, thumb_h, 1)
     end

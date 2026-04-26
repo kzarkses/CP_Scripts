@@ -1,0 +1,104 @@
+desc: CP - Filter (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Multi-mode State Variable Filter with smooth parameter modulation.
+  Designed for FX Constellation XY gesture control.
+
+slider1:frequency=1000<20,20000,1:log>Frequency (Hz)
+slider2:resonance=0.5<0,1,0.01>Resonance
+slider3:filter_type=0<0,3,1{Low Pass,High Pass,Band Pass,Notch}>Type
+slider4:drive=0<0,12,0.1>Drive (dB)
+slider5:mix=100<0,100,1>Mix (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+pi2 = 2 * $pi;
+
+// Smoothing coefficients
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+// SVF state
+ic1eq_l = 0;
+ic2eq_l = 0;
+ic1eq_r = 0;
+ic2eq_r = 0;
+
+// Smoothed parameters
+s_freq = 1000;
+s_reso = 0.5;
+s_drive = 0;
+s_mix = 1;
+
+@slider
+target_freq = frequency;
+target_reso = resonance;
+target_drive = 10 ^ (drive / 20);
+target_mix = mix / 100;
+
+@sample
+// Smooth parameters to avoid zipper noise
+s_freq = s_freq * smooth_coeff + target_freq * (1 - smooth_coeff);
+s_reso = s_reso * smooth_coeff + target_reso * (1 - smooth_coeff);
+s_drive = s_drive * smooth_coeff + target_drive * (1 - smooth_coeff);
+s_mix = s_mix * smooth_coeff + target_mix * (1 - smooth_coeff);
+
+// SVF coefficients (Cytomic/Andrew Simper topology)
+g = tan($pi * min(s_freq, srate * 0.49) / srate);
+k = 2 - 2 * s_reso;
+a1 = 1 / (1 + g * (g + k));
+a2 = g * a1;
+a3 = g * a2;
+
+// Apply drive (soft saturation on input)
+in_l = spl0 * s_drive;
+in_r = spl1 * s_drive;
+
+// Drive saturation (tanh approximation)
+s_drive > 1.01 ? (
+  in_l = in_l / (1 + abs(in_l));
+  in_r = in_r / (1 + abs(in_r));
+  in_l *= s_drive;
+  in_r *= s_drive;
+);
+
+// Left channel SVF
+v3_l = in_l - ic2eq_l;
+v1_l = a1 * ic1eq_l + a2 * v3_l;
+v2_l = ic2eq_l + a2 * ic1eq_l + a3 * v3_l;
+ic1eq_l = 2 * v1_l - ic1eq_l;
+ic2eq_l = 2 * v2_l - ic2eq_l;
+
+// Right channel SVF
+v3_r = in_r - ic2eq_r;
+v1_r = a1 * ic1eq_r + a2 * v3_r;
+v2_r = ic2eq_r + a2 * ic1eq_r + a3 * v3_r;
+ic1eq_r = 2 * v1_r - ic1eq_r;
+ic2eq_r = 2 * v2_r - ic2eq_r;
+
+// Select filter output
+filter_type < 0.5 ? (
+  // Low Pass
+  out_l = v2_l;
+  out_r = v2_r;
+) : filter_type < 1.5 ? (
+  // High Pass
+  out_l = in_l - k * v1_l - v2_l;
+  out_r = in_r - k * v1_r - v2_r;
+) : filter_type < 2.5 ? (
+  // Band Pass
+  out_l = v1_l;
+  out_r = v1_r;
+) : (
+  // Notch
+  out_l = in_l - k * v1_l;
+  out_r = in_r - k * v1_r;
+);
+
+// Wet/dry mix
+spl0 = spl0 * (1 - s_mix) + out_l * s_mix;
+spl1 = spl1 * (1 - s_mix) + out_r * s_mix;

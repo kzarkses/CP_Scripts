@@ -1,6 +1,9 @@
 -- CP_Toolkit Layout — Container system, child regions, scroll, positioning
 -- Emulates ImGui-style layout: vertical stacking, SameLine, child windows
 
+-- Localize math lib — avoids table lookup per call on hot paths.
+local floor, min, max, abs, ceil = math.floor, math.min, math.max, math.abs, math.ceil
+
 local Layout = {}
 local Core  -- set via init
 
@@ -63,7 +66,8 @@ end
 -- ============================================================================
 -- BEGIN / END WINDOW (root container)
 -- ============================================================================
-function Layout.Begin(id, theme)
+function Layout.Begin(id, theme, opts)
+    opts = opts or {}
     local state = Core.GetState()
     local w, h = Core.GetWindowSize()
     local pad = theme and theme.window_padding or 8
@@ -77,11 +81,20 @@ function Layout.Begin(id, theme)
         Core.DrawRect(0, 0, w, h, 0.13, 0.13, 0.13, 1)
     end
 
-    -- Get persistent scroll state for root
-    local data = Core.GetWidgetData("root_" .. id, { scroll_y = 0, content_h = 0 })
+    -- Allow callers to disable root scrolling entirely (toolbars, status bars)
+    local scrollable = opts.scrollable ~= false
 
-    local c = new_container(id, 0, 0, w, h, pad, pad, spacing, true)
-    c.scroll_y = data.scroll_y
+    -- Get persistent scroll state for root
+    local data = Core.GetWidgetSubData("root", id)
+    if data._init == nil then
+        data.scroll_y = 0
+        data.content_h = 0
+        data._init = true
+    end
+
+    local c = new_container(id, 0, 0, w, h, pad, pad, spacing, scrollable)
+    c.scroll_y = scrollable and data.scroll_y or 0
+    c._no_scroll = not scrollable
 
     Core.PushContainer(c)
     Core.PushClipRect(0, 0, w, h)
@@ -97,18 +110,21 @@ function Layout.End()
             content_h = c.cursor_y + c.max_row_h + c.spacing + c.pad_y
         end
 
-        local data = Core.GetWidgetData("root_" .. c.id, {})
+        local data = Core.GetWidgetSubData("root", c.id)
         data.content_h = content_h
 
-        -- Scroll with mouse wheel when content overflows
-        if content_h > c.h then
+        -- Scroll with mouse wheel when content overflows (skipped when no_scroll).
+        -- Notch-based step: one wheel tick scrolls by SCROLL_STEP pixels,
+        -- independent of platform wheel-delta magnitude.
+        if not c._no_scroll and content_h > c.h then
             local state = Core.GetState()
-            if not Core.HasPopup() then
+            if not Core.HasPopup() and not Core.IsWheelConsumed() then
                 local wheel = state.mouse_wheel
                 if wheel ~= 0 then
                     local scroll_range = content_h - c.h
-                    data.scroll_y = data.scroll_y - wheel * 30
-                    data.scroll_y = math.max(0, math.min(data.scroll_y, scroll_range))
+                    local SCROLL_STEP = 40  -- pixels per wheel notch
+                    local dir = wheel > 0 and -1 or 1
+                    data.scroll_y = max(0, min(data.scroll_y + dir * SCROLL_STEP, scroll_range))
                 end
             end
 
@@ -117,8 +133,7 @@ function Layout.End()
         else
             data.scroll_y = 0
         end
-
-        Core.SetWidgetData("root_" .. c.id, data)
+        -- data is a reference from GetWidgetData; field mutations persist without SetWidgetData.
     end
 
     Core.PopClipRect()
@@ -152,7 +167,12 @@ function Layout.BeginChild(id, w, h, opts)
     end
 
     -- Get or create persistent scroll state
-    local data = Core.GetWidgetData("child_" .. id, { scroll_y = 0, content_h = 0 })
+    local data = Core.GetWidgetSubData("child", id)
+    if data._init == nil then
+        data.scroll_y = 0
+        data.content_h = 0
+        data._init = true
+    end
 
     local c = new_container(id, abs_x, abs_y, w, h, pad, pad, spacing, scrollable)
     c.scroll_y = data.scroll_y
@@ -184,17 +204,20 @@ function Layout.EndChild()
 
     -- Calculate total content height
     local content_h = c.cursor_y + c.max_row_h
-    local data = Core.GetWidgetData("child_" .. c.id, {})
+    local data = Core.GetWidgetSubData("child", c.id)
     data.content_h = content_h
 
-    -- Handle scroll wheel inside child
+    -- Handle scroll wheel inside child. Notch-based step (see Layout.End).
     if c.scrollable and content_h > c.h then
         local state = Core.GetState()
-        if Core.MouseInRect(c.x, c.y, c.w, c.h) and not Core.HasPopup() then
+        if Core.MouseInRect(c.x, c.y, c.w, c.h) and not Core.HasPopup() and not Core.IsWheelConsumed() then
             local wheel = state.mouse_wheel
             if wheel ~= 0 then
-                data.scroll_y = data.scroll_y - wheel * 20
-                data.scroll_y = math.max(0, math.min(data.scroll_y, content_h - c.h + c.pad_y * 2))
+                local SCROLL_STEP = 40
+                local dir = wheel > 0 and -1 or 1
+                data.scroll_y = max(0, min(data.scroll_y + dir * SCROLL_STEP,
+                    content_h - c.h + c.pad_y * 2))
+                Core.ConsumeWheel()  -- prevent parent from also scrolling
             end
         end
 
@@ -203,8 +226,7 @@ function Layout.EndChild()
     else
         data.scroll_y = 0
     end
-
-    Core.SetWidgetData("child_" .. c.id, data)
+    -- data is a reference from GetWidgetData; mutations persist without SetWidgetData.
     Core.PopClipRect()
     Core.PopContainer()
 
@@ -225,7 +247,7 @@ function Layout._DrawScrollbar(c, data)
     local bar_h = c.h - 4
 
     local visible_ratio = c.h / data.content_h
-    local thumb_h = math.max(20, bar_h * visible_ratio)
+    local thumb_h = max(20, bar_h * visible_ratio)
     local scroll_range = data.content_h - c.h + c.pad_y * 2
     local scroll_ratio = scroll_range > 0 and (data.scroll_y / scroll_range) or 0
     local thumb_y = bar_y + (bar_h - thumb_h) * scroll_ratio
@@ -253,7 +275,7 @@ function Layout._DrawScrollbar(c, data)
             if dy ~= 0 and bar_h > thumb_h then
                 local scroll_per_pixel = scroll_range / (bar_h - thumb_h)
                 data.scroll_y = data.scroll_y + dy * scroll_per_pixel
-                data.scroll_y = math.max(0, math.min(data.scroll_y, scroll_range))
+                data.scroll_y = max(0, min(data.scroll_y, scroll_range))
             end
         else
             Core.ClearActive()
@@ -273,7 +295,7 @@ function Layout._AdvanceCursor(c, widget_w, widget_h)
     if c.same_line then
         -- Horizontal: advance X, stay on same Y
         c.cursor_x = c.cursor_x + widget_w + c.spacing
-        c.max_row_h = math.max(c.max_row_h, widget_h)
+        c.max_row_h = max(c.max_row_h, widget_h)
         c.same_line = false
         c.sameline_pending = true  -- row hasn't been "closed" yet
     else
@@ -285,7 +307,7 @@ function Layout._AdvanceCursor(c, widget_w, widget_h)
             c.max_row_h = 0
         end
         -- Vertical: advance Y, reset X
-        local row_h = math.max(c.max_row_h, widget_h)
+        local row_h = max(c.max_row_h, widget_h)
         c.cursor_y = c.cursor_y + row_h + c.spacing
         c.cursor_x = c.pad_x + c.indent_x
         c.max_row_h = widget_h
@@ -299,7 +321,7 @@ function Layout.SameLine(spacing)
     c.cursor_y = c.last_widget_y
     c.cursor_x = c.last_widget_end_x + (spacing or c.spacing)
     c.same_line = true
-    c.max_row_h = math.max(c.max_row_h, c.last_widget_h)
+    c.max_row_h = max(c.max_row_h, c.last_widget_h)
 end
 
 function Layout.NewLine()
@@ -341,16 +363,31 @@ function Layout.Unindent(amount)
     local c = Core.CurrentContainer()
     if not c then return end
     local amt = amount or 16
-    c.indent_x = math.max(0, c.indent_x - amt)
-    c.cursor_x = math.max(c.pad_x, c.cursor_x - amt)
+    c.indent_x = max(0, c.indent_x - amt)
+    c.cursor_x = max(c.pad_x, c.cursor_x - amt)
 end
 
 -- ============================================================================
 -- GET WIDGET POSITION (resolves cursor + scroll into screen coords)
 -- ============================================================================
+-- Close any pending SameLine row so the next widget lands on a new line.
+-- Called by GetCursorPos when not in a SameLine call. Without this, calling
+-- a vertical widget right after a SameLine pair would draw it at the end of
+-- the previous row (the pending row would only be closed by _AdvanceCursor
+-- which runs AFTER the widget has already drawn).
+local function _flush_pending_row(c)
+    if c.sameline_pending and not c.same_line then
+        c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
+        c.cursor_x = c.pad_x + c.indent_x
+        c.sameline_pending = false
+        c.max_row_h = 0
+    end
+end
+
 function Layout.GetCursorPos()
     local c = Core.CurrentContainer()
     if not c then return 0, 0 end
+    _flush_pending_row(c)
     local x = c.x + c.cursor_x
     local y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
     return x, y
@@ -362,11 +399,12 @@ end
 function Layout.GetCursorPosAligned(widget_h)
     local c = Core.CurrentContainer()
     if not c then return 0, 0 end
+    _flush_pending_row(c)
     local x = c.x + c.cursor_x
     local base_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
     -- If on a SameLine row with taller widgets, center vertically
     if c.max_row_h > widget_h then
-        base_y = base_y + math.floor((c.max_row_h - widget_h) / 2)
+        base_y = base_y + floor((c.max_row_h - widget_h) / 2)
     end
     return x, base_y
 end
@@ -384,6 +422,11 @@ function Layout.GetAvailableHeight()
 end
 
 function Layout.AdvanceCursor(w, h)
+    -- If inside a wrap context, use wrap logic instead
+    if Layout.IsWrapping() then
+        Layout.WrapItem(w, h)
+        return
+    end
     local c = Core.CurrentContainer()
     if not c then return end
     Layout._AdvanceCursor(c, w, h)
@@ -398,15 +441,111 @@ function Layout.Separator(theme)
 
     local x, y = Layout.GetCursorPos()
     local w = Layout.GetAvailableWidth()
+    local pad = (theme and theme.separator_pad) or 4
 
     if theme then
         local sc = theme.colors.separator
-        Core.DrawLine(x, y + 2, x + w, y + 2, sc[1], sc[2], sc[3], sc[4] or 0.5)
+        Core.DrawLine(x, y + pad, x + w, y + pad, sc[1], sc[2], sc[3], sc[4] or 0.5)
     else
-        Core.DrawLine(x, y + 2, x + w, y + 2, 0.3, 0.3, 0.3, 0.5)
+        Core.DrawLine(x, y + pad, x + w, y + pad, 0.3, 0.3, 0.3, 0.5)
     end
 
-    Layout.AdvanceCursor(w, 5)
+    -- We want the *total* vertical advance to be (pad above + 1px line + pad below)
+    -- regardless of theme.item_spacing. _AdvanceCursor always tacks on c.spacing
+    -- after the widget — strip that here so Separator's footprint stays exactly
+    -- pad*2+1. With pad=0 and spacing=5 the next widget now starts immediately
+    -- after the line instead of 5px later.
+    Layout.AdvanceCursor(w, pad * 2 + 1)
+    c.cursor_y = c.cursor_y - c.spacing
+end
+
+-- ============================================================================
+-- WRAP LAYOUT (auto-wrap like CSS flex-wrap)
+-- ============================================================================
+-- Widgets placed inside BeginWrap/EndWrap flow horizontally and wrap
+-- to the next line when they exceed the available width.
+-- Each widget calls Layout.WrapItem(w, h) instead of AdvanceCursor.
+local wrap_stack = {}
+
+function Layout.BeginWrap(id, opts)
+    opts = opts or {}
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    -- Flush pending SameLine
+    if c.sameline_pending then
+        c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
+        c.cursor_x = c.pad_x + c.indent_x
+        c.sameline_pending = false
+        c.max_row_h = 0
+    end
+
+    local gap = opts.gap or c.spacing
+
+    wrap_stack[#wrap_stack + 1] = {
+        id = id,
+        start_x = c.cursor_x,
+        start_y = c.cursor_y,
+        gap = gap,
+        row_h = 0,
+        max_x = c.w - c.pad_x,  -- right edge (absolute within container)
+    }
+end
+
+-- Called automatically by AdvanceCursor when inside a wrap context.
+function Layout.WrapItem(w, h)
+    local wrap = wrap_stack[#wrap_stack]
+    if not wrap then return end
+
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    -- Save last widget info
+    c.last_widget_end_x = c.cursor_x + w
+    c.last_widget_y = c.cursor_y
+    c.last_widget_h = h
+
+    wrap.row_h = max(wrap.row_h, h)
+
+    -- Advance X for the next widget
+    c.cursor_x = c.cursor_x + w + wrap.gap
+    c.max_row_h = wrap.row_h
+end
+
+-- Called by GetCursorPos: pre-check if the next widget would overflow, wrap BEFORE drawing
+function Layout.WrapPreCheck(estimated_w)
+    local wrap = wrap_stack[#wrap_stack]
+    if not wrap then return end
+
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    -- If current cursor_x + estimated widget width exceeds the max, wrap first
+    if c.cursor_x + estimated_w > wrap.max_x and c.cursor_x > wrap.start_x then
+        c.cursor_y = c.cursor_y + wrap.row_h + wrap.gap
+        c.cursor_x = wrap.start_x
+        wrap.row_h = 0
+    end
+end
+
+function Layout.EndWrap()
+    local wrap = wrap_stack[#wrap_stack]
+    if not wrap then return end
+    wrap_stack[#wrap_stack] = nil
+
+    local c = Core.CurrentContainer()
+    if not c then return end
+
+    -- Advance past the last wrap row
+    c.cursor_y = c.cursor_y + wrap.row_h + c.spacing
+    c.cursor_x = c.pad_x + c.indent_x
+    c.max_row_h = 0
+    c.sameline_pending = false
+end
+
+-- Check if we're currently inside a wrap context
+function Layout.IsWrapping()
+    return #wrap_stack > 0
 end
 
 -- ============================================================================
@@ -455,7 +594,7 @@ function Layout.BeginColumns(id, ratios, opts)
     for i, r in ipairs(ratios) do
         if r <= 1 then
             local share = (r > 0) and r or 1
-            col_widths[i] = math.floor(remaining * share / total_ratio)
+            col_widths[i] = floor(remaining * share / total_ratio)
         end
     end
 
@@ -517,7 +656,7 @@ function Layout.NextColumn()
         if old_c.sameline_pending then
             col_content_h = old_c.cursor_y + old_c.max_row_h + old_c.spacing
         end
-        cols.max_h = math.max(cols.max_h, col_content_h)
+        cols.max_h = max(cols.max_h, col_content_h)
     end
     Core.PopClipRect()
     Core.PopContainer()
@@ -562,7 +701,7 @@ function Layout.EndColumns()
         if old_c.sameline_pending then
             col_content_h = old_c.cursor_y + old_c.max_row_h + old_c.spacing
         end
-        cols.max_h = math.max(cols.max_h, col_content_h)
+        cols.max_h = max(cols.max_h, col_content_h)
     end
     Core.PopClipRect()
     Core.PopContainer()
@@ -611,7 +750,7 @@ function Layout.BeginWeightedRow(id, weights, opts)
     end
 
     -- Remove columns that don't fit (starting from rightmost low-weight)
-    local gaps_needed = math.max(0, #visible_list - 1)
+    local gaps_needed = max(0, #visible_list - 1)
     local function calc_total_min()
         local total = gaps_needed * gap
         for _, w in ipairs(visible_list) do
@@ -638,13 +777,13 @@ function Layout.BeginWeightedRow(id, weights, opts)
         end
     end
 
-    local gaps_total = math.max(0, visible_count - 1) * gap
+    local gaps_total = max(0, visible_count - 1) * gap
     local distributable = avail_w - gaps_total
     local widths = {}
     for _, w in ipairs(weights) do
         if visible[w.key] then
-            widths[w.key] = math.max(w.min_w or 40,
-                math.floor(distributable * w.weight / total_weight))
+            widths[w.key] = max(w.min_w or 40,
+                floor(distributable * w.weight / total_weight))
         else
             widths[w.key] = 0
         end
@@ -654,28 +793,26 @@ function Layout.BeginWeightedRow(id, weights, opts)
     local abs_x = c.x + c.cursor_x
     local abs_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
 
-    local row_data = {
-        id = id,
-        widths = widths,
-        visible = visible,
-        weights = weights,
-        gap = gap,
-        start_x = abs_x,
-        start_y = abs_y,
-        current_x = abs_x,
-        height = row_h,
-        parent_cursor_y = c.cursor_y,
-    }
-
-    Core.SetWidgetData("wrow_" .. id, row_data)
+    -- Reuse persistent table to avoid per-frame allocation.
+    local row_data = Core.GetWidgetSubData("wrow", id)
+    row_data.id = id
+    row_data.widths = widths
+    row_data.visible = visible
+    row_data.weights = weights
+    row_data.gap = gap
+    row_data.start_x = abs_x
+    row_data.start_y = abs_y
+    row_data.current_x = abs_x
+    row_data.height = row_h
+    row_data.parent_cursor_y = c.cursor_y
     return widths, visible
 end
 
 -- Get position and size for a specific cell in the weighted row
 -- Returns: x, y, w, h (screen coords), or nil if not visible
 function Layout.WeightedCell(id, key)
-    local row = Core.GetWidgetData("wrow_" .. id, nil)
-    if not row or not row.visible[key] then return nil end
+    local row = Core.GetWidgetSubData("wrow", id)
+    if not row.visible or not row.visible[key] then return nil end
 
     -- Find X position by summing previous visible columns
     local cell_x = row.start_x
@@ -690,8 +827,8 @@ function Layout.WeightedCell(id, key)
 end
 
 function Layout.EndWeightedRow(id)
-    local row = Core.GetWidgetData("wrow_" .. id, nil)
-    if not row then return end
+    local row = Core.GetWidgetSubData("wrow", id)
+    if not row.widths then return end
 
     local c = Core.CurrentContainer()
     if not c then return end
@@ -724,50 +861,47 @@ function Layout.BeginGrid(id, opts)
     local gap = opts.gap or c.spacing
     local avail_w = c.w - c.cursor_x - c.pad_x
 
-    local cols = math.max(1, math.floor((avail_w + gap) / (cell_w + gap)))
+    local cols = max(1, floor((avail_w + gap) / (cell_w + gap)))
 
-    local grid = {
-        id = id,
-        cell_w = cell_w,
-        cell_h = cell_h,
-        gap = gap,
-        cols = cols,
-        index = 0,
-        start_cursor_y = c.cursor_y,
-    }
-
-    Core.SetWidgetData("grid_" .. id, grid)
+    -- Reuse persistent table to avoid per-frame allocation.
+    local grid = Core.GetWidgetSubData("grid", id)
+    grid.id = id
+    grid.cell_w = cell_w
+    grid.cell_h = cell_h
+    grid.gap = gap
+    grid.cols = cols
+    grid.index = 0
+    grid.start_cursor_y = c.cursor_y
 end
 
 -- Call for each cell. Returns x, y, w, h in screen coords.
 function Layout.GridCell(id)
-    local grid = Core.GetWidgetData("grid_" .. id, nil)
-    if not grid then return 0, 0, 0, 0 end
+    local grid = Core.GetWidgetSubData("grid", id)
+    if not grid.cols then return 0, 0, 0, 0 end
 
     local c = Core.CurrentContainer()
     if not c then return 0, 0, 0, 0 end
 
     local col = grid.index % grid.cols
-    local row = math.floor(grid.index / grid.cols)
+    local row = floor(grid.index / grid.cols)
 
     local cell_x = c.x + c.pad_x + c.indent_x + col * (grid.cell_w + grid.gap)
     local cell_y = c.y + grid.start_cursor_y + row * (grid.cell_h + grid.gap)
            - (c.scrollable and c.scroll_y or 0)
 
     grid.index = grid.index + 1
-    Core.SetWidgetData("grid_" .. id, grid)
-
+    -- grid is a reference from GetWidgetData; mutation persists without SetWidgetData.
     return cell_x, cell_y, grid.cell_w, grid.cell_h
 end
 
 function Layout.EndGrid(id)
-    local grid = Core.GetWidgetData("grid_" .. id, nil)
-    if not grid then return end
+    local grid = Core.GetWidgetSubData("grid", id)
+    if not grid.cols then return end
 
     local c = Core.CurrentContainer()
     if not c then return end
 
-    local total_rows = math.ceil(grid.index / grid.cols)
+    local total_rows = ceil(grid.index / grid.cols)
     local total_h = total_rows * (grid.cell_h + grid.gap) - grid.gap
 
     c.cursor_y = grid.start_cursor_y + total_h + c.spacing
@@ -782,18 +916,19 @@ end
 function Layout.Splitter(id, direction, total_size, default_ratio, opts)
     opts = opts or {}
     local c = Core.CurrentContainer()
-    if not c then return math.floor(total_size * (default_ratio or 0.5)) end
+    if not c then return floor(total_size * (default_ratio or 0.5)) end
 
     local thickness = opts.thickness or 6
     local min_a = opts.min_a or 50
     local min_b = opts.min_b or 50
 
-    local data = Core.GetWidgetData("splitter_" .. id, {
-        ratio = default_ratio or 0.5
-    })
+    local data = Core.GetWidgetSubData("splitter", id)
+    if data.ratio == nil then
+        data.ratio = default_ratio or 0.5
+    end
 
-    local size_a = math.floor(total_size * data.ratio)
-    size_a = math.max(min_a, math.min(total_size - min_b - thickness, size_a))
+    local size_a = floor(total_size * data.ratio)
+    size_a = max(min_a, min(total_size - min_b - thickness, size_a))
 
     -- Splitter bar position
     local x, y = Layout.GetCursorPos()
@@ -825,9 +960,9 @@ function Layout.Splitter(id, direction, total_size, default_ratio, opts)
             local delta = (direction == "horizontal") and dx or dy
             if delta ~= 0 then
                 data.ratio = data.ratio + delta / total_size
-                data.ratio = math.max(min_a / total_size,
-                    math.min(1 - (min_b + thickness) / total_size, data.ratio))
-                size_a = math.floor(total_size * data.ratio)
+                data.ratio = max(min_a / total_size,
+                    min(1 - (min_b + thickness) / total_size, data.ratio))
+                size_a = floor(total_size * data.ratio)
             end
         else
             Core.ClearActive()
@@ -839,8 +974,7 @@ function Layout.Splitter(id, direction, total_size, default_ratio, opts)
         local color = (hovered or Core.IsActive(drag_id)) and 0.45 or 0.25
         Core.DrawRect(bar_x, bar_y, bar_w, bar_h, color, color, color, 0.5)
     end
-
-    Core.SetWidgetData("splitter_" .. id, data)
+    -- data is a reference from GetWidgetData; ratio mutation persists without SetWidgetData.
     return size_a
 end
 

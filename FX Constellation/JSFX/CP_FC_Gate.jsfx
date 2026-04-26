@@ -1,0 +1,95 @@
+desc: CP - Gate (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Noise gate with smooth transitions and hold time.
+  Designed for FX Constellation XY gesture control.
+
+slider1:threshold=-40<-80,0,0.1>Threshold (dB)
+slider2:attack=1<0.1,50,0.1>Attack (ms)
+slider3:hold=50<0,500,1>Hold (ms)
+slider4:release=100<10,1000,1>Release (ms)
+slider5:range=-80<-80,0,1>Range (dB)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+env = -120;
+gate_gain = 0;
+hold_counter = 0;
+gate_state = 0; // 0=closed, 1=attack, 2=open/hold, 3=release
+
+s_threshold = -40;
+s_range = -80;
+
+@slider
+target_threshold = threshold;
+target_range = range;
+
+attack_coeff = exp(-1 / (attack / 1000 * srate));
+release_coeff = exp(-1 / (release / 1000 * srate));
+hold_samples = hold / 1000 * srate;
+
+@sample
+// Smooth parameters
+s_threshold = s_threshold * smooth_coeff + target_threshold * (1 - smooth_coeff);
+s_range = s_range * smooth_coeff + target_range * (1 - smooth_coeff);
+
+// Level detection (peak, stereo linked)
+input_abs = max(abs(spl0), abs(spl1));
+input_abs < 0.0000001 ? input_abs = 0.0000001;
+input_db = 20 * log10(input_abs);
+
+// Envelope follower
+input_db > env ? (
+  env = env + (input_db - env) * 0.1;
+) : (
+  env = env + (input_db - env) * 0.001;
+);
+
+// Gate state machine
+gate_state == 0 ? ( // Closed
+  env > s_threshold ? (
+    gate_state = 1; // -> Attack
+  );
+) : gate_state == 1 ? ( // Attack
+  gate_gain = gate_gain * attack_coeff + 1 * (1 - attack_coeff);
+  gate_gain >= 0.999 ? (
+    gate_gain = 1;
+    gate_state = 2; // -> Open
+    hold_counter = hold_samples;
+  );
+  env < s_threshold ? (
+    gate_state = 3; // -> Release
+  );
+) : gate_state == 2 ? ( // Open/Hold
+  gate_gain = 1;
+  env < s_threshold ? (
+    hold_counter > 0 ? (
+      hold_counter -= 1;
+    ) : (
+      gate_state = 3; // -> Release
+    );
+  ) : (
+    hold_counter = hold_samples;
+  );
+) : gate_state == 3 ? ( // Release
+  range_lin = 10 ^ (s_range / 20);
+  gate_gain = gate_gain * release_coeff + range_lin * (1 - release_coeff);
+  gate_gain <= range_lin + 0.001 ? (
+    gate_gain = range_lin;
+    gate_state = 0; // -> Closed
+  );
+  env > s_threshold ? (
+    gate_state = 1; // -> Attack
+  );
+);
+
+// Apply gate
+spl0 *= gate_gain;
+spl1 *= gate_gain;

@@ -1,8 +1,75 @@
 -- CP_Toolkit Widgets — Button, Text, Checkbox, Slider, Separator, Combo
 -- Immediate-mode: call each frame, returns state
 
+-- Localize math lib to avoid table lookup per call on hot paths.
+local floor, min, max, abs, ceil = math.floor, math.min, math.max, math.abs, math.ceil
+local pi, sin, cos, sqrt = math.pi, math.sin, math.cos, math.sqrt
+
 local Widgets = {}
 local Core, Layout, Theme, Log, Icons, Keys  -- set via init
+
+-- ============================================================================
+-- SHARED OFFSCREEN BUFFERS (module-level — visible to all widgets below)
+-- ============================================================================
+
+-- ColorPicker gradient buffers. Only one picker popup is open at a time,
+-- so two shared global buffers suffice. Re-render only when hue or size
+-- changes — a 128x128 SV gradient = ~5.5k gfx.rect calls saved per frame.
+local colorpicker_gradient = {
+    sv_buf_id = 902,
+    hue_buf_id = 903,
+    sv_hue = -1,
+    sv_size = 0,
+    hue_size = 0,
+    hue_w = 0,
+}
+
+-- Knob background (bg circle + track arc) cache. Keyed by size; re-rendered
+-- if theme colors change. For a Mixer with N same-size knobs, turns
+-- N × (1 circle + tw arcs) into N blits + 1 bake.
+local knob_bg_cache = {}
+local knob_next_buf_id = 910
+local KNOB_MAX_BUF = 925
+
+local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, tw)
+    local entry = knob_bg_cache[size]
+    if entry and entry.bg_r == bg_r and entry.bg_g == bg_g and entry.bg_b == bg_b
+       and entry.trk_r == trk_r and entry.trk_g == trk_g and entry.trk_b == trk_b
+       and entry.tw == tw then
+        return entry.buf_id
+    end
+    local buf_id
+    if entry then
+        buf_id = entry.buf_id
+    else
+        if knob_next_buf_id > KNOB_MAX_BUF then return nil end
+        buf_id = knob_next_buf_id
+        knob_next_buf_id = knob_next_buf_id + 1
+        entry = {}
+        knob_bg_cache[size] = entry
+    end
+    local cx, cy = size / 2, size / 2
+    local radius = size / 2
+    local ar = radius - 3
+    gfx.dest = buf_id
+    gfx.setimgdim(buf_id, size, size)
+    gfx.set(0, 0, 0, 0)
+    gfx.rect(0, 0, size, size, 1)
+    gfx.set(bg_r, bg_g, bg_b, 0.5)
+    gfx.circle(cx, cy, radius - 1, 1, 1)
+    local angle_min = pi * 0.75
+    local angle_max = pi * 2.25
+    gfx.set(trk_r, trk_g, trk_b, 0.25)
+    for i = 0, tw - 1 do
+        gfx.arc(cx, cy, ar - i, angle_min, angle_max, 1)
+    end
+    gfx.dest = -1
+    entry.buf_id = buf_id
+    entry.bg_r = bg_r; entry.bg_g = bg_g; entry.bg_b = bg_b
+    entry.trk_r = trk_r; entry.trk_g = trk_g; entry.trk_b = trk_b
+    entry.tw = tw
+    return buf_id
+end
 
 function Widgets.Init(core, layout, theme_mod)
     Core = core
@@ -20,6 +87,44 @@ end
 
 function Widgets.SetIcons(icons_mod)
     Icons = icons_mod
+end
+
+-- ============================================================================
+-- SHARED BEVEL HELPER — Win32-style 3D edge for widget_style == "windows"
+-- ============================================================================
+-- mode: "raised" (buttons) — light top/left, dark bottom/right
+--       "sunken" (inputs)  — dark top/left, light bottom/right
+-- Draws: 1px outer border + 1px inner bevel. Requires the fill to be already drawn.
+local function draw_win32_bevel(x, y, w, h, theme, mode)
+    if theme.widget_style ~= "windows" then return end
+    local border = theme.colors.border
+
+    if mode == "raised" then
+        -- RAISED (buttons): full outer border is OK because the button fill
+        -- is close to the window bg — the contrast is low, no bracket effect.
+        Core.DrawRect(x, y, w, h, border[1], border[2], border[3], border[4] or 1, false)
+        -- Inner: light top/left, dark bottom/right
+        Core.DrawLine(x + 1, y + 1, x + w - 2, y + 1, 1, 1, 1, 0.55)
+        Core.DrawLine(x + 1, y + 1, x + 1, y + h - 2, 1, 1, 1, 0.55)
+        local sh = border[1] * 0.6
+        Core.DrawLine(x + 1, y + h - 2, x + w - 2, y + h - 2, sh, sh, sh, 0.4)
+        Core.DrawLine(x + w - 2, y + 1, x + w - 2, y + h - 2, sh, sh, sh, 0.4)
+    else
+        -- SUNKEN (inputs): NO full rectangle (white fill vs gray bg creates
+        -- bracket [] artifacts on left/right edges). Instead draw individual
+        -- edges: dark top + left (outer shadow), light bottom + right (outer
+        -- highlight), then inner bevel 1px inside.
+        local dk = border[1] * 0.7
+        -- Outer shadow: top + left
+        Core.DrawLine(x, y, x + w - 1, y, dk, dk, dk, 0.7)            -- top
+        Core.DrawLine(x, y, x, y + h - 1, dk, dk, dk, 0.5)            -- left
+        -- Outer highlight: bottom + right
+        Core.DrawLine(x, y + h - 1, x + w - 1, y + h - 1, 1, 1, 1, 0.25) -- bottom
+        Core.DrawLine(x + w - 1, y, x + w - 1, y + h - 1, 1, 1, 1, 0.18) -- right
+        -- Inner shadow: top + left (darker, 1px inside)
+        Core.DrawLine(x + 1, y + 1, x + w - 2, y + 1, dk, dk, dk, 0.35)
+        Core.DrawLine(x + 1, y + 1, x + 1, y + h - 2, dk, dk, dk, 0.25)
+    end
 end
 
 -- ============================================================================
@@ -54,11 +159,11 @@ function Widgets.BeginWindow(title, theme, opts)
     local tc = theme.colors.title_text
     local tx
     if title_align == "center" then
-        tx = math.floor((win_w - tw) / 2)
+        tx = floor((win_w - tw) / 2)
     else
         tx = theme.window_padding
     end
-    local ty = math.floor((h - th) / 2)
+    local ty = floor((h - th) / 2)
     Core.DrawText(title, tx, ty, tc[1], tc[2], tc[3], tc[4])
     Core.SetFontSecondary()  -- restore default font
 
@@ -101,7 +206,7 @@ function Widgets.BeginWindow(title, theme, opts)
         else
             local xc = btn_hovered and { 1, 1, 1, 1 } or theme.colors.title_text
             local xw = Core.MeasureText("X")
-            Core.DrawText("X", btn_x + math.floor((btn_size - xw) / 2), ty, xc[1], xc[2], xc[3], xc[4])
+            Core.DrawText("X", btn_x + floor((btn_size - xw) / 2), ty, xc[1], xc[2], xc[3], xc[4])
         end
 
         if btn_hovered and Core.MouseClicked(1) then
@@ -163,6 +268,225 @@ function Widgets.EndWindow()
 end
 
 -- ============================================================================
+-- PANEL — Windows-style content container (filled / groupbox / inset)
+-- ============================================================================
+-- Wraps content in a visual sub-region with bg/border/title. Auto-fits to
+-- the content height: BeginPanel draws the bg with the maximum available
+-- height, the content draws on top, EndPanel measures the actual content
+-- height and erases the excess with the parent's bg color.
+--
+-- Three styles (opts.style):
+--   "filled"   — solid bg + 1px border + optional title (default)
+--   "groupbox" — no fill, 1px border with the title text inset on the top edge
+--   "inset"    — sunken look (light bottom/right edge, dark top/left edge)
+--                like a Win32 read-only display surface
+-- ============================================================================
+function Widgets.BeginPanel(id, theme, opts)
+    opts = opts or {}
+    local parent = Core.CurrentContainer()
+    if not parent then return end
+
+    local style = opts.style or "filled"
+    -- Asymmetric padding by default: horizontal stays generous for breathing
+    -- room, vertical is tight (matches the Win32 GroupBox feel — no wasted
+    -- space above/below the content). Caller can override with opts.padding
+    -- (symmetric) or opts.padding_x / opts.padding_y (per-axis).
+    local pad_x = opts.padding_x or opts.padding or theme.frame_padding_x
+    local pad_y = opts.padding_y or opts.padding or theme.frame_padding_y
+    local title = opts.title
+
+    -- Position relative to parent cursor
+    local abs_x = parent.x + parent.cursor_x
+    local abs_y = parent.y + parent.cursor_y - (parent.scrollable and parent.scroll_y or 0)
+
+    -- Auto-width: fill remaining width unless explicit
+    local w = opts.width
+    if not w or w <= 0 then
+        w = parent.w - parent.cursor_x - parent.pad_x
+    end
+
+    -- Max possible height (used to draw the bg before content height is known)
+    local max_h = parent.h - parent.cursor_y - parent.pad_y
+    if max_h < 1 then max_h = 1 end
+
+    -- Resolve background color
+    local bg
+    if type(opts.bg) == "table" then
+        bg = opts.bg
+    elseif opts.bg == "window" then
+        bg = theme.colors.window_bg
+    else
+        bg = theme.colors.frame_bg
+    end
+
+    -- Title text width (for groupbox border break)
+    local title_w, title_h = 0, 0
+    if title and title ~= "" then
+        title_w, title_h = Core.MeasureText(title)
+    end
+
+    -- ---- Draw the bg ----
+    if style == "filled" then
+        -- Solid fill with the panel bg
+        Core.DrawRect(abs_x, abs_y, w, max_h, bg[1], bg[2], bg[3], bg[4] or 1)
+    elseif style == "inset" then
+        -- Slightly sunken — fill with frame_bg, top/left edge will be drawn
+        -- darker in EndPanel after we know the actual height
+        Core.DrawRect(abs_x, abs_y, w, max_h, bg[1], bg[2], bg[3], bg[4] or 1)
+    end
+    -- "groupbox" has no fill — content sits on parent bg with a labeled border
+
+    -- Reserve room for the title in the content area:
+    --   filled  → title is rendered INSIDE the panel, content starts below
+    --   groupbox → title overlaps the top border, content starts below border
+    local title_offset = 0
+    if title and title ~= "" then
+        if style == "filled" then
+            title_offset = title_h + 4
+        elseif style == "groupbox" then
+            title_offset = floor(title_h / 2) + 2
+        end
+    end
+
+    -- Push a child container scoped to the panel area
+    local c = {
+        id            = "panel_" .. id,
+        x             = abs_x,
+        y             = abs_y,
+        w             = w,
+        h             = max_h,
+        pad_x         = pad_x,
+        pad_y         = pad_y,
+        cursor_x      = pad_x,
+        cursor_y      = pad_y + title_offset,
+        content_h     = 0,
+        spacing       = theme.item_spacing,  -- use theme's own spacing, not parent's
+        max_row_h     = 0,
+        same_line     = false,
+        same_line_x   = 0,
+        sameline_pending = false,
+        indent_x      = 0,
+        last_widget_end_x = pad_x,
+        last_widget_y     = pad_y + title_offset,
+        last_widget_h     = 0,
+        scrollable    = false,
+        scroll_y      = 0,
+        -- Stash for EndPanel
+        _is_panel     = true,
+        _panel_style  = style,
+        _panel_bg     = bg,
+        _panel_title  = title,
+        _panel_title_w = title_w,
+        _panel_title_h = title_h,
+        _panel_max_h  = max_h,
+        _panel_parent_bg = parent._panel_bg or theme.colors.window_bg,
+    }
+
+    Core.PushContainer(c)
+    Core.PushClipRect(abs_x, abs_y, w, max_h)
+end
+
+function Widgets.EndPanel(theme)
+    local c = Core.CurrentContainer()
+    if not c or not c._is_panel then
+        Core.PopClipRect()
+        Core.PopContainer()
+        return
+    end
+
+    -- Compute actual content end (relative to panel top).
+    -- After _AdvanceCursor, cursor_y already points BELOW the last widget
+    -- (it includes widget_h + item_spacing). So we just subtract the trailing
+    -- spacing — except when a SameLine row is still pending, in which case
+    -- cursor_y is back on the row's top and we add max_row_h.
+    local content_end_y
+    if c.sameline_pending then
+        content_end_y = c.cursor_y + c.max_row_h
+    else
+        content_end_y = c.cursor_y - (c.spacing or 0)
+    end
+    if content_end_y < c.pad_y then content_end_y = c.pad_y end
+
+    local actual_h = content_end_y + c.pad_y
+
+    Core.PopClipRect()
+    Core.PopContainer()
+
+    local x = c.x
+    local y = c.y
+    local w = c.w
+    local style = c._panel_style
+    local title = c._panel_title
+
+    -- ---- Erase the excess bg with parent's bg color ----
+    if style == "filled" or style == "inset" then
+        local pbg = c._panel_parent_bg
+        if actual_h < c._panel_max_h then
+            Core.DrawRect(x, y + actual_h, w, c._panel_max_h - actual_h,
+                pbg[1], pbg[2], pbg[3], pbg[4] or 1)
+        end
+    end
+
+    -- ---- Draw title (must come AFTER bg, BEFORE border for filled style) ----
+    if title and title ~= "" then
+        local tc = theme.colors.text
+        if style == "filled" then
+            -- Inside the panel, top-left, with the same x padding as content
+            Core.DrawText(title, x + c.pad_x, y + c.pad_y - 2, tc[1], tc[2], tc[3], tc[4] or 1)
+        end
+        -- groupbox title is drawn during border drawing below
+    end
+
+    -- ---- Draw border ----
+    if style == "filled" then
+        local bc = theme.colors.border
+        Core.DrawRect(x, y, w, actual_h, bc[1], bc[2], bc[3], bc[4] or 1, false)
+
+    elseif style == "groupbox" then
+        local bc = theme.colors.border
+        local title_y = y + floor(c._panel_title_h / 2)
+        if title and title ~= "" then
+            -- Top border with a gap for the title
+            local gap_x1 = x + 6
+            local gap_x2 = gap_x1 + c._panel_title_w + 6
+            Core.DrawLine(x, title_y, gap_x1, title_y, bc[1], bc[2], bc[3], bc[4] or 1)
+            Core.DrawLine(gap_x2, title_y, x + w, title_y, bc[1], bc[2], bc[3], bc[4] or 1)
+            -- Title text in the gap
+            local tc = theme.colors.text
+            Core.DrawText(title, gap_x1 + 3, y, tc[1], tc[2], tc[3], tc[4] or 1)
+        else
+            Core.DrawLine(x, title_y, x + w, title_y, bc[1], bc[2], bc[3], bc[4] or 1)
+        end
+        -- Side and bottom borders
+        Core.DrawLine(x, title_y, x, y + actual_h, bc[1], bc[2], bc[3], bc[4] or 1)
+        Core.DrawLine(x + w - 1, title_y, x + w - 1, y + actual_h, bc[1], bc[2], bc[3], bc[4] or 1)
+        Core.DrawLine(x, y + actual_h - 1, x + w, y + actual_h - 1, bc[1], bc[2], bc[3], bc[4] or 1)
+
+    elseif style == "inset" then
+        -- Sunken look: dark top/left edge, light bottom/right edge
+        local dark  = theme.colors.border
+        local light = theme.colors.frame_hovered or { 1, 1, 1, 0.6 }
+        -- Top
+        Core.DrawLine(x, y, x + w - 1, y, dark[1], dark[2], dark[3], (dark[4] or 1) * 0.9)
+        -- Left
+        Core.DrawLine(x, y, x, y + actual_h - 1, dark[1], dark[2], dark[3], (dark[4] or 1) * 0.9)
+        -- Bottom
+        Core.DrawLine(x, y + actual_h - 1, x + w - 1, y + actual_h - 1,
+            light[1], light[2], light[3], (light[4] or 1) * 0.6)
+        -- Right
+        Core.DrawLine(x + w - 1, y, x + w - 1, y + actual_h - 1,
+            light[1], light[2], light[3], (light[4] or 1) * 0.6)
+    end
+
+    -- Advance parent cursor past the panel (use AdvanceCursor so item_spacing
+    -- is added like any other widget — but pad_y is already inside actual_h)
+    local parent = Core.CurrentContainer()
+    if parent then
+        Layout._AdvanceCursor(parent, w, actual_h)
+    end
+end
+
+-- ============================================================================
 -- TEXT
 -- ============================================================================
 function Widgets.Text(text, theme, opts)
@@ -174,6 +498,16 @@ function Widgets.Text(text, theme, opts)
 
     if opts.font_size then
         Core.SetFont(opts.font_size, theme.fonts.default_face)
+    end
+
+    -- Truncation (opt-out via opts.truncate=false). Default behavior keeps
+    -- text inside the current container's remaining width — long paths/status
+    -- strings can't spill past the window padding. opts.max_width for a
+    -- specific cap instead of auto.
+    if opts.max_width then
+        text = Core.TruncateText(text, opts.max_width)
+    elseif opts.truncate ~= false then
+        text = Core.TruncateText(text, Layout.GetAvailableWidth())
     end
 
     local tw, th = Core.MeasureText(text)
@@ -193,8 +527,16 @@ function Widgets.Text(text, theme, opts)
     Layout.AdvanceCursor(tw, th)
 end
 
-function Widgets.TextColored(text, r, g, b, a, theme)
-    Widgets.Text(text, theme, { color = { r, g, b, a or 1 } })
+function Widgets.TextColored(text, r, g, b, a, _theme)
+    -- Auto-truncate to remaining row width so colored text can't overflow
+    -- past window padding either.
+    text = Core.TruncateText(text, Layout.GetAvailableWidth())
+    local tw, th = Core.MeasureText(text)
+    local x, y = Layout.GetCursorPosAligned(th)
+    if Core.IsVisible(x, y, tw, th) then
+        Core.DrawText(text, x, y, r, g, b, a or 1)
+    end
+    Layout.AdvanceCursor(tw, th)
 end
 
 function Widgets.Header(text, theme)
@@ -208,16 +550,22 @@ end
 -- ============================================================================
 function Widgets.Button(id, label, theme, opts)
     opts = opts or {}
-    local x, y = Layout.GetCursorPos()
     local fp_x = theme.frame_padding_x
-    local fp_y = theme.frame_padding_y
 
     local tw, th = Core.MeasureText(label)
     local w = opts.width or (tw + fp_x * 2)
-    local h = opts.height or (th + fp_y * 2)
+    local h = opts.height or theme.button_height
+
+    -- Pre-check wrap before getting position
+    if Layout.IsWrapping() then Layout.WrapPreCheck(w) end
+
+    local x, y = Layout.GetCursorPos()
 
     local clicked = false
-    local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local disabled = opts.disabled
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h)
+        and not Core.HasPopup()
 
     if hovered then
         Core.SetHot(id)
@@ -232,24 +580,48 @@ function Widgets.Button(id, label, theme, opts)
         Core.ClearActive()
     end
 
-    -- Colors
+    -- Colors — opts.selected forces the "active" look to mark the current
+    -- choice in button-group selectors (e.g., algorithm list).
     local bg
     if Core.IsActive(id) and hovered then
         bg = theme.colors.button_active
     elseif hovered then
         bg = theme.colors.button_hovered
+    elseif opts.selected then
+        bg = theme.colors.button_active
     else
         bg = theme.colors.button
     end
 
     -- Draw
     if Core.IsVisible(x, y, w, h) then
-        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
-        -- Center text
-        local tx = x + math.floor((w - tw) / 2)
-        local ty = y + math.floor((h - th) / 2)
-        local tc = theme.colors.text
-        Core.DrawText(label, tx, ty, tc[1], tc[2], tc[3], tc[4])
+        local alpha_mul = disabled and 0.5 or 1.0
+        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], (bg[4] or 1) * alpha_mul)
+
+        -- Windows-style 3D bevel (raised for buttons, sunken when pressed or selected)
+        local pressed = (Core.IsActive(id) and hovered) or opts.selected
+        if not disabled then
+            draw_win32_bevel(x, y, w, h, theme, pressed and "sunken" or "raised")
+        end
+
+        -- Truncate the label if it doesn't fit the button width (reserving
+        -- frame padding on both sides). Standard pattern used by toolbars
+        -- and menus: keep the button width, shorten the text with "..".
+        local text_budget = w - fp_x * 2
+        local draw_label, draw_tw = label, tw
+        if tw > text_budget then
+            draw_label, draw_tw = Core.TruncateText(label, text_budget)
+        end
+
+        -- Center text (offset by 1px when pressed for the "click" feeling)
+        local press_offset = 0
+        if theme.widget_style == "windows" and pressed and not disabled then
+            press_offset = 1
+        end
+        local tx = x + floor((w - draw_tw) / 2) + press_offset
+        local ty = y + floor((h - th) / 2) + press_offset
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
+        Core.DrawText(draw_label, tx, ty, tc[1], tc[2], tc[3], (tc[4] or 1) * alpha_mul)
     end
 
     Layout.AdvanceCursor(w, h)
@@ -262,9 +634,16 @@ end
 function Widgets.Checkbox(id, label, checked, theme)
     local x, y = Layout.GetCursorPos()
     local size = theme.checkbox_size
+    -- Truncate label so the widget (box + gap + label) never overflows the
+    -- container's remaining width. Label-less widgets are untouched.
+    local avail_w = Layout.GetAvailableWidth()
     local tw, th = Core.MeasureText(label)
+    local max_label_w = max(0, avail_w - size - 6)
+    if tw > max_label_w then
+        label, tw = Core.TruncateText(label, max_label_w)
+    end
     local total_w = size + 6 + tw
-    local h = math.max(size, th)
+    local h = max(size, th)
 
     local toggled = false
     local hovered = Core.MouseInClippedRect(x, y, total_w, h) and not Core.HasPopup()
@@ -281,25 +660,28 @@ function Widgets.Checkbox(id, label, checked, theme)
 
     -- Draw box
     if Core.IsVisible(x, y, total_w, h) then
-        local box_y = y + math.floor((h - size) / 2)
+        local box_y = y + floor((h - size) / 2)
         local bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
         Core.DrawRect(x, box_y, size, size, bg[1], bg[2], bg[3], bg[4])
 
-        -- Border
-        local bc = theme.colors.border
-        Core.DrawRect(x, box_y, size, size, bc[1], bc[2], bc[3], bc[4], false)
+        draw_win32_bevel(x, box_y, size, size, theme, "sunken")
 
         -- Filled square (accent color)
         if new_checked then
             local ac = theme.colors.accent
-            local m = 3
-            Core.DrawRect(x + m, box_y + m, size - m * 2, size - m * 2, ac[1], ac[2], ac[3], ac[4])
+            if theme.widget_style == "windows" then
+                -- Asymmetric: 2px bevel top/left vs 1px bottom/right → shift fill 1px toward bottom-right
+                Core.DrawRect(x + 3, box_y + 3, size - 5, size - 5, ac[1], ac[2], ac[3], ac[4])
+            else
+                local m = 3
+                Core.DrawRect(x + m, box_y + m, size - m * 2, size - m * 2, ac[1], ac[2], ac[3], ac[4])
+            end
         end
 
         -- Label
         local tc = theme.colors.text
         local lx = x + size + 6
-        local ly = y + math.floor((h - th) / 2)
+        local ly = y + floor((h - th) / 2)
         Core.DrawText(label, lx, ly, tc[1], tc[2], tc[3], tc[4])
     end
 
@@ -325,8 +707,16 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
 
+    -- Truncate label first so the widget (label + gap + control) can never
+    -- overflow the container. Reserved control width = opts.width if set,
+    -- else 40px (min usable slider track).
     local tw, th = Core.MeasureText(label)
-    local slider_w = opts.width or math.max(100, avail_w - tw - 12)
+    local reserved_w = opts.width or 40
+    local max_label_w = max(0, avail_w - reserved_w - 12)
+    if tw > max_label_w then
+        label, tw = Core.TruncateText(label, max_label_w)
+    end
+    local slider_w = opts.width or max(20, avail_w - tw - 12)
     local h = theme.slider_height
     local total_w = slider_w + tw + 12
 
@@ -335,7 +725,7 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
 
     -- Slider track area
     local sx = x + tw + 8
-    local sy = y + math.floor((math.max(h, th) - h) / 2)
+    local sy = y + floor((max(h, th) - h) / 2)
 
     local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h) and not Core.HasPopup()
 
@@ -350,9 +740,9 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
     if Core.IsActive(id) then
         if Core.MouseDown(1) then
             local mx = Core.GetState().mouse_x
-            local ratio = math.max(0, math.min(1, (mx - sx) / slider_w))
+            local ratio = max(0, min(1, (mx - sx) / slider_w))
             new_value = min_val + ratio * (max_val - min_val)
-            if is_int then new_value = math.floor(new_value + 0.5) end
+            if is_int then new_value = floor(new_value + 0.5) end
             if new_value ~= value then changed = true end
         else
             Core.ClearActive()
@@ -361,49 +751,67 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
     end
 
     -- Draw
-    if Core.IsVisible(x, y, total_w, math.max(h, th)) then
+    if Core.IsVisible(x, y, total_w, max(h, th)) then
         -- Label
         local tc = theme.colors.text
-        local ly = y + math.floor((math.max(h, th) - th) / 2)
+        local ly = y + floor((max(h, th) - th) / 2)
         Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
 
         -- Track
         local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
         Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
+        draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
 
-        -- Filled portion
+        -- Filled portion (inset in windows mode so it doesn't overpaint bevel)
+        -- Asymmetric: 2px bevel top/left, 1px bottom/right → top inset 2, bottom inset 1
+        local s_top = (theme.widget_style == "windows") and 2 or 0
+        local s_bot = (theme.widget_style == "windows") and 1 or 0
         local display_val = changed and new_value or value
         local ratio = (display_val - min_val) / (max_val - min_val)
-        ratio = math.max(0, math.min(1, ratio))
-        local fill_w = math.floor(slider_w * ratio)
+        ratio = max(0, min(1, ratio))
+        local fill_w = floor((slider_w - s_top - s_bot) * ratio)
         local ac = theme.colors.accent
         if fill_w > 0 then
-            Core.DrawRect(sx, sy, fill_w, h, ac[1], ac[2], ac[3], ac[4])
+            Core.DrawRect(sx + s_top, sy + s_top, fill_w, h - s_top - s_bot, ac[1], ac[2], ac[3], ac[4])
         end
 
         -- Grab handle
         local grab_w = 8
-        local grab_x = sx + fill_w - math.floor(grab_w / 2)
-        grab_x = math.max(sx, math.min(sx + slider_w - grab_w, grab_x))
+        local grab_x = sx + fill_w - floor(grab_w / 2)
+        grab_x = max(sx, min(sx + slider_w - grab_w, grab_x))
         local grab_c = Core.IsActive(id) and theme.colors.accent_active or
                         (hovered and theme.colors.accent_hovered or theme.colors.accent)
         Core.DrawRect(grab_x, sy, grab_w, h, grab_c[1], grab_c[2], grab_c[3], grab_c[4])
+        draw_win32_bevel(grab_x, sy, grab_w, h, theme, Core.IsActive(id) and "sunken" or "raised")
 
-        -- Value text (on top of slider)
+        -- Value text (on top of slider) — formatted string is cached in
+        -- widget_data so we only re-format when display_val actually changes.
+        -- opts.format: fixed string override (e.g., an item-name from a lookup
+        -- table). When present, it wins over the numeric display.
+        local sd = Core.GetWidgetSubData("slider", id)
         local val_str
-        if is_int then
-            val_str = tostring(math.floor(display_val))
+        local fmt_override = opts.format
+        if fmt_override then
+            val_str = fmt_override
+        elseif sd.fv_val == display_val and sd.fv_str then
+            val_str = sd.fv_str
         else
-            val_str = string.format("%.2f", display_val)
+            if is_int then
+                val_str = tostring(floor(display_val))
+            else
+                val_str = string.format("%.2f", display_val)
+            end
+            sd.fv_val = display_val
+            sd.fv_str = val_str
         end
         local vw, vh = Core.MeasureText(val_str)
-        local vx = sx + math.floor((slider_w - vw) / 2)
-        local vy = sy + math.floor((h - vh) / 2)
+        local vx = sx + floor((slider_w - vw) / 2)
+        local vy = sy + floor((h - vh) / 2)
         Core.DrawText(val_str, vx, vy, tc[1], tc[2], tc[3], tc[4])
     end
 
-    Layout.AdvanceCursor(total_w, math.max(h, th))
-    return changed, is_int and math.floor(new_value + 0.5) or new_value
+    Layout.AdvanceCursor(total_w, max(h, th))
+    return changed, is_int and floor(new_value + 0.5) or new_value
 end
 
 -- ============================================================================
@@ -421,20 +829,26 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
 
+    -- Truncate label so combo never overflows container.
     local tw, th = Core.MeasureText(label)
-    local combo_w = opts.width or math.max(120, avail_w - tw - 12)
+    local reserved_w = opts.width or 50
+    local max_label_w = max(0, avail_w - reserved_w - 12)
+    if tw > max_label_w then
+        label, tw = Core.TruncateText(label, max_label_w)
+    end
+    local combo_w = opts.width or max(20, avail_w - tw - 12)
     local h = theme.combo_height
     local total_w = combo_w + tw + 12
 
     -- Check for pending selection from popup (set on previous frame)
-    local data = Core.GetWidgetData("combo_" .. id, { pending = nil })
+    local data = Core.GetWidgetSubData("combo", id)
     local selected = current_index
     local changed = false
     if data.pending ~= nil then
         selected = data.pending
         changed = true
         data.pending = nil
-        Core.SetWidgetData("combo_" .. id, data)
+        -- (data is already a reference to the stored table; mutation persists)
     end
 
     -- Combo button area
@@ -459,12 +873,11 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
         local item_h = h
         local popup_h = #items * item_h
         local popup_current = current_index
-        local combo_data_id = "combo_" .. id
 
         -- Clamp popup to window
         local _, win_h = Core.GetWindowSize()
         if popup_y + popup_h > win_h - 4 then
-            popup_h = math.min(popup_h, win_h - popup_y - 4)
+            popup_h = min(popup_h, win_h - popup_y - 4)
         end
 
         Core.SetPopup(id, function()
@@ -480,8 +893,8 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
             Core.DrawRect(popup_x, popup_y, popup_w, popup_h, pbc[1], pbc[2], pbc[3], pbc[4], false)
 
             -- Items
-            local visible_count = math.floor(popup_h / item_h)
-            for i = 1, math.min(#popup_items, visible_count) do
+            local visible_count = floor(popup_h / item_h)
+            for i = 1, min(#popup_items, visible_count) do
                 local iy = popup_y + (i - 1) * item_h
                 local item_hovered = Core.MouseInRect(popup_x, iy, popup_w, item_h)
 
@@ -496,16 +909,15 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
                 end
 
                 local tc = theme.colors.text
-                local text_y = iy + math.floor((item_h - th) / 2)
+                local text_y = iy + floor((item_h - th) / 2)
                 Core.DrawText(popup_items[i], popup_x + 8, text_y, tc[1], tc[2], tc[3], tc[4])
 
                 -- Select item on click (not on the open frame)
                 if not is_new and item_hovered and Core.MouseClicked(1) then
                     if Log then Log.WidgetChanged(id, "Combo", tostring(popup_current), tostring(i) .. "=" .. popup_items[i]) end
                     -- Store selection in widget_data (read next frame by Combo)
-                    local d = Core.GetWidgetData(combo_data_id, {})
+                    local d = Core.GetWidgetSubData("combo", id)
                     d.pending = i
-                    Core.SetWidgetData(combo_data_id, d)
                     Core.ClearPopup(id)
                     return  -- stop processing popup this frame
                 end
@@ -524,16 +936,14 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
     if Core.IsVisible(x, y, total_w, h) then
         -- Label
         local tc = theme.colors.text
-        local ly = y + math.floor((h - th) / 2)
+        local ly = y + floor((h - th) / 2)
         Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
 
         -- Button background
         local bg = (hovered and not Core.HasPopup()) and theme.colors.frame_hovered or theme.colors.frame_bg
         Core.DrawRect(cx, cy, combo_w, h, bg[1], bg[2], bg[3], bg[4])
 
-        -- Border
-        local bc = theme.colors.border
-        Core.DrawRect(cx, cy, combo_w, h, bc[1], bc[2], bc[3], bc[4], false)
+        draw_win32_bevel(cx, cy, combo_w, h, theme, "sunken")
 
         -- Current value text
         local display_idx = changed and selected or current_index
@@ -595,16 +1005,27 @@ function Widgets.TabBar(id, tabs, active_tab, theme, opts)
             end
             Core.DrawRect(tab_x, y, tab_w, h, bg[1], bg[2], bg[3], bg[4])
 
-            -- Active indicator (bottom line)
-            if is_active then
-                local ac = theme.colors.accent
-                Core.DrawRect(tab_x, y + h - 2, tab_w, 2, ac[1], ac[2], ac[3], ac[4])
+            if theme.widget_style == "windows" then
+                -- Windows-style: active tab = raised, inactive = flat
+                if is_active then
+                    draw_win32_bevel(tab_x, y, tab_w, h, theme, "raised")
+                else
+                    -- Subtle border on inactive tabs
+                    local bc = theme.colors.border
+                    Core.DrawRect(tab_x, y, tab_w, h, bc[1], bc[2], bc[3], 0.3, false)
+                end
+            else
+                -- Flat: accent underline for active
+                if is_active then
+                    local ac = theme.colors.accent
+                    Core.DrawRect(tab_x, y + h - 2, tab_w, 2, ac[1], ac[2], ac[3], ac[4])
+                end
             end
 
             -- Text
             local tc = theme.colors.text
-            local tx = tab_x + math.floor((tab_w - tw) / 2)
-            local ty = y + math.floor((h - th) / 2)
+            local tx = tab_x + floor((tab_w - tw) / 2)
+            local ty = y + floor((h - th) / 2)
             Core.DrawText(tab_label, tx, ty, tc[1], tc[2], tc[3], is_active and tc[4] or 0.7)
         end
 
@@ -627,7 +1048,7 @@ function Widgets.CollapsingHeader(id, label, is_open, theme)
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
     local tw, th = Core.MeasureText(label)
-    local h = th + theme.frame_padding_y * 2
+    local h = theme.combo_height
     local toggled = false
 
     local hovered = Core.MouseInClippedRect(x, y, avail_w, h) and not Core.HasPopup()
@@ -651,7 +1072,7 @@ function Widgets.CollapsingHeader(id, label, is_open, theme)
 
         -- Arrow icon + label
         local tc = theme.colors.text
-        local ty = y + theme.frame_padding_y
+        local ty = y + floor((h - th) / 2)
         local icon_size = h
         if Icons then
             if new_open then
@@ -690,8 +1111,6 @@ function Widgets.Tooltip(text, theme)
     elseif not data.visible and (now - data.hover_start) > 0.4 then
         data.visible = true
     end
-
-    Core.SetWidgetData("_tooltip", data)
 
     if not data.visible then return end
 
@@ -786,8 +1205,9 @@ end
 -- ============================================================================
 function Widgets.Knob(id, label, value, default_value, theme, opts)
     opts = opts or {}
-    local x, y = Layout.GetCursorPos()
     local size = opts.size or 40
+    if Layout.IsWrapping() then Layout.WrapPreCheck(size) end
+    local x, y = Layout.GetCursorPos()
     local radius = size / 2
     local sensitivity = opts.sensitivity or 0.004
 
@@ -811,7 +1231,7 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
             local _, dy = Core.MouseDelta()
             if dy ~= 0 then
                 new_value = new_value - dy * sensitivity
-                new_value = math.max(0, math.min(1, new_value))
+                new_value = max(0, min(1, new_value))
                 if new_value ~= value then changed = true end
             end
         else
@@ -834,67 +1254,49 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         local display_val = changed and new_value or value
 
         -- Angle range: 135° to 405° (270° sweep, gap at bottom)
-        local angle_min = math.pi * 0.75
-        local angle_max = math.pi * 2.25
+        local angle_min = pi * 0.75
+        local angle_max = pi * 2.25
         local angle_val = angle_min + (angle_max - angle_min) * display_val
-        local ar = radius - 4
-        local track_w = math.max(2, math.floor(radius * 0.12))
+        local ar = radius - 3                                    -- arc radius
+        local tw = max(2, floor(radius * 0.1))        -- track thickness
 
-        -- Background circle (filled)
+        -- Background (circle + track arc) — baked into shared buffer per size.
         local bg = theme.colors.frame_bg
-        gfx.set(bg[1], bg[2], bg[3], bg[4])
-        gfx.circle(cx, cy, radius, 1, 1)
-
-        -- Track arc (full range, dim) — native gfx.arc
-        local track_c = theme.colors.border
-        gfx.set(track_c[1], track_c[2], track_c[3], 0.3)
-        for w = 0, track_w - 1 do
-            gfx.arc(cx, cy, ar - w, angle_min, angle_max, 1)
+        local trk = theme.colors.border
+        local knob_buf = get_knob_bg_buffer(size,
+            bg[1], bg[2], bg[3], trk[1], trk[2], trk[3], tw)
+        if knob_buf then
+            gfx.blit(knob_buf, 1, 0, 0, 0, size, size, x, y, size, size)
+        else
+            gfx.set(bg[1], bg[2], bg[3], 0.5)
+            gfx.circle(cx, cy, radius - 1, 1, 1)
+            gfx.set(trk[1], trk[2], trk[3], 0.25)
+            for i = 0, tw - 1 do
+                gfx.arc(cx, cy, ar - i, angle_min, angle_max, 1)
+            end
         end
 
-        -- Value arc (bright, accent color)
-        if display_val > 0.01 then
+        -- Value arc (from min to current value)
+        if display_val > 0.005 then
             local ac = theme.colors.accent
-            -- Animate color on active
-            if Core.IsActive(id) then
-                ac = theme.colors.accent_active
-            elseif hovered then
-                ac = theme.colors.accent_hovered
-            end
+            if Core.IsActive(id) then ac = theme.colors.accent_active
+            elseif hovered then ac = theme.colors.accent_hovered end
             gfx.set(ac[1], ac[2], ac[3], ac[4])
-            for w = 0, track_w - 1 do
-                gfx.arc(cx, cy, ar - w, angle_min, angle_val, 1)
+            for i = 0, tw - 1 do
+                gfx.arc(cx, cy, ar - i, angle_min, angle_val, 1)
             end
         end
 
-        -- Indicator dot (not line — cleaner)
-        local ind_r = math.max(2, math.floor(radius * 0.1))
-        local ind_dist = ar - track_w - 3
-        local ind_x = cx + math.cos(angle_val) * ind_dist
-        local ind_y = cy + math.sin(angle_val) * ind_dist
-        local lc = theme.colors.text
-        gfx.set(lc[1], lc[2], lc[3], 0.9)
-        gfx.circle(ind_x, ind_y, ind_r, 1, 1)
+        -- (no indicator — clean arc only)
 
-        -- Center dot
-        gfx.set(lc[1], lc[2], lc[3], 0.3)
-        gfx.circle(cx, cy, math.max(1, math.floor(radius * 0.08)), 1, 1)
-
-        -- Value text (small, below knob center)
-        Core.SetFontCaption()
-        local val_str = string.format("%d%%", math.floor(display_val * 100))
-        local vw, vh = Core.MeasureText(val_str)
-        local tc = theme.colors.text_disabled
-        Core.DrawText(val_str, cx - vw / 2, cy + radius * 0.15, tc[1], tc[2], tc[3], tc[4])
-        Core.SetFontBody()
-
-        -- Label below
+        -- Label below knob
         if label then
             Core.SetFontCaption()
             local lw = Core.MeasureText(label)
-            local lx = x + math.floor((size - lw) / 2)
+            local lx = x + floor((size - lw) / 2)
             local ly = y + size + 1
-            Core.DrawText(label, lx, ly, tc[1], tc[2], tc[3], tc[4])
+            local lc = theme.colors.text_disabled
+            Core.DrawText(label, lx, ly, lc[1], lc[2], lc[3], lc[4])
             Core.SetFontBody()
         end
     end
@@ -911,7 +1313,7 @@ function Widgets.VMeter(id, peak_l, peak_r, theme, opts)
     local x, y = Layout.GetCursorPos()
     local width = opts.width or 12
     local height = opts.height or 80
-    local half_w = math.floor(width / 2) - 1
+    local half_w = floor(width / 2) - 1
 
     if Core.IsVisible(x, y, width, height) then
         -- Background
@@ -927,14 +1329,14 @@ function Widgets.VMeter(id, peak_l, peak_r, theme, opts)
         end
 
         -- Left channel
-        local h_l = math.floor(math.max(0, math.min(1, peak_l)) * height)
+        local h_l = floor(max(0, min(1, peak_l)) * height)
         if h_l > 0 then
             local r, g, b, a = meter_color(peak_l)
             Core.DrawRect(x, y + height - h_l, half_w, h_l, r, g, b, a)
         end
 
         -- Right channel
-        local h_r = math.floor(math.max(0, math.min(1, peak_r)) * height)
+        local h_r = floor(max(0, min(1, peak_r)) * height)
         if h_r > 0 then
             local r, g, b, a = meter_color(peak_r)
             Core.DrawRect(x + half_w + 1, y + height - h_r, width - half_w - 1, h_r, r, g, b, a)
@@ -952,7 +1354,7 @@ function Widgets.HMeter(id, peak_l, peak_r, theme, opts)
     local x, y = Layout.GetCursorPos()
     local width = opts.width or 120
     local height = opts.height or 12
-    local half_h = math.floor(height / 2) - 1
+    local half_h = floor(height / 2) - 1
 
     if Core.IsVisible(x, y, width, height) then
         local bg = theme.colors.frame_bg
@@ -965,13 +1367,13 @@ function Widgets.HMeter(id, peak_l, peak_r, theme, opts)
             else return 0.3, 0.75, 0.4, 1 end
         end
 
-        local w_l = math.floor(math.max(0, math.min(1, peak_l)) * width)
+        local w_l = floor(max(0, min(1, peak_l)) * width)
         if w_l > 0 then
             local r, g, b, a = meter_color(peak_l)
             Core.DrawRect(x, y, w_l, half_h, r, g, b, a)
         end
 
-        local w_r = math.floor(math.max(0, math.min(1, peak_r)) * width)
+        local w_r = floor(max(0, min(1, peak_r)) * width)
         if w_r > 0 then
             local r, g, b, a = meter_color(peak_r)
             Core.DrawRect(x, y + half_h + 1, w_r, height - half_h - 1, r, g, b, a)
@@ -1050,7 +1452,7 @@ function Widgets.ImageButton(id, img, theme, opts)
     opts = opts or {}
     local x, y = Layout.GetCursorPos()
     local pad = opts.padding or 2
-    local img_size = opts.size or math.max(img.w, img.h)
+    local img_size = opts.size or max(img.w, img.h)
     local w = img_size + pad * 2
     local h = img_size + pad * 2
 
@@ -1078,18 +1480,18 @@ function Widgets.ImageButton(id, img, theme, opts)
         end
 
         -- Draw image centered in button
-        local ix = x + pad + math.floor((img_size - math.min(img_size, img.w)) / 2)
-        local iy = y + pad + math.floor((img_size - math.min(img_size, img.h)) / 2)
-        local draw_w = math.min(img_size, img.w)
-        local draw_h = math.min(img_size, img.h)
+        local ix = x + pad + floor((img_size - min(img_size, img.w)) / 2)
+        local iy = y + pad + floor((img_size - min(img_size, img.h)) / 2)
+        local draw_w = min(img_size, img.w)
+        local draw_h = min(img_size, img.h)
 
         -- Scale to fit if image is larger than size
         if img.w > img_size or img.h > img_size then
-            local scale = math.min(img_size / img.w, img_size / img.h)
-            draw_w = math.floor(img.w * scale)
-            draw_h = math.floor(img.h * scale)
-            ix = x + pad + math.floor((img_size - draw_w) / 2)
-            iy = y + pad + math.floor((img_size - draw_h) / 2)
+            local scale = min(img_size / img.w, img_size / img.h)
+            draw_w = floor(img.w * scale)
+            draw_h = floor(img.h * scale)
+            ix = x + pad + floor((img_size - draw_w) / 2)
+            iy = y + pad + floor((img_size - draw_h) / 2)
         end
 
         gfx.blit(img.buffer, 1, 0, 0, 0, img.w, img.h, ix, iy, draw_w, draw_h)
@@ -1105,7 +1507,7 @@ end
 -- HSV to RGB helper (module-level for reuse)
 local function hsv_to_rgb(h_val, s, v)
     if s == 0 then return v, v, v end
-    local i = math.floor(h_val * 6)
+    local i = floor(h_val * 6)
     local f = h_val * 6 - i
     local p = v * (1 - s)
     local q = v * (1 - f * s)
@@ -1120,80 +1522,172 @@ local function hsv_to_rgb(h_val, s, v)
 end
 
 -- ============================================================================
--- EYEDROPPER (screen color picker)
+-- EYEDROPPER — screen-wide color picker (anywhere on the desktop)
+--   Uses JS_ReaScriptAPI to:
+--     - poll the global mouse position (works outside the script window)
+--     - poll the global mouse button state (catches clicks anywhere)
+--     - blit 1px from the desktop DC to a LICE bitmap, read RGB
+--   Live preview drawn at the top-left of the script window each frame.
 -- ============================================================================
-local eyedropper = { active = false, callback = nil }
+local eyedropper = {
+    active = false,
+    callback = nil,
+    prev_lmb = false,
+    lmb_was_up = false,  -- set true once we observe LMB released after arming
+    last_color = nil,
+}
 
-function Widgets.StartEyedropper(callback)
-    if not reaper.JS_Window_GetRect then return false end
-    eyedropper.active = true
-    eyedropper.callback = callback
-    return true
+
+local function _has_js_api()
+    return reaper.JS_LICE_CreateBitmap
+       and reaper.JS_LICE_DestroyBitmap
+       and reaper.JS_LICE_GetPixel
+       and reaper.JS_LICE_GetDC
+       and reaper.JS_GDI_Blit
+       and reaper.JS_GDI_ReleaseDC
+       and reaper.JS_Mouse_GetState
 end
 
--- Helper: get screen mouse position using window rect + gfx.mouse
-local function get_screen_mouse()
-    local hwnd = Core.GetHWND()
-    if hwnd and reaper.JS_Window_GetRect then
-        local ok, wl, wt = reaper.JS_Window_GetRect(hwnd)
-        if ok then
-            return wl + gfx.mouse_x, wt + gfx.mouse_y
-        end
+-- Resolve a desktop hwnd / screen DC by trying the various function names
+-- exposed by different JS_ReaScriptAPI versions. Returns (hwnd, dc) or (nil).
+local function _get_desktop_dc()
+    -- Path 1: dedicated screen-DC accessor
+    if reaper.JS_GDI_GetScreenDC then
+        local dc = reaper.JS_GDI_GetScreenDC()
+        if dc then return nil, dc end  -- nil hwnd → release with nil
+    end
+    -- Path 2: explicit desktop window getter (indirect lookup so the linter
+    -- doesn't yell about a function it doesn't know — JS_ReaScriptAPI exposes
+    -- different names depending on its version)
+    local desktop
+    local r_get_desktop = (rawget and rawget(reaper, "JS_Window_GetDesktopWindow"))
+                       or rawget(reaper, "JS_Window_GetDesktop")
+    if r_get_desktop then
+        desktop = r_get_desktop()
+    end
+    if desktop and reaper.JS_GDI_GetWindowDC then
+        local dc = reaper.JS_GDI_GetWindowDC(desktop)
+        if dc then return desktop, dc end
+    end
+    -- Path 3: GetWindowDC(nil) — on Windows, NULL hwnd returns the desktop DC
+    if reaper.JS_GDI_GetWindowDC then
+        local dc = reaper.JS_GDI_GetWindowDC(nil)
+        if dc then return nil, dc end
     end
     return nil, nil
 end
 
--- Called each frame from UI.Run
+-- Sample one pixel from the desktop at SCREEN coordinates (sx, sy).
+-- Returns {r, g, b} in 0-1 range, or nil on failure.
+local function sample_screen_pixel(sx, sy)
+    if not _has_js_api() then return nil end
+
+    local hwnd, dc = _get_desktop_dc()
+    if not dc then return nil end
+
+    local bm = reaper.JS_LICE_CreateBitmap(true, 1, 1)
+    if not bm then
+        reaper.JS_GDI_ReleaseDC(hwnd, dc)
+        return nil
+    end
+
+    local bm_dc = reaper.JS_LICE_GetDC(bm)
+    if not bm_dc then
+        reaper.JS_LICE_DestroyBitmap(bm)
+        reaper.JS_GDI_ReleaseDC(hwnd, dc)
+        return nil
+    end
+
+    reaper.JS_GDI_Blit(bm_dc, 0, 0, dc, sx, sy, 1, 1)
+    reaper.JS_GDI_ReleaseDC(hwnd, dc)
+
+    local pixel = reaper.JS_LICE_GetPixel(bm, 0, 0)
+    reaper.JS_LICE_DestroyBitmap(bm)
+
+    if not pixel then return nil end
+    local r = (pixel >> 16) & 0xFF
+    local g = (pixel >> 8) & 0xFF
+    local b = pixel & 0xFF
+    return { r / 255, g / 255, b / 255 }
+end
+
+function Widgets.StartEyedropper(callback)
+    if not _has_js_api() then return false end
+    eyedropper.active = true
+    eyedropper.callback = callback
+    eyedropper.lmb_was_up = false
+    eyedropper.prev_lmb = true   -- assume the arming click is still down
+    eyedropper.last_color = nil
+    return true
+end
+
+-- Called each frame from UI.Run.
 function Widgets.UpdateEyedropper(theme)
     if not eyedropper.active then return end
 
-    -- Draw hint
+    -- Keep the script redrawing even while the mouse is elsewhere on screen
+    Core.RequestRedraw()
+
+    -- Global mouse position (works regardless of focus)
+    local sx, sy = reaper.GetMousePosition()
+    local color = sample_screen_pixel(sx, sy)
+    if color then eyedropper.last_color = color end
+
+    -- Live preview overlay drawn in the top-left of the script window.
+    -- Uses Core.SetTooltip so it renders on top of everything else this frame.
     Core.SetTooltip(function()
-        local mx, my = Core.GetMousePos()
-        local tc = theme.colors.text
-        Core.DrawText("Click to pick color (right-click cancel)", mx + 14, my + 14, tc[1], tc[2], tc[3], 0.8)
+        local hw, hh = 220, 38
+        local hx, hy = 6, 6
+        local pbg = (theme and theme.colors.popup_bg) or { 0.1, 0.1, 0.1, 0.95 }
+        Core.DrawRect(hx, hy, hw, hh, pbg[1], pbg[2], pbg[3], pbg[4] or 0.95)
+        local bc = (theme and theme.colors.border) or { 0.6, 0.6, 0.6, 1 }
+        Core.DrawRect(hx, hy, hw, hh, bc[1], bc[2], bc[3], bc[4] or 1, false)
+
+        local sw_x = hx + 4
+        local sw_y = hy + 4
+        local sw_size = hh - 8
+        if color then
+            Core.DrawRect(sw_x, sw_y, sw_size, sw_size, color[1], color[2], color[3], 1)
+            Core.DrawRect(sw_x, sw_y, sw_size, sw_size, 0.5, 0.5, 0.5, 0.6, false)
+            local tc = (theme and theme.colors.text) or { 1, 1, 1, 1 }
+            local rgb = string.format("R %d  G %d  B %d",
+                floor(color[1] * 255 + 0.5),
+                floor(color[2] * 255 + 0.5),
+                floor(color[3] * 255 + 0.5))
+            Core.DrawText(rgb,    sw_x + sw_size + 8, hy + 4,  tc[1], tc[2], tc[3], 1)
+            Core.DrawText("Click to pick — Esc / R-click to cancel",
+                                  sw_x + sw_size + 8, hy + 18, tc[1], tc[2], tc[3], 0.7)
+        else
+            local tc = { 1, 0.5, 0.5, 1 }
+            Core.DrawText("Eyedropper failed (JS_ReaScriptAPI missing?)",
+                          sw_x, hy + 12, tc[1], tc[2], tc[3], 1)
+        end
     end)
 
-    -- On click, sample the screen pixel
-    if Core.MouseClicked(1) then
-        local sx, sy = get_screen_mouse()
+    -- Global mouse button state (independent of script window focus)
+    local mstate = reaper.JS_Mouse_GetState(0xFF)
+    local lmb_now = (mstate & 1) ~= 0
+    local rmb_now = (mstate & 2) ~= 0
 
-        if sx and reaper.JS_GDI_GetPixel then
-            -- Try to get pixel from screen DC
-            local dc = reaper.JS_GDI_GetScreenDC and reaper.JS_GDI_GetScreenDC()
-            if not dc then
-                -- Fallback: get DC from desktop window
-                local desktop = reaper.JS_Window_GetDesktop and reaper.JS_Window_GetDesktop()
-                if desktop then
-                    dc = reaper.JS_Window_GetDC and reaper.JS_Window_GetDC(desktop)
-                end
-            end
-
-            if dc then
-                local pixel = reaper.JS_GDI_GetPixel(dc, sx, sy)
-                if reaper.JS_GDI_ReleaseDC then
-                    reaper.JS_GDI_ReleaseDC(nil, dc)
-                end
-
-                if pixel and pixel >= 0 then
-                    local cr = pixel & 0xFF
-                    local cg = (pixel >> 8) & 0xFF
-                    local cb = (pixel >> 16) & 0xFF
-                    local color = { cr / 255, cg / 255, cb / 255 }
-
-                    if eyedropper.callback then
-                        eyedropper.callback(color)
-                    end
-                end
-            end
+    -- Commit on down→up edge, but ONLY if lmb_was_up was already set on a
+    -- PREVIOUS frame. This prevents the arming click's release from firing
+    -- immediately (the old code set lmb_was_up and checked it in the same
+    -- frame iteration, so the very first release always triggered commit).
+    if eyedropper.lmb_was_up and eyedropper.prev_lmb and not lmb_now then
+        if color and eyedropper.callback then
+            eyedropper.callback(color)
         end
-
         eyedropper.active = false
         eyedropper.callback = nil
+        return
     end
 
-    -- Cancel on right-click or Escape
-    if Core.MouseClicked(2) or Core.GetChar() == 27 then
+    -- Update lmb_was_up AFTER the edge check (not before)
+    if not lmb_now then eyedropper.lmb_was_up = true end
+    eyedropper.prev_lmb = lmb_now
+
+    -- Right-click or Escape cancels
+    if rmb_now or Core.GetChar() == 27 then
         eyedropper.active = false
         eyedropper.callback = nil
     end
@@ -1222,11 +1716,15 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
     local py = y
 
     -- Persistent state
-    local data = Core.GetWidgetData("color_" .. id, {
-        hue = 0, sat = 1, val = 1,
-        initialized = false,
-        pending = nil,  -- pending color from popup
-    })
+    local data = Core.GetWidgetSubData("color", id)
+    if data._init == nil then
+        data.hue = 0
+        data.sat = 1
+        data.val = 1
+        data.initialized = false
+        data.pending = nil
+        data._init = true
+    end
 
     -- Check for pending color from popup (set on previous frames)
     local changed = false
@@ -1243,8 +1741,8 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
     -- Initialize HSV from current color
     if not data.initialized then
         local cr, cg, cb = new_color[1], new_color[2], new_color[3]
-        local max_c = math.max(cr, cg, cb)
-        local min_c = math.min(cr, cg, cb)
+        local max_c = max(cr, cg, cb)
+        local min_c = min(cr, cg, cb)
         local delta = max_c - min_c
         data.val = max_c
         data.sat = max_c > 0 and (delta / max_c) or 0
@@ -1272,14 +1770,16 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
         local picker_h = 160
         local picker_x = px
         local picker_y = py + preview_size + 2
-        local win_w, win_h = Core.GetWindowSize()
+        local _, win_h = Core.GetWindowSize()
         if picker_y + picker_h > win_h then picker_y = py - picker_h - 2 end
 
-        local color_data_id = "color_" .. id
+        data.open_frame = Core.GetState().frame
+        data.pending = nil
 
         Core.SetPopup(id, function()
-            local is_new = Core.IsPopupNewThisFrame()
-            local d = Core.GetWidgetData(color_data_id, {})
+            local d = Core.GetWidgetSubData("color", id)
+            local frame_now = Core.GetState().frame
+            local input_ready = frame_now > (d.open_frame or 0)
 
             -- Background
             local pbg = theme.colors.popup_bg
@@ -1293,55 +1793,71 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
             local hue_bar_x = sq_x + sq_size + 8
             local hue_bar_w = 16
 
-            -- Draw SV gradient
-            for row = 0, sq_size - 1 do
-                local v = 1 - row / sq_size
-                for col = 0, sq_size - 1, 3 do
-                    local s = col / sq_size
-                    local cr, cg, cb = hsv_to_rgb(d.hue or 0, s, v)
-                    gfx.set(cr, cg, cb, 1)
-                    gfx.rect(sq_x + col, sq_y + row, 3, 1, 1)
+            -- Draw SV gradient — render into buffer once per (hue, size);
+            -- blit each frame. Saves ~5.5k gfx.rect calls when hue is stable.
+            local gb = colorpicker_gradient
+            local cur_hue = d.hue or 0
+            if gb.sv_hue ~= cur_hue or gb.sv_size ~= sq_size then
+                gfx.dest = gb.sv_buf_id
+                gfx.setimgdim(gb.sv_buf_id, sq_size, sq_size)
+                for row = 0, sq_size - 1 do
+                    local v = 1 - row / sq_size
+                    for col = 0, sq_size - 1, 3 do
+                        local s = col / sq_size
+                        local cr, cg, cb = hsv_to_rgb(cur_hue, s, v)
+                        gfx.set(cr, cg, cb, 1)
+                        gfx.rect(col, row, 3, 1, 1)
+                    end
                 end
+                gfx.dest = -1
+                gb.sv_hue = cur_hue
+                gb.sv_size = sq_size
             end
+            gfx.blit(gb.sv_buf_id, 1, 0, 0, 0, sq_size, sq_size, sq_x, sq_y, sq_size, sq_size)
 
-            -- Draw hue bar
-            for row = 0, sq_size - 1 do
-                local hv = row / sq_size
-                local cr, cg, cb = hsv_to_rgb(hv, 1, 1)
-                gfx.set(cr, cg, cb, 1)
-                gfx.rect(hue_bar_x, sq_y + row, hue_bar_w, 1, 1)
+            -- Draw hue bar — depends only on size, not hue. Render once, blit.
+            if gb.hue_size ~= sq_size or gb.hue_w ~= hue_bar_w then
+                gfx.dest = gb.hue_buf_id
+                gfx.setimgdim(gb.hue_buf_id, hue_bar_w, sq_size)
+                for row = 0, sq_size - 1 do
+                    local hv = row / sq_size
+                    local cr, cg, cb = hsv_to_rgb(hv, 1, 1)
+                    gfx.set(cr, cg, cb, 1)
+                    gfx.rect(0, row, hue_bar_w, 1, 1)
+                end
+                gfx.dest = -1
+                gb.hue_size = sq_size
+                gb.hue_w = hue_bar_w
             end
+            gfx.blit(gb.hue_buf_id, 1, 0, 0, 0, hue_bar_w, sq_size, hue_bar_x, sq_y, hue_bar_w, sq_size)
 
             -- SV cursor
             gfx.set(1, 1, 1, 0.9)
-            gfx.rect(sq_x + math.floor((d.sat or 0) * sq_size) - 2,
-                     sq_y + math.floor((1 - (d.val or 1)) * sq_size) - 2, 5, 5, 0)
+            gfx.rect(sq_x + floor((d.sat or 0) * sq_size) - 2,
+                     sq_y + floor((1 - (d.val or 1)) * sq_size) - 2, 5, 5, 0)
 
             -- Hue cursor
             gfx.set(1, 1, 1, 0.9)
-            gfx.rect(hue_bar_x - 1, sq_y + math.floor((d.hue or 0) * sq_size) - 1, hue_bar_w + 2, 3, 0)
+            gfx.rect(hue_bar_x - 1, sq_y + floor((d.hue or 0) * sq_size) - 1, hue_bar_w + 2, 3, 0)
 
-            -- Drag SV square
-            local in_sv = Core.MouseInRect(sq_x, sq_y, sq_size, sq_size)
-            if Core.MouseDown(1) and in_sv then
+            if input_ready then
                 local mx, my = Core.GetMousePos()
-                d.sat = math.max(0, math.min(1, (mx - sq_x) / sq_size))
-                d.val = math.max(0, math.min(1, 1 - (my - sq_y) / sq_size))
-                local nr, ng, nb = hsv_to_rgb(d.hue, d.sat, d.val)
-                d.pending = { nr, ng, nb }
-                d.initialized = false
-                Core.SetWidgetData(color_data_id, d)
-            end
+                -- Drag SV square
+                local in_sv = Core.MouseInRect(sq_x, sq_y, sq_size, sq_size)
+                if Core.MouseDown(1) and in_sv then
+                    d.sat = max(0, min(1, (mx - sq_x) / sq_size))
+                    d.val = max(0, min(1, 1 - (my - sq_y) / sq_size))
+                    local nr, ng, nb = hsv_to_rgb(d.hue, d.sat, d.val)
+                    d.pending = { nr, ng, nb }
+                end
 
-            -- Drag hue bar
-            local in_hue = Core.MouseInRect(hue_bar_x, sq_y, hue_bar_w, sq_size)
-            if Core.MouseDown(1) and in_hue then
-                local _, my = Core.GetMousePos()
-                d.hue = math.max(0, math.min(1, (my - sq_y) / sq_size))
-                local nr, ng, nb = hsv_to_rgb(d.hue, d.sat, d.val)
-                d.pending = { nr, ng, nb }
-                d.initialized = false
-                Core.SetWidgetData(color_data_id, d)
+                -- Drag hue bar
+                local in_hue = Core.MouseInRect(hue_bar_x, sq_y, hue_bar_w, sq_size)
+                if Core.MouseDown(1) and in_hue then
+                    d.hue = max(0, min(1, (my - sq_y) / sq_size))
+                    local nr, ng, nb = hsv_to_rgb(d.hue, d.sat, d.val)
+                    d.pending = { nr, ng, nb }
+                end
             end
 
             -- Preview + hex
@@ -1349,17 +1865,19 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
             local cr, cg, cb = hsv_to_rgb(d.hue or 0, d.sat or 1, d.val or 1)
             Core.DrawRect(sq_x, prev_y, 30, 16, cr, cg, cb, 1)
             local hex_str = string.format("#%02X%02X%02X",
-                math.floor(cr * 255), math.floor(cg * 255), math.floor(cb * 255))
+                floor(cr * 255), floor(cg * 255), floor(cb * 255))
             local tc = theme.colors.text
             Core.DrawText(hex_str, sq_x + 36, prev_y + 1, tc[1], tc[2], tc[3], tc[4])
 
-            -- Close: click outside picker, right-click, or Escape
-            local in_picker = Core.MouseInRect(picker_x, picker_y, picker_w, picker_h)
-            if not is_new and Core.MouseClicked(1) and not in_picker then
-                Core.ClearPopup(id)
-            end
-            if Core.MouseClicked(2) then
-                Core.ClearPopup(id)
+            -- Close: click outside picker (only after input lockout), right-click, or Escape
+            if input_ready then
+                local in_picker = Core.MouseInRect(picker_x, picker_y, picker_w, picker_h)
+                if Core.MouseClicked(1) and not in_picker then
+                    Core.ClearPopup(id)
+                end
+                if Core.MouseClicked(2) or Core.GetChar() == 27 then
+                    Core.ClearPopup(id)
+                end
             end
         end)
     end
@@ -1368,7 +1886,7 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
     if Core.IsVisible(x, y, total_w, h) then
         if tw > 0 then
             local tc = theme.colors.text
-            local ly = y + math.floor((h - th) / 2)
+            local ly = y + floor((h - th) / 2)
             Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
         end
 
@@ -1378,8 +1896,6 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
         local bc = theme.colors.border
         Core.DrawRect(px, py, preview_size, preview_size, bc[1], bc[2], bc[3], 0.5, false)
     end
-
-    Core.SetWidgetData("color_" .. id, data)
 
     Layout.AdvanceCursor(total_w, h)
     return changed, new_color
@@ -1398,7 +1914,14 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
         tw, th = Core.MeasureText(label)
     end
 
+    -- Truncate label if the total widget won't fit the container.
     local input_w = opts.width or 80
+    if tw > 0 then
+        local max_label_w = max(0, avail_w - input_w - 8)
+        if tw > max_label_w then
+            label, tw = Core.TruncateText(label, max_label_w)
+        end
+    end
     local h = theme.combo_height
     local total_w = input_w + (tw > 0 and (tw + 8) or 0)
     local step = opts.step or 1
@@ -1408,7 +1931,13 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
     local ix = x + (tw > 0 and (tw + 8) or 0)
     local iy = y
 
-    local data = Core.GetWidgetData("numinput_" .. id, { editing = false, edit_buf = "", blink_time = 0 })
+    local data = Core.GetWidgetSubData("numinput", id)
+    if data._init == nil then
+        data.editing = false
+        data.edit_buf = ""
+        data.blink_time = 0
+        data._init = true
+    end
     local changed = false
     local new_value = value
 
@@ -1420,14 +1949,19 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
         local num = tonumber(data.edit_buf)
         if num then
             new_value = num
-            if min_val then new_value = math.max(min_val, new_value) end
-            if max_val then new_value = math.min(max_val, new_value) end
+            if min_val then new_value = max(min_val, new_value) end
+            if max_val then new_value = min(max_val, new_value) end
             changed = true
         end
         data.editing = false
     end
 
-    if hovered then Core.SetHot(id) end
+    if hovered then
+        Core.SetHot(id)
+        -- Ibeam in edit mode (text entry); horizontal-resize cursor otherwise
+        -- to signal the drag-to-adjust-value behaviour.
+        Core.SetCursor(data.editing and "ibeam" or "size_we")
+    end
 
     -- Double-click to enter edit mode
     if hovered and Core.MouseDoubleClicked() then
@@ -1449,9 +1983,9 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
                 local dx = Core.MouseDelta()
                 if dx ~= 0 then
                     new_value = value + dx * speed
-                    if min_val then new_value = math.max(min_val, new_value) end
-                    if max_val then new_value = math.min(max_val, new_value) end
-                    if step >= 1 then new_value = math.floor(new_value + 0.5) end
+                    if min_val then new_value = max(min_val, new_value) end
+                    if max_val then new_value = min(max_val, new_value) end
+                    if step >= 1 then new_value = floor(new_value + 0.5) end
                     if new_value ~= value then changed = true end
                 end
             else
@@ -1465,9 +1999,9 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
             if wheel ~= 0 then
                 local dir = wheel > 0 and 1 or -1
                 new_value = value + dir * step
-                if min_val then new_value = math.max(min_val, new_value) end
-                if max_val then new_value = math.min(max_val, new_value) end
-                if step >= 1 then new_value = math.floor(new_value + 0.5) end
+                if min_val then new_value = max(min_val, new_value) end
+                if max_val then new_value = min(max_val, new_value) end
+                if step >= 1 then new_value = floor(new_value + 0.5) end
                 if new_value ~= value then changed = true end
             end
         end
@@ -1481,8 +2015,8 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
             local num = tonumber(data.edit_buf)
             if num then
                 new_value = num
-                if min_val then new_value = math.max(min_val, new_value) end
-                if max_val then new_value = math.min(max_val, new_value) end
+                if min_val then new_value = max(min_val, new_value) end
+                if max_val then new_value = min(max_val, new_value) end
                 changed = true
             end
             data.editing = false
@@ -1504,26 +2038,38 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
         end
     end
 
-    Core.SetWidgetData("numinput_" .. id, data)
-
     -- Draw
     if Core.IsVisible(x, y, total_w, h) then
         if tw > 0 then
             local tc = theme.colors.text
-            local ly = y + math.floor((h - th) / 2)
+            local ly = y + floor((h - th) / 2)
             Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
         end
 
         local bg = data.editing and theme.colors.frame_active or
                    (hovered and theme.colors.frame_hovered or theme.colors.frame_bg)
         Core.DrawRect(ix, iy, input_w, h, bg[1], bg[2], bg[3], bg[4])
-        local bc = data.editing and theme.colors.accent or theme.colors.border
-        Core.DrawRect(ix, iy, input_w, h, bc[1], bc[2], bc[3], data.editing and 0.8 or 0.4, false)
 
-        local display = data.editing and data.edit_buf or string.format(format, changed and new_value or value)
+        draw_win32_bevel(ix, iy, input_w, h, theme, "sunken")
+
+        -- Format value with cache (only re-format when display value changes)
+        local display
+        if data.editing then
+            display = data.edit_buf
+        else
+            local display_val = changed and new_value or value
+            if data.fv_val == display_val and data.fv_fmt == format and data.fv_str then
+                display = data.fv_str
+            else
+                display = string.format(format, display_val)
+                data.fv_val = display_val
+                data.fv_fmt = format
+                data.fv_str = display
+            end
+        end
         local dtw, dth = Core.MeasureText(display)
-        local tx = ix + math.floor((input_w - dtw) / 2)
-        local ty = iy + math.floor((h - dth) / 2)
+        local tx = ix + floor((input_w - dtw) / 2)
+        local ty = iy + floor((h - dth) / 2)
         local tc = theme.colors.text
         Core.DrawText(display, tx, ty, tc[1], tc[2], tc[3], tc[4])
 
@@ -1552,18 +2098,23 @@ function Widgets.TextEdit(id, text, theme, opts)
     local h = opts.height or 120
     local pad = theme.frame_padding_x
 
-    local data = Core.GetWidgetData("textedit_" .. id, {
-        cursor = #text,
-        scroll_y = 0,
-        blink_time = 0,
-    })
+    local data = Core.GetWidgetSubData("textedit", id)
+    if data._init == nil then
+        data.cursor = #text
+        data.scroll_y = 0
+        data.blink_time = 0
+        data._init = true
+    end
 
     local changed = false
     local new_text = text
     local is_focused = Core.IsFocused(id)
     local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
 
-    if hovered then Core.SetHot(id) end
+    if hovered then
+        Core.SetHot(id)
+        Core.SetCursor("ibeam")
+    end
 
     if hovered and Core.MouseClicked(1) then
         Core.SetFocus(id)
@@ -1577,14 +2128,21 @@ function Widgets.TextEdit(id, text, theme, opts)
         local _, line_h = Core.MeasureText("M")
         local row_h = line_h + 2
 
-        -- Split text into lines
-        local lines = {}
-        for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-            lines[#lines + 1] = line
+        -- Reuse cached line split when possible (render path populates cache).
+        local lines
+        if data._cached_text == text and data._cached_lines then
+            lines = data._cached_lines
+        else
+            lines = {}
+            for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+                lines[#lines + 1] = line
+            end
+            data._cached_text = text
+            data._cached_lines = lines
         end
 
         -- Find clicked line
-        local clicked_line = math.max(1, math.min(#lines, math.floor(click_y / row_h) + 1))
+        local clicked_line = max(1, min(#lines, floor(click_y / row_h) + 1))
 
         -- Find clicked character in that line
         local line_text = lines[clicked_line] or ""
@@ -1669,38 +2227,46 @@ function Widgets.TextEdit(id, text, theme, opts)
         end
     end
 
-    -- Scroll
+    -- Scroll (cache line split when text unchanged)
     local display_text = changed and new_text or text
-    local lines = {}
-    for line in (display_text .. "\n"):gmatch("([^\n]*)\n") do
-        lines[#lines + 1] = line
+    if data._cached_text ~= display_text then
+        data._cached_text = display_text
+        local l = {}
+        for line in (display_text .. "\n"):gmatch("([^\n]*)\n") do
+            l[#l + 1] = line
+        end
+        data._cached_lines = l
     end
+    local lines = data._cached_lines
     local _, line_h = Core.MeasureText("M")
     local content_h = #lines * (line_h + 2)
 
     if hovered and not Core.HasPopup() then
         local wheel = Core.GetState().mouse_wheel
         if wheel ~= 0 then
-            data.scroll_y = data.scroll_y - wheel * (line_h + 2) * 2
-            data.scroll_y = math.max(0, math.min(data.scroll_y, math.max(0, content_h - h + pad * 2)))
+            -- 3 lines per notch, independent of platform wheel-delta magnitude.
+            local dir = wheel > 0 and -1 or 1
+            data.scroll_y = max(0, min(data.scroll_y + dir * (line_h + 2) * 3,
+                max(0, content_h - h + pad * 2)))
         end
     end
-
-    Core.SetWidgetData("textedit_" .. id, data)
 
     -- Draw using offscreen buffer for clipping
     if Core.IsVisible(x, y, w, h) then
         local bg = is_focused and theme.colors.frame_active or theme.colors.frame_bg
         Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
-        local bc = is_focused and theme.colors.accent or theme.colors.border
-        Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], is_focused and 0.8 or 0.4, false)
+        draw_win32_bevel(x, y, w, h, theme, "sunken")
 
-        -- Render into buffer
+        -- Render into buffer — only resize when dimensions actually change.
         local buf_id = 901
         local vis_w = w - pad * 2
         local vis_h = h - 4
         gfx.dest = buf_id
-        gfx.setimgdim(buf_id, vis_w, vis_h)
+        if data._buf_w ~= vis_w or data._buf_h ~= vis_h then
+            gfx.setimgdim(buf_id, vis_w, vis_h)
+            data._buf_w = vis_w
+            data._buf_h = vis_h
+        end
         gfx.set(bg[1], bg[2], bg[3], 1)
         gfx.rect(0, 0, vis_w, vis_h, 1)
 
@@ -1738,7 +2304,7 @@ function Widgets.TextEdit(id, text, theme, opts)
         if content_h > h then
             local bar_x = x + w - 6
             local bar_h = h - 4
-            local thumb_h = math.max(10, bar_h * (h / content_h))
+            local thumb_h = max(10, bar_h * (h / content_h))
             local scroll_range = content_h - h + pad * 2
             local ratio = scroll_range > 0 and (data.scroll_y / scroll_range) or 0
             local thumb_y = y + 2 + (bar_h - thumb_h) * ratio
@@ -1771,11 +2337,20 @@ function Widgets.RadioGroup(id, label, current_index, items, theme, opts)
 
     for i, item_label in ipairs(items) do
         local item_id = id .. "_" .. i
-        local x, y = Layout.GetCursorPos()
         local size = theme.checkbox_size
         local item_tw, item_th = Core.MeasureText(item_label)
         local total_w = size + 6 + item_tw
-        local h = math.max(size, item_th)
+
+        -- In horizontal mode: wrap to next line when the next item would
+        -- overflow the container's remaining width. Keeps the whole row
+        -- inside the window padding even when the window is narrow.
+        if horizontal and i > 1 then
+            local avail = Layout.GetAvailableWidth()
+            if total_w > avail then Layout.NewLine() end
+        end
+
+        local x, y = Layout.GetCursorPos()
+        local h = max(size, item_th)
         local is_selected = (i == current_index)
 
         local item_hovered = Core.MouseInClippedRect(x, y, total_w, h) and not Core.HasPopup()
@@ -1791,28 +2366,31 @@ function Widgets.RadioGroup(id, label, current_index, items, theme, opts)
 
         -- Draw
         if Core.IsVisible(x, y, total_w, h) then
-            local circle_y = y + math.floor((h - size) / 2)
+            local circle_y = y + floor((h - size) / 2)
             local bg = item_hovered and theme.colors.frame_hovered or theme.colors.frame_bg
 
-            -- Outer ring
-            local bc = theme.colors.border
+            -- Box fill (+ top shadow in windows mode only)
             gfx.set(bg[1], bg[2], bg[3], bg[4])
             gfx.rect(x, circle_y, size, size, 1)
-            gfx.set(bc[1], bc[2], bc[3], bc[4])
-            gfx.rect(x, circle_y, size, size, 0)
+            draw_win32_bevel(x, circle_y, size, size, theme, "sunken")
 
             -- Filled dot if selected
             if is_selected or (changed and new_index == i) then
                 local ac = theme.colors.accent
-                local m = 4
                 gfx.set(ac[1], ac[2], ac[3], ac[4])
-                gfx.rect(x + m, circle_y + m, size - m * 2, size - m * 2, 1)
+                if theme.widget_style == "windows" then
+                    -- Asymmetric: 2px bevel top/left vs 1px bottom/right
+                    gfx.rect(x + 4, circle_y + 4, size - 7, size - 7, 1)
+                else
+                    local m = 4
+                    gfx.rect(x + m, circle_y + m, size - m * 2, size - m * 2, 1)
+                end
             end
 
             -- Label
             local tc = theme.colors.text
             local lx = x + size + 6
-            local ly = y + math.floor((h - item_th) / 2)
+            local ly = y + floor((h - item_th) / 2)
             Core.DrawText(item_label, lx, ly, tc[1], tc[2], tc[3], tc[4])
         end
 
@@ -1834,24 +2412,37 @@ function Widgets.ProgressBar(id, fraction, theme, opts)
     local h = opts.height or theme.combo_height  -- taller than slider for better text readability
     local label = opts.label  -- nil = show percentage, string = custom, "" = none
 
-    fraction = math.max(0, math.min(1, fraction))
+    fraction = max(0, min(1, fraction))
 
     if Core.IsVisible(x, y, w, h) then
         -- Background
         local bg = theme.colors.frame_bg
         Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+        draw_win32_bevel(x, y, w, h, theme, "sunken")
 
-        -- Filled portion
-        local fill_w = math.floor(w * fraction)
+        -- Filled portion — asymmetric inset: 2px top/left (bevel shadow), 1px bottom/right
+        local s_top = (theme.widget_style == "windows") and 2 or 0
+        local s_bot = (theme.widget_style == "windows") and 1 or 0
+        local fill_w = floor((w - s_top - s_bot) * fraction)
         if fill_w > 0 then
             local ac = theme.colors.accent
-            Core.DrawRect(x, y, fill_w, h, ac[1], ac[2], ac[3], ac[4])
+            Core.DrawRect(x + s_top, y + s_top, fill_w, h - s_top - s_bot, ac[1], ac[2], ac[3], ac[4])
         end
 
-        -- Text overlay
+        -- Text overlay — percentage string is cached so we only re-format
+        -- when the integer percent value actually changes (sub-pixel
+        -- fraction changes don't invalidate).
         local display_text
         if label == nil then
-            display_text = string.format("%d%%", math.floor(fraction * 100))
+            local pct = floor(fraction * 100)
+            local pd = Core.GetWidgetSubData("progressbar", id)
+            if pd.fv_pct == pct and pd.fv_str then
+                display_text = pd.fv_str
+            else
+                display_text = string.format("%d%%", pct)
+                pd.fv_pct = pct
+                pd.fv_str = display_text
+            end
         elseif label ~= "" then
             display_text = label
         end
@@ -1860,8 +2451,8 @@ function Widgets.ProgressBar(id, fraction, theme, opts)
             local tw, th = Core.MeasureText(display_text)
             -- Only draw if text fits with padding
             if tw + 8 <= w then
-                local tx = x + math.floor((w - tw) / 2)
-                local ty = y + math.floor((h - th) / 2)
+                local tx = x + floor((w - tw) / 2)
+                local ty = y + floor((h - th) / 2)
                 local tc = theme.colors.text
                 Core.DrawText(display_text, tx, ty, tc[1], tc[2], tc[3], tc[4])
             end
@@ -1898,7 +2489,7 @@ function Widgets.Table(id, columns, rows, theme, opts)
             auto_count = auto_count + 1
         end
     end
-    local auto_width = auto_count > 0 and math.floor((avail_w - total_fixed) / auto_count) or 0
+    local auto_width = auto_count > 0 and floor((avail_w - total_fixed) / auto_count) or 0
 
     local col_widths = {}
     for i, col in ipairs(columns) do
@@ -1906,30 +2497,47 @@ function Widgets.Table(id, columns, rows, theme, opts)
     end
 
     -- Total height
-    local visible_rows = math.min(#rows, max_visible)
+    local visible_rows = min(#rows, max_visible)
     local total_h = (show_header and header_h or 0) + visible_rows * row_h
 
     -- Scroll state
-    local data = Core.GetWidgetData("table_" .. id, { scroll_y = 0 })
-    local scroll_offset = math.floor(data.scroll_y)
+    local data = Core.GetWidgetSubData("table", id)
+    if data._init == nil then
+        data.scroll_y = 0
+        data._cells = {}   -- row_idx -> { col_idx -> {raw, str, th} }
+        data._hdr = {}     -- col_idx -> {raw, th}
+        data._init = true
+    end
+    local scroll_offset = floor(data.scroll_y)
 
     local clicked_row, clicked_col = nil, nil
 
     if Core.IsVisible(x, y, avail_w, total_h) then
         local draw_y = y
 
-        -- Header
+        -- Header — measure once per column, re-measure only if header text changes.
         if show_header then
             local hbg = theme.colors.header
             Core.DrawRect(x, draw_y, avail_w, header_h, hbg[1], hbg[2], hbg[3], hbg[4])
 
             local col_x = x
+            local hdr_cache = data._hdr
             for i, col in ipairs(columns) do
-                local tw, th = Core.MeasureText(col.header or "")
+                local h_text = col.header or ""
+                local he = hdr_cache[i]
+                local th
+                if he and he.raw == h_text then
+                    th = he.th
+                else
+                    local _, m_th = Core.MeasureText(h_text)
+                    th = m_th
+                    if he then he.raw = h_text; he.th = th
+                    else hdr_cache[i] = { raw = h_text, th = th } end
+                end
                 local tx = col_x + 6
-                local ty = draw_y + math.floor((header_h - th) / 2)
+                local ty = draw_y + floor((header_h - th) / 2)
                 local tc = theme.colors.text
-                Core.DrawText(col.header or "", tx, ty, tc[1], tc[2], tc[3], tc[4])
+                Core.DrawText(h_text, tx, ty, tc[1], tc[2], tc[3], tc[4])
 
                 -- Column separator
                 if i < #columns then
@@ -1944,43 +2552,84 @@ function Widgets.Table(id, columns, rows, theme, opts)
             draw_y = draw_y + header_h
         end
 
+        -- List color aliases (fallback to generic theme colors if list_* not set)
+        local list_bg   = theme.colors.list_bg or theme.colors.frame_bg
+        local list_text = theme.colors.list_text or theme.colors.text
+        local list_alt  = theme.colors.list_alt_bg
+        local list_sel  = theme.colors.list_selected or theme.colors.accent
+        local list_sel_t = theme.colors.list_selected_text or { 1, 1, 1, 1 }
+        local list_hov  = theme.colors.list_hover or theme.colors.header_hovered
+        local list_grid = theme.colors.list_grid
+
+        -- List background (behind all rows)
+        local body_h = visible_rows * row_h
+        Core.DrawRect(x, draw_y, avail_w, body_h, list_bg[1], list_bg[2], list_bg[3], list_bg[4])
+
         -- Rows
-        for row_idx = 1 + scroll_offset, math.min(#rows, visible_rows + scroll_offset) do
+        for row_idx = 1 + scroll_offset, min(#rows, visible_rows + scroll_offset) do
             local row = rows[row_idx]
             local row_y = draw_y + (row_idx - 1 - scroll_offset) * row_h
             local is_selected = (row_idx == selected_row)
+            local vis_row = row_idx - scroll_offset
 
             -- Row hover / selection
             local row_hovered = Core.MouseInClippedRect(x, row_y, avail_w, row_h) and not Core.HasPopup()
 
-            if row_hovered then
-                local hc = theme.colors.header_hovered
-                Core.DrawRect(x, row_y, avail_w, row_h, hc[1], hc[2], hc[3], 0.4)
-                if Core.MouseClicked(1) then
-                    clicked_row = row_idx
-                end
+            local inset = (theme.widget_style == "windows") and 2 or 0
+
+            -- Alternating row background
+            if list_alt and vis_row % 2 == 0 and not is_selected then
+                Core.DrawRect(x + inset, row_y, avail_w - inset * 2, row_h, list_alt[1], list_alt[2], list_alt[3], list_alt[4])
             end
 
+            -- Selection highlight (full row)
             if is_selected then
-                local ac = theme.colors.accent
-                Core.DrawRect(x, row_y, avail_w, row_h, ac[1], ac[2], ac[3], 0.2)
+                Core.DrawRect(x + inset, row_y, avail_w - inset * 2, row_h, list_sel[1], list_sel[2], list_sel[3], list_sel[4])
             end
 
-            -- Alternating row bg
-            if not is_selected and not row_hovered and row_idx % 2 == 0 then
-                Core.DrawRect(x, row_y, avail_w, row_h, 1, 1, 1, 0.02)
+            -- Hover highlight
+            if row_hovered and not is_selected then
+                Core.DrawRect(x + inset, row_y, avail_w - inset * 2, row_h, list_hov[1], list_hov[2], list_hov[3], list_hov[4] or 0.5)
             end
 
-            -- Cell values
+            if row_hovered and Core.MouseClicked(1) then
+                clicked_row = row_idx
+            end
+
+            -- Grid line (bottom of row)
+            if list_grid then
+                Core.DrawLine(x, row_y + row_h - 1, x + avail_w, row_y + row_h - 1,
+                    list_grid[1], list_grid[2], list_grid[3], list_grid[4] or 0.3)
+            end
+
+            -- Cell values — cache tostring + MeasureText per (row, col).
+            -- Invalidated per-cell when raw value changes.
             local col_x = x
+            local tc = is_selected and list_sel_t or list_text
+            local cell_cache = data._cells
+            local row_cache = cell_cache[row_idx]
+            if not row_cache then
+                row_cache = {}
+                cell_cache[row_idx] = row_cache
+            end
             for col_idx, cell_value in ipairs(row) do
                 if col_idx <= #columns then
                     local cw = col_widths[col_idx]
-                    local tc = theme.colors.text
-                    local _, cell_th = Core.MeasureText(tostring(cell_value))
+                    local ce = row_cache[col_idx]
+                    local cell_str, cell_th
+                    if ce and ce.raw == cell_value then
+                        cell_str = ce.str
+                        cell_th = ce.th
+                    else
+                        cell_str = type(cell_value) == "string" and cell_value or tostring(cell_value)
+                        local _, m_th = Core.MeasureText(cell_str)
+                        cell_th = m_th
+                        if ce then ce.raw = cell_value; ce.str = cell_str; ce.th = cell_th
+                        else row_cache[col_idx] = { raw = cell_value, str = cell_str, th = cell_th } end
+                    end
                     local tx = col_x + 6
-                    local ty = row_y + math.floor((row_h - cell_th) / 2)
-                    Core.DrawText(tostring(cell_value), tx, ty, tc[1], tc[2], tc[3], tc[4])
+                    local ty = row_y + floor((row_h - cell_th) / 2)
+                    Core.DrawText(cell_str, tx, ty, tc[1], tc[2], tc[3], tc[4])
 
                     -- Track clicked column
                     if row_hovered and Core.MouseClicked(1) then
@@ -2000,30 +2649,31 @@ function Widgets.Table(id, columns, rows, theme, opts)
                 end
             end
 
-            -- Row bottom separator
-            local sc = theme.colors.separator
-            Core.DrawLine(x, row_y + row_h - 1, x + avail_w, row_y + row_h - 1, sc[1], sc[2], sc[3], 0.1)
         end
 
-        -- Scroll with wheel
+        -- Sunken bevel (drawn AFTER items so highlights don't overwrite edges)
+        draw_win32_bevel(x, y, avail_w, total_h, theme, "sunken")
+
+        -- Fallback border for flat mode (bevel is no-op when not "windows")
+        if theme.widget_style ~= "windows" then
+            local bc = theme.colors.border
+            Core.DrawRect(x, y, avail_w, total_h, bc[1], bc[2], bc[3], 0.3, false)
+        end
+
+        -- Scroll with wheel — notch-based step (opts.scroll_step rows per notch)
         if #rows > max_visible then
             local wheel_area = Core.MouseInRect(x, y, avail_w, total_h)
             if wheel_area and not Core.HasPopup() then
                 local state = Core.GetState()
                 if state.mouse_wheel ~= 0 then
-                    data.scroll_y = data.scroll_y - state.mouse_wheel * 2
-                    data.scroll_y = math.max(0, math.min(data.scroll_y, #rows - visible_rows))
+                    local step = opts.scroll_step or 3
+                    local dir = state.mouse_wheel > 0 and -1 or 1
+                    data.scroll_y = max(0, min(data.scroll_y + dir * step, #rows - visible_rows))
                 end
             end
         else
             data.scroll_y = 0
         end
-
-        Core.SetWidgetData("table_" .. id, data)
-
-        -- Border
-        local bc = theme.colors.border
-        Core.DrawRect(x, y, avail_w, total_h, bc[1], bc[2], bc[3], 0.3, false)
     end
 
     Layout.AdvanceCursor(avail_w, total_h)
@@ -2047,8 +2697,8 @@ function Widgets.BeginModal(id, title, theme, opts)
     local win_w, win_h = Core.GetWindowSize()
     local w = opts.width or 300
     local h = opts.height or 150
-    local mx = math.floor((win_w - w) / 2)
-    local my = math.floor((win_h - h) / 2)
+    local mx = floor((win_w - w) / 2)
+    local my = floor((win_h - h) / 2)
     local pad = theme.window_padding
 
     -- Dim background overlay
@@ -2066,7 +2716,7 @@ function Widgets.BeginModal(id, title, theme, opts)
         Core.DrawRect(mx, my, w, theme.tab_height, hbg[1], hbg[2], hbg[3], hbg[4])
         local tc = theme.colors.text
         local tw, th = Core.MeasureText(title)
-        Core.DrawText(title, mx + pad, my + math.floor((theme.tab_height - th) / 2),
+        Core.DrawText(title, mx + pad, my + floor((theme.tab_height - th) / 2),
             tc[1], tc[2], tc[3], tc[4])
         my = my + theme.tab_height
         h = h - theme.tab_height
@@ -2109,7 +2759,7 @@ function Widgets.BeginDragSource(id, payload, drag_type, display_text)
     -- Start drag when widget is active and mouse moves enough
     if Core.IsActive(id) and Core.MouseDown(1) then
         local dx, dy = Core.MouseDelta()
-        if not drag_state.active and (math.abs(dx) > 3 or math.abs(dy) > 3) then
+        if not drag_state.active and (abs(dx) > 3 or abs(dy) > 3) then
             drag_state.active = true
             drag_state.dropping = false
             drag_state.payload = payload
@@ -2216,7 +2866,7 @@ function Widgets.ContextMenu(id, items, theme)
                 local label_w = Core.MeasureText(item.label or "")
                 local shortcut_w = item.shortcut and Core.MeasureText(item.shortcut) or 0
                 local gap = shortcut_w > 0 and 32 or 0  -- gap between label and shortcut
-                menu_w = math.max(menu_w, label_w + gap + shortcut_w + 20)
+                menu_w = max(menu_w, label_w + gap + shortcut_w + 20)
             end
         end
 
@@ -2225,7 +2875,7 @@ function Widgets.ContextMenu(id, items, theme)
         for _, item in ipairs(items) do
             visible_items = visible_items + (item.separator and 0.3 or 1)
         end
-        local menu_h = math.floor(visible_items * item_h)
+        local menu_h = floor(visible_items * item_h)
 
         -- Clamp to window
         local win_w, win_h = Core.GetWindowSize()
@@ -2248,7 +2898,7 @@ function Widgets.ContextMenu(id, items, theme)
             for _, item in ipairs(items) do
                 if item.separator then
                     -- Separator line
-                    local sep_h = math.floor(item_h * 0.3)
+                    local sep_h = floor(item_h * 0.3)
                     local sc = theme.colors.separator
                     Core.DrawLine(popup_x + 4, iy + sep_h / 2, popup_x + menu_w - 4, iy + sep_h / 2,
                         sc[1], sc[2], sc[3], sc[4] or 0.5)
@@ -2264,7 +2914,7 @@ function Widgets.ContextMenu(id, items, theme)
 
                     local tc = disabled and theme.colors.text_disabled or theme.colors.text
                     local _, text_h = Core.MeasureText(item.label)
-                    local text_y = iy + math.floor((item_h - text_h) / 2)
+                    local text_y = iy + floor((item_h - text_h) / 2)
                     Core.DrawText(item.label, popup_x + 8, text_y, tc[1], tc[2], tc[3], tc[4])
 
                     -- Shortcut hint (right-aligned)
@@ -2328,7 +2978,15 @@ function Widgets.InputText(id, label, text, theme, opts)
     if label and label ~= "" then
         tw, th = Core.MeasureText(label)
     end
-    local input_w = opts.width or math.max(100, avail_w - tw - 12)
+    -- Truncate label so widget never overflows container.
+    if tw > 0 then
+        local reserved_w = opts.width or 40
+        local max_label_w = max(0, avail_w - reserved_w - 12)
+        if tw > max_label_w then
+            label, tw = Core.TruncateText(label, max_label_w)
+        end
+    end
+    local input_w = opts.width or max(20, avail_w - tw - 12)
     local h = theme.combo_height
     local total_w = input_w + (tw > 0 and (tw + 8) or 0)
     local pad = theme.frame_padding_x
@@ -2336,35 +2994,55 @@ function Widgets.InputText(id, label, text, theme, opts)
     local ix = x + (tw > 0 and (tw + 8) or 0)
     local iy = y
 
-    local data = Core.GetWidgetData("input_" .. id, {
-        cursor = #text,
-        sel_start = nil,
-        scroll_x = 0,
-        blink_time = 0,
-    })
+    local data = Core.GetWidgetSubData("input", id)
+    if data._init == nil then
+        data.cursor = #text
+        data.sel_start = nil
+        data.scroll_x = 0
+        data.blink_time = 0
+        data._init = true
+    end
 
+    local disabled = opts.disabled or false
     local changed = false
+    local submitted = false  -- true on the frame Enter is pressed
     local new_text = text
-    local is_focused = Core.IsFocused(id)
+    local is_focused = not disabled and Core.IsFocused(id)
     local current_text = text  -- track working copy
 
+    -- Track focus across frames (Core.Run clears state.focus on every click
+    -- before widgets run, so Core.IsFocused is unreliable for "was I focused
+    -- BEFORE this click?" — we need our own per-widget tracking).
+    local was_focused_prev = data._was_focused or false
+
     -- Click to focus
-    local hovered = Core.MouseInClippedRect(ix, iy, input_w, h) and not Core.HasPopup()
+    local hovered = not disabled and Core.MouseInClippedRect(ix, iy, input_w, h) and not Core.HasPopup()
 
     if hovered then
         Core.SetHot(id)
+        Core.SetCursor("ibeam")
         if Core.MouseClicked(1) then
             Core.SetFocus(id)
             Core.SetActive(id)
             is_focused = true
-            local click_x = Core.GetState().mouse_x - ix + data.scroll_x - pad
-            local pos = 0
-            for i = 1, #text do
-                if Core.MeasureText(text:sub(1, i)) > click_x then break end
-                pos = i
+
+            if not was_focused_prev and opts.select_all_on_focus ~= false then
+                -- First click on unfocused input → select all (Windows native)
+                data.sel_start = 0
+                data.cursor = #text
+                data._focus_click = true  -- block drag until mouse released
+            else
+                -- Already focused → position cursor normally
+                local click_x = Core.GetState().mouse_x - ix + data.scroll_x - pad
+                local pos = 0
+                for i = 1, #text do
+                    if Core.MeasureText(text:sub(1, i)) > click_x then break end
+                    pos = i
+                end
+                data.cursor = pos
+                data.sel_start = nil
+                data._focus_click = false
             end
-            data.cursor = pos
-            data.sel_start = nil
             data.blink_time = reaper.time_precise()
         end
     end
@@ -2375,8 +3053,8 @@ function Widgets.InputText(id, label, text, theme, opts)
         data.cursor = #text
     end
 
-    -- Drag to select
-    if Core.IsActive(id) and Core.MouseDown(1) and is_focused then
+    -- Drag to select (blocked on the focus-gaining click to preserve select-all)
+    if Core.IsActive(id) and Core.MouseDown(1) and is_focused and not data._focus_click then
         local click_x = Core.GetState().mouse_x - ix + data.scroll_x - pad
         local pos = 0
         for i = 1, #text do
@@ -2389,6 +3067,7 @@ function Widgets.InputText(id, label, text, theme, opts)
 
     if Core.IsActive(id) and Core.MouseReleased(1) then
         Core.ClearActive()
+        data._focus_click = false
         if data.sel_start == data.cursor then data.sel_start = nil end
     end
 
@@ -2398,7 +3077,7 @@ function Widgets.InputText(id, label, text, theme, opts)
 
         local function get_sel()
             if data.sel_start == nil then return nil, nil end
-            return math.min(data.sel_start, data.cursor), math.max(data.sel_start, data.cursor)
+            return min(data.sel_start, data.cursor), max(data.sel_start, data.cursor)
         end
 
         local function get_sel_text()
@@ -2468,8 +3147,11 @@ function Widgets.InputText(id, label, text, theme, opts)
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.ENTER or char == Keys.TAB then
+            -- Enter is treated as "submit"; Tab as "next field". Both clear focus.
+            if char == Keys.ENTER then submitted = true end
             Core.SetFocus(nil)
             is_focused = false
+            data.was_focused = false
 
         elseif char == 1 then  -- Ctrl+A
             data.sel_start = 0
@@ -2510,41 +3192,50 @@ function Widgets.InputText(id, label, text, theme, opts)
         if cursor_px - data.scroll_x > visible_w then
             data.scroll_x = cursor_px - visible_w + 10
         elseif cursor_px - data.scroll_x < 0 then
-            data.scroll_x = math.max(0, cursor_px - 10)
+            data.scroll_x = max(0, cursor_px - 10)
         end
     else
         data.scroll_x = 0  -- reset scroll when not focused
     end
 
-    Core.SetWidgetData("input_" .. id, data)
-
     -- Draw
     if Core.IsVisible(x, y, total_w, h) then
         -- Label
         if tw > 0 then
-            local tc = theme.colors.text
-            local ly = y + math.floor((h - th) / 2)
-            Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
+            local lc = disabled and theme.colors.text_disabled or theme.colors.text
+            local ly = y + floor((h - th) / 2)
+            Core.DrawText(label, x, ly, lc[1], lc[2], lc[3], lc[4])
         end
 
         -- Input background
-        local bg = is_focused and theme.colors.frame_active or
-                   (hovered and theme.colors.frame_hovered or theme.colors.frame_bg)
+        local bg
+        if disabled then
+            bg = theme.colors.window_bg
+        elseif is_focused then
+            bg = theme.colors.frame_active
+        elseif hovered then
+            bg = theme.colors.frame_hovered
+        else
+            bg = theme.colors.frame_bg
+        end
         Core.DrawRect(ix, iy, input_w, h, bg[1], bg[2], bg[3], bg[4])
 
-        -- Border
-        local bc = is_focused and theme.colors.accent or theme.colors.border
-        Core.DrawRect(ix, iy, input_w, h, bc[1], bc[2], bc[3], is_focused and 0.8 or 0.4, false)
+        -- Sunken bevel (windows) or nothing (flat)
+        draw_win32_bevel(ix, iy, input_w, h, theme, "sunken")
 
         -- Render text content into offscreen buffer for proper clipping
         local vis_w = input_w - pad * 2
-        local vis_h = h
+        local vis_h = h - 4  -- leave 2px top + 2px bottom for bevel edges
         local _, char_h = Core.MeasureText("M")
-        local text_y_off = math.floor((vis_h - char_h) / 2)
+        local text_y_off = floor((vis_h - char_h) / 2)
 
-        -- Setup offscreen buffer
+        -- Setup offscreen buffer — only resize when dimensions actually change.
         gfx.dest = INPUT_BUFFER_ID
-        gfx.setimgdim(INPUT_BUFFER_ID, vis_w, vis_h)
+        if data._buf_w ~= vis_w or data._buf_h ~= vis_h then
+            gfx.setimgdim(INPUT_BUFFER_ID, vis_w, vis_h)
+            data._buf_w = vis_w
+            data._buf_h = vis_h
+        end
         gfx.set(0, 0, 0, 1)
         gfx.rect(0, 0, vis_w, vis_h, 1)
 
@@ -2554,8 +3245,8 @@ function Widgets.InputText(id, label, text, theme, opts)
 
         -- Draw selection highlight in buffer
         if is_focused and data.sel_start ~= nil then
-            local s = math.min(data.sel_start, data.cursor)
-            local e = math.max(data.sel_start, data.cursor)
+            local s = min(data.sel_start, data.cursor)
+            local e = max(data.sel_start, data.cursor)
             local sel_x1 = Core.MeasureText(display_text:sub(1, s)) - data.scroll_x
             local sel_x2 = Core.MeasureText(display_text:sub(1, e)) - data.scroll_x
             local ac = theme.colors.accent
@@ -2565,7 +3256,8 @@ function Widgets.InputText(id, label, text, theme, opts)
 
         -- Draw text in buffer
         local show_text = (#display_text > 0) and display_text or (opts.hint or "")
-        local tc = (#display_text > 0) and theme.colors.text or theme.colors.text_disabled
+        local tc = disabled and theme.colors.text_disabled
+                   or ((#display_text > 0) and theme.colors.text or theme.colors.text_disabled)
         gfx.set(tc[1], tc[2], tc[3], tc[4])
         gfx.x = -data.scroll_x
         gfx.y = text_y_off
@@ -2583,11 +3275,19 @@ function Widgets.InputText(id, label, text, theme, opts)
 
         -- Blit buffer to screen (this clips perfectly)
         gfx.dest = -1
-        gfx.blit(INPUT_BUFFER_ID, 1, 0, 0, 0, vis_w, vis_h, ix + pad, iy)
+        gfx.blit(INPUT_BUFFER_ID, 1, 0, 0, 0, vis_w, vis_h, ix + pad, iy + 2)
+
+        -- Windows-style focus accent line at bottom edge
+        if is_focused and theme.widget_style == "windows" then
+            local ac = theme.colors.accent
+            Core.DrawRect(ix, iy + h - 2, input_w, 2, ac[1], ac[2], ac[3], ac[4])
+        end
     end
 
+    data._was_focused = is_focused
+
     Layout.AdvanceCursor(total_w, h)
-    return changed, changed and new_text or text
+    return changed, changed and new_text or text, submitted
 end
 
 -- ============================================================================
@@ -2605,16 +3305,11 @@ function Widgets.Canvas(id, theme, opts)
     local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
     local mouse_x, mouse_y = Core.GetMousePos()
 
-    -- Normalize mouse position to 0-1 within canvas
-    local norm_x = hovered and math.max(0, math.min(1, (mouse_x - x) / w)) or nil
-    local norm_y = hovered and math.max(0, math.min(1, (mouse_y - y) / h)) or nil
-
     local clicked = hovered and Core.MouseClicked(1)
     local dragging = false
     local right_clicked = hovered and Core.MouseClicked(2)
 
     if hovered then Core.SetHot(id) end
-
     if clicked then Core.SetActive(id) end
 
     if Core.IsActive(id) then
@@ -2623,6 +3318,13 @@ function Widgets.Canvas(id, theme, opts)
         else
             Core.ClearActive()
         end
+    end
+
+    -- Normalize mouse position to 0-1 (clamped, even when dragging outside canvas)
+    local norm_x, norm_y
+    if hovered or dragging then
+        norm_x = max(0, min(1, (mouse_x - x) / w))
+        norm_y = max(0, min(1, (mouse_y - y) / h))
     end
 
     -- Draw background
@@ -2673,13 +3375,13 @@ end
 -- ============================================================================
 function Widgets.ToggleButton(id, label, is_on, theme, opts)
     opts = opts or {}
-    local x, y = Layout.GetCursorPos()
-
     local tw, th = Core.MeasureText(label)
     local fp_x = theme.frame_padding_x
-    local fp_y = theme.frame_padding_y
     local w = opts.width or (tw + fp_x * 2)
-    local h = opts.height or (th + fp_y * 2)
+    local h = opts.height or theme.button_height
+
+    if Layout.IsWrapping() then Layout.WrapPreCheck(w) end
+    local x, y = Layout.GetCursorPos()
 
     local toggled = false
     local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
@@ -2703,10 +3405,13 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
         end
         Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
 
+        -- Bevel: ON = sunken (pressed), OFF = raised (like a button)
+        draw_win32_bevel(x, y, w, h, theme, new_on and "sunken" or "raised")
+
         -- Text
         local tc = new_on and { 1, 1, 1, 1 } or theme.colors.text
-        local tx = x + math.floor((w - tw) / 2)
-        local ty = y + math.floor((h - th) / 2)
+        local tx = x + floor((w - tw) / 2)
+        local ty = y + floor((h - th) / 2)
         Core.DrawText(label, tx, ty, tc[1], tc[2], tc[3], tc[4])
     end
 
@@ -2727,12 +3432,20 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
         tw, th = Core.MeasureText(label)
     end
 
-    local slider_w = opts.width or math.max(100, avail_w - tw - 12)
+    -- Truncate label so range slider never overflows container.
+    if tw > 0 then
+        local reserved_w = opts.width or 40
+        local max_label_w = max(0, avail_w - reserved_w - 12)
+        if tw > max_label_w then
+            label, tw = Core.TruncateText(label, max_label_w)
+        end
+    end
+    local slider_w = opts.width or max(20, avail_w - tw - 12)
     local h = theme.slider_height
     local total_w = slider_w + (tw > 0 and (tw + 8) or 0)
 
     local sx = x + (tw > 0 and (tw + 8) or 0)
-    local sy = y + math.floor((math.max(h, th) - h) / 2)
+    local sy = y + floor((max(h, th) - h) / 2)
 
     local changed = false
     local new_min = val_min
@@ -2744,8 +3457,8 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     local ratio_max = (val_max - range_min) / range
     local grab_w = 8
 
-    local min_px = sx + math.floor(ratio_min * slider_w)
-    local max_px = sx + math.floor(ratio_max * slider_w)
+    local min_px = sx + floor(ratio_min * slider_w)
+    local max_px = sx + floor(ratio_max * slider_w)
 
     local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h) and not Core.HasPopup()
     if hovered then Core.SetHot(id) end
@@ -2756,8 +3469,8 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
 
     if hovered and Core.MouseClicked(1) then
         local mx = Core.GetState().mouse_x
-        local dist_min = math.abs(mx - min_px)
-        local dist_max = math.abs(mx - max_px)
+        local dist_min = abs(mx - min_px)
+        local dist_max = abs(mx - max_px)
         if dist_min <= dist_max then
             Core.SetActive(drag_id_min)
         else
@@ -2769,7 +3482,7 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     if Core.IsActive(drag_id_min) then
         if Core.MouseDown(1) then
             local mx = Core.GetState().mouse_x
-            local ratio = math.max(0, math.min(ratio_max, (mx - sx) / slider_w))
+            local ratio = max(0, min(ratio_max, (mx - sx) / slider_w))
             new_min = range_min + ratio * range
             if new_min ~= val_min then changed = true end
         else
@@ -2781,7 +3494,7 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     if Core.IsActive(drag_id_max) then
         if Core.MouseDown(1) then
             local mx = Core.GetState().mouse_x
-            local ratio = math.max(ratio_min, math.min(1, (mx - sx) / slider_w))
+            local ratio = max(ratio_min, min(1, (mx - sx) / slider_w))
             new_max = range_min + ratio * range
             if new_max ~= val_max then changed = true end
         else
@@ -2793,16 +3506,16 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     if changed then
         ratio_min = (new_min - range_min) / range
         ratio_max = (new_max - range_min) / range
-        min_px = sx + math.floor(ratio_min * slider_w)
-        max_px = sx + math.floor(ratio_max * slider_w)
+        min_px = sx + floor(ratio_min * slider_w)
+        max_px = sx + floor(ratio_max * slider_w)
     end
 
     -- Draw
-    if Core.IsVisible(x, y, total_w, math.max(h, th)) then
+    if Core.IsVisible(x, y, total_w, max(h, th)) then
         -- Label
         if tw > 0 then
             local tc = theme.colors.text
-            local ly = y + math.floor((math.max(h, th) - th) / 2)
+            local ly = y + floor((max(h, th) - th) / 2)
             Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
         end
 
@@ -2819,28 +3532,44 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
         end
 
         -- Min handle
-        local min_grab_x = math.max(sx, min_px - grab_w / 2)
+        local min_grab_x = max(sx, min_px - grab_w / 2)
         local mc = Core.IsActive(drag_id_min) and theme.colors.accent_active or
                    (hovered and theme.colors.accent_hovered or theme.colors.accent)
         Core.DrawRect(min_grab_x, sy, grab_w, h, mc[1], mc[2], mc[3], mc[4])
 
         -- Max handle
-        local max_grab_x = math.min(sx + slider_w - grab_w, max_px - grab_w / 2)
+        local max_grab_x = min(sx + slider_w - grab_w, max_px - grab_w / 2)
         local xc = Core.IsActive(drag_id_max) and theme.colors.accent_active or
                    (hovered and theme.colors.accent_hovered or theme.colors.accent)
         Core.DrawRect(max_grab_x, sy, grab_w, h, xc[1], xc[2], xc[3], xc[4])
 
-        -- Value display
+        -- Value display — cache compound format and final string in widget data
+        -- (only re-format when min/max values or format change).
         local format = opts.format or "%.1f"
-        local val_str = string.format(format .. " - " .. format, changed and new_min or val_min, changed and new_max or val_max)
+        local rd = Core.GetWidgetSubData("rslider", id)
+        if rd._fmt_src ~= format then
+            rd._fmt_src = format
+            rd._fmt = format .. " - " .. format
+        end
+        local disp_min = changed and new_min or val_min
+        local disp_max = changed and new_max or val_max
+        local val_str
+        if rd.fv_min == disp_min and rd.fv_max == disp_max and rd.fv_str then
+            val_str = rd.fv_str
+        else
+            val_str = string.format(rd._fmt, disp_min, disp_max)
+            rd.fv_min = disp_min
+            rd.fv_max = disp_max
+            rd.fv_str = val_str
+        end
         local vw, vh = Core.MeasureText(val_str)
-        local vx = sx + math.floor((slider_w - vw) / 2)
-        local vy = sy + math.floor((h - vh) / 2)
+        local vx = sx + floor((slider_w - vw) / 2)
+        local vy = sy + floor((h - vh) / 2)
         local tc = theme.colors.text
         Core.DrawText(val_str, vx, vy, tc[1], tc[2], tc[3], tc[4])
     end
 
-    Layout.AdvanceCursor(total_w, math.max(h, th))
+    Layout.AdvanceCursor(total_w, max(h, th))
     return changed, changed and new_min or val_min, changed and new_max or val_max
 end
 
@@ -2857,13 +3586,17 @@ function Widgets.ActionList(id, items, actions, theme, opts)
     local w = opts.width or avail_w
     local item_h = opts.item_height or theme.combo_height
     local max_visible = opts.max_visible or 8
-    local visible_count = math.min(#items, max_visible)
+    local visible_count = min(#items, max_visible)
     local h = visible_count * item_h
     local selected = opts.selected
 
-    local data = Core.GetWidgetData("alist_" .. id, { scroll = 0 })
+    local data = Core.GetWidgetSubData("alist", id)
+    if data._init == nil then
+        data.scroll = 0
+        data._init = true
+    end
 
-    local clicked_item, clicked_action = nil, nil
+    local clicked_item, clicked_action, activated_item = nil, nil, nil
 
     -- Calculate action buttons total width
     local action_total_w = 0
@@ -2874,54 +3607,90 @@ function Widgets.ActionList(id, items, actions, theme, opts)
         end
     end
 
-    if Core.IsVisible(x, y, w, h) then
-        -- Background
-        local bg = theme.colors.frame_bg
-        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+    -- Reserve scrollbar area when items overflow
+    local has_scroll = #items > max_visible
+    local SCROLLBAR_W = 10
+    local content_w = has_scroll and (w - SCROLLBAR_W) or w
 
-        -- Border
-        local bc = theme.colors.border
-        Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], 0.3, false)
+    if Core.IsVisible(x, y, w, h) then
+        -- Background (uses list-specific colors when available)
+        local list_bg = theme.colors.list_bg or theme.colors.frame_bg
+        Core.DrawRect(x, y, w, h, list_bg[1], list_bg[2], list_bg[3], list_bg[4])
 
         -- Items
-        local scroll_offset = math.floor(data.scroll)
-        for i = 1 + scroll_offset, math.min(#items, visible_count + scroll_offset) do
+        local list_text = theme.colors.list_text or theme.colors.text
+        local list_alt  = theme.colors.list_alt_bg
+        local list_sel  = theme.colors.list_selected or theme.colors.accent
+        local list_sel_t = theme.colors.list_selected_text or { 1, 1, 1, 1 }
+        local list_hov  = theme.colors.list_hover or theme.colors.header_hovered
+        local list_grid = theme.colors.list_grid
+
+        local scroll_offset = floor(data.scroll)
+        for i = 1 + scroll_offset, min(#items, visible_count + scroll_offset) do
             local item = items[i]
             local iy = y + (i - 1 - scroll_offset) * item_h
             local is_selected = (i == selected)
+            local row_idx = i - scroll_offset  -- 1-based visible row index
 
-            local row_hovered = Core.MouseInRect(x, iy, w, item_h) and not Core.HasPopup()
+            local row_hovered = Core.MouseInRect(x, iy, content_w, item_h) and not Core.HasPopup()
 
-            -- Hover highlight
-            if row_hovered then
-                local hc = theme.colors.header_hovered
-                Core.DrawRect(x + 1, iy, w - 2, item_h, hc[1], hc[2], hc[3], 0.4)
+            -- Inset for bevel (2px in windows mode so highlights don't overpaint border)
+            local inset = (theme.widget_style == "windows") and 2 or 1
+
+            -- Alternating row background (every other row)
+            if list_alt and row_idx % 2 == 0 then
+                Core.DrawRect(x + inset, iy, content_w - inset * 2, item_h, list_alt[1], list_alt[2], list_alt[3], list_alt[4])
             end
 
-            -- Selection highlight
+            -- Selection highlight (full row, like REAPER's blue band)
             if is_selected then
-                local ac = theme.colors.accent
-                Core.DrawRect(x + 1, iy, w - 2, item_h, ac[1], ac[2], ac[3], 0.2)
+                Core.DrawRect(x + inset, iy, content_w - inset * 2, item_h, list_sel[1], list_sel[2], list_sel[3], list_sel[4])
             end
 
-            -- Label
-            local tc = theme.colors.text
-            local _, lh = Core.MeasureText(item.label)
-            local ly = iy + math.floor((item_h - lh) / 2)
-            Core.DrawText(item.label, x + 6, ly, tc[1], tc[2], tc[3], tc[4])
+            -- Hover highlight (subtle, below selection)
+            if row_hovered and not is_selected then
+                Core.DrawRect(x + inset, iy, content_w - inset * 2, item_h, list_hov[1], list_hov[2], list_hov[3], list_hov[4] or 0.5)
+            end
 
-            -- Click on label area
-            if row_hovered and Core.MouseClicked(1) then
-                -- Check if click is on action buttons or label
+            -- Grid line (bottom of each row)
+            if list_grid then
+                Core.DrawLine(x + inset, iy + item_h - 1, x + content_w - inset, iy + item_h - 1,
+                    list_grid[1], list_grid[2], list_grid[3], list_grid[4] or 0.3)
+            end
+
+            -- Label — per-item color override (e.g. current-file highlight)
+            -- wins over selected/default colors unless the row is actively selected.
+            local tc
+            if is_selected then
+                tc = list_sel_t
+            elseif item.color then
+                tc = item.color
+            else
+                tc = list_text
+            end
+            local _, lh = Core.MeasureText(item.label)
+            local ly = iy + floor((item_h - lh) / 2)
+            -- Truncate label to fit row's text area (accounting for action
+            -- buttons + padding). Prevents long filenames spilling past edges.
+            local text_area_w = content_w - 6 - (actions and (action_total_w + 4) or 4)
+            local label = Core.TruncateText(item.label, text_area_w)
+            Core.DrawText(label, x + 6, ly, tc[1], tc[2], tc[3], tc[4])
+
+            -- Click on label area (single = select, double = activate)
+            if row_hovered then
                 local mx = Core.GetState().mouse_x
-                if mx < x + w - action_total_w - 4 then
+                local on_label = mx < x + content_w - action_total_w - 4
+                if on_label and Core.MouseClicked(1) then
                     clicked_item = i
+                end
+                if on_label and Core.MouseDoubleClicked() then
+                    activated_item = i
                 end
             end
 
             -- Action buttons (right-aligned)
             if actions and (row_hovered or is_selected) then
-                local btn_x = x + w - action_total_w - 4
+                local btn_x = x + content_w - action_total_w - 4
                 for ai, act in ipairs(actions) do
                     local aw = Core.MeasureText(act.icon or "?") + theme.frame_padding_x * 2
                     local btn_hovered = Core.MouseInRect(btn_x, iy + 2, aw, item_h - 4)
@@ -2936,8 +3705,8 @@ function Widgets.ActionList(id, items, actions, theme, opts)
                     local atc = btn_hovered and theme.colors.text or theme.colors.text_disabled
                     local atw, ath = Core.MeasureText(act.icon or "?")
                     Core.DrawText(act.icon or "?",
-                        btn_x + math.floor((aw - atw) / 2),
-                        iy + math.floor((item_h - ath) / 2),
+                        btn_x + floor((aw - atw) / 2),
+                        iy + floor((item_h - ath) / 2),
                         atc[1], atc[2], atc[3], atc[4])
 
                     -- Click action button
@@ -2950,19 +3719,52 @@ function Widgets.ActionList(id, items, actions, theme, opts)
                 end
             end
 
-            -- Row separator
-            local sc = theme.colors.separator
-            Core.DrawLine(x, iy + item_h - 1, x + w, iy + item_h - 1, sc[1], sc[2], sc[3], 0.1)
         end
 
-        -- Scroll
-        if #items > max_visible then
+        -- Sunken bevel (drawn AFTER items so highlights don't overwrite edges)
+        draw_win32_bevel(x, y, w, h, theme, "sunken")
+
+        -- Scrollbar (vertical) + wheel scroll
+        -- opts.scroll_step = rows advanced per wheel notch (default 3). Using a
+        -- notch-based step avoids dependence on platform-specific wheel delta
+        -- magnitudes (Windows = ±120, Mac/trackpad can differ).
+        if has_scroll then
             local in_list = Core.MouseInRect(x, y, w, h)
             if in_list and not Core.HasPopup() then
                 local wheel = Core.GetState().mouse_wheel
                 if wheel ~= 0 then
-                    data.scroll = data.scroll - wheel * 2
-                    data.scroll = math.max(0, math.min(data.scroll, #items - visible_count))
+                    local step = opts.scroll_step or 3
+                    local dir = wheel > 0 and -1 or 1
+                    data.scroll = max(0, min(data.scroll + dir * step, #items - visible_count))
+                end
+            end
+            -- Draw scrollbar track + thumb on the right side
+            local sb_x = x + w - SCROLLBAR_W
+            local sb_track = theme.colors.scrollbar_bg or theme.colors.frame_bg
+            Core.DrawRect(sb_x, y + 1, SCROLLBAR_W, h - 2,
+                sb_track[1], sb_track[2], sb_track[3], (sb_track[4] or 1) * 0.5)
+            local thumb_h = max(16, floor(h * (visible_count / #items)))
+            local max_scroll = #items - visible_count
+            local thumb_y = y + 1 + floor((data.scroll / max_scroll) * (h - 2 - thumb_h))
+            local thumb_c = theme.colors.scrollbar_grab or theme.colors.border
+            local thumb_hovered = Core.MouseInRect(sb_x, thumb_y, SCROLLBAR_W, thumb_h)
+            local thumb_a = thumb_hovered and 0.9 or 0.6
+            Core.DrawRect(sb_x + 2, thumb_y, SCROLLBAR_W - 4, thumb_h,
+                thumb_c[1], thumb_c[2], thumb_c[3], thumb_a)
+            -- Drag thumb
+            local drag_id = id .. "_sb"
+            if thumb_hovered and Core.MouseClicked(1) then
+                Core.SetActive(drag_id)
+            end
+            if Core.IsActive(drag_id) then
+                if Core.MouseDown(1) then
+                    local _, dy = Core.MouseDelta()
+                    if dy ~= 0 then
+                        local drag_ratio = dy / (h - 2 - thumb_h)
+                        data.scroll = max(0, min(max_scroll, data.scroll + drag_ratio * max_scroll))
+                    end
+                else
+                    Core.ClearActive()
                 end
             end
         else
@@ -2970,9 +3772,8 @@ function Widgets.ActionList(id, items, actions, theme, opts)
         end
     end
 
-    Core.SetWidgetData("alist_" .. id, data)
     Layout.AdvanceCursor(w, h)
-    return clicked_item, clicked_action
+    return clicked_item, clicked_action, activated_item
 end
 
 -- ============================================================================
@@ -3015,7 +3816,7 @@ function Widgets.CollapsiblePanel(id, label, is_open, theme, opts)
             for ci = 1, #label do
                 local ch = label:sub(ci, ci)
                 local cw = Core.MeasureText(ch)
-                local cx = x + math.floor((collapsed_w - cw) / 2)
+                local cx = x + floor((collapsed_w - cw) / 2)
                 if text_start_y + char_h < y + panel_h then
                     Core.DrawText(ch, cx, text_start_y, tc[1], tc[2], tc[3], tc[4])
                     text_start_y = text_start_y + char_h + 1
@@ -3030,7 +3831,7 @@ function Widgets.CollapsiblePanel(id, label, is_open, theme, opts)
             -- Label
             local tc = theme.colors.text
             local ltw, lth = Core.MeasureText(label)
-            Core.DrawText(label, x + 6, y + math.floor((header_h - lth) / 2), tc[1], tc[2], tc[3], tc[4])
+            Core.DrawText(label, x + 6, y + floor((header_h - lth) / 2), tc[1], tc[2], tc[3], tc[4])
 
             -- Collapse button (< arrow)
             local btn_x = x + expanded_w - header_h
@@ -3101,11 +3902,13 @@ function Widgets.ReorderableList(id, items, theme, opts)
     local item_h = opts.item_height or theme.combo_height
     local h = #items * item_h
 
-    local data = Core.GetWidgetData("reorder_" .. id, {
-        drag_index = nil,
-        drag_y = 0,
-        order = nil,
-    })
+    local data = Core.GetWidgetSubData("reorder", id)
+    if data._init == nil then
+        data.drag_index = nil
+        data.drag_y = 0
+        data.order = nil
+        data._init = true
+    end
 
     -- Initialize order if needed
     if not data.order or #data.order ~= #items then
@@ -3143,13 +3946,13 @@ function Widgets.ReorderableList(id, items, theme, opts)
                 -- Drag handle (left side)
                 local handle_w = 16
                 local tc_dim = theme.colors.text_disabled
-                Core.DrawText("=", x + 4, iy + math.floor((item_h - 14) / 2),
+                Core.DrawText("=", x + 4, iy + floor((item_h - 14) / 2),
                     tc_dim[1], tc_dim[2], tc_dim[3], tc_dim[4])
 
                 -- Label
                 local tc = theme.colors.text
                 local _, lh = Core.MeasureText(label)
-                Core.DrawText(label, x + handle_w + 4, iy + math.floor((item_h - lh) / 2),
+                Core.DrawText(label, x + handle_w + 4, iy + floor((item_h - lh) / 2),
                     tc[1], tc[2], tc[3], tc[4])
 
                 -- Start drag
@@ -3178,12 +3981,12 @@ function Widgets.ReorderableList(id, items, theme, opts)
                 Core.DrawRect(x, drag_display_y, w, item_h, ac[1], ac[2], ac[3], 0.3)
                 local tc = theme.colors.text
                 local _, lh = Core.MeasureText(label)
-                Core.DrawText(label, x + 20, drag_display_y + math.floor((item_h - lh) / 2),
+                Core.DrawText(label, x + 20, drag_display_y + floor((item_h - lh) / 2),
                     tc[1], tc[2], tc[3], tc[4])
 
                 -- Calculate drop position
-                local target_i = math.max(1, math.min(#items,
-                    math.floor((my - y) / item_h) + 1))
+                local target_i = max(1, min(#items,
+                    floor((my - y) / item_h) + 1))
 
                 -- Draw insertion indicator
                 local ind_y = y + (target_i - 1) * item_h
@@ -3192,14 +3995,14 @@ function Widgets.ReorderableList(id, items, theme, opts)
             else
                 -- Drop: reorder
                 local my = Core.GetState().mouse_y
-                local target_i = math.max(1, math.min(#items,
-                    math.floor((my - y) / item_h) + 1))
+                local target_i = max(1, min(#items,
+                    floor((my - y) / item_h) + 1))
 
                 if target_i ~= data.drag_index then
                     local moving = table.remove(data.order, data.drag_index)
                     local insert_at = target_i
                     if target_i > data.drag_index then insert_at = insert_at end
-                    insert_at = math.max(1, math.min(#data.order + 1, insert_at))
+                    insert_at = max(1, min(#data.order + 1, insert_at))
                     table.insert(data.order, insert_at, moving)
                     changed = true
                 end
@@ -3213,7 +4016,6 @@ function Widgets.ReorderableList(id, items, theme, opts)
         Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], 0.3, false)
     end
 
-    Core.SetWidgetData("reorder_" .. id, data)
     Layout.AdvanceCursor(w, h)
     return changed, data.order, data.drag_index
 end
@@ -3233,7 +4035,7 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
     local row_h = opts.row_height or theme.combo_height
     local header_h = opts.header ~= false and row_h or 0
     local max_visible = opts.max_rows or row_count
-    local visible_rows = math.min(row_count, max_visible)
+    local visible_rows = min(row_count, max_visible)
     local total_h = header_h + visible_rows * row_h
     local gap = opts.col_gap or 0
     local selected_row = opts.selected
@@ -3250,7 +4052,7 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
         end
     end
 
-    local gaps_total = math.max(0, #columns - 1) * gap
+    local gaps_total = max(0, #columns - 1) * gap
     local distributable = avail_w - total_fixed - gaps_total
     local col_widths = {}
     local col_positions = {}
@@ -3260,14 +4062,18 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
         if col.width then
             col_widths[i] = col.width
         else
-            col_widths[i] = math.floor(distributable * (col.weight or 1) / total_weight)
+            col_widths[i] = floor(distributable * (col.weight or 1) / total_weight)
         end
         cx = cx + col_widths[i] + gap
     end
 
     -- Scroll
-    local data = Core.GetWidgetData("itable_" .. id, { scroll = 0 })
-    local scroll_offset = math.floor(data.scroll)
+    local data = Core.GetWidgetSubData("itable", id)
+    if data._init == nil then
+        data.scroll = 0
+        data._init = true
+    end
+    local scroll_offset = floor(data.scroll)
 
     local clicked_row, clicked_col_key, hovered_row = nil, nil, nil
 
@@ -3285,7 +4091,7 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
                     local hw, hh = Core.MeasureText(col.header or "")
                     Core.DrawText(col.header or "",
                         col_positions[i] + 4,
-                        y + math.floor((header_h - hh) / 2),
+                        y + floor((header_h - hh) / 2),
                         tc[1], tc[2], tc[3], tc[4])
                 end
 
@@ -3300,7 +4106,7 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
 
         -- Rows
         local draw_y = y + header_h
-        for row_idx = 1 + scroll_offset, math.min(row_count, visible_rows + scroll_offset) do
+        for row_idx = 1 + scroll_offset, min(row_count, visible_rows + scroll_offset) do
             local ry = draw_y + (row_idx - 1 - scroll_offset) * row_h
             local is_selected = (row_idx == selected_row)
             local row_hovered = Core.MouseInClippedRect(x, ry, avail_w, row_h) and not Core.HasPopup()
@@ -3343,31 +4149,33 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
                 end
             end
 
-            -- Row separator
-            local sc = theme.colors.separator
-            Core.DrawLine(x, ry + row_h - 1, x + avail_w, ry + row_h - 1, sc[1], sc[2], sc[3], 0.08)
         end
 
-        -- Scroll with wheel
+        -- Sunken bevel (drawn AFTER items so highlights don't overwrite edges)
+        draw_win32_bevel(x, y, avail_w, total_h, theme, "sunken")
+
+        -- Fallback border for flat mode (bevel is no-op when not "windows")
+        if theme.widget_style ~= "windows" then
+            local bc = theme.colors.border
+            Core.DrawRect(x, y, avail_w, total_h, bc[1], bc[2], bc[3], 0.3, false)
+        end
+
+        -- Scroll with wheel — notch-based step (opts.scroll_step rows per notch)
         if row_count > max_visible then
             local in_table = Core.MouseInRect(x, y, avail_w, total_h)
             if in_table and not Core.HasPopup() then
                 local wheel = Core.GetState().mouse_wheel
                 if wheel ~= 0 then
-                    data.scroll = data.scroll - wheel * 2
-                    data.scroll = math.max(0, math.min(data.scroll, row_count - visible_rows))
+                    local step = opts.scroll_step or 3
+                    local dir = wheel > 0 and -1 or 1
+                    data.scroll = max(0, min(data.scroll + dir * step, row_count - visible_rows))
                 end
             end
         else
             data.scroll = 0
         end
-
-        -- Border
-        local bc = theme.colors.border
-        Core.DrawRect(x, y, avail_w, total_h, bc[1], bc[2], bc[3], 0.3, false)
     end
 
-    Core.SetWidgetData("itable_" .. id, data)
     Layout.AdvanceCursor(avail_w, total_h)
     return clicked_row, clicked_col_key, hovered_row
 end

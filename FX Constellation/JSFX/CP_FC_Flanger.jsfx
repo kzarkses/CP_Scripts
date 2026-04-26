@@ -1,0 +1,99 @@
+desc: CP - Flanger (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Classic flanger with short modulated delay and feedback.
+  Designed for FX Constellation XY gesture control.
+
+slider1:rate=0.3<0.01,10,0.01:log>Rate (Hz)
+slider2:depth=70<0,100,1>Depth (%)
+slider3:feedback=60<-95,95,1>Feedback (%)
+slider4:delay_ms=3<0.5,10,0.1>Delay (ms)
+slider5:mix=50<0,100,1>Mix (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+pi2 = 2 * $pi;
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+// Delay buffer (max 20ms at 192kHz)
+max_delay_samples = ceil(0.020 * 192000);
+buf_l = 0;
+buf_r = buf_l + max_delay_samples;
+write_pos = 0;
+
+memset(buf_l, 0, max_delay_samples);
+memset(buf_r, 0, max_delay_samples);
+
+lfo_phase = 0;
+fb_l = 0;
+fb_r = 0;
+
+s_rate = 0.3;
+s_depth = 0.7;
+s_feedback = 0.6;
+s_delay = 0.003;
+s_mix = 0.5;
+
+@slider
+target_rate = rate;
+target_depth = depth / 100;
+target_feedback = feedback / 100;
+target_delay = delay_ms / 1000;
+target_mix = mix / 100;
+
+@sample
+// Smooth parameters
+s_rate = s_rate * smooth_coeff + target_rate * (1 - smooth_coeff);
+s_depth = s_depth * smooth_coeff + target_depth * (1 - smooth_coeff);
+s_feedback = s_feedback * smooth_coeff + target_feedback * (1 - smooth_coeff);
+s_delay = s_delay * smooth_coeff + target_delay * (1 - smooth_coeff);
+s_mix = s_mix * smooth_coeff + target_mix * (1 - smooth_coeff);
+
+// LFO (inverted for right channel = stereo widening)
+lfo_l = (sin(lfo_phase * pi2) + 1) * 0.5;
+lfo_r = (sin((lfo_phase + 0.5) * pi2) + 1) * 0.5;
+
+// Modulated delay times
+base_delay_smp = s_delay * srate;
+mod_range = s_depth * base_delay_smp;
+
+delay_l = base_delay_smp + lfo_l * mod_range;
+delay_r = base_delay_smp + lfo_r * mod_range;
+
+delay_l = max(1, min(max_delay_samples - 2, delay_l));
+delay_r = max(1, min(max_delay_samples - 2, delay_r));
+
+// Write input + feedback
+buf_l[write_pos] = spl0 + fb_l * s_feedback;
+buf_r[write_pos] = spl1 + fb_r * s_feedback;
+
+// Read with linear interpolation - left
+read_pos_l = write_pos - delay_l;
+read_pos_l < 0 ? read_pos_l += max_delay_samples;
+idx_l = floor(read_pos_l);
+frac_l = read_pos_l - idx_l;
+wet_l = buf_l[idx_l % max_delay_samples] * (1 - frac_l) + buf_l[(idx_l + 1) % max_delay_samples] * frac_l;
+
+// Read with linear interpolation - right
+read_pos_r = write_pos - delay_r;
+read_pos_r < 0 ? read_pos_r += max_delay_samples;
+idx_r = floor(read_pos_r);
+frac_r = read_pos_r - idx_r;
+wet_r = buf_r[idx_r % max_delay_samples] * (1 - frac_r) + buf_r[(idx_r + 1) % max_delay_samples] * frac_r;
+
+fb_l = wet_l;
+fb_r = wet_r;
+
+write_pos = (write_pos + 1) % max_delay_samples;
+
+lfo_phase += s_rate / srate;
+lfo_phase >= 1 ? lfo_phase -= 1;
+
+// Mix
+spl0 = spl0 * (1 - s_mix) + wet_l * s_mix;
+spl1 = spl1 * (1 - s_mix) + wet_r * s_mix;

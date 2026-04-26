@@ -1,6 +1,9 @@
 -- CP_Toolkit Core — Immediate-mode UI on REAPER gfx.*
 -- Boucle principale, état souris/clavier, système d'IDs, hit-testing
 
+-- Localize math lib — avoids table lookup per call on hot paths.
+local floor, min, max, abs, ceil = math.floor, math.min, math.max, math.abs, math.ceil
+
 local Core = {}
 local Log   -- set via Core.SetLog()
 
@@ -50,9 +53,96 @@ local state = {
     popup_layer = nil,  -- {draw_fn, id}
     popup_open_frame = 0, -- frame when popup was opened (to skip same-frame close)
 
+    -- Wheel consumed flag (child regions set this to prevent parent scroll)
+    wheel_consumed = false,
+
     -- Persistent widget data (scroll offsets, combo open states, etc.)
     widget_data = {},
+
+    -- Animation pending flag (set by Core.Animate when value still moving)
+    _has_active_animation = false,
+
+    -- Explicit redraw request (set via Core.RequestRedraw)
+    _request_redraw = false,
 }
+
+-- ============================================================================
+-- PERFORMANCE STATS (instrumentation — see PERFORMANCE.md)
+-- ============================================================================
+-- Lightweight measurement of frame cost. Always on. Cost: ~6 microseconds/frame.
+local SAMPLE_COUNT = 60
+local _stats = {
+    -- Per-frame measurements (last full frame)
+    frame_ms = 0,         -- last frame duration in ms
+    alloc_kb = 0,         -- KB allocated by Lua during last frame
+    draws_per_frame = 0,  -- gfx draw calls in last frame
+
+    -- Moving averages (over SAMPLE_COUNT samples)
+    frame_ms_avg = 0,
+    frame_ms_peak = 0,
+    alloc_kb_avg = 0,
+    draws_avg = 0,
+
+    -- Mode tracking
+    mode = "active",      -- "active" or "idle"
+    idle_skips = 0,       -- frames skipped since last full frame
+
+    -- Internal: ring buffers for moving avg
+    _samples_ms = {},
+    _samples_kb = {},
+    _samples_draws = {},
+    _sample_idx = 0,
+    _draw_count = 0,      -- counter incremented by draw wrappers
+}
+
+-- Push a sample into the ring buffer and update moving averages.
+local function _push_sample(ms, kb, draws)
+    _stats._sample_idx = (_stats._sample_idx % SAMPLE_COUNT) + 1
+    _stats._samples_ms[_stats._sample_idx] = ms
+    _stats._samples_kb[_stats._sample_idx] = kb
+    _stats._samples_draws[_stats._sample_idx] = draws
+
+    local sum_ms, sum_kb, sum_draws = 0, 0, 0
+    local peak = 0
+    local count = 0
+    for i = 1, SAMPLE_COUNT do
+        local v = _stats._samples_ms[i]
+        if v then
+            sum_ms = sum_ms + v
+            sum_kb = sum_kb + (_stats._samples_kb[i] or 0)
+            sum_draws = sum_draws + (_stats._samples_draws[i] or 0)
+            if v > peak then peak = v end
+            count = count + 1
+        end
+    end
+    if count > 0 then
+        _stats.frame_ms_avg = sum_ms / count
+        _stats.alloc_kb_avg = sum_kb / count
+        _stats.draws_avg = sum_draws / count
+        _stats.frame_ms_peak = peak
+    end
+end
+
+function Core.GetStats()
+    return _stats
+end
+
+-- Mark the next frame as needing a full redraw (escapes idle mode).
+-- Use this when displaying live external data (REAPER playback, FX values, etc.).
+function Core.RequestRedraw()
+    state._request_redraw = true
+end
+
+-- Globally enable/disable the idle throttle. Default: enabled.
+-- Disable this when the script is fundamentally always-active (live meters,
+-- waveform displays, etc.) and per-frame RequestRedraw would be tedious.
+local _idle_throttle_enabled = true
+function Core.SetIdleThrottle(enabled)
+    _idle_throttle_enabled = enabled ~= false
+end
+function Core.IsIdleThrottleEnabled()
+    return _idle_throttle_enabled
+end
 
 -- ============================================================================
 -- MOUSE HELPERS
@@ -132,6 +222,23 @@ function Core.SetWidgetData(id, data)
     state.widget_data[id] = data
 end
 
+-- Sub-table accessor: avoids "prefix_"..id string concat in widget hot paths.
+-- Each widget category gets its own sub-table, indexed by raw id.
+-- Always returns a table (creates an empty one on first access).
+function Core.GetWidgetSubData(category, id)
+    local map = state.widget_data[category]
+    if not map then
+        map = {}
+        state.widget_data[category] = map
+    end
+    local d = map[id]
+    if not d then
+        d = {}
+        map[id] = d
+    end
+    return d
+end
+
 -- ============================================================================
 -- POPUP LAYER
 -- ============================================================================
@@ -174,7 +281,10 @@ end
 -- ============================================================================
 -- DRAWING HELPERS (thin wrappers for readability)
 -- ============================================================================
+-- Note: each wrapper increments _stats._draw_count. Cost is one local table
+-- write per call, ~10ns. Always on (cheap enough not to gate behind a flag).
 function Core.DrawRect(x, y, w, h, r, g, b, a, filled)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r, g, b, a or 1)
     if filled ~= false then
         gfx.rect(x, y, w, h, 1)
@@ -184,24 +294,95 @@ function Core.DrawRect(x, y, w, h, r, g, b, a, filled)
 end
 
 function Core.DrawLine(x1, y1, x2, y2, r, g, b, a)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r, g, b, a or 1)
     gfx.line(x1, y1, x2, y2)
 end
 
 function Core.DrawText(text, x, y, r, g, b, a)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r, g, b, a or 1)
     gfx.x, gfx.y = x, y
     gfx.drawstr(text)
 end
 
+-- Truncate a string so that MeasureText(result) <= max_w. If truncation is
+-- needed, appends ".." (which is included in the width budget). Returns the
+-- (possibly shortened) string plus its measured width. If max_w is too small
+-- to even fit "..", returns ("", 0) so callers never overflow.
+function Core.TruncateText(text, max_w)
+    if max_w <= 0 then return "", 0 end
+    local tw = Core.MeasureText(text)
+    if tw <= max_w or #text <= 2 then return text, tw end
+    local ellipsis_w = Core.MeasureText("..")
+    if max_w < ellipsis_w then return "", 0 end
+    local budget = max_w - ellipsis_w
+    local lo, hi = 1, #text
+    while lo < hi do
+        local mid = (lo + hi + 1) >> 1
+        local sub = text:sub(1, mid)
+        if Core.MeasureText(sub) <= budget then lo = mid else hi = mid - 1 end
+    end
+    local out = text:sub(1, lo) .. ".."
+    return out, Core.MeasureText(out)
+end
+
+-- ============================================================================
+-- MEASURE TEXT CACHE (PERFORMANCE.md rule 2 / ROADMAP task 1.1)
+-- ============================================================================
+-- gfx.measurestr crosses the Lua↔C boundary and walks the font glyphs. For
+-- static labels (which is most UI text), the result never changes between
+-- frames — caching saves N traversals per frame where N = label count.
+--
+-- Cache layout: _measure_cache[slot][text] = {w, h}
+--   - keyed by (current font slot, text) so font-dependent measurements stay
+--     correct even when widgets switch slots mid-frame
+--   - cleared whenever LoadFontSlots reloads the underlying fonts
+--   - bounded by MEASURE_CACHE_MAX as a safety net against pathological use
+--     (e.g. per-frame unique formatted strings); on overflow we wipe and
+--     refill on next frame
+local _current_font_slot = 4   -- default body slot (matches LoadFontSlots default)
+local _measure_cache = {}      -- [slot] = { [text] = {w, h} }
+local _measure_cache_size = 0
+local MEASURE_CACHE_MAX = 8000
+
+local function _measure_cache_clear()
+    for k in pairs(_measure_cache) do _measure_cache[k] = nil end
+    _measure_cache_size = 0
+end
+
+function Core.ClearMeasureCache()
+    _measure_cache_clear()
+end
+
 function Core.MeasureText(text)
+    local sub = _measure_cache[_current_font_slot]
+    if not sub then
+        sub = {}
+        _measure_cache[_current_font_slot] = sub
+    end
+    local entry = sub[text]
+    if entry then return entry[1], entry[2] end
+
     local w, h = gfx.measurestr(text)
+    if _measure_cache_size >= MEASURE_CACHE_MAX then
+        _measure_cache_clear()
+        sub = {}
+        _measure_cache[_current_font_slot] = sub
+    end
+    sub[text] = { w, h }
+    _measure_cache_size = _measure_cache_size + 1
     return w, h
 end
 
 function Core.SetFont(size, face, flags)
     -- flags: 0=normal, 66=bold ('B'), 73=italic ('I')
+    -- Legacy custom font path — reuses slot 1 with a user-supplied font
+    -- definition, so any cached slot 1 measurements become invalid.
+    -- (_measure_cache_size becomes a slight over-estimate; harmless.)
     gfx.setfont(1, face or "Tahoma", size or 12, flags or 0)
+    _measure_cache[1] = nil
+    _current_font_slot = 1
 end
 
 -- ============================================================================
@@ -221,15 +402,18 @@ function Core.LoadFontSlots(theme)
     gfx.setfont(7, f.face, f.h2, 66)             -- H2 Bold
     font_slots_loaded = true
     gfx.setfont(4)  -- restore to Body
+    _current_font_slot = 4
+    -- Font definitions changed → all cached measurements are now invalid
+    _measure_cache_clear()
 end
 
-function Core.SetFontTitle()    if font_slots_loaded then gfx.setfont(1) end end
-function Core.SetFontH1()       if font_slots_loaded then gfx.setfont(2) end end
-function Core.SetFontH2()       if font_slots_loaded then gfx.setfont(3) end end
-function Core.SetFontBody()     if font_slots_loaded then gfx.setfont(4) end end
-function Core.SetFontCaption()  if font_slots_loaded then gfx.setfont(5) end end
-function Core.SetFontMono()     if font_slots_loaded then gfx.setfont(6) end end
-function Core.SetFontH2Bold()   if font_slots_loaded then gfx.setfont(7) end end
+function Core.SetFontTitle()    if font_slots_loaded then gfx.setfont(1); _current_font_slot = 1 end end
+function Core.SetFontH1()       if font_slots_loaded then gfx.setfont(2); _current_font_slot = 2 end end
+function Core.SetFontH2()       if font_slots_loaded then gfx.setfont(3); _current_font_slot = 3 end end
+function Core.SetFontBody()     if font_slots_loaded then gfx.setfont(4); _current_font_slot = 4 end end
+function Core.SetFontCaption()  if font_slots_loaded then gfx.setfont(5); _current_font_slot = 5 end end
+function Core.SetFontMono()     if font_slots_loaded then gfx.setfont(6); _current_font_slot = 6 end end
+function Core.SetFontH2Bold()   if font_slots_loaded then gfx.setfont(7); _current_font_slot = 7 end end
 
 -- Legacy aliases
 function Core.SetFontPrimary()      Core.SetFontH1() end
@@ -242,52 +426,92 @@ function Core.SetFontPrimaryBold()  Core.SetFontTitle() end
 -- ============================================================================
 -- gfx doesn't have hardware scissor, but we can skip draw calls
 -- outside the clip rect. Widgets should call Core.IsVisible() before drawing.
-local clip_stack = {}
+-- Parallel arrays avoid per-push table allocation.
+local clip_x = {}
+local clip_y = {}
+local clip_w = {}
+local clip_h = {}
+local clip_top = 0
 
 function Core.PushClipRect(x, y, w, h)
     -- Intersect with current clip rect if any
-    local current = clip_stack[#clip_stack]
-    if current then
-        local cx2 = math.min(x + w, current.x + current.w)
-        local cy2 = math.min(y + h, current.y + current.h)
-        x = math.max(x, current.x)
-        y = math.max(y, current.y)
-        w = math.max(0, cx2 - x)
-        h = math.max(0, cy2 - y)
+    if clip_top > 0 then
+        local px, py, pw, ph = clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top]
+        local cx2 = min(x + w, px + pw)
+        local cy2 = min(y + h, py + ph)
+        x = max(x, px)
+        y = max(y, py)
+        w = max(0, cx2 - x)
+        h = max(0, cy2 - y)
     end
-    clip_stack[#clip_stack + 1] = { x = x, y = y, w = w, h = h }
+    clip_top = clip_top + 1
+    clip_x[clip_top] = x
+    clip_y[clip_top] = y
+    clip_w[clip_top] = w
+    clip_h[clip_top] = h
 end
 
 function Core.PopClipRect()
-    clip_stack[#clip_stack] = nil
+    if clip_top > 0 then clip_top = clip_top - 1 end
 end
 
 function Core.GetClipRect()
-    local c = clip_stack[#clip_stack]
-    if c then return c.x, c.y, c.w, c.h end
+    if clip_top > 0 then
+        return clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top]
+    end
     return 0, 0, state.win_w, state.win_h
 end
 
--- Returns true if a rect is at least partially visible in current clip
+-- Returns true if a rect is at least partially visible in current clip.
+-- Inlined clip lookup + bounds intersection (no helper call in hot path).
 function Core.IsVisible(x, y, w, h)
-    local cx, cy, cw, ch = Core.GetClipRect()
+    local cx, cy, cw, ch
+    if clip_top > 0 then
+        cx, cy, cw, ch = clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top]
+    else
+        cx, cy, cw, ch = 0, 0, state.win_w, state.win_h
+    end
+    return x + w > cx and x < cx + cw and y >= cy and y + h <= cy + ch
+end
+
+-- Less strict: partially visible (for rects that can be clamped)
+function Core.IsPartiallyVisible(x, y, w, h)
+    local cx, cy, cw, ch
+    if clip_top > 0 then
+        cx, cy, cw, ch = clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top]
+    else
+        cx, cy, cw, ch = 0, 0, state.win_w, state.win_h
+    end
     return x + w > cx and x < cx + cw and y + h > cy and y < cy + ch
 end
 
 -- Clamp drawing coordinates to clip rect (for rect fills)
 function Core.ClampToClip(x, y, w, h)
-    local cx, cy, cw, ch = Core.GetClipRect()
-    local x2 = math.min(x + w, cx + cw)
-    local y2 = math.min(y + h, cy + ch)
-    x = math.max(x, cx)
-    y = math.max(y, cy)
-    return x, y, math.max(0, x2 - x), math.max(0, y2 - y)
+    local cx, cy, cw, ch
+    if clip_top > 0 then
+        cx, cy, cw, ch = clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top]
+    else
+        cx, cy, cw, ch = 0, 0, state.win_w, state.win_h
+    end
+    local x2 = min(x + w, cx + cw)
+    local y2 = min(y + h, cy + ch)
+    x = max(x, cx)
+    y = max(y, cy)
+    return x, y, max(0, x2 - x), max(0, y2 - y)
 end
 
--- Hit-test respects clip rect: clicks outside clip are ignored
+-- Hit-test respects clip rect: clicks outside clip are ignored.
+-- Inlined clip+hit intersection: single bounds check, no helper calls.
 function Core.MouseInClippedRect(x, y, w, h)
-    if not Core.IsVisible(x, y, w, h) then return false end
-    return Core.MouseInRect(x, y, w, h)
+    local cx, cy, cw, ch
+    if clip_top > 0 then
+        cx, cy, cw, ch = clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top]
+    else
+        cx, cy, cw, ch = 0, 0, state.win_w, state.win_h
+    end
+    if x + w <= cx or x >= cx + cw or y + h <= cy or y >= cy + ch then return false end
+    local mx, my = state.mouse_x, state.mouse_y
+    return mx >= x and mx < x + w and my >= y and my < y + h
 end
 
 -- ============================================================================
@@ -305,8 +529,8 @@ local function update_double_click()
     state._dbl_click = false
     if Core.MouseClicked(1) then
         local now = reaper.time_precise()
-        local dx = math.abs(state.mouse_x - dbl_click_state.last_x)
-        local dy = math.abs(state.mouse_y - dbl_click_state.last_y)
+        local dx = abs(state.mouse_x - dbl_click_state.last_x)
+        local dy = abs(state.mouse_y - dbl_click_state.last_y)
         if now - dbl_click_state.last_time < dbl_click_state.threshold
            and dx < dbl_click_state.dist and dy < dbl_click_state.dist then
             state._dbl_click = true
@@ -326,6 +550,8 @@ function Core.GetMousePos() return state.mouse_x, state.mouse_y end
 function Core.GetWindowSize() return state.win_w, state.win_h end
 function Core.GetChar() return state.char end
 function Core.GetFrame() return state.frame end
+function Core.ConsumeWheel() state.wheel_consumed = true end
+function Core.IsWheelConsumed() return state.wheel_consumed end
 function Core.IsDocked() return state.dock ~= 0 end
 function Core.GetDockState() return state.dock end
 
@@ -448,8 +674,8 @@ function Core.UpdateAnchor()
     local r_w = r_right - r_left
     local r_h = r_bottom - r_top
 
-    local target_x = r_left + math.floor(r_w * (anchor.x or 0)) + (anchor.offset_x or 0)
-    local target_y = r_top + math.floor(r_h * (anchor.y or 0)) + (anchor.offset_y or 0)
+    local target_x = r_left + floor(r_w * (anchor.x or 0)) + (anchor.offset_x or 0)
+    local target_y = r_top + floor(r_h * (anchor.y or 0)) + (anchor.offset_y or 0)
 
     reaper.JS_Window_Move(win_hwnd, target_x, target_y)
 end
@@ -510,13 +736,16 @@ function Core.Animate(id, target, speed, dt)
     local current = animations[id]
     local diff = target - current
 
-    if math.abs(diff) < 0.001 then
+    if abs(diff) < 0.001 then
         animations[id] = target
         return target
     end
 
+    -- Animation is still moving — keep frame loop in active mode
+    state._has_active_animation = true
+
     -- Exponential ease-out
-    animations[id] = current + diff * math.min(1, speed * dt)
+    animations[id] = current + diff * min(1, speed * dt)
     return animations[id]
 end
 
@@ -529,16 +758,20 @@ function Core.AnimateColor(id, target_color, speed, dt)
     end
 
     local c = animations[id]
+    local moving = false
 
     for i = 1, 4 do
         local t = target_color[i] or (i == 4 and 1 or 0)
         local diff = t - c[i]
-        if math.abs(diff) > 0.001 then
-            c[i] = c[i] + diff * math.min(1, speed * dt)
+        if abs(diff) > 0.001 then
+            c[i] = c[i] + diff * min(1, speed * dt)
+            moving = true
         else
             c[i] = t
         end
     end
+
+    if moving then state._has_active_animation = true end
 
     return c[1], c[2], c[3], c[4]
 end
@@ -587,31 +820,46 @@ end
 -- ============================================================================
 -- PERSISTENT LAYOUT (save/load window state, splitter positions, etc.)
 -- ============================================================================
+-- Window state is saved as a SINGLE ExtState entry (one disk write) to keep
+-- close latency low. Format: "dock,x,y,w,h" — undocked saves x/y/w/h, docked
+-- only saves dock.
 function Core.SaveWindowState(script_id)
     local dock_state = gfx.dock(-1)
-    local x, y, w, h
+    local payload
     if dock_state == 0 then
-        -- Undocked: save position/size
         local _, wx, wy, ww, wh = gfx.dock(-1, 0, 0, 0, 0)
-        x, y, w, h = wx, wy, ww, wh
+        payload = string.format("%d,%d,%d,%d,%d", dock_state, wx, wy, ww, wh)
+    else
+        payload = tostring(dock_state)
     end
-
-    reaper.SetExtState(script_id, "win_dock", tostring(dock_state), true)
-    if x then
-        reaper.SetExtState(script_id, "win_x", tostring(x), true)
-        reaper.SetExtState(script_id, "win_y", tostring(y), true)
-        reaper.SetExtState(script_id, "win_w", tostring(w), true)
-        reaper.SetExtState(script_id, "win_h", tostring(h), true)
-    end
+    reaper.SetExtState(script_id, "win_state", payload, true)
 end
 
 function Core.LoadWindowState(script_id)
+    local payload = reaper.GetExtState(script_id, "win_state")
+    if payload ~= "" then
+        local dock, x, y, w, h = payload:match("([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)")
+        if dock then
+            return {
+                dock = tonumber(dock) or 0,
+                x = tonumber(x), y = tonumber(y),
+                w = tonumber(w), h = tonumber(h),
+            }
+        end
+        -- Docked-only payload (single number)
+        local d = tonumber(payload)
+        if d then return { dock = d } end
+    end
+
+    -- Legacy fallback: read the old per-key format if present
     local dock = tonumber(reaper.GetExtState(script_id, "win_dock")) or 0
-    local x = tonumber(reaper.GetExtState(script_id, "win_x"))
-    local y = tonumber(reaper.GetExtState(script_id, "win_y"))
-    local w = tonumber(reaper.GetExtState(script_id, "win_w"))
-    local h = tonumber(reaper.GetExtState(script_id, "win_h"))
-    return { dock = dock, x = x, y = y, w = w, h = h }
+    return {
+        dock = dock,
+        x = tonumber(reaper.GetExtState(script_id, "win_x")),
+        y = tonumber(reaper.GetExtState(script_id, "win_y")),
+        w = tonumber(reaper.GetExtState(script_id, "win_w")),
+        h = tonumber(reaper.GetExtState(script_id, "win_h")),
+    }
 end
 
 -- Save/load arbitrary persistent values (splitter positions, collapsing states, etc.)
@@ -628,29 +876,134 @@ function Core.LoadPersistent(script_id, key, default)
 end
 
 -- ============================================================================
+-- CP_CONFIG — file-based config storage
+--   One Lua file per script_id under <resource>/Scripts/CP_Scripts/CP_Config/
+--   - Save: 1 disk write of a small file (~1-5KB) regardless of #fields,
+--     vs ExtState which rewrites the global ~50-200KB reaper-extstate.ini.
+--   - Load: dofile() returns the table; instant after the OS file cache.
+--   - Format: human-readable Lua source, manually editable / backup-friendly.
+-- ============================================================================
+local function _cp_config_dir()
+    return reaper.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Config/"
+end
+
+local function _cp_config_path(script_id)
+    return _cp_config_dir() .. script_id .. ".lua"
+end
+
+-- Recursive Lua-table serializer. Supports: nil, boolean, number, string,
+-- and tables (mixed array/hash). Cycles will infinite-loop — don't pass them.
+local function _serialize(value, indent)
+    local t = type(value)
+    if t == "nil" then
+        return "nil"
+    elseif t == "boolean" then
+        return tostring(value)
+    elseif t == "number" then
+        -- Preserve precision; "%.6g" trims trailing zeros while keeping enough digits
+        if value == floor(value) and abs(value) < 1e15 then
+            return string.format("%d", value)
+        end
+        return string.format("%.6g", value)
+    elseif t == "string" then
+        return string.format("%q", value)
+    elseif t == "table" then
+        local pad = string.rep("  ", indent)
+        local pad2 = string.rep("  ", indent + 1)
+        local parts = {}
+        -- Detect array vs hash
+        local n = 0
+        local is_array = true
+        for k, _ in pairs(value) do
+            n = n + 1
+            if type(k) ~= "number" or k ~= floor(k) or k < 1 then
+                is_array = false
+            end
+        end
+        if is_array and n == #value and n > 0 then
+            for i = 1, #value do
+                parts[#parts + 1] = pad2 .. _serialize(value[i], indent + 1)
+            end
+            return "{\n" .. table.concat(parts, ",\n") .. "\n" .. pad .. "}"
+        else
+            -- Hash table — sort keys for stable output
+            local keys = {}
+            for k, _ in pairs(value) do keys[#keys + 1] = k end
+            table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+            for _, k in ipairs(keys) do
+                local v = value[k]
+                local key_str
+                if type(k) == "string" and k:match("^[%a_][%w_]*$") then
+                    key_str = k
+                else
+                    key_str = "[" .. _serialize(k, indent + 1) .. "]"
+                end
+                parts[#parts + 1] = pad2 .. key_str .. " = " .. _serialize(v, indent + 1)
+            end
+            if #parts == 0 then return "{}" end
+            return "{\n" .. table.concat(parts, ",\n") .. "\n" .. pad .. "}"
+        end
+    end
+    return "nil"
+end
+
+-- Save a Lua table as <CP_Config>/<script_id>.lua. Returns true on success.
+function Core.SaveConfig(script_id, data)
+    if not script_id or type(data) ~= "table" then return false end
+    reaper.RecursiveCreateDirectory(_cp_config_dir(), 0)
+    local path = _cp_config_path(script_id)
+
+    local body = "-- " .. script_id .. " — auto-generated config\n"
+              .. "return " .. _serialize(data, 0) .. "\n"
+
+    local f = io.open(path, "w")
+    if not f then return false end
+    f:write(body)
+    f:close()
+    return true
+end
+
+-- Load a config table from disk. Returns the table or nil if not found.
+function Core.LoadConfig(script_id)
+    if not script_id then return nil end
+    local path = _cp_config_path(script_id)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    f:close()
+    local ok, data = pcall(dofile, path)
+    if ok and type(data) == "table" then return data end
+    return nil
+end
+
+-- ============================================================================
 -- NATIVE GFX DRAWING (exposed for toolkit use)
 -- ============================================================================
 function Core.DrawRoundRect(x, y, w, h, radius, r, g, b, a, antialias)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r, g, b, a or 1)
     gfx.roundrect(x, y, w, h, radius, antialias ~= false and 1 or 0)
 end
 
 function Core.DrawCircle(x, y, radius, r, g, b, a, filled, antialias)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r, g, b, a or 1)
     gfx.circle(x, y, radius, filled and 1 or 0, antialias ~= false and 1 or 0)
 end
 
 function Core.DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r, g, b, a or 1)
     gfx.triangle(x1, y1, x2, y2, x3, y3)
 end
 
 function Core.DrawArc(x, y, radius, ang1, ang2, r, g, b, a, antialias)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r, g, b, a or 1)
     gfx.arc(x, y, radius, ang1, ang2, antialias ~= false and 1 or 0)
 end
 
 function Core.DrawGradientRect(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2, vertical)
+    _stats._draw_count = _stats._draw_count + 1
     gfx.set(r1, g1, b1, a1)
     if vertical then
         local dr = (r2 - r1) / h
@@ -683,9 +1036,96 @@ function Core.GetHWND()
     return win_hwnd
 end
 
+-- ============================================================================
+-- IDLE THROTTLE (see PERFORMANCE.md rule 4 + ROADMAP task 2.1)
+-- ============================================================================
+-- Strategy: instead of running the full frame body 30x/sec unconditionally,
+-- detect frames where nothing has changed and skip the heavy work (input
+-- processing, user loop, drawing). On idle frames we still defer at REAPER's
+-- natural rate, but we bail out early — saving the bulk of the CPU cost.
+--
+-- A frame is considered idle when ALL of these are true:
+--   - mouse position, buttons and wheel are unchanged from last full frame
+--   - no widget holds focus (text editing, etc.)
+--   - no popup or tooltip is up
+--   - no anchor (window doesn't follow REAPER position)
+--   - no animation is mid-interpolation
+--   - no explicit Core.RequestRedraw() pending
+--   - window size hasn't changed
+--   - we have not exceeded the idle heartbeat interval (forces a wakeup
+--     occasionally so external dirty state still gets a chance to redraw)
+--
+-- During an idle skip we DO NOT call gfx.getchar() (it's consuming) and we DO
+-- NOT call gfx.update() (no draws to flush — gfx keeps its backbuffer).
+local IDLE_HEARTBEAT = 0.15  -- forced wakeup interval in seconds (~6.6 Hz)
+local INPUT_MOMENTUM = 0.30  -- stay active for N seconds after last user input
+local _last_full_frame_time = 0
+local _last_input_time = 0
+
+-- Called from the full-frame body when an input event was observed.
+-- Keeps the loop active for INPUT_MOMENTUM seconds so follow-up events
+-- (rapid wheel ticks, key repeat, drag-release) are processed promptly
+-- without waiting on the idle heartbeat + REAPER's defer throttle.
+local function _mark_input()
+    _last_input_time = reaper.time_precise()
+end
+
+local function _can_skip_frame()
+    -- Throttle disabled globally? Never skip.
+    if not _idle_throttle_enabled then return false end
+
+    -- Window resize or first frame: always do full frame
+    if gfx.w ~= state.win_w or gfx.h ~= state.win_h then return false end
+    if state.frame == 0 then return false end
+
+    -- Mouse changes: any movement, button state change, or wheel input
+    if gfx.mouse_x ~= state.mouse_x then return false end
+    if gfx.mouse_y ~= state.mouse_y then return false end
+    if gfx.mouse_cap ~= state.mouse_cap then return false end
+    if gfx.mouse_wheel ~= 0 then return false end
+
+    -- Anything that demands continuous redraw
+    if state.focus ~= nil then return false end
+    if state.popup_layer ~= nil then return false end
+    if state.tooltip_layer ~= nil then return false end
+    if anchor ~= nil then return false end
+    if state._has_active_animation then return false end
+    if state._request_redraw then return false end
+
+    local now = reaper.time_precise()
+
+    -- Input momentum: absorb follow-up events (rapid wheel ticks etc.) without
+    -- the defer-throttle round-trip penalty of dropping to idle between ticks.
+    if now - _last_input_time < INPUT_MOMENTUM then return false end
+
+    -- Heartbeat: at least one full frame per IDLE_HEARTBEAT, so external
+    -- state changes (e.g. RequestRedraw from a coroutine) get a chance.
+    if now - _last_full_frame_time > IDLE_HEARTBEAT then
+        return false
+    end
+
+    return true
+end
+
 function Core.Run(loop_fn)
     user_loop_fn = loop_fn
     local function frame()
+        -- ----- Idle skip check (cheap path, runs first) -----
+        if _can_skip_frame() then
+            _stats.mode = "idle"
+            _stats.idle_skips = _stats.idle_skips + 1
+            reaper.defer(frame)
+            return
+        end
+
+        -- ----- Full frame body -----
+        local t0 = reaper.time_precise()
+        local kb0 = collectgarbage("count")
+        _stats._draw_count = 0
+        _stats.mode = "active"
+        _stats.idle_skips = 0
+        _last_full_frame_time = t0
+
         -- Update state
         state.prev_mouse_x = state.mouse_x
         state.prev_mouse_y = state.mouse_y
@@ -702,6 +1142,21 @@ function Core.Run(loop_fn)
         state.dock = gfx.dock(-1)
         state.frame = state.frame + 1
 
+        -- Any user input on this frame → refresh momentum so follow-up events
+        -- stay on the active path (see INPUT_MOMENTUM).
+        if state.mouse_wheel ~= 0
+           or state.mouse_cap ~= state.prev_mouse_cap
+           or state.mouse_x ~= state.prev_mouse_x
+           or state.mouse_y ~= state.prev_mouse_y
+           or (state.char and state.char ~= 0 and state.char ~= -1) then
+            _mark_input()
+        end
+
+        -- Reset animation tracker — set by Core.Animate during user loop
+        state._has_active_animation = false
+        -- Consume one-shot redraw request
+        state._request_redraw = false
+
         -- Log: begin frame
         if Log then
             Log.HandleInput(state.char, state.mouse_wheel, state.mouse_y)
@@ -711,8 +1166,9 @@ function Core.Run(loop_fn)
         -- Update anchor position (if overlay is anchored to REAPER)
         Core.UpdateAnchor()
 
-        -- Reset hot widget each frame (widgets re-claim it)
+        -- Reset per-frame flags
         state.hot = nil
+        state.wheel_consumed = false
 
         -- Double-click tracking
         update_double_click()
@@ -750,12 +1206,22 @@ function Core.Run(loop_fn)
         -- End frame
         gfx.update()
 
-        -- Check for close (ESC or window closed)
-        if state.char >= 0 and state.char ~= 27 then
+        -- ----- Stats sampling (after gfx.update so we capture full frame cost) -----
+        local frame_ms = (reaper.time_precise() - t0) * 1000
+        local alloc_kb = collectgarbage("count") - kb0
+        _stats.frame_ms = frame_ms
+        _stats.alloc_kb = alloc_kb
+        _stats.draws_per_frame = _stats._draw_count
+        _push_sample(frame_ms, alloc_kb, _stats._draw_count)
+
+        -- Check for close (ESC, window closed, or programmatic request)
+        if state.char >= 0 and state.char ~= 27 and not state._request_close then
             reaper.defer(frame)
         else
-            gfx.quit()
+            -- Run user OnClose BEFORE gfx.quit() so it can still query
+            -- gfx state (window position, dock, etc.)
             if Core._on_close then Core._on_close() end
+            gfx.quit()
         end
     end
 
@@ -764,6 +1230,11 @@ end
 
 function Core.OnClose(fn)
     Core._on_close = fn
+end
+
+-- Programmatically request the window to close on the next frame.
+function Core.RequestClose()
+    state._request_close = true
 end
 
 -- ============================================================================

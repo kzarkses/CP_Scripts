@@ -1,0 +1,98 @@
+desc: CP - Tremolo (FX Constellation)
+author: Cedric Pamalio
+version: 1.0
+about:
+  Tremolo with multiple LFO shapes and stereo phase offset.
+  Designed for FX Constellation XY gesture control.
+
+slider1:rate=4<0.1,20,0.01:log>Rate (Hz)
+slider2:depth=50<0,100,1>Depth (%)
+slider3:shape=0<0,3,1{Sine,Triangle,Square,Sample & Hold}>Shape
+slider4:stereo_phase=0<0,180,1>Stereo Phase (deg)
+slider5:mix=100<0,100,1>Mix (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+pi2 = 2 * $pi;
+smooth_coeff = exp(-1 / (0.005 * srate));
+
+phase = 0;
+sh_value_l = 1;
+sh_value_r = 1;
+last_phase_l = 0;
+last_phase_r = 0;
+
+s_rate = 4;
+s_depth = 0.5;
+s_stereo = 0;
+s_mix = 1;
+
+@slider
+target_rate = rate;
+target_depth = depth / 100;
+target_stereo = stereo_phase / 360;
+target_mix = mix / 100;
+
+@sample
+// Smooth parameters
+s_rate = s_rate * smooth_coeff + target_rate * (1 - smooth_coeff);
+s_depth = s_depth * smooth_coeff + target_depth * (1 - smooth_coeff);
+s_stereo = s_stereo * smooth_coeff + target_stereo * (1 - smooth_coeff);
+s_mix = s_mix * smooth_coeff + target_mix * (1 - smooth_coeff);
+
+// Phase increment
+phase_inc = s_rate / srate;
+
+// Left phase
+phase_l = phase;
+
+// Right phase with stereo offset
+phase_r = phase + s_stereo;
+phase_r >= 1 ? phase_r -= 1;
+
+// Generate LFO values (unipolar 0 to 1)
+shape < 0.5 ? (
+  // Sine (unipolar: 0 to 1)
+  lfo_l = (sin(phase_l * pi2) + 1) * 0.5;
+  lfo_r = (sin(phase_r * pi2) + 1) * 0.5;
+) : shape < 1.5 ? (
+  // Triangle (unipolar)
+  lfo_l = 1 - 2 * abs(phase_l - 0.5);
+  lfo_r = 1 - 2 * abs(phase_r - 0.5);
+) : shape < 2.5 ? (
+  // Square (unipolar, with slight smoothing)
+  lfo_l = phase_l < 0.5 ? 1 : 0;
+  lfo_r = phase_r < 0.5 ? 1 : 0;
+) : (
+  // Sample & Hold
+  phase_l < last_phase_l ? (
+    sh_value_l = rand();
+  );
+  phase_r < last_phase_r ? (
+    sh_value_r = rand();
+  );
+  lfo_l = sh_value_l;
+  lfo_r = sh_value_r;
+  last_phase_l = phase_l;
+  last_phase_r = phase_r;
+);
+
+// Apply depth: lfo modulates between 1 (no effect) and (1-depth) (max tremolo)
+gain_l = 1 - s_depth * (1 - lfo_l);
+gain_r = 1 - s_depth * (1 - lfo_r);
+
+// Apply tremolo
+trem_l = spl0 * gain_l;
+trem_r = spl1 * gain_r;
+
+// Wet/dry mix
+spl0 = spl0 * (1 - s_mix) + trem_l * s_mix;
+spl1 = spl1 * (1 - s_mix) + trem_r * s_mix;
+
+// Advance phase
+phase += phase_inc;
+phase >= 1 ? phase -= 1;
