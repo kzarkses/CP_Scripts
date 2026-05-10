@@ -1,0 +1,38 @@
+// CP_VideoKit — Audio Shake
+// Translates the image by a random offset proportional to the gmem slot
+// value. The randomness is regenerated each frame.
+
+//@param1:slot 'gmem slot' 0 0 31 0 1
+//@param2:amplitude 'Max shake (px)' 30 0 200 30 1
+//@param3:rotation 'Rotation amount (deg)' 0 0 30 0 0.1
+//@param4:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    audio = gmem[slot];
+    audio < 0 ? audio = 0;
+    audio > 1 ? audio = 1;
+
+    // Pseudo-random offsets driven by project time so they don't repeat.
+    rx = (rand(2) - 1) * amplitude * audio;
+    ry = (rand(2) - 1) * amplitude * audio;
+    rrot = (rand(2) - 1) * rotation * audio;
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, pw, ph);
+    rrot == 0 ? (
+        gfx_blit(0, 0, rx, ry, pw, ph);
+    ) : (
+        gfx_rotoblit(0, rrot * $pi / 180, rx, ry, pw, ph, 0, 0, iw, ih);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

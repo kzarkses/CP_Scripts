@@ -1,0 +1,42 @@
+// CP_VideoKit — Audio Zoom Punch
+// Reads a gmem slot (filled by CP_AudioReactive.jsfx) and uses its 0..1
+// value to drive a centered zoom. Loud audio = zoom in.
+
+//@param1:slot 'gmem slot' 0 0 31 0 1
+//@param2:amount 'Punch amount' 0.5 0 2 0.5 0.001
+//@param3:base_zoom 'Base zoom' 1 1 4 1 0.001
+//@param4:cx 'Center X' 0.5 0 1 0.5 0.001
+//@param5:cy 'Center Y' 0.5 0 1 0.5 0.001
+//@param6:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    // Read the audio-reactive value from gmem (0..1).
+    audio = gmem[slot];
+    audio < 0 ? audio = 0;
+    audio > 1 ? audio = 1;
+
+    zoom = base_zoom + audio * amount;
+    zoom < 0.1 ? zoom = 0.1;
+
+    half_w = (iw * 0.5) / zoom;
+    half_h = (ih * 0.5) / zoom;
+    sx = iw * cx - half_w;
+    sy = ih * cy - half_h;
+    sw = iw / zoom;
+    sh = ih / zoom;
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, pw, ph);
+    gfx_blit(0, 0, 0, 0, pw, ph, sx, sy, sw, sh);
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

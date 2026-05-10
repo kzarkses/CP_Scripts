@@ -1,0 +1,66 @@
+// CP_VideoKit — Frame Echo (motion trail)
+// Persists an offscreen buffer across frames and blends the current frame
+// into it with a configurable decay.
+
+//@param1:decay 'Decay (0=none, 1=keep all)' 0.85 0 1 0.85 0.001
+//@param2:offset_x 'Drift X (px/frame)' 0 -20 20 0 0.5
+//@param3:offset_y 'Drift Y (px/frame)' 0 -20 20 0 0.5
+//@param4:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+
+    pw = project_w; ph = project_h;
+
+    // Allocate the trail buffer once per project_w/ph; gfx_img_hold keeps
+    // its content between frames as long as we don't free it.
+    trail < 0 || trail_w != pw || trail_h != ph ? (
+        trail >= 0 ? gfx_img_free(trail);
+        trail = gfx_img_alloc(pw, ph, 1) | 0;
+        trail_w = pw;
+        trail_h = ph;
+    );
+
+    trail >= 0 ? (
+        // Step 1: fade the existing trail in-place.
+        prev_dest = gfx_dest;
+        gfx_dest = trail;
+        gfx_set(0, 0, 0, 1 - decay);
+        gfx_mode = 0;
+        gfx_fillrect(0, 0, pw, ph);
+
+        // Optional drift: shift trail content before adding the new frame.
+        (offset_x != 0 || offset_y != 0) ? (
+            tmp = gfx_img_alloc(pw, ph, 1) | 0;
+            tmp >= 0 ? (
+                gfx_dest = tmp;
+                gfx_blit(trail, 0, offset_x, offset_y, pw, ph);
+                gfx_dest = trail;
+                gfx_set(0, 0, 0, 1);
+                gfx_fillrect(0, 0, pw, ph);
+                gfx_blit(tmp, 0, 0, 0, pw, ph);
+                gfx_img_free(tmp);
+            );
+        );
+
+        // Step 2: blend current frame on top of trail.
+        gfx_set(1, 1, 1, 1);
+        gfx_blit(0, 0, 0, 0, pw, ph);
+        gfx_dest = prev_dest;
+
+        // Step 3: render trail to the framebuffer.
+        gfx_set(0, 0, 0, 1);
+        gfx_fillrect(0, 0, pw, ph);
+        gfx_blit(trail, 0, 0, 0, pw, ph);
+    ) : (
+        gfx_blit(0, 0);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

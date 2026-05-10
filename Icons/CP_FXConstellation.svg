@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CP_FXConstellation toolbar icon — 30x90 (3 vertical states for REAPER).
+  Concept: a small constellation of nodes connected by faint lines.
+  Top    = normal   (outlined nodes)
+  Middle = hover    (thicker outline)
+  Bottom = active   (filled nodes)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="30" height="90" viewBox="0 0 30 90">
+  <!-- ============== STATE: NORMAL (y offset 0) ============== -->
+  <g transform="translate(0,0)">
+    <!-- connecting lines -->
+    <g stroke="#ffffff" stroke-opacity="0.45" stroke-width="0.8" fill="none" stroke-linecap="round">
+      <line x1="7"  y1="9"  x2="15" y2="14"/>
+      <line x1="15" y1="14" x2="23" y2="8"/>
+      <line x1="15" y1="14" x2="9"  y2="22"/>
+      <line x1="15" y1="14" x2="22" y2="22"/>
+      <line x1="9"  y1="22" x2="22" y2="22"/>
+    </g>
+    <!-- nodes (outlined) -->
+    <g stroke="#ffffff" stroke-width="1.2" fill="none">
+      <circle cx="7"  cy="9"  r="1.8"/>
+      <circle cx="23" cy="8"  r="1.8"/>
+      <circle cx="15" cy="14" r="2.2"/>
+      <circle cx="9"  cy="22" r="1.8"/>
+      <circle cx="22" cy="22" r="1.8"/>
+    </g>
+  </g>
+
+  <!-- ============== STATE: HOVER (y offset 30) ============== -->
+  <g transform="translate(0,30)">
+    <g stroke="#ffffff" stroke-opacity="0.6" stroke-width="1.0" fill="none" stroke-linecap="round">
+      <line x1="7"  y1="9"  x2="15" y2="14"/>
+      <line x1="15" y1="14" x2="23" y2="8"/>
+      <line x1="15" y1="14" x2="9"  y2="22"/>
+      <line x1="15" y1="14" x2="22" y2="22"/>
+      <line x1="9"  y1="22" x2="22" y2="22"/>
+    </g>
+    <g stroke="#ffffff" stroke-width="1.6" fill="none">
+      <circle cx="7"  cy="9"  r="1.8"/>
+      <circle cx="23" cy="8"  r="1.8"/>
+      <circle cx="15" cy="14" r="2.4"/>
+      <circle cx="9"  cy="22" r="1.8"/>
+      <circle cx="22" cy="22" r="1.8"/>
+    </g>
+  </g>
+
+  <!-- ============== STATE: ACTIVE (y offset 60) ============== -->
+  <g transform="translate(0,60)">
+    <g stroke="#ffffff" stroke-opacity="0.85" stroke-width="1.0" fill="none" stroke-linecap="round">
+      <line x1="7"  y1="9"  x2="15" y2="14"/>
+      <line x1="15" y1="14" x2="23" y2="8"/>
+      <line x1="15" y1="14" x2="9"  y2="22"/>
+      <line x1="15" y1="14" x2="22" y2="22"/>
+      <line x1="9"  y1="22" x2="22" y2="22"/>
+    </g>
+    <g fill="#ffffff" stroke="none">
+      <circle cx="7"  cy="9"  r="2.0"/>
+      <circle cx="23" cy="8"  r="2.0"/>
+      <circle cx="15" cy="14" r="2.6"/>
+      <circle cx="9"  cy="22" r="2.0"/>
+      <circle cx="22" cy="22" r="2.0"/>
+    </g>
+  </g>
+</svg>

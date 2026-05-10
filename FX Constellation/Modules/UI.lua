@@ -1,1878 +1,1576 @@
+-- ============================================================================
+-- CP_FXConstellation — UI module (CP_Toolkit port, v2.0)
+--
+-- The whole interface is rendered through CP_Toolkit's gfx-based widgets.
+-- Layout is fully theme-driven: every padding, gap, height and width is
+-- derived from theme primitives (window_padding, item_spacing, button_height,
+-- scale, …) so the Theme Tweaker can tune the look without touching code.
+--
+-- Sections, in order: SoundGen | Navigation | Mode | XY Pad | Presets |
+-- Randomizer | FX Settings (flexible). Each is collapsible (click header).
+-- The FX cards row uses CP_Toolkit's horizontal scrolling child.
+-- ============================================================================
+
 local UI = {}
 
-function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence, soundgen, license, fxmanagerui, style_loader, ctx, header_font_size, item_spacing_x, item_spacing_y, window_padding_x, window_padding_y)
-	UI.r = reaper_api
-	UI.core = core
-	UI.fxmanager = fxmanager
-	UI.gesture = gesture
-	UI.presetsystem = presetsystem
-	UI.persistence = persistence
-	UI.soundgen = soundgen
-	UI.license = license
-	UI.fxmanagerui = fxmanagerui
-	UI.style_loader = style_loader
-	UI.ctx = ctx
-	UI.filters_ctx = nil
-	UI.presets_ctx = nil
-	UI.license_ctx = nil
-	UI.pushed_colors = 0
-	UI.filters_pushed_colors = 0
-	UI.presets_pushed_colors = 0
-	UI.license_pushed_colors = 0
-	UI.pushed_vars = 0
-	UI.filters_pushed_vars = 0
-	UI.presets_pushed_vars = 0
-	UI.license_pushed_vars = 0
-	UI.header_font_size = header_font_size
-	UI.item_spacing_x = item_spacing_x
-	UI.item_spacing_y = item_spacing_y
-	UI.window_padding_x = window_padding_x
-	UI.window_padding_y = window_padding_y
-	UI.license_key_input = ""
-	UI.license_activation_message = ""
-	UI.license_message_time = 0
+-- ---------------------------------------------------------------------------
+-- INIT
+-- ---------------------------------------------------------------------------
+function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence,
+                 soundgen, license, fxmanagerui, toolkit)
+    UI.r            = reaper_api
+    UI.core         = core
+    UI.fxmanager    = fxmanager
+    UI.gesture      = gesture
+    UI.presetsystem = presetsystem
+    UI.persistence  = persistence
+    UI.soundgen     = soundgen
+    UI.license      = license
+    UI.fxmanagerui  = fxmanagerui
+    UI.tk           = toolkit
+
+    UI.license_key_input = ""
+    UI.license_msg = ""
+    UI.license_msg_time = 0
+
+    UI.fxbrowser_script = reaper_api.GetResourcePath()
+        .. "/Scripts/CP_Scripts/FX Constellation/CP_FXBrowser.lua"
+    UI.fxbrowser_cmd = 0
+
+    UI.section_order = core.state.section_order or {
+        "soundgen", "navigation", "mode", "pad",
+        "presets", "randomizer", "fx_settings"
+    }
+    core.state.section_order = UI.section_order
 end
 
-function UI.getStyleValue(path, default_value)
-	return UI.style_loader and UI.style_loader.GetValue(path, default_value) or default_value
+-- Launch the standalone FX Browser script as its own REAPER window.
+-- Resolves the named command id once (registers the script if needed) and
+-- caches it. The browser stays open across calls — REAPER toggles a script's
+-- defer loop, so we re-trigger only when it's not already running.
+function UI.openFXBrowser()
+    local r = UI.r
+    if not r.file_exists(UI.fxbrowser_script) then return false end
+
+    if UI.fxbrowser_cmd == 0 then
+        UI.fxbrowser_cmd = r.NamedCommandLookup("_RS" .. UI.fxbrowser_script)
+        if UI.fxbrowser_cmd == 0 then
+            UI.fxbrowser_cmd = r.AddRemoveReaScript(true, 0,
+                                                   UI.fxbrowser_script, true)
+        end
+    end
+    if UI.fxbrowser_cmd == 0 then return false end
+
+    local running = r.GetToggleCommandStateEx(0, UI.fxbrowser_cmd)
+    if running ~= 1 then
+        r.Main_OnCommand(UI.fxbrowser_cmd, 0)
+    end
+    return true
 end
 
-function UI.getStyleFont(font_name, context)
-	return UI.style_loader and UI.style_loader.getFont(context or UI.ctx, font_name) or nil
+-- ---------------------------------------------------------------------------
+-- HELPERS
+-- ---------------------------------------------------------------------------
+local function clamp(v, lo, hi)
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
 end
 
-function UI.drawCollapsibleHeader(section_name, display_text)
-	local is_collapsed = UI.core.state.section_collapsed[section_name]
-	local collapse_icon = is_collapsed and "▶" or "▼"
-	local header_font = UI.getStyleFont("header")
-
-	if is_collapsed then
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		end
-		local char_height = 12
-		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-		local button_height = #display_text * char_height + 30
-		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_" .. section_name, 25, button_height)
-		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
-		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
-
-		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-		if hovered then
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
-			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
-			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
-			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
-		end
-
-		local icon_x = cursor_x + 5
-		local icon_y = cursor_y + 5
-		UI.r.ImGui_DrawList_AddText(draw_list, icon_x, icon_y, 0xFFFFFFFF, collapse_icon)
-
-		local text_x = cursor_x + 7
-		local text_y = cursor_y + 25
-		for i = 1, #display_text do
-			local char = display_text:sub(i, i)
-			UI.r.ImGui_DrawList_AddText(draw_list, text_x, text_y, 0xFFFFFFFF, char)
-			text_y = text_y + char_height
-		end
-
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PopFont(UI.ctx)
-		end
-
-		if clicked then
-			UI.core.state.section_collapsed[section_name] = false
-			UI.persistence.scheduleSave()
-		end
-
-		return false
-	else
-		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		end
-		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " " .. display_text)
-		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
-		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
-		if hovered then
-			local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-			local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
-			local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
-			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
-			UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x - 2, min_y - 2, max_x + 2, max_y + 2, highlight_color, rounding)
-			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
-			UI.r.ImGui_SetCursorScreenPos(UI.ctx, cursor_x, cursor_y)
-			UI.r.ImGui_Text(UI.ctx, collapse_icon .. " " .. display_text)
-		end
-		if clicked then
-			UI.core.state.section_collapsed[section_name] = true
-			UI.persistence.scheduleSave()
-		end
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PopFont(UI.ctx)
-		end
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-		return true
-	end
+-- Toolkit's slider `format` is a fixed display string (not a printf pattern),
+-- so we render the value through string.format and pass the resulting text
+-- on every frame.
+local function fmtVal(pattern, value)
+    return string.format(pattern, value)
 end
 
-function UI.drawPatternIcon(draw_list, x, y, size, pattern_id, is_active)
-	local center_x = x + size / 2
-	local center_y = y + size / 2
-	local radius = size * 0.35
-	local color = is_active and 0xFFFFFFFF or 0x888888FF
-	local thickness = is_active and 2 or 1
-
-	if pattern_id == 0 then
-		UI.r.ImGui_DrawList_AddCircle(draw_list, center_x, center_y, radius, color, 32, thickness)
-	elseif pattern_id == 1 then
-		local offset = radius
-		UI.r.ImGui_DrawList_AddRect(draw_list, center_x - offset, center_y - offset, center_x + offset, center_y + offset, color, 0, 0, thickness)
-	elseif pattern_id == 2 then
-		local h = radius * 1.2
-		UI.r.ImGui_DrawList_AddTriangle(draw_list, center_x, center_y - h * 0.7, center_x - h * 0.6, center_y + h * 0.5, center_x + h * 0.6, center_y + h * 0.5, color, thickness)
-	elseif pattern_id == 3 then
-		local offset = radius * 0.8
-		UI.r.ImGui_DrawList_AddQuad(draw_list, center_x, center_y - offset, center_x + offset, center_y, center_x, center_y + offset, center_x - offset, center_y, color, thickness)
-	elseif pattern_id == 4 then
-		local offset = radius * 0.8
-		UI.r.ImGui_DrawList_AddLine(draw_list, center_x - offset, center_y + offset, center_x + offset, center_y - offset, color, thickness)
-		UI.r.ImGui_DrawList_AddLine(draw_list, center_x + offset, center_y + offset, center_x - offset, center_y - offset, color, thickness)
-	elseif pattern_id == 5 then
-		local segments = 64
-		for i = 0, segments - 1 do
-			local t1 = (i / segments) * 2 * math.pi
-			local t2 = ((i + 1) / segments) * 2 * math.pi
-			local scale = radius * 1.3
-			local x1 = center_x + scale * math.sin(t1) / (1 + math.cos(t1) * math.cos(t1))
-			local y1 = center_y + scale * math.sin(t1) * math.cos(t1) / (1 + math.cos(t1) * math.cos(t1))
-			local x2 = center_x + scale * math.sin(t2) / (1 + math.cos(t2) * math.cos(t2))
-			local y2 = center_y + scale * math.sin(t2) * math.cos(t2) / (1 + math.cos(t2) * math.cos(t2))
-			UI.r.ImGui_DrawList_AddLine(draw_list, x1, y1, x2, y2, color, thickness)
-		end
-	end
+-- All section widgets fill their column by default and share the same
+-- vertical metric (`theme.button_height`) so checkboxes, sliders, combos
+-- and buttons line up on the same row. The toolkit accepts opts.height /
+-- opts.size on each widget — we set them here once for FX Constellation.
+local function _commonOpts(opts, theme)
+    opts = opts or {}
+    if opts.width  == nil then opts.width  = -1 end
+    if opts.height == nil then opts.height = theme.button_height end
+    return opts
 end
 
-function UI.drawNavigation()
-	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	if not UI.drawCollapsibleHeader("navigation", "NAVIGATION") then return end
-
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, 128)
-	local nav_modes = UI.license.isFull() and UI.core.navigation_modes or {"Manual", "Random Walk 🔒", "Figures 🔒"}
-	local nav_items = table.concat(nav_modes, "\0") .. "\0"
-	local changed, new_nav_mode = UI.r.ImGui_Combo(UI.ctx, "##navmode", UI.core.state.navigation_mode, nav_items)
-	if changed then
-		if (new_nav_mode == 1 or new_nav_mode == 2) and not UI.license.isFull() then
-			UI.core.state.navigation_mode = 0
-			UI.core.state.show_license_window = true
-		else
-			UI.core.state.navigation_mode = new_nav_mode
-			if new_nav_mode == 1 then
-				UI.core.state.random_walk_active = true
-				UI.core.state.random_walk_next_time = UI.r.time_precise() + 1.0 / UI.core.state.random_walk_speed
-				UI.gesture.generateRandomWalkControlPoints()
-				UI.fxmanager.captureBaseValues()
-			elseif new_nav_mode == 2 then
-				UI.core.state.figures_active = true
-				UI.core.state.figures_time = 0
-				UI.fxmanager.captureBaseValues()
-			else
-				UI.core.state.random_walk_active = false
-				UI.core.state.figures_active = false
-			end
-			UI.persistence.scheduleSave()
-		end
-	end
-
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-	if UI.core.state.navigation_mode == 0 then
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_smooth = UI.r.ImGui_SliderDouble(UI.ctx, "Smooth", UI.core.state.smooth_speed, 0.0, 1.0, "%.2f")
-		if changed then UI.core.state.smooth_speed = new_smooth end
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_max_speed = UI.r.ImGui_SliderDouble(UI.ctx, "Speed", UI.core.state.max_gesture_speed, 0.1, 10.0, "%.1f")
-		if changed then UI.core.state.max_gesture_speed = new_max_speed end
-	elseif UI.core.state.navigation_mode == 1 then
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_speed = UI.r.ImGui_SliderDouble(UI.ctx, "Speed", UI.core.state.random_walk_speed, 0.1, 10.0, "%.1f Hz")
-		if changed then
-			UI.core.state.random_walk_speed = new_speed
-			if UI.core.state.random_walk_active then
-				UI.core.state.random_walk_next_time = UI.r.time_precise() + 1.0 / UI.core.state.random_walk_speed
-			end
-		end
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_jitter = UI.r.ImGui_SliderDouble(UI.ctx, "Jitter", UI.core.state.random_walk_jitter, 0.0, 1.0)
-		if changed then UI.core.state.random_walk_jitter = new_jitter end
-	elseif UI.core.state.navigation_mode == 2 then
-		local button_size = (content_width - 16) / 3
-		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-
-		for row = 0, 1 do
-			for col = 0, 2 do
-				local pattern_id = row * 3 + col
-				if pattern_id < 6 then
-					if col > 0 then UI.r.ImGui_SameLine(UI.ctx) end
-					local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-					local is_active = UI.core.state.figures_mode == pattern_id
-					if is_active then UI.r.ImGui_PushStyleColor(UI.ctx, UI.r.ImGui_Col_Button(), 0x444444FF) end
-					if UI.r.ImGui_Button(UI.ctx, "##pattern" .. pattern_id, button_size, button_size) then
-						UI.core.state.figures_mode = pattern_id
-						UI.core.state.figures_time = 0
-						UI.persistence.scheduleSave()
-					end
-					if is_active then UI.r.ImGui_PopStyleColor(UI.ctx) end
-					UI.drawPatternIcon(draw_list, cursor_x, cursor_y, button_size, pattern_id, is_active)
-					if UI.r.ImGui_IsItemHovered(UI.ctx) then
-						UI.r.ImGui_SetTooltip(UI.ctx, UI.core.figures_modes[pattern_id + 1])
-					end
-				end
-			end
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, 4)
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_speed = UI.r.ImGui_SliderDouble(UI.ctx, "Speed", UI.core.state.figures_speed, 0.01, 10.0, "%.2f Hz")
-		if changed then
-			local current_angle = UI.core.state.figures_time * UI.core.state.figures_speed * 2 * math.pi
-			local current_progress = (current_angle / (2 * math.pi)) % 1
-			UI.core.state.figures_time = (current_progress / new_speed)
-			UI.core.state.figures_speed = new_speed
-			UI.persistence.scheduleSave()
-		end
-
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_size = UI.r.ImGui_SliderDouble(UI.ctx, "Size", UI.core.state.figures_size, 0.1, 1.0, "%.2f")
-		if changed then
-			UI.core.state.figures_size = new_size
-			UI.persistence.scheduleSave()
-		end
-	end
-
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local changed, new_range = UI.r.ImGui_SliderDouble(UI.ctx, "Range", UI.core.state.gesture_range, 0.1, 1.0)
-	if changed then UI.core.state.gesture_range = new_range end
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local changed, new_min = UI.r.ImGui_SliderDouble(UI.ctx, "Min", UI.core.state.gesture_min, 0.0, 1.0)
-	if changed then
-		UI.core.state.gesture_min = new_min
-		if UI.core.state.gesture_max < new_min then UI.core.state.gesture_max = new_min end
-		UI.persistence.scheduleSave()
-	end
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local changed, new_max = UI.r.ImGui_SliderDouble(UI.ctx, "Max", UI.core.state.gesture_max, 0.0, 1.0)
-	if changed then
-		UI.core.state.gesture_max = new_max
-		if UI.core.state.gesture_min > new_max then UI.core.state.gesture_min = new_max end
-		UI.persistence.scheduleSave()
-	end
-
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	if UI.r.ImGui_Button(UI.ctx, "Morph 1", (content_width - UI.item_spacing_x) / 2) then
-		UI.gesture.captureToMorph(1)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "Morph 2", (content_width - UI.item_spacing_x) / 2) then
-		UI.gesture.captureToMorph(2)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Text(UI.ctx, UI.core.state.morph_preset_a and UI.core.state.morph_preset_b and "Ready" or "Set both")
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, 128)
-	local changed, new_amount = UI.r.ImGui_SliderDouble(UI.ctx, "Morph", UI.core.state.morph_amount or 0, 0.0, 1.0)
-	if changed then
-		UI.core.state.morph_amount = new_amount
-		UI.gesture.morphBetweenPresets(UI.core.state.morph_amount)
-	end
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-	if UI.r.ImGui_Button(UI.ctx, "Auto JSFX", content_width) then
-		if UI.core.state.jsfx_automation_enabled then
-			UI.core.state.jsfx_automation_enabled = false
-			UI.core.state.jsfx_automation_index = -1
-		else
-			UI.gesture.createAutomationJSFX()
-		end
-	end
-	if UI.core.state.jsfx_automation_enabled then
-		UI.r.ImGui_SameLine(UI.ctx)
-		UI.r.ImGui_TextColored(UI.ctx, 0x00FF00FF, "ON")
-	else
-		local found_idx = UI.gesture.findAutomationJSFX()
-		if found_idx >= 0 then
-			UI.core.state.jsfx_automation_enabled = true
-			UI.core.state.jsfx_automation_index = found_idx
-			UI.r.ImGui_SameLine(UI.ctx)
-			UI.r.ImGui_TextColored(UI.ctx, 0x00FF00FF, "Found")
-		else
-			UI.r.ImGui_SameLine(UI.ctx)
-			UI.r.ImGui_TextColored(UI.ctx, 0xFF0000FF, "OFF")
-		end
-	end
-
-	if UI.r.ImGui_Button(UI.ctx, "Show Env", content_width) then
-		if not UI.core.state.jsfx_automation_enabled or UI.core.state.jsfx_automation_index < 0 then
-			UI.gesture.createAutomationJSFX()
-		end
-		if UI.core.state.jsfx_automation_enabled and UI.core.state.jsfx_automation_index >= 0 then
-			local x_env = UI.r.GetFXEnvelope(UI.core.state.track, UI.core.state.jsfx_automation_index, 0, true)
-			local y_env = UI.r.GetFXEnvelope(UI.core.state.track, UI.core.state.jsfx_automation_index, 1, true)
-			if x_env then UI.r.SetCursorContext(2, x_env) end
-			if y_env then UI.r.SetCursorContext(2, y_env) end
-		end
-	end
+local function Btn(id, label, opts)
+    return UI.tk.Button(id, label, _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawMode()
-	if not UI.drawCollapsibleHeader("mode", "MODE") then return end
-
-	if UI.r.ImGui_Button(UI.ctx, "Single", 128) then
-		UI.core.state.pad_mode = 0
-		UI.persistence.scheduleSave()
-	end
-	if not UI.license.isFull() then
-		UI.r.ImGui_BeginDisabled(UI.ctx)
-	end
-	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Granular" or "Granular 🔒", 128) then
-		if UI.license.isFull() then
-			UI.core.state.pad_mode = 1
-			if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
-				UI.gesture.initializeGranularGrid()
-			end
-			UI.persistence.scheduleSave()
-		end
-	end
-	if not UI.license.isFull() then
-		UI.r.ImGui_EndDisabled(UI.ctx)
-	end
-	if UI.core.state.pad_mode == 1 then
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-		local grid_sizes = { "2x2", "3x3", "4x4" }
-		local grid_values = { 2, 3, 4 }
-		local current_grid_idx = 1
-		for i, val in ipairs(grid_values) do
-			if val == UI.core.state.granular_grid_size then
-				current_grid_idx = i - 1
-				break
-			end
-		end
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, 128)
-		local changed, new_grid_idx = UI.r.ImGui_Combo(UI.ctx, "##gran", current_grid_idx, table.concat(grid_sizes, "\0") .. "\0")
-		if changed then
-			UI.core.state.granular_grid_size = grid_values[new_grid_idx + 1]
-			UI.gesture.initializeGranularGrid()
-		end
-		if UI.r.ImGui_Button(UI.ctx, "Randomize", 128) then
-			if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
-				UI.gesture.initializeGranularGrid()
-			else
-				UI.gesture.randomizeGranularGrid()
-			end
-		end
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, 128)
-		local changed, new_name = UI.r.ImGui_InputText(UI.ctx, "##granset", UI.core.state.granular_set_name)
-		if changed then UI.core.state.granular_set_name = new_name end
-		if UI.r.ImGui_Button(UI.ctx, "Save", 62) then
-			if UI.core.state.granular_set_name and UI.core.state.granular_set_name ~= "" then
-				UI.presetsystem.saveGranularSet(UI.core.state.granular_set_name)
-			end
-		end
-		UI.r.ImGui_SameLine(UI.ctx)
-		if UI.r.ImGui_Button(UI.ctx, "Load", 62) then
-			if UI.core.state.granular_set_name and UI.core.state.granular_set_name ~= "" then
-				UI.presetsystem.loadGranularSet(UI.core.state.granular_set_name)
-			end
-		end
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-		if UI.r.ImGui_BeginChild(UI.ctx, "GrainSetList", 128, 80) then
-			local current_preset = UI.core.state.current_loaded_preset
-			local granular_sets_to_display = {}
-			if current_preset ~= "" and UI.core.state.presets[current_preset] and UI.core.state.presets[current_preset].granular_sets then
-				granular_sets_to_display = UI.core.state.presets[current_preset].granular_sets
-			end
-			for name, _ in pairs(granular_sets_to_display) do
-				UI.r.ImGui_PushID(UI.ctx, name)
-				if UI.r.ImGui_Button(UI.ctx, name, 102, 22) then
-					UI.presetsystem.loadGranularSet(name)
-					UI.core.state.granular_set_name = name
-				end
-				UI.r.ImGui_SameLine(UI.ctx)
-				if UI.r.ImGui_Button(UI.ctx, "X", 22, 22) then
-					UI.presetsystem.deleteGranularSet(name)
-				end
-				UI.r.ImGui_PopID(UI.ctx)
-			end
-			UI.r.ImGui_EndChild(UI.ctx)
-		end
-	end
+local function Tgl(id, label, on, opts)
+    return UI.tk.ToggleButton(id, label, on, _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawSoundGenerator()
-	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	if not UI.drawCollapsibleHeader("soundgen", "SOUND GENERATOR") then return end
-
-	if not UI.license.isFull() then
-		UI.r.ImGui_TextColored(UI.ctx, 0xFFAA00FF, "🔒 Premium Feature")
-		UI.r.ImGui_Text(UI.ctx, "Sound Generator is available")
-		UI.r.ImGui_Text(UI.ctx, "in the full version.")
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-		if UI.r.ImGui_Button(UI.ctx, "Activate License", content_width) then
-			UI.core.state.show_license_window = true
-		end
-		return
-	end
-
-	local sg = UI.core.state.sound_generator
-	UI.soundgen.syncFromJSFX()
-
-	local button_width = (content_width - UI.item_spacing_x) / 2
-	local toggle_label = sg.enabled and "● ON" or "○ OFF"
-	if UI.r.ImGui_Button(UI.ctx, toggle_label, button_width) then
-		if not sg.enabled then
-			UI.soundgen.createGenerator()
-			UI.fxmanager.scanTrackFX()
-		else
-			UI.soundgen.removeGenerator()
-			UI.fxmanager.scanTrackFX()
-		end
-	end
-
-	if sg.enabled then
-		UI.r.ImGui_SameLine(UI.ctx)
-		local mode_button_width = (content_width - UI.item_spacing_x) / 2
-		if UI.r.ImGui_Button(UI.ctx, sg.mode == 0 and "Continuous" or "Triggered", mode_button_width) then
-			sg.mode = sg.mode == 0 and 1 or 0
-			UI.soundgen.updateJSFXParams()
-		end
-	end
-
-	if not sg.enabled then return end
-
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-	local waveforms = {"Sine", "Triangle", "Square", "Saw", "Noise", "Click"}
-	local wf_combo = table.concat(waveforms, "\0") .. "\0"
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local changed, new_wf = UI.r.ImGui_Combo(UI.ctx, "Type##sg", sg.waveform, wf_combo)
-	if changed then
-		sg.waveform = new_wf
-		UI.soundgen.updateJSFXParams()
-	end
-
-	if sg.waveform < 4 then
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local freq_min_log = math.log(20)
-		local freq_max_log = math.log(20000)
-		local freq_norm = (math.log(sg.frequency) - freq_min_log) / (freq_max_log - freq_min_log)
-		local changed, new_freq_norm = UI.r.ImGui_SliderDouble(UI.ctx, "Frequency##sg", freq_norm, 0, 1, string.format("%.1f Hz", sg.frequency))
-		if changed then
-			sg.frequency = math.exp(freq_min_log + new_freq_norm * (freq_max_log - freq_min_log))
-			UI.soundgen.updateJSFXParams()
-		end
-
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_width = UI.r.ImGui_SliderDouble(UI.ctx, "Width##sg", sg.width, 0, 100, "%.1f cents")
-		if changed then
-			sg.width = new_width
-			UI.soundgen.updateJSFXParams()
-		end
-	elseif sg.waveform == 4 then
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_color = UI.r.ImGui_SliderDouble(UI.ctx, "Color##sg", sg.noise_color, 0, 1, "%.2f")
-		if changed then
-			sg.noise_color = new_color
-			UI.soundgen.updateJSFXParams()
-		end
-
-		UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-		local changed, new_width = UI.r.ImGui_SliderDouble(UI.ctx, "Width##sg", sg.width, 0, 100, "%.1f cents")
-		if changed then
-			sg.width = new_width
-			UI.soundgen.updateJSFXParams()
-		end
-	end
-
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local changed, new_amp = UI.r.ImGui_SliderDouble(UI.ctx, "Amplitude##sg", sg.amplitude, 0, 1, "%.2f")
-	if changed then
-		sg.amplitude = new_amp
-		UI.soundgen.updateJSFXParams()
-	end
-
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-	if sg.mode == 0 then
-		local changed, rhythmic = UI.r.ImGui_Checkbox(UI.ctx, "Rhythmic", sg.rhythmic)
-		if changed then
-			sg.rhythmic = rhythmic
-			UI.soundgen.updateJSFXParams()
-		end
-
-		if sg.rhythmic then
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_rate = UI.r.ImGui_SliderDouble(UI.ctx, "Tick Rate##sg", sg.tick_rate, 0.1, 20, "%.2f Hz")
-			if changed then
-				sg.tick_rate = new_rate
-				UI.soundgen.updateJSFXParams()
-			end
-
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_duty = UI.r.ImGui_SliderDouble(UI.ctx, "Duty Cycle##sg", sg.duty_cycle, 0.01, 0.99, "%.2f")
-			if changed then
-				sg.duty_cycle = new_duty
-				UI.soundgen.updateJSFXParams()
-			end
-
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_curve = UI.r.ImGui_SliderDouble(UI.ctx, "Rhythmic Curve##sg", sg.rhythmic_curve, 0, 1, "%.2f")
-			if changed then
-				sg.rhythmic_curve = new_curve
-				UI.soundgen.updateJSFXParams()
-			end
-		end
-	else
-		local changed, use_adsr = UI.r.ImGui_Checkbox(UI.ctx, "ADSR Envelope", sg.use_adsr)
-		if changed then
-			sg.use_adsr = use_adsr
-			UI.soundgen.updateJSFXParams()
-		end
-
-		if sg.use_adsr then
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_a = UI.r.ImGui_SliderDouble(UI.ctx, "Attack##sg", sg.attack, 0.001, 2, "%.3f s")
-			if changed then
-				sg.attack = new_a
-				UI.soundgen.updateJSFXParams()
-			end
-
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_d = UI.r.ImGui_SliderDouble(UI.ctx, "Decay##sg", sg.decay, 0.001, 2, "%.3f s")
-			if changed then
-				sg.decay = new_d
-				UI.soundgen.updateJSFXParams()
-			end
-
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_s = UI.r.ImGui_SliderDouble(UI.ctx, "Sustain##sg", sg.sustain, 0, 1, "%.2f")
-			if changed then
-				sg.sustain = new_s
-				UI.soundgen.updateJSFXParams()
-			end
-
-			UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-			local changed, new_r = UI.r.ImGui_SliderDouble(UI.ctx, "Release##sg", sg.release, 0.001, 5, "%.3f s")
-			if changed then
-				sg.release = new_r
-				UI.soundgen.updateJSFXParams()
-			end
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-		local changed, midi = UI.r.ImGui_Checkbox(UI.ctx, "MIDI Trigger", sg.midi_mode)
-		if changed then
-			sg.midi_mode = midi
-			UI.soundgen.updateJSFXParams()
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-		UI.r.ImGui_Button(UI.ctx, "HOLD TO PLAY", content_width)
-		if UI.r.ImGui_IsItemActive(UI.ctx) then
-			UI.soundgen.setManualTrigger(true)
-		end
-		if UI.r.ImGui_IsItemDeactivated(UI.ctx) then
-			UI.soundgen.setManualTrigger(false)
-		end
-	end
+local function Slid(id, label, value, mn, mx, opts)
+    return UI.tk.SliderDouble(id, label, value, mn, mx,
+        _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawPadSection()
-	local is_collapsed = UI.core.state.section_collapsed.pad
-	local collapse_icon = is_collapsed and "▶" or "▼"
-	local header_font = UI.getStyleFont("header")
-
-	if is_collapsed then
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		end
-		local char_height = 12
-		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-		local display_text = "XY PAD"
-		local button_height = #display_text * char_height + 30
-		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_pad", 25, button_height)
-		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
-		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
-
-		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-		if hovered then
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
-			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
-			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
-			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
-		end
-
-		local icon_x = cursor_x + 5
-		local icon_y = cursor_y + 5
-		UI.r.ImGui_DrawList_AddText(draw_list, icon_x, icon_y, 0xFFFFFFFF, collapse_icon)
-
-		local text_x = cursor_x + 7
-		local text_y = cursor_y + 25
-		for i = 1, #display_text do
-			local char = display_text:sub(i, i)
-			UI.r.ImGui_DrawList_AddText(draw_list, text_x, text_y, 0xFFFFFFFF, char)
-			text_y = text_y + char_height
-		end
-
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PopFont(UI.ctx)
-		end
-
-		if clicked then
-			UI.core.state.section_collapsed.pad = false
-			UI.persistence.scheduleSave()
-		end
-
-		return
-	else
-		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		end
-		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " XY PAD")
-		local header_hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
-		local header_clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
-		if header_hovered then
-			local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-			local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
-			local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
-			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
-			UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x - 2, min_y - 2, max_x + 2, max_y + 2, highlight_color, rounding)
-			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
-			UI.r.ImGui_SetCursorScreenPos(UI.ctx, cursor_x, cursor_y)
-			UI.r.ImGui_Text(UI.ctx, collapse_icon .. " XY PAD")
-		end
-		if header_clicked then
-			UI.core.state.section_collapsed.pad = true
-			UI.persistence.scheduleSave()
-		end
-
-		UI.r.ImGui_SameLine(UI.ctx)
-		local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-		local reset_text = "↻"
-		local reset_text_width = UI.r.ImGui_CalcTextSize(UI.ctx, reset_text)
-		local reset_x = UI.r.ImGui_GetCursorPosX(UI.ctx) + content_width - reset_text_width
-		UI.r.ImGui_SetCursorPosX(UI.ctx, reset_x)
-		UI.r.ImGui_Text(UI.ctx, reset_text)
-		if UI.r.ImGui_IsItemClicked(UI.ctx) then
-			UI.core.state.gesture_x = 0.5
-			UI.core.state.gesture_y = 0.5
-			UI.core.state.gesture_base_x = 0.5
-			UI.core.state.gesture_base_y = 0.5
-			UI.gesture.updateJSFXFromGesture()
-			UI.fxmanager.captureBaseValues()
-			if UI.core.state.pad_mode == 1 then
-				if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
-					UI.gesture.initializeGranularGrid()
-				end
-				UI.gesture.applyGranularGesture(UI.core.state.gesture_x, UI.core.state.gesture_y)
-			else
-				UI.gesture.applyGestureToSelection(UI.core.state.gesture_x, UI.core.state.gesture_y)
-			end
-		end
-		if UI.r.ImGui_IsItemHovered(UI.ctx) then
-			UI.r.ImGui_SetTooltip(UI.ctx, "Reset XY Pad to center")
-		end
-
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PopFont(UI.ctx)
-		end
-
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	end
-	local pad_size = 298
-	local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-	local cursor_pos_x, cursor_pos_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-	UI.r.ImGui_InvisibleButton(UI.ctx, "xy_pad", pad_size, pad_size)
-	if UI.r.ImGui_IsItemActive(UI.ctx) then
-		local mouse_x, mouse_y = UI.r.ImGui_GetMousePos(UI.ctx)
-		local click_x = (mouse_x - cursor_pos_x) / pad_size
-		local click_y = 1.0 - (mouse_y - cursor_pos_y) / pad_size
-		if not UI.core.state.gesture_active then
-			UI.core.state.gesture_active = true
-			UI.core.state.gesture_base_x = UI.core.state.gesture_x
-			UI.core.state.gesture_base_y = UI.core.state.gesture_y
-			UI.fxmanager.captureBaseValues()
-			local cursor_screen_x = cursor_pos_x + UI.core.state.gesture_x * pad_size
-			local cursor_screen_y = cursor_pos_y + (1.0 - UI.core.state.gesture_y) * pad_size
-			local dx = mouse_x - cursor_screen_x
-			local dy = mouse_y - cursor_screen_y
-			local distance = math.sqrt(dx * dx + dy * dy)
-			local dead_zone_radius = 30
-			if distance <= dead_zone_radius then
-				UI.core.state.click_offset_x = UI.core.state.gesture_x - click_x
-				UI.core.state.click_offset_y = UI.core.state.gesture_y - click_y
-			else
-				UI.core.state.click_offset_x = 0
-				UI.core.state.click_offset_y = 0
-			end
-		end
-		click_x = math.max(0, math.min(1, click_x + UI.core.state.click_offset_x))
-		click_y = math.max(0, math.min(1, click_y + UI.core.state.click_offset_y))
-		if UI.core.state.navigation_mode == 1 then
-			UI.core.state.random_walk_active = false
-		elseif UI.core.state.navigation_mode == 2 then
-			UI.core.state.figures_active = false
-		end
-		if UI.core.state.navigation_mode == 1 or UI.core.state.navigation_mode == 2 or UI.core.state.smooth_speed == 0 then
-			UI.core.state.gesture_x = click_x
-			UI.core.state.gesture_y = click_y
-			UI.gesture.updateJSFXFromGesture()
-			if UI.core.state.pad_mode == 1 then
-				if not UI.core.state.granular_grains or #UI.core.state.granular_grains == 0 then
-					UI.gesture.initializeGranularGrid()
-				end
-				UI.gesture.applyGranularGesture(UI.core.state.gesture_x, UI.core.state.gesture_y)
-			else
-				UI.gesture.applyGestureToSelection(UI.core.state.gesture_x, UI.core.state.gesture_y)
-			end
-		else
-			UI.core.state.target_gesture_x = click_x
-			UI.core.state.target_gesture_y = click_y
-		end
-	else
-		if UI.core.state.gesture_active then
-			UI.core.state.gesture_active = false
-			UI.core.state.click_offset_x = 0
-			UI.core.state.click_offset_y = 0
-		end
-	end
-	UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_pos_x, cursor_pos_y, cursor_pos_x + pad_size, cursor_pos_y + pad_size, 0x222222FF)
-	UI.r.ImGui_DrawList_AddRect(draw_list, cursor_pos_x, cursor_pos_y, cursor_pos_x + pad_size, cursor_pos_y + pad_size, 0x666666FF)
-	UI.r.ImGui_DrawList_AddLine(draw_list, cursor_pos_x + pad_size / 2, cursor_pos_y, cursor_pos_x + pad_size / 2, cursor_pos_y + pad_size, 0x444444FF)
-	UI.r.ImGui_DrawList_AddLine(draw_list, cursor_pos_x, cursor_pos_y + pad_size / 2, cursor_pos_x + pad_size, cursor_pos_y + pad_size / 2, 0x444444FF)
-	if UI.core.state.pad_mode == 1 and UI.core.state.granular_grains and #UI.core.state.granular_grains > 0 then
-		local grid_size = UI.core.state.granular_grid_size
-		for i = 1, grid_size - 1 do
-			local line_x = cursor_pos_x + (i / grid_size) * pad_size
-			local line_y = cursor_pos_y + (i / grid_size) * pad_size
-			UI.r.ImGui_DrawList_AddLine(draw_list, line_x, cursor_pos_y, line_x, cursor_pos_y + pad_size, 0x444444AA)
-			UI.r.ImGui_DrawList_AddLine(draw_list, cursor_pos_x, line_y, cursor_pos_x + pad_size, line_y, 0x444444AA)
-		end
-		for _, grain in ipairs(UI.core.state.granular_grains) do
-			local grain_screen_x = cursor_pos_x + grain.x * pad_size
-			local grain_screen_y = cursor_pos_y + (1.0 - grain.y) * pad_size
-			local grain_radius = (pad_size / grid_size)
-			UI.r.ImGui_DrawList_AddCircle(draw_list, grain_screen_x, grain_screen_y, grain_radius, 0x66666644, 0, 1)
-			UI.r.ImGui_DrawList_AddCircleFilled(draw_list, grain_screen_x, grain_screen_y, 4, 0xFFFFFFFF)
-		end
-	elseif UI.core.state.pad_mode == 1 then
-		local grid_size = UI.core.state.granular_grid_size
-		for i = 1, grid_size - 1 do
-			local line_x = cursor_pos_x + (i / grid_size) * pad_size
-			local line_y = cursor_pos_y + (i / grid_size) * pad_size
-			UI.r.ImGui_DrawList_AddLine(draw_list, line_x, cursor_pos_y, line_x, cursor_pos_y + pad_size, 0x444444AA)
-			UI.r.ImGui_DrawList_AddLine(draw_list, cursor_pos_x, line_y, cursor_pos_x + pad_size, line_y, 0x444444AA)
-		end
-	end
-	local dot_x = cursor_pos_x + UI.core.state.gesture_x * pad_size
-	local dot_y = cursor_pos_y + (1.0 - UI.core.state.gesture_y) * pad_size
-	UI.r.ImGui_DrawList_AddCircleFilled(draw_list, dot_x, dot_y, 8, 0xFFFFFFFF)
-	if UI.core.state.navigation_mode == 0 and UI.core.state.smooth_speed > 0 then
-		local target_dot_x = cursor_pos_x + UI.core.state.target_gesture_x * pad_size
-		local target_dot_y = cursor_pos_y + (1.0 - UI.core.state.target_gesture_y) * pad_size
-		UI.r.ImGui_DrawList_AddCircle(draw_list, target_dot_x, target_dot_y, 6, 0x888888FF, 0, 2)
-	end
-	local mono_font = UI.getStyleFont("mono")
-	if mono_font and UI.r.ImGui_ValidatePtr(mono_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, mono_font, 0)
-		UI.r.ImGui_Text(UI.ctx, string.format("Position: %.2f, %.2f", UI.core.state.gesture_x, UI.core.state.gesture_y))
-		UI.r.ImGui_PopFont(UI.ctx)
-	end
+local function SlidInt(id, label, value, mn, mx, opts)
+    return UI.tk.SliderInt(id, label, value, mn, mx,
+        _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawRandomizer()
-	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	if not UI.drawCollapsibleHeader("randomizer", "RANDOMIZER") then return end
-
-	if UI.license.isFull() then
-		if UI.r.ImGui_Button(UI.ctx, "ULTRA RANDOM", content_width) then
-			UI.fxmanager.ultraRandom()
-			UI.gesture.updateJSFXFromGesture()
-		end
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	end
-	if UI.r.ImGui_Button(UI.ctx, "FX Order", content_width) then
-		UI.fxmanager.randomizeFXOrder()
-	end
-	if UI.r.ImGui_Button(UI.ctx, "Bypass", (content_width - UI.item_spacing_x) / 2) then
-		UI.fxmanager.randomBypassFX()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, (content_width - UI.item_spacing_x) / 2)
-	local changed, new_bypass = UI.r.ImGui_SliderDouble(UI.ctx, "##bypass", UI.core.state.random_bypass_percentage * 100, 0.0, 100.0, "%.0f%%")
-	if changed then
-		UI.core.state.random_bypass_percentage = new_bypass / 100
-		UI.persistence.scheduleSave()
-	end
-	if UI.r.ImGui_Button(UI.ctx, "XY", (content_width - 2 * UI.item_spacing_x) / 4) then
-		UI.fxmanager.globalRandomXYAssign()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	local changed, exclusive = UI.r.ImGui_Checkbox(UI.ctx, "##exclusive", UI.core.state.exclusive_xy)
-	if changed then
-		UI.core.state.exclusive_xy = exclusive
-		UI.persistence.scheduleSave()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, "N", (content_width - UI.item_spacing_x) / 2) then
-		UI.fxmanager.globalRandomInvert()
-	end
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	if UI.r.ImGui_Button(UI.ctx, "Ranges", content_width) then
-		UI.fxmanager.globalRandomRanges()
-	end
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, (content_width - UI.item_spacing_x) / 2)
-	local changed, new_rmin = UI.r.ImGui_SliderDouble(UI.ctx, "##rngmin", UI.core.state.range_min, 0.0, 1.0, "%.2f")
-	if changed then
-		UI.core.state.range_min = new_rmin
-		if UI.core.state.range_max < new_rmin then UI.core.state.range_max = new_rmin end
-		UI.persistence.scheduleSave()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, (content_width - UI.item_spacing_x) / 2)
-	local changed, new_rmax = UI.r.ImGui_SliderDouble(UI.ctx, "##rngmax", UI.core.state.range_max, 0.0, 1.0, "%.2f")
-	if changed then
-		UI.core.state.range_max = new_rmax
-		if UI.core.state.range_min > new_rmax then UI.core.state.range_min = new_rmax end
-		UI.persistence.scheduleSave()
-	end
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	if UI.r.ImGui_Button(UI.ctx, "Bases", content_width) then
-		UI.fxmanager.randomizeAllBases()
-	end
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local changed, new_intensity = UI.r.ImGui_SliderDouble(UI.ctx, "##intensity", UI.core.state.randomize_intensity, 0.0, 1.0, "%.2f")
-	if changed then UI.core.state.randomize_intensity = new_intensity end
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, (content_width - UI.item_spacing_x) / 2)
-	local changed, new_min = UI.r.ImGui_SliderDouble(UI.ctx, "##basemin", UI.core.state.randomize_min, 0.0, 1.0, "%.2f")
-	if changed then
-		UI.core.state.randomize_min = new_min
-		if UI.core.state.randomize_max < new_min then UI.core.state.randomize_max = new_min end
-		UI.persistence.scheduleSave()
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, (content_width - UI.item_spacing_x) / 2)
-	local changed, new_max = UI.r.ImGui_SliderDouble(UI.ctx, "##basemax", UI.core.state.randomize_max, 0.0, 1.0, "%.2f")
-	if changed then
-		UI.core.state.randomize_max = new_max
-		if UI.core.state.randomize_min > new_max then UI.core.state.randomize_min = new_max end
-		UI.persistence.scheduleSave()
-	end
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	if UI.r.ImGui_Button(UI.ctx, "Parameters", content_width) then
-		UI.fxmanager.globalRandomSelect()
-		UI.fxmanager.saveTrackSelection()
-	end
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, (content_width - UI.item_spacing_x) / 2)
-	local changed, new_min = UI.r.ImGui_SliderInt(UI.ctx, "##min", UI.core.state.random_min, 1, 300)
-	if changed then UI.core.state.random_min = new_min end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, (content_width - UI.item_spacing_x) / 2)
-	local changed, new_max = UI.r.ImGui_SliderInt(UI.ctx, "##max", UI.core.state.random_max, 1, 300)
-	if changed then
-		UI.core.state.random_max = math.max(new_max, UI.core.state.random_min)
-	end
+local function RngSlid(id, label, vmin, vmax, mn, mx, opts)
+    return UI.tk.RangeSlider(id, label, vmin, vmax, mn, mx,
+        _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawPresets()
-	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	if not UI.drawCollapsibleHeader("presets", "PRESETS") then return end
-
-	if not UI.license.isFull() then
-		UI.r.ImGui_BeginDisabled(UI.ctx)
-	end
-
-	local button_width = (content_width - UI.item_spacing_x) / 2
-	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Save##presets" or "Save 🔒##presets", button_width) then
-		if UI.license.isFull() then
-			if UI.core.state.current_loaded_preset ~= "" then
-				UI.presetsystem.savePreset(UI.core.state.current_loaded_preset)
-			else
-				local retval, preset_name = UI.r.GetUserInputs("Save FX Chain Preset", 1, "Preset name:", "")
-				if retval and preset_name ~= "" then
-					UI.presetsystem.savePreset(preset_name)
-					UI.core.state.current_loaded_preset = preset_name
-					UI.fxmanager.saveTrackSelection()
-				end
-			end
-		else
-			UI.core.state.show_license_window = true
-		end
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Save As##presets" or "Save As 🔒##presets", button_width) then
-		if UI.license.isFull() then
-			local retval, preset_name = UI.r.GetUserInputs("Save FX Chain Preset As", 1, "Preset name:", UI.core.state.current_loaded_preset)
-			if retval and preset_name ~= "" then
-				UI.presetsystem.savePreset(preset_name)
-				UI.core.state.current_loaded_preset = preset_name
-				UI.fxmanager.saveTrackSelection()
-			end
-		else
-			UI.core.state.show_license_window = true
-		end
-	end
-
-	local preset_names = {}
-	local current_index = -1
-	for name, _ in pairs(UI.core.state.presets) do
-		table.insert(preset_names, name)
-	end
-	table.sort(preset_names)
-	for idx, name in ipairs(preset_names) do
-		if name == UI.core.state.current_loaded_preset then
-			current_index = idx - 1
-		end
-	end
-
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local preset_combo_str = table.concat(preset_names, "\0") .. "\0"
-	if preset_combo_str == "\0" then preset_combo_str = " \0" end
-	local changed, new_index = UI.r.ImGui_Combo(UI.ctx, "##presetlist", current_index, preset_combo_str)
-	if changed and new_index >= 0 and preset_names[new_index + 1] then
-		if UI.license.isFull() then
-			UI.presetsystem.loadPreset(preset_names[new_index + 1])
-		else
-			UI.core.state.show_license_window = true
-		end
-	end
-
-	local delete_button_width = (content_width - UI.item_spacing_x) / 2
-	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Rename##preset" or "Rename 🔒##preset", delete_button_width) then
-		if UI.license.isFull() then
-			if UI.core.state.current_loaded_preset ~= "" then
-				local retval, new_name = UI.r.GetUserInputs("Rename Preset", 1, "New name:", UI.core.state.current_loaded_preset)
-				if retval and new_name ~= "" and new_name ~= UI.core.state.current_loaded_preset then
-					UI.presetsystem.renamePreset(UI.core.state.current_loaded_preset, new_name)
-					UI.core.state.current_loaded_preset = new_name
-					UI.fxmanager.saveTrackSelection()
-				end
-			end
-		else
-			UI.core.state.show_license_window = true
-		end
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Delete##preset" or "Delete 🔒##preset", delete_button_width) then
-		if UI.license.isFull() then
-			if UI.core.state.current_loaded_preset ~= "" then
-				local result = UI.r.ShowMessageBox("Delete preset '" .. UI.core.state.current_loaded_preset .. "'?", "Delete Preset", 4)
-				if result == 6 then
-					UI.presetsystem.deletePreset(UI.core.state.current_loaded_preset)
-					UI.core.state.current_loaded_preset = ""
-				end
-			end
-		else
-			UI.core.state.show_license_window = true
-		end
-	end
-
-	if not UI.license.isFull() then
-		UI.r.ImGui_EndDisabled(UI.ctx)
-	end
-
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-	local header_font = UI.getStyleFont("header")
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		UI.r.ImGui_Text(UI.ctx, UI.license.isFull() and "SNAPSHOTS" or "SNAPSHOTS 🔒")
-		UI.r.ImGui_PopFont(UI.ctx)
-		UI.r.ImGui_Separator(UI.ctx)
-		UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	end
-
-	if not UI.license.isFull() then
-		UI.r.ImGui_BeginDisabled(UI.ctx)
-	end
-
-	UI.r.ImGui_SetNextItemWidth(UI.ctx, content_width)
-	local changed, new_name = UI.r.ImGui_InputText(UI.ctx, "##snapname", UI.core.state.snapshot_name)
-	if changed then UI.core.state.snapshot_name = new_name end
-
-	if UI.r.ImGui_Button(UI.ctx, UI.license.isFull() and "Save##snapshots" or "Save 🔒##snapshots", content_width) then
-		if UI.license.isFull() then
-			if UI.core.state.snapshot_name and UI.core.state.snapshot_name ~= "" then
-				UI.presetsystem.saveSnapshot(UI.core.state.snapshot_name)
-			end
-		else
-			UI.core.state.show_license_window = true
-		end
-	end
-
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-	if UI.r.ImGui_BeginChild(UI.ctx, "SnapshotListPresets", content_width, -1) then
-		local current_preset = UI.core.state.current_loaded_preset
-		if current_preset ~= "" and UI.core.state.presets[current_preset] and UI.core.state.presets[current_preset].snapshots then
-			for name, _ in pairs(UI.core.state.presets[current_preset].snapshots) do
-				UI.r.ImGui_PushID(UI.ctx, name)
-				local button_width = content_width - 54 - (2 * UI.item_spacing_x)
-				if UI.r.ImGui_Button(UI.ctx, name, button_width) then
-					if UI.license.isFull() then
-						UI.presetsystem.loadSnapshot(name)
-						UI.core.state.snapshot_name = UI.presetsystem.getNextSnapshotName()
-					else
-						UI.core.state.show_license_window = true
-					end
-				end
-				UI.r.ImGui_SameLine(UI.ctx)
-				if UI.r.ImGui_Button(UI.ctx, "R", 22) then
-					if UI.license.isFull() then
-						local retval, new_name = UI.r.GetUserInputs("Rename Snapshot", 1, "New name:", name)
-						if retval and new_name ~= "" and new_name ~= name then
-							if UI.core.state.presets[current_preset].snapshots[name] then
-								UI.core.state.presets[current_preset].snapshots[new_name] = UI.core.state.presets[current_preset].snapshots[name]
-								UI.core.state.presets[current_preset].snapshots[name] = nil
-								UI.persistence.schedulePresetSave()
-							end
-						end
-					else
-						UI.core.state.show_license_window = true
-					end
-				end
-				UI.r.ImGui_SameLine(UI.ctx)
-				if UI.r.ImGui_Button(UI.ctx, "X", 22) then
-					if UI.license.isFull() then
-						UI.presetsystem.deleteSnapshot(name)
-					else
-						UI.core.state.show_license_window = true
-					end
-				end
-				UI.r.ImGui_PopID(UI.ctx)
-			end
-		end
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-
-	if not UI.license.isFull() then
-		UI.r.ImGui_EndDisabled(UI.ctx)
-	end
+local function ValRngSlid(id, label, value, vmin, vmax, mn, mx, opts)
+    return UI.tk.ValueRangeSlider(id, label, value, vmin, vmax, mn, mx,
+        _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawFXSection()
-	local is_collapsed = UI.core.state.section_collapsed.fx_settings
-	local collapse_icon = is_collapsed and "▶" or "▼"
-	local header_font = UI.getStyleFont("header")
-
-	if is_collapsed then
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-		end
-		local char_height = 12
-		local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-		local display_text = "FX SETTINGS"
-		local button_height = #display_text * char_height + 30
-		UI.r.ImGui_InvisibleButton(UI.ctx, "##header_fx_settings", 25, button_height)
-		local hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
-		local clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
-
-		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-		if hovered then
-			local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
-			local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
-			UI.r.ImGui_DrawList_AddRectFilled(draw_list, cursor_x, cursor_y, cursor_x + 25, cursor_y + button_height, highlight_color, rounding)
-			UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
-		end
-
-		local icon_x = cursor_x + 5
-		local icon_y = cursor_y + 5
-		UI.r.ImGui_DrawList_AddText(draw_list, icon_x, icon_y, 0xFFFFFFFF, collapse_icon)
-
-		local text_x = cursor_x + 7
-		local text_y = cursor_y + 25
-		for i = 1, #display_text do
-			local char = display_text:sub(i, i)
-			UI.r.ImGui_DrawList_AddText(draw_list, text_x, text_y, 0xFFFFFFFF, char)
-			text_y = text_y + char_height
-		end
-
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PopFont(UI.ctx)
-		end
-
-		if clicked then
-			UI.core.state.section_collapsed.fx_settings = false
-			UI.persistence.scheduleSave()
-		end
-		return
-	end
-
-	local cursor_x, cursor_y = UI.r.ImGui_GetCursorScreenPos(UI.ctx)
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PushFont(UI.ctx, header_font, 0)
-	end
-	UI.r.ImGui_Text(UI.ctx, collapse_icon .. " FX SETTINGS")
-	local header_hovered = UI.r.ImGui_IsItemHovered(UI.ctx)
-	local header_clicked = UI.r.ImGui_IsItemClicked(UI.ctx)
-	if header_hovered then
-		local draw_list = UI.r.ImGui_GetWindowDrawList(UI.ctx)
-		local min_x, min_y = UI.r.ImGui_GetItemRectMin(UI.ctx)
-		local max_x, max_y = UI.r.ImGui_GetItemRectMax(UI.ctx)
-		local highlight_color = UI.getStyleValue("colors.button_hovered", 0x1AFFFFFF)
-		local rounding = UI.getStyleValue("spacing.frame_rounding", 4)
-		UI.r.ImGui_DrawList_AddRectFilled(draw_list, min_x - 2, min_y - 2, max_x + 2, max_y + 2, highlight_color, rounding)
-		UI.r.ImGui_SetMouseCursor(UI.ctx, UI.r.ImGui_MouseCursor_Hand())
-		UI.r.ImGui_SetCursorScreenPos(UI.ctx, cursor_x, cursor_y)
-		UI.r.ImGui_Text(UI.ctx, collapse_icon .. " FX SETTINGS")
-	end
-	if header_clicked then
-		UI.core.state.section_collapsed.fx_settings = true
-		UI.persistence.scheduleSave()
-	end
-
-	UI.r.ImGui_SameLine(UI.ctx)
-	local selection_text = "| Selected: " .. UI.core.state.selected_count
-	if UI.core.state.current_loaded_preset ~= "" then
-		selection_text = selection_text .. " | " .. UI.core.state.current_loaded_preset
-	end
-	UI.r.ImGui_Text(UI.ctx, selection_text)
-
-	if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		UI.r.ImGui_PopFont(UI.ctx)
-	end
-
-	UI.r.ImGui_Separator(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-
-	local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-	local buttons_column_width = content_width * 0.15
-
-	if UI.r.ImGui_BeginChild(UI.ctx, "FXButtons", buttons_column_width, 0) then
-		local button_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-
-		if UI.r.ImGui_Button(UI.ctx, "Add FX...", button_width) then
-			UI.core.state.show_fxmanager_window = not UI.core.state.show_fxmanager_window
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
-
-		if UI.r.ImGui_Button(UI.ctx, UI.core.state.show_filters_window and "Hide Filters" or "Show Filters", button_width) then
-			UI.core.state.show_filters_window = not UI.core.state.show_filters_window
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
-
-		if UI.r.ImGui_Button(UI.ctx, "Show All FX", button_width) then
-			UI.presetsystem.showAllFloatingFX()
-		end
-		if UI.r.ImGui_Button(UI.ctx, "Close All FX", button_width) then
-			UI.presetsystem.closeAllFloatingFX()
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
-
-		if UI.r.ImGui_Button(UI.ctx, "Collapse All", button_width) then
-			UI.core.state.all_fx_collapsed = true
-			for fx_id, _ in pairs(UI.core.state.fx_data) do
-				UI.core.state.fx_collapsed[fx_id] = true
-			end
-		end
-		if UI.r.ImGui_Button(UI.ctx, "Expand All", button_width) then
-			UI.core.state.all_fx_collapsed = false
-			for fx_id, _ in pairs(UI.core.state.fx_data) do
-				UI.core.state.fx_collapsed[fx_id] = false
-			end
-		end
-
-		UI.r.ImGui_Dummy(UI.ctx, 0, UI.item_spacing_y)
-
-		if UI.r.ImGui_Button(UI.ctx, "All", button_width) then
-			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-				UI.fxmanager.selectAllParams(fx_data.params, true)
-			end
-			UI.fxmanager.saveTrackSelection()
-		end
-		if UI.r.ImGui_Button(UI.ctx, "All Cont", button_width) then
-			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-				UI.fxmanager.selectAllContinuousParams(fx_data.params, true)
-			end
-			UI.fxmanager.saveTrackSelection()
-		end
-		if UI.r.ImGui_Button(UI.ctx, "Clear", button_width) then
-			for fx_id, fx_data in pairs(UI.core.state.fx_data) do
-				UI.fxmanager.selectAllParams(fx_data.params, false)
-			end
-			UI.fxmanager.saveTrackSelection()
-		end
-
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)
-
-	if UI.r.ImGui_BeginChild(UI.ctx, "FXListColumn", 0, 0) then
-
-		local fx_count = 0
-		for _ in pairs(UI.core.state.fx_data) do fx_count = fx_count + 1 end
-		if fx_count > 0 then
-			if UI.r.ImGui_BeginChild(UI.ctx, "FXHorizontal", 0, 0, 0, UI.r.ImGui_WindowFlags_HorizontalScrollbar()) then
-			local fx_width = 350
-			UI.r.ImGui_SetCursorPosX(UI.ctx, 0)
-			for fx_id = 0, fx_count - 1 do
-				if fx_id > 0 then UI.r.ImGui_SameLine(UI.ctx) end
-				local fx_data = UI.core.state.fx_data[fx_id]
-				if fx_data then
-					UI.r.ImGui_BeginGroup(UI.ctx)
-					UI.r.ImGui_PushStyleVar(UI.ctx, UI.r.ImGui_StyleVar_ChildBorderSize(), 1)
-					local collapsed = UI.core.state.fx_collapsed[fx_id] or false
-					local child_width = collapsed and 28 or fx_width
-					local child_height = collapsed and 320 or -1
-					if UI.r.ImGui_BeginChild(UI.ctx, "FX" .. fx_id, child_width, child_height) then
-						if collapsed then
-							if UI.r.ImGui_Button(UI.ctx, "+", -1) then
-								UI.core.state.fx_collapsed[fx_id] = false
-							end
-							local enabled = fx_data.enabled
-							UI.r.ImGui_PushStyleVar(UI.ctx, UI.r.ImGui_StyleVar_ButtonTextAlign(), 0.5, 0.0)
-							local fx_name_vertical = ""
-							for i = 1, #fx_data.name do
-								fx_name_vertical = fx_name_vertical .. fx_data.name:sub(i, i) .. "\n"
-							end
-							if UI.r.ImGui_Button(UI.ctx, fx_name_vertical, -1, 242) then
-								local actual_fx_id = fx_data.actual_fx_id or fx_id
-								UI.r.TrackFX_Show(UI.core.state.track, actual_fx_id, 3)
-							end
-							UI.r.ImGui_PopStyleVar(UI.ctx)
-							if UI.r.ImGui_Checkbox(UI.ctx, "##enabled" .. fx_id, enabled) then
-								local actual_fx_id = fx_data.actual_fx_id or fx_id
-								UI.r.TrackFX_SetEnabled(UI.core.state.track, actual_fx_id, not enabled)
-								fx_data.enabled = not enabled
-							end
-						else
-							local content_width = UI.r.ImGui_GetContentRegionAvail(UI.ctx)
-							local num_elements_line1 = 3
-							local num_spacings_line1 = num_elements_line1 - 1
-							local available_width_line1 = content_width - (num_spacings_line1 * UI.item_spacing_x)
-							local part_width_line1 = available_width_line1 / 15
-
-							if UI.r.ImGui_Button(UI.ctx, "-##collapse" .. fx_id, part_width_line1) then
-								UI.core.state.fx_collapsed[fx_id] = true
-							end
-							UI.r.ImGui_SameLine(UI.ctx, 0, UI.item_spacing_x)
-							local fx_button_label = (fx_data.name and fx_data.name ~= "") and fx_data.name or ("FX " .. fx_id)
-							if UI.r.ImGui_Button(UI.ctx, fx_button_label .. "##fxname" .. fx_id, 13 * part_width_line1) then
-								local actual_fx_id = fx_data.actual_fx_id or fx_id
-								local is_visible = UI.r.TrackFX_GetOpen(UI.core.state.track, actual_fx_id)
-								UI.r.TrackFX_Show(UI.core.state.track, actual_fx_id, is_visible and 2 or 3)
-							end
-							UI.r.ImGui_SameLine(UI.ctx, 0, UI.item_spacing_x)
-							local enabled = fx_data.enabled
-							if UI.r.ImGui_Checkbox(UI.ctx, "##enabled" .. fx_id, enabled) then
-								local actual_fx_id = fx_data.actual_fx_id or fx_id
-								UI.r.TrackFX_SetEnabled(UI.core.state.track, actual_fx_id, not enabled)
-								fx_data.enabled = not enabled
-							end
-							local num_items = 5
-							local item_width = (content_width - (UI.item_spacing_x * (num_items - 1))) / num_items
-							if UI.r.ImGui_Button(UI.ctx, "All##" .. fx_id, item_width) then
-								UI.fxmanager.selectAllParams(fx_data.params, true)
-								UI.fxmanager.saveTrackSelection()
-							end
-							UI.r.ImGui_SameLine(UI.ctx)
-							if UI.r.ImGui_Button(UI.ctx, "Cont##" .. fx_id, item_width) then
-								UI.fxmanager.selectAllContinuousParams(fx_data.params, true)
-								UI.fxmanager.saveTrackSelection()
-							end
-							UI.r.ImGui_SameLine(UI.ctx)
-							if UI.r.ImGui_Button(UI.ctx, "None##" .. fx_id, item_width) then
-								UI.fxmanager.selectAllParams(fx_data.params, false)
-								UI.fxmanager.saveTrackSelection()
-							end
-							UI.r.ImGui_SameLine(UI.ctx)
-							if UI.r.ImGui_Button(UI.ctx, "Rnd##" .. fx_id, item_width) then
-								UI.fxmanager.randomSelectParams(fx_data.params, fx_id)
-								UI.fxmanager.saveTrackSelection()
-							end
-							UI.r.ImGui_SameLine(UI.ctx)
-							UI.r.ImGui_SetNextItemWidth(UI.ctx, item_width)
-							local fx_key = UI.core.getFXKey(fx_id)
-							local current_max = (fx_key and UI.core.state.fx_random_max[fx_key]) or 3
-							local changed, new_max = UI.r.ImGui_SliderInt(UI.ctx, "##max" .. fx_id, current_max, 1, 10)
-							if changed and fx_key then
-								UI.core.state.fx_random_max[fx_key] = new_max
-								UI.fxmanager.saveTrackSelection()
-							end
-							local num_items = 3
-							local item_width = (content_width - (UI.item_spacing_x * (num_items - 1))) / num_items
-							if UI.r.ImGui_Button(UI.ctx, "RandXY##" .. fx_id, item_width) then
-								UI.fxmanager.randomizeXYAssign(fx_data.params, fx_id)
-							end
-							UI.r.ImGui_SameLine(UI.ctx)
-							if UI.r.ImGui_Button(UI.ctx, "RandRng##" .. fx_id, item_width) then
-								UI.fxmanager.randomizeRanges(fx_data.params, fx_id)
-							end
-							UI.r.ImGui_SameLine(UI.ctx)
-							if UI.r.ImGui_Button(UI.ctx, "RndBase##" .. fx_id, item_width) then
-								UI.fxmanager.randomizeBaseValues(fx_data.params, fx_id)
-							end
-							UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-							local table_flags = UI.r.ImGui_TableFlags_SizingStretchProp()
-							if UI.r.ImGui_BeginTable(UI.ctx, "params" .. fx_id, 6, table_flags) then
-								UI.r.ImGui_TableSetupColumn(UI.ctx, "Name", 0, 4.0)
-								UI.r.ImGui_TableSetupColumn(UI.ctx, "N", 0, 1.0)
-								UI.r.ImGui_TableSetupColumn(UI.ctx, "X", 0, 1.0)
-								UI.r.ImGui_TableSetupColumn(UI.ctx, "Y", 0, 1.0)
-								UI.r.ImGui_TableSetupColumn(UI.ctx, "Range", 0, 2.0)
-								UI.r.ImGui_TableSetupColumn(UI.ctx, "Base", 0, 2.0)
-								for param_id, param_data in pairs(fx_data.params) do
-									UI.r.ImGui_PushID(UI.ctx, fx_id * 10000 + param_id)
-									UI.r.ImGui_TableNextRow(UI.ctx)
-									UI.r.ImGui_TableNextColumn(UI.ctx)
-									local param_name = param_data.name
-									if #param_name > 14 then
-										param_name = param_name:sub(1, 11) .. "..."
-									end
-									local changed, selected = UI.r.ImGui_Checkbox(UI.ctx, param_name .. "##" .. fx_id .. "_" .. param_id, param_data.selected)
-									if changed then
-										param_data.selected = selected
-										UI.fxmanager.updateSelectedCount()
-										if selected then
-											param_data.base_value = param_data.current_value
-										end
-										UI.fxmanager.saveTrackSelection()
-									end
-									if UI.r.ImGui_IsItemHovered(UI.ctx) then
-										UI.r.ImGui_SetTooltip(UI.ctx, param_data.name)
-									end
-									UI.r.ImGui_TableNextColumn(UI.ctx)
-									local param_invert = UI.fxmanager.getParamInvert(fx_id, param_id)
-									if UI.r.ImGui_Button(UI.ctx, param_invert and "N" or "P" .. "##n" .. fx_id .. "_" .. param_id, -1) then
-										UI.fxmanager.setParamInvert(fx_id, param_id, not param_invert)
-									end
-									UI.r.ImGui_TableNextColumn(UI.ctx)
-									local x_assign, y_assign = UI.fxmanager.getParamXYAssign(fx_id, param_id)
-									if UI.r.ImGui_Button(UI.ctx, x_assign and "X" or "-" .. "##x" .. fx_id .. "_" .. param_id, -1) then
-										UI.fxmanager.setParamXYAssign(fx_id, param_id, "x", not x_assign)
-									end
-									UI.r.ImGui_TableNextColumn(UI.ctx)
-									if UI.r.ImGui_Button(UI.ctx, y_assign and "Y" or "-" .. "##y" .. fx_id .. "_" .. param_id, -1) then
-										UI.fxmanager.setParamXYAssign(fx_id, param_id, "y", not y_assign)
-									end
-									UI.r.ImGui_TableNextColumn(UI.ctx)
-									UI.r.ImGui_SetNextItemWidth(UI.ctx, -1)
-									local range = UI.fxmanager.getParamRange(fx_id, param_id)
-									local changed, new_range = UI.r.ImGui_SliderDouble(UI.ctx, "##r" .. fx_id .. "_" .. param_id, range, 0.1, 1.0, "%.1f")
-									if changed then
-										UI.fxmanager.setParamRange(fx_id, param_id, new_range)
-									end
-									UI.r.ImGui_TableNextColumn(UI.ctx)
-									UI.r.ImGui_SetNextItemWidth(UI.ctx, -1)
-									local format_str = "%.2f"
-									local display_value = param_data.base_value
-									local real_min = param_data.min_val
-									local real_max = param_data.max_val
-									local real_current = UI.core.denormalizeParamValue(param_data.current_value, real_min, real_max)
-									local real_base = UI.core.denormalizeParamValue(param_data.base_value, real_min, real_max)
-
-									if param_data.step_count and param_data.step_count == 2 then
-										format_str = param_data.base_value > 0.5 and "ON" or "OFF"
-										display_value = param_data.base_value > 0.5 and 1.0 or 0.0
-									elseif param_data.step_count and param_data.step_count > 2 and param_data.step_count <= 5 then
-										local step_index = math.floor(param_data.base_value * (param_data.step_count - 1) + 0.5)
-										format_str = tostring(step_index + 1) .. "/" .. param_data.step_count
-									elseif real_min ~= 0 or real_max ~= 1 then
-										format_str = string.format("%.2f", real_base)
-									end
-
-									local changed, new_base = UI.r.ImGui_SliderDouble(UI.ctx, "##b" .. fx_id .. "_" .. param_id, param_data.base_value, 0.0, 1.0, format_str)
-									if changed then
-										if param_data.step_count and param_data.step_count > 0 then
-											new_base = UI.core.snapToDiscreteValue(new_base, param_data.step_count)
-										end
-										UI.fxmanager.updateParamBaseValue(fx_id, param_id, new_base)
-									end
-									if UI.r.ImGui_IsItemHovered(UI.ctx) then
-										local xy_text = ""
-										if x_assign and y_assign then
-											xy_text = " [XY]"
-										elseif x_assign then
-											xy_text = " [X]"
-										elseif y_assign then
-											xy_text = " [Y]"
-										end
-										local invert_text = param_invert and " [INVERTED]" or ""
-										local value_text = string.format("Current: %.3f, Base: %.3f", real_current, real_base)
-										if real_min ~= 0 or real_max ~= 1 then
-											value_text = value_text .. string.format(" (%.1f to %.1f)", real_min, real_max)
-										end
-										UI.r.ImGui_SetTooltip(UI.ctx, param_data.name .. "\n" .. value_text .. string.format("\nRange: %.1f", range) .. xy_text .. invert_text)
-									end
-									UI.r.ImGui_PopID(UI.ctx)
-								end
-								UI.r.ImGui_EndTable(UI.ctx)
-							end
-						end
-						UI.r.ImGui_EndChild(UI.ctx)
-					end
-					UI.r.ImGui_PopStyleVar(UI.ctx)
-					UI.r.ImGui_EndGroup(UI.ctx)
-				end
-			end
-			UI.r.ImGui_EndChild(UI.ctx)
-		end
-	else
-		UI.r.ImGui_Text(UI.ctx, "No FX found")
-	end
-	UI.r.ImGui_EndChild(UI.ctx)
-	end
+local function Chk(id, label, checked, opts)
+    local theme = UI.tk.GetTheme()
+    opts = opts or {}
+    -- Match button height by sizing the checkbox box to button_height.
+    if opts.size == nil then opts.size = theme.button_height end
+    return UI.tk.Checkbox(id, label, checked, opts)
 end
 
-function UI.drawFiltersWindow()
-	if not UI.core.state.show_filters_window then return end
-	if not UI.filters_ctx or not UI.r.ImGui_ValidatePtr(UI.filters_ctx, "ImGui_Context*") then
-		UI.filters_ctx = UI.r.ImGui_CreateContext('FX Constellation Filters')
-		if UI.style_loader then
-			UI.style_loader.ApplyFontsToContext(UI.filters_ctx)
-		end
-	end
-	if UI.style_loader then
-		local success, colors, vars = UI.style_loader.applyToContext(UI.filters_ctx)
-		if success then UI.filters_pushed_colors, UI.filters_pushed_vars = colors, vars end
-	end
-	UI.r.ImGui_SetNextWindowSize(UI.filters_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.filters_ctx, 'Filter Keywords', true)
-	if visible then
-		local main_font = UI.getStyleFont("main", UI.filters_ctx)
-		local header_font = UI.getStyleFont("header", UI.filters_ctx)
-
-		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.filters_ctx, main_font, 0)
-		end
-
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.filters_ctx, header_font, 0)
-			UI.r.ImGui_Text(UI.filters_ctx, "FILTER KEYWORDS")
-			UI.r.ImGui_PopFont(UI.filters_ctx)
-		else
-			UI.r.ImGui_Text(UI.filters_ctx, "Filter Keywords:")
-		end
-
-		local changed, new_word = UI.r.ImGui_InputText(UI.filters_ctx, "Add Filter", UI.core.state.new_filter_word)
-		if changed then UI.core.state.new_filter_word = new_word end
-		UI.r.ImGui_SameLine(UI.filters_ctx)
-		if UI.r.ImGui_Button(UI.filters_ctx, "Add") and UI.core.state.new_filter_word ~= "" then
-			table.insert(UI.core.state.filter_keywords, UI.core.state.new_filter_word)
-			UI.core.state.new_filter_word = ""
-			UI.persistence.scheduleSave()
-			UI.fxmanager.scanTrackFX()
-		end
-		for i, keyword in ipairs(UI.core.state.filter_keywords) do
-			UI.r.ImGui_Text(UI.filters_ctx, keyword)
-			UI.r.ImGui_SameLine(UI.filters_ctx)
-			if UI.r.ImGui_Button(UI.filters_ctx, "X##" .. i) then
-				table.remove(UI.core.state.filter_keywords, i)
-				UI.persistence.scheduleSave()
-				UI.fxmanager.scanTrackFX()
-				break
-			end
-		end
-		UI.r.ImGui_Separator(UI.filters_ctx)
-		UI.r.ImGui_Text(UI.filters_ctx, "Param Filter:")
-		UI.r.ImGui_SameLine(UI.filters_ctx)
-		UI.r.ImGui_SetNextItemWidth(UI.filters_ctx, 200)
-		local changed, new_filter = UI.r.ImGui_InputText(UI.filters_ctx, "##paramfilter", UI.core.state.param_filter)
-		if changed then
-			UI.core.state.param_filter = new_filter
-			UI.fxmanager.scanTrackFX()
-		end
-
-		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
-			UI.r.ImGui_PopFont(UI.filters_ctx)
-		end
-		UI.r.ImGui_End(UI.filters_ctx)
-	end
-	if not open then
-		UI.core.state.show_filters_window = false
-	end
-	if UI.style_loader then UI.style_loader.clearStyles(UI.filters_ctx, UI.filters_pushed_colors, UI.filters_pushed_vars) end
+local function Combo(id, label, idx, items, opts)
+    return UI.tk.Combo(id, label, idx, items,
+        _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawSettingsWindow()
-	if not UI.core.state.show_settings_window then return end
-	if not UI.settings_ctx or not UI.r.ImGui_ValidatePtr(UI.settings_ctx, "ImGui_Context*") then
-		UI.settings_ctx = UI.r.ImGui_CreateContext('FX Constellation Settings')
-		if UI.style_loader then
-			UI.style_loader.ApplyFontsToContext(UI.settings_ctx)
-		end
-	end
-	if UI.style_loader then
-		local success, colors, vars = UI.style_loader.applyToContext(UI.settings_ctx)
-		if success then UI.settings_pushed_colors, UI.settings_pushed_vars = colors, vars end
-	end
-	UI.r.ImGui_SetNextWindowSize(UI.settings_ctx, 400, 350, UI.r.ImGui_Cond_FirstUseEver())
-	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
-	local visible, open = UI.r.ImGui_Begin(UI.settings_ctx, 'Settings', true, window_flags)
-	if visible then
-		local main_font = UI.getStyleFont("main", UI.settings_ctx)
-		local header_font = UI.getStyleFont("header", UI.settings_ctx)
-
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
-			UI.r.ImGui_Text(UI.settings_ctx, "SETTINGS")
-			UI.r.ImGui_PopFont(UI.settings_ctx)
-		else
-			UI.r.ImGui_Text(UI.settings_ctx, "SETTINGS")
-		end
-
-		UI.r.ImGui_SameLine(UI.settings_ctx)
-		local header_font_size = UI.getStyleValue("fonts.header.size", 16)
-		local window_padding_x = UI.getStyleValue("spacing.window_padding_x", 8)
-		local close_button_size = header_font_size + 6
-		local close_x = UI.r.ImGui_GetWindowWidth(UI.settings_ctx) - close_button_size - window_padding_x
-		UI.r.ImGui_SetCursorPosX(UI.settings_ctx, close_x)
-		if UI.r.ImGui_Button(UI.settings_ctx, "X", close_button_size, close_button_size) then
-			open = false
-		end
-
-		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.settings_ctx, main_font, 0)
-		end
-
-		UI.r.ImGui_Separator(UI.settings_ctx)
-
-		UI.r.ImGui_Text(UI.settings_ctx, "ULTRA RANDOM SETTINGS")
-		UI.r.ImGui_Separator(UI.settings_ctx)
-
-		local urs = UI.core.state.ultra_random_settings
-
-		local changed, xy_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize XY Assignments", urs.xy_assignments)
-		if changed then
-			urs.xy_assignments = xy_val
-			UI.persistence.scheduleSave()
-		end
-
-		local changed, ranges_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Ranges", urs.ranges)
-		if changed then
-			urs.ranges = ranges_val
-			UI.persistence.scheduleSave()
-		end
-
-		local changed, bases_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Bases", urs.bases)
-		if changed then
-			urs.bases = bases_val
-			UI.persistence.scheduleSave()
-		end
-
-		local changed, bypass_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Bypass", urs.bypass)
-		if changed then
-			urs.bypass = bypass_val
-			UI.persistence.scheduleSave()
-		end
-
-		local changed, fx_order_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize FX Order", urs.fx_order)
-		if changed then
-			urs.fx_order = fx_order_val
-			UI.persistence.scheduleSave()
-		end
-
-		local changed, invert_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Invert", urs.invert)
-		if changed then
-			urs.invert = invert_val
-			UI.persistence.scheduleSave()
-		end
-
-		local changed, sound_freq_val = UI.r.ImGui_Checkbox(UI.settings_ctx, "Randomize Sound Generator Frequency", urs.sound_frequency)
-		if changed then
-			urs.sound_frequency = sound_freq_val
-			UI.persistence.scheduleSave()
-		end
-
-		UI.r.ImGui_Separator(UI.settings_ctx)
-
-		if header_font and UI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			UI.r.ImGui_PushFont(UI.settings_ctx, header_font, 0)
-			UI.r.ImGui_Text(UI.settings_ctx, "SECTION WIDTH")
-			UI.r.ImGui_PopFont(UI.settings_ctx)
-		else
-			UI.r.ImGui_Text(UI.settings_ctx, "SECTION WIDTH")
-		end
-
-		UI.r.ImGui_SetNextItemWidth(UI.settings_ctx, -1)
-		local changed, new_width = UI.r.ImGui_SliderInt(UI.settings_ctx, "##sectionwidth", UI.core.state.section_width_percent, 50, 200, "%d%%")
-		if changed then
-			UI.core.state.section_width_percent = new_width
-			UI.persistence.scheduleSave()
-		end
-
-		if main_font and UI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
-			UI.r.ImGui_PopFont(UI.settings_ctx)
-		end
-		UI.r.ImGui_End(UI.settings_ctx)
-	end
-	if not open then
-		UI.core.state.show_settings_window = false
-	end
-	if UI.style_loader then UI.style_loader.clearStyles(UI.settings_ctx, UI.settings_pushed_colors, UI.settings_pushed_vars) end
+local function Input(id, label, text, opts)
+    return UI.tk.InputText(id, label, text,
+        _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-function UI.drawHorizontalLayout()
-	local nav_width = UI.core.state.section_collapsed.navigation and 30 or 160
-	local mode_width = UI.core.state.section_collapsed.mode and 30 or 128
-	local soundgen_width = UI.core.state.section_collapsed.soundgen and 30 or 160
-	local pad_width = UI.core.state.section_collapsed.pad and 30 or 298
-	local rand_width = UI.core.state.section_collapsed.randomizer and 30 or 128
-	local preset_width = UI.core.state.section_collapsed.presets and 30 or 180
+-- Default section widths, expressed as multiples of theme.button_height
+-- so they scale with DPI / the theme tweaker. The user can override any
+-- of these by dragging the inter-column splitters; overrides live in
+-- core.state.section_widths_user (persisted via Persistence) and are
+-- consulted before this default map.
+local SECTION_DEFAULT_W = {
+    soundgen     = 7.5,
+    navigation   = 7.5,
+    mode         = 6.0,
+    pad          = 13.0,
+    presets      = 8.0,
+    randomizer   = 9.0,
+    fx_settings  = 0,    -- 0 = remaining (flex)
+}
 
-	if UI.r.ImGui_BeginChild(UI.ctx, "SoundGen", soundgen_width, 0) then
-		UI.drawSoundGenerator()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)	
-	if UI.r.ImGui_BeginChild(UI.ctx, "Navigation", nav_width, 0) then
-		UI.drawNavigation()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Mode", mode_width, 0) then
-		UI.drawMode()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "PadXY", pad_width, 0) then
-		UI.drawPadSection()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Presets", preset_width, 0) then
-		UI.drawPresets()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "Randomizer", rand_width, 0) then
-		UI.drawRandomizer()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
-	UI.r.ImGui_SameLine(UI.ctx)
-	UI.r.ImGui_Dummy(UI.ctx, 0, 0)
-	UI.r.ImGui_SameLine(UI.ctx)
-	if UI.r.ImGui_BeginChild(UI.ctx, "FX", 0, 0) then
-		UI.drawFXSection()
-		UI.r.ImGui_EndChild(UI.ctx)
-	end
+local function sectionW(theme, key)
+    local s = UI.core.state
+    s.section_widths_user = s.section_widths_user or {}
+    local user_w = s.section_widths_user[key]
+    if user_w and user_w > 0 then return math.floor(user_w) end
+    local mult = SECTION_DEFAULT_W[key] or 0
+    return math.floor(mult * theme.button_height)
 end
 
-function UI.drawInterface()
-	if UI.style_loader then
-		local success, colors, vars = UI.style_loader.applyToContext(UI.ctx)
-		if success then UI.pushed_colors, UI.pushed_vars = colors, vars end
-	end
+-- ---------------------------------------------------------------------------
+-- STATUS BAR (track name + Lock + Settings, single row)
+-- ---------------------------------------------------------------------------
+local function drawStatusBar(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
 
-	UI.r.ImGui_SetNextWindowSize(UI.ctx, 1400, 800, UI.r.ImGui_Cond_FirstUseEver())
-	local window_flags = UI.r.ImGui_WindowFlags_NoTitleBar() | UI.r.ImGui_WindowFlags_NoCollapse()
-	local visible, open = UI.r.ImGui_Begin(UI.ctx, 'FX Constellation', true, window_flags)
-	if visible then
-		if UI.style_loader and UI.style_loader.PushFont(UI.ctx, "header") then
-			local lock_icon = UI.core.state.track_locked and "[L] " or ""
-			UI.r.ImGui_Text(UI.ctx, lock_icon .. "FX Constellation")
-			UI.style_loader.PopFont(UI.ctx)
-		else
-			local lock_icon = UI.core.state.track_locked and "[L] " or ""
-			UI.r.ImGui_Text(UI.ctx, lock_icon .. "FX Constellation")
-		end
+    local track_name = "—"
+    if UI.core.isTrackValid() then
+        local _, name = UI.r.GetSetMediaTrackInfo_String(s.track, "P_NAME", "", false)
+        if name and name ~= "" then track_name = name end
+    end
 
-		UI.r.ImGui_SameLine(UI.ctx)
-		local lock_button_size = UI.header_font_size + 6
-		if UI.r.ImGui_Button(UI.ctx, UI.core.state.track_locked and "U" or "L", lock_button_size, lock_button_size) then
-			if UI.core.state.track_locked then
-				UI.core.state.track_locked = false
-				UI.core.state.locked_track = nil
-			else
-				UI.core.state.track_locked = true
-				UI.core.state.locked_track = UI.core.state.track
-			end
-		end
-		if UI.r.ImGui_IsItemHovered(UI.ctx) then
-			UI.r.ImGui_SetTooltip(UI.ctx, UI.core.state.track_locked and "Unlock track" or "Lock to current track")
-		end
+    -- 0 = flex (left), then two fixed buttons sized from theme.button_height.
+    local btn_w = math.floor(theme.button_height * 2.5)
+    UItk.BeginColumns("statusbar", { 0, btn_w, theme.button_height },
+                     { gap = theme.item_spacing })
 
-		UI.r.ImGui_SameLine(UI.ctx)
-		local close_button_size = UI.header_font_size + 6
-		local settings_x = UI.r.ImGui_GetWindowWidth(UI.ctx) - (close_button_size * 2) - UI.item_spacing_x - UI.window_padding_x
-		UI.r.ImGui_SetCursorPosX(UI.ctx, settings_x)
-		if UI.r.ImGui_Button(UI.ctx, "⚙", close_button_size, close_button_size) then
-			UI.core.state.show_settings_window = not UI.core.state.show_settings_window
-		end
+    UItk.SetFontH2Bold()
+    UItk.Text("FX Constellation")
+    UItk.SetFontBody()
+    UItk.SameLine(theme.frame_padding_x)
+    UItk.TextColored("— " .. track_name,
+        theme.colors.text_disabled[1],
+        theme.colors.text_disabled[2],
+        theme.colors.text_disabled[3], 1)
 
-		UI.r.ImGui_SameLine(UI.ctx)
-		local close_x = UI.r.ImGui_GetWindowWidth(UI.ctx) - close_button_size - UI.window_padding_x
-		UI.r.ImGui_SetCursorPosX(UI.ctx, close_x)
-		if UI.r.ImGui_Button(UI.ctx, "X", close_button_size, close_button_size) then
-			open = false
-		end
+    UItk.NextColumn()
 
-		if UI.style_loader and UI.style_loader.PushFont(UI.ctx, "main") then
-			UI.r.ImGui_Separator(UI.ctx)
+    local _, locked = Tgl("lock_track",
+        s.track_locked and "Unlock" or "Lock", s.track_locked)
+    if locked ~= s.track_locked then
+        if locked then
+            s.track_locked, s.locked_track = true, s.track
+        else
+            s.track_locked, s.locked_track = false, nil
+        end
+    end
 
-			UI.persistence.checkSave()
-			UI.gesture.updateGestureMotion()
+    UItk.NextColumn()
+    if Btn("settings_btn", "S") then
+        s.show_settings_window = not s.show_settings_window
+    end
 
-			if not UI.core.state.track_locked then
-				local new_track = UI.r.GetSelectedTrack(0, 0)
-				if new_track ~= UI.core.state.track then
-					if UI.core.state.track then UI.fxmanager.saveTrackSelection() end
-					UI.core.state.track = new_track
-					if UI.core.state.track then
-						UI.fxmanager.scanTrackFX()
-						UI.core.state.jsfx_automation_index = UI.gesture.findAutomationJSFX()
-						UI.core.state.jsfx_automation_enabled = UI.core.state.jsfx_automation_index >= 0
-					end
-				end
-			else
-				if UI.core.state.locked_track and UI.r.ValidatePtr(UI.core.state.locked_track, "MediaTrack*") then
-					UI.core.state.track = UI.core.state.locked_track
-				else
-					UI.core.state.track_locked = false
-					UI.core.state.locked_track = nil
-				end
-			end
-			if UI.core.isTrackValid() then
-				UI.fxmanager.checkForFXChanges()
-				UI.presetsystem.checkPresetModification()
-			end
-			if not UI.core.isTrackValid() then
-				UI.r.ImGui_Text(UI.ctx, "No track selected")
-				if UI.style_loader and UI.style_loader.PopFont then UI.style_loader.PopFont(UI.ctx) end
-				UI.r.ImGui_End(UI.ctx)
-				if UI.style_loader then UI.style_loader.clearStyles(UI.ctx, UI.pushed_colors, UI.pushed_vars) end
-				return open
-			end
-
-			UI.drawHorizontalLayout()
-
-			UI.style_loader.PopFont(UI.ctx)
-		end
-		UI.r.ImGui_End(UI.ctx)
-	end
-	if UI.style_loader then UI.style_loader.clearStyles(UI.ctx, UI.pushed_colors, UI.pushed_vars) end
-	UI.drawFiltersWindow()
-	UI.drawSettingsWindow()
-	UI.drawLicenseWindow()
-	if UI.fxmanagerui then
-		UI.fxmanagerui.drawWindow()
-	end
-	return open
+    UItk.EndColumns()
+    UItk.Separator()
 end
 
-function UI.drawLicenseWindow()
-	if not UI.core.state.show_license_window then return end
+-- ---------------------------------------------------------------------------
+-- SECTION HEADER (collapsible). Returns true if open.
+-- ---------------------------------------------------------------------------
+local function sectionHeader(key, label, theme, extra_text)
+    local s = UI.core.state
+    local is_open = not (s.section_collapsed[key] == true)
+    local toggled, new_open = UI.tk.CollapsingHeader("hdr_" .. key, label, is_open)
+    if toggled then
+        s.section_collapsed[key] = not new_open
+        UI.persistence.scheduleSave()
+    end
+    if extra_text and new_open then
+        UI.tk.SameLine(theme.frame_padding_x)
+        UI.tk.SetFontCaption()
+        UI.tk.TextColored(extra_text,
+            theme.colors.text_disabled[1],
+            theme.colors.text_disabled[2],
+            theme.colors.text_disabled[3], 1)
+        UI.tk.SetFontBody()
+    end
+    return new_open
+end
 
-	if not UI.license_ctx then
-		UI.license_ctx = UI.r.ImGui_CreateContext('FX Constellation License')
-	end
+-- ---------------------------------------------------------------------------
+-- SOUND GENERATOR
+-- ---------------------------------------------------------------------------
+local function drawSoundGen(theme)
+    local UItk = UI.tk
+    if not sectionHeader("soundgen", "SOUND GENERATOR", theme) then return end
 
-	if UI.style_loader then
-		local success, colors, vars = UI.style_loader.applyToContext(UI.license_ctx)
-		if success then UI.license_pushed_colors, UI.license_pushed_vars = colors, vars end
-	end
+    if not UI.license.isFull() then
+        UItk.TextColored("🔒 Premium", 1.0, 0.7, 0.2, 1)
+        if Btn("sg_act", "Activate License") then
+            UI.core.state.show_license_window = true
+        end
+        return
+    end
 
-	UI.r.ImGui_SetNextWindowSize(UI.license_ctx, 400, 300, UI.r.ImGui_Cond_FirstUseEver())
-	local visible, open = UI.r.ImGui_Begin(UI.license_ctx, 'FX Constellation - License', true)
-	if visible then
-		local status = UI.license.getStatus()
+    local sg = UI.core.state.sound_generator
+    UI.soundgen.syncFromJSFX()
 
-		if status == "FULL" then
-			UI.r.ImGui_TextColored(UI.license_ctx, 0x00FF00FF, "✓ Licensed")
-			UI.r.ImGui_Text(UI.license_ctx, "Thank you for supporting FX Constellation!")
-			UI.r.ImGui_Dummy(UI.license_ctx, 0, 10)
-			if UI.r.ImGui_Button(UI.license_ctx, "Close", 100) then
-				UI.core.state.show_license_window = false
-			end
-		else
-			if status == "INVALID" then
-				UI.r.ImGui_TextColored(UI.license_ctx, 0xFF0000FF, "✗ Invalid License Key")
-				UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
-			end
+    local toggled, _ = Tgl("sg_toggle",
+        sg.enabled and "● ON" or "○ OFF", sg.enabled)
+    if toggled then
+        if not sg.enabled then UI.soundgen.createGenerator()
+        else UI.soundgen.removeGenerator() end
+        UI.fxmanager.scanTrackFX()
+    end
 
-			UI.r.ImGui_Text(UI.license_ctx, "FX Constellation FREE")
-			UI.r.ImGui_Separator(UI.license_ctx)
-			UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
-			UI.r.ImGui_Text(UI.license_ctx, "Upgrade to unlock:")
-			UI.r.ImGui_BulletText(UI.license_ctx, "Sound Generator")
-			UI.r.ImGui_BulletText(UI.license_ctx, "Unlimited FX (FREE: max 5)")
-			UI.r.ImGui_BulletText(UI.license_ctx, "Granular mode")
-			UI.r.ImGui_BulletText(UI.license_ctx, "Random Walk & Figures")
-			UI.r.ImGui_BulletText(UI.license_ctx, "Ultra Random")
-			UI.r.ImGui_Dummy(UI.license_ctx, 0, 10)
+    if not sg.enabled then return end
 
-			UI.r.ImGui_Text(UI.license_ctx, "Enter License Key:")
-			UI.r.ImGui_SetNextItemWidth(UI.license_ctx, 350)
-			local changed, new_key = UI.r.ImGui_InputText(UI.license_ctx, "##licensekey", UI.license_key_input)
-			if changed then
-				UI.license_key_input = new_key
-			end
+    if Btn("sg_mode", sg.mode == 0 and "Continuous" or "Triggered") then
+        sg.mode = sg.mode == 0 and 1 or 0
+        UI.soundgen.updateJSFXParams()
+    end
 
-			UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
+    local waveforms = { "Sine", "Triangle", "Square", "Saw", "Noise", "Click" }
+    local cc, ci = Combo("sg_wf", "Type", sg.waveform + 1, waveforms)
+    if cc then sg.waveform = ci - 1; UI.soundgen.updateJSFXParams() end
 
-			if UI.r.ImGui_Button(UI.license_ctx, "Activate", 100) then
-				if UI.license_key_input == "" then
-					UI.license_activation_message = "Please enter a license key"
-					UI.license_message_time = UI.r.time_precise()
-				elseif UI.license.validate(UI.license_key_input) then
-					UI.license.setKey(UI.license_key_input)
-					UI.license_activation_message = "License activated successfully!"
-					UI.license_message_time = UI.r.time_precise()
-					UI.license_key_input = ""
-				else
-					UI.license_activation_message = "Invalid license key. Please check and try again."
-					UI.license_message_time = UI.r.time_precise()
-				end
-			end
-			UI.r.ImGui_SameLine(UI.license_ctx)
-			if UI.r.ImGui_Button(UI.license_ctx, "Cancel", 100) then
-				UI.core.state.show_license_window = false
-				UI.license_key_input = ""
-				UI.license_activation_message = ""
-			end
+    if sg.waveform < 4 then
+        local fmin, fmax = math.log(20), math.log(20000)
+        local norm = (math.log(sg.frequency) - fmin) / (fmax - fmin)
+        local fc, fv = Slid("sg_freq", "Freq", norm, 0, 1,
+            { format = fmtVal("%.1f Hz", sg.frequency) })
+        if fc then
+            sg.frequency = math.exp(fmin + fv * (fmax - fmin))
+            UI.soundgen.updateJSFXParams()
+        end
+        local wc, wv = Slid("sg_w", "Width", sg.width, 0, 100,
+            { format = fmtVal("%.1f c", sg.width) })
+        if wc then sg.width = wv; UI.soundgen.updateJSFXParams() end
+    elseif sg.waveform == 4 then
+        local cc2, cv = Slid("sg_color", "Color", sg.noise_color, 0, 1,
+            { format = fmtVal("%.2f", sg.noise_color) })
+        if cc2 then sg.noise_color = cv; UI.soundgen.updateJSFXParams() end
+        local wc, wv = Slid("sg_w2", "Width", sg.width, 0, 100,
+            { format = fmtVal("%.1f c", sg.width) })
+        if wc then sg.width = wv; UI.soundgen.updateJSFXParams() end
+    end
 
-			if UI.license_activation_message ~= "" and (UI.r.time_precise() - UI.license_message_time < 5) then
-				UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
-				UI.r.ImGui_Separator(UI.license_ctx)
-				UI.r.ImGui_Dummy(UI.license_ctx, 0, 5)
-				local is_success = UI.license_activation_message:find("success")
-				local msg_color = is_success and 0x00FF00FF or 0xFF0000FF
-				UI.r.ImGui_TextColored(UI.license_ctx, msg_color, UI.license_activation_message)
-			end
-		end
+    local ac, av = Slid("sg_amp", "Amp", sg.amplitude, 0, 1,
+        { format = fmtVal("%.2f", sg.amplitude) })
+    if ac then sg.amplitude = av; UI.soundgen.updateJSFXParams() end
 
-		UI.r.ImGui_End(UI.license_ctx)
-	end
-	if not open then
-		UI.core.state.show_license_window = false
-	end
+    if sg.mode == 0 then
+        local rc, rv = Chk("sg_rh", "Rhythmic", sg.rhythmic)
+        if rc then sg.rhythmic = rv; UI.soundgen.updateJSFXParams() end
+        if sg.rhythmic then
+            local tc, tv = Slid("sg_tr", "Rate", sg.tick_rate, 0.1, 20,
+                { format = fmtVal("%.2f Hz", sg.tick_rate) })
+            if tc then sg.tick_rate = tv; UI.soundgen.updateJSFXParams() end
+            local dc, dv = Slid("sg_du", "Duty", sg.duty_cycle, 0.01, 0.99,
+                { format = fmtVal("%.2f", sg.duty_cycle) })
+            if dc then sg.duty_cycle = dv; UI.soundgen.updateJSFXParams() end
+        end
+    else
+        local ec, ev = Chk("sg_adsr", "ADSR", sg.use_adsr)
+        if ec then sg.use_adsr = ev; UI.soundgen.updateJSFXParams() end
+        if sg.use_adsr then
+            local c, v = Slid("sg_a", "A", sg.attack, 0.001, 2,
+                { format = fmtVal("%.3f s", sg.attack) })
+            if c then sg.attack = v; UI.soundgen.updateJSFXParams() end
+            c, v = Slid("sg_d", "D", sg.decay, 0.001, 2,
+                { format = fmtVal("%.3f s", sg.decay) })
+            if c then sg.decay = v; UI.soundgen.updateJSFXParams() end
+            c, v = Slid("sg_s", "S", sg.sustain, 0, 1,
+                { format = fmtVal("%.2f", sg.sustain) })
+            if c then sg.sustain = v; UI.soundgen.updateJSFXParams() end
+            c, v = Slid("sg_r", "R", sg.release, 0.001, 5,
+                { format = fmtVal("%.3f s", sg.release) })
+            if c then sg.release = v; UI.soundgen.updateJSFXParams() end
+        end
+        local mc, mv = Chk("sg_midi", "MIDI", sg.midi_mode)
+        if mc then sg.midi_mode = mv; UI.soundgen.updateJSFXParams() end
+        Btn("sg_play", "HOLD TO PLAY")
+    end
+end
 
-	if UI.style_loader then
-		UI.style_loader.clearStyles(UI.license_ctx, UI.license_pushed_colors, UI.license_pushed_vars)
-	end
+-- ---------------------------------------------------------------------------
+-- NAVIGATION
+-- ---------------------------------------------------------------------------
+local function drawPatternIcon(UItk, theme, x, y, size, pattern_id, active)
+    local cx, cy = x + size / 2, y + size / 2
+    local rad = size * 0.32
+    local col = active and theme.colors.accent or theme.colors.text_disabled
+    local r, g, b = col[1], col[2], col[3]
+    if pattern_id == 0 then
+        UItk.DrawCircle(cx, cy, rad, r, g, b, 1, false)
+    elseif pattern_id == 1 then
+        UItk.Core.DrawRect(cx - rad, cy - rad, rad * 2, rad * 2, r, g, b, 1, false)
+    elseif pattern_id == 2 then
+        local h = rad * 1.1
+        UItk.DrawTriangle(cx, cy - h * 0.7,
+                          cx - h * 0.6, cy + h * 0.5,
+                          cx + h * 0.6, cy + h * 0.5,
+                          r, g, b, 1)
+    elseif pattern_id == 3 then
+        UItk.DrawTriangle(cx, cy - rad,  cx + rad, cy,  cx, cy + rad, r, g, b, 1)
+        UItk.DrawTriangle(cx, cy - rad,  cx - rad, cy,  cx, cy + rad, r, g, b, 1)
+    elseif pattern_id == 4 then
+        UItk.Core.DrawLine(cx - rad, cy + rad, cx + rad, cy - rad, r, g, b, 1)
+        UItk.Core.DrawLine(cx - rad, cy - rad, cx + rad, cy + rad, r, g, b, 1)
+    elseif pattern_id == 5 then
+        UItk.DrawCircle(cx - rad * 0.5, cy, rad * 0.6, r, g, b, 1, false)
+        UItk.DrawCircle(cx + rad * 0.5, cy, rad * 0.6, r, g, b, 1, false)
+    end
+end
+
+local function drawNavigation(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
+    if not sectionHeader("navigation", "NAVIGATION", theme) then return end
+
+    local nav_modes = UI.license.isFull()
+        and UI.core.navigation_modes
+        or { "Manual", "Random Walk 🔒", "Figures 🔒" }
+    local cc, ci = Combo("nav_mode", "", s.navigation_mode + 1, nav_modes)
+    if cc then
+        local new_mode = ci - 1
+        if (new_mode == 1 or new_mode == 2) and not UI.license.isFull() then
+            s.navigation_mode = 0
+            s.show_license_window = true
+        else
+            s.navigation_mode = new_mode
+            if new_mode == 1 then
+                s.random_walk_active = true
+                s.random_walk_next_time = UI.r.time_precise() + 1.0 / s.random_walk_speed
+                UI.gesture.generateRandomWalkControlPoints()
+                UI.fxmanager.captureBaseValues()
+            elseif new_mode == 2 then
+                s.figures_active = true
+                s.figures_time = 0
+                UI.fxmanager.captureBaseValues()
+            else
+                s.random_walk_active = false
+                s.figures_active = false
+            end
+            UI.persistence.scheduleSave()
+        end
+    end
+
+    if s.navigation_mode == 0 then
+        local c, v = Slid("nav_smooth", "Smooth", s.smooth_speed, 0, 1,
+            { format = fmtVal("%.2f", s.smooth_speed) })
+        if c then s.smooth_speed = v end
+        c, v = Slid("nav_speed", "Speed", s.max_gesture_speed, 0.1, 10,
+            { format = fmtVal("%.1f", s.max_gesture_speed) })
+        if c then s.max_gesture_speed = v end
+    elseif s.navigation_mode == 1 then
+        local c, v = Slid("rw_speed", "Speed", s.random_walk_speed, 0.1, 10,
+            { format = fmtVal("%.1f Hz", s.random_walk_speed) })
+        if c then
+            s.random_walk_speed = v
+            if s.random_walk_active then
+                s.random_walk_next_time = UI.r.time_precise() + 1.0 / s.random_walk_speed
+            end
+        end
+        c, v = Slid("rw_jit", "Jitter", s.random_walk_jitter, 0, 1,
+            { format = fmtVal("%.2f", s.random_walk_jitter) })
+        if c then s.random_walk_jitter = v end
+    elseif s.navigation_mode == 2 then
+        -- Pattern grid — square cells, manual hit-testing so the click
+        -- zones line up exactly with the drawn icons (BeginGrid only
+        -- gives screen rects; widgets like ToggleButton drift because
+        -- they use the layout cursor instead).
+        local cell = math.floor(theme.button_height * 1.4)
+        UItk.BeginGrid("fig_grid",
+            { cell_w = cell, cell_h = cell, gap = theme.item_spacing })
+        for pid = 0, 5 do
+            local px, py, pw, ph = UItk.GridCell("fig_grid")
+            local active = s.figures_mode == pid
+            local hovered = UItk.Core.MouseInRect(px, py, pw, ph)
+                            and not UItk.Core.HasPopup()
+
+            -- Background: accent for the active cell, hover tint, plain
+            -- frame_bg otherwise (mirrors a flat ToggleButton look).
+            local bg
+            if active then bg = theme.colors.accent
+            elseif hovered then bg = theme.colors.button_hovered
+            else bg = theme.colors.frame_bg end
+            UItk.Core.DrawRect(px, py, pw, ph, bg[1], bg[2], bg[3], bg[4] or 1)
+            local bc = theme.colors.border
+            UItk.Core.DrawRect(px, py, pw, ph, bc[1], bc[2], bc[3], bc[4] or 0.4, false)
+
+            drawPatternIcon(UItk, theme, px, py, pw, pid, active)
+
+            if hovered and UItk.Core.MouseClicked(1) then
+                s.figures_mode = pid
+                s.figures_time = 0
+                UI.persistence.scheduleSave()
+            end
+        end
+        UItk.EndGrid("fig_grid")
+
+        local c, v = Slid("fig_speed", "Speed", s.figures_speed, 0.01, 10,
+            { format = fmtVal("%.2f Hz", s.figures_speed) })
+        if c then s.figures_speed = v; UI.persistence.scheduleSave() end
+        c, v = Slid("fig_size", "Size", s.figures_size, 0.1, 1.0,
+            { format = fmtVal("%.2f", s.figures_size) })
+        if c then s.figures_size = v; UI.persistence.scheduleSave() end
+    end
+
+    -- Range = base+range expressed as a single dual-thumb slider. Drag the
+    -- middle to translate the window (preserves span = move base value).
+    local rc, rmin, rmax = RngSlid("gesture_rng", "Range",
+        s.gesture_min, s.gesture_max, 0, 1, { format = "%.2f" })
+    if rc then
+        s.gesture_min = rmin
+        s.gesture_max = rmax
+        UI.persistence.scheduleSave()
+    end
+
+    UItk.BeginColumns("morph_row", { 0.5, 0.5 }, { gap = theme.item_spacing })
+    if Btn("morph1", "Morph 1") then UI.gesture.captureToMorph(1) end
+    UItk.NextColumn()
+    if Btn("morph2", "Morph 2") then UI.gesture.captureToMorph(2) end
+    UItk.EndColumns()
+
+    if s.morph_preset_a and s.morph_preset_b then
+        local mc, mv = Slid("morph_amt", "Morph", s.morph_amount or 0, 0, 1,
+            { format = fmtVal("%.2f", s.morph_amount or 0) })
+        if mc then
+            s.morph_amount = mv
+            UI.gesture.morphBetweenPresets(mv)
+        end
+    end
+
+    if Btn("auto_jsfx", s.jsfx_automation_enabled and "Auto JSFX (ON)" or "Auto JSFX") then
+        if s.jsfx_automation_enabled then
+            s.jsfx_automation_enabled = false
+            s.jsfx_automation_index = -1
+        else
+            UI.gesture.createAutomationJSFX()
+        end
+    end
+
+    if Btn("show_env", "Show Env") then
+        if not s.jsfx_automation_enabled or s.jsfx_automation_index < 0 then
+            UI.gesture.createAutomationJSFX()
+        end
+        if s.jsfx_automation_enabled and s.jsfx_automation_index >= 0 then
+            local x_env = UI.r.GetFXEnvelope(s.track, s.jsfx_automation_index, 0, true)
+            local y_env = UI.r.GetFXEnvelope(s.track, s.jsfx_automation_index, 1, true)
+            if x_env then UI.r.SetCursorContext(2, x_env) end
+            if y_env then UI.r.SetCursorContext(2, y_env) end
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- MODE
+-- ---------------------------------------------------------------------------
+local function drawMode(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
+    if not sectionHeader("mode", "MODE", theme) then return end
+
+    local _, single = Tgl("mode_single", "Single", s.pad_mode == 0)
+    if single and s.pad_mode ~= 0 then
+        s.pad_mode = 0
+        UI.persistence.scheduleSave()
+    end
+
+    if not UI.license.isFull() then
+        if Btn("mode_gran_locked", "Granular 🔒") then
+            s.show_license_window = true
+        end
+        return
+    end
+
+    local _, gran = Tgl("mode_gran", "Granular", s.pad_mode == 1)
+    if gran and s.pad_mode ~= 1 then
+        s.pad_mode = 1
+        if not s.granular_grains or #s.granular_grains == 0 then
+            UI.gesture.initializeGranularGrid()
+        end
+        UI.persistence.scheduleSave()
+    end
+
+    if s.pad_mode == 1 then
+        local sizes = { "2x2", "3x3", "4x4" }
+        local vals = { 2, 3, 4 }
+        local cur = 1
+        for i, v in ipairs(vals) do if v == s.granular_grid_size then cur = i; break end end
+        local cc, ci = Combo("gran_grid", "", cur, sizes)
+        if cc then
+            s.granular_grid_size = vals[ci]
+            UI.gesture.initializeGranularGrid()
+        end
+        if Btn("gran_rnd", "Randomize") then
+            if not s.granular_grains or #s.granular_grains == 0 then
+                UI.gesture.initializeGranularGrid()
+            else
+                UI.gesture.randomizeGranularGrid()
+            end
+        end
+
+        local nc, nv = Input("gran_name", "", s.granular_set_name,
+            { hint = "Set name" })
+        if nc then s.granular_set_name = nv end
+
+        UItk.BeginColumns("gran_btns", { 0.5, 0.5 }, { gap = theme.item_spacing })
+        if Btn("gran_save", "Save") and s.granular_set_name ~= "" then
+            UI.presetsystem.saveGranularSet(s.granular_set_name)
+        end
+        UItk.NextColumn()
+        if Btn("gran_load", "Load") and s.granular_set_name ~= "" then
+            UI.presetsystem.loadGranularSet(s.granular_set_name)
+        end
+        UItk.EndColumns()
+
+        local cur_preset = s.current_loaded_preset
+        if cur_preset ~= "" and s.presets[cur_preset]
+           and s.presets[cur_preset].granular_sets then
+            UItk.BeginChild("gran_list", 0, theme.button_height * 4,
+                { scrollable = true, border = true })
+            for name, _ in pairs(s.presets[cur_preset].granular_sets) do
+                UItk.BeginColumns("gr_" .. name, { 0, theme.button_height },
+                    { gap = theme.item_spacing })
+                if Btn("gload_" .. name, name) then
+                    UI.presetsystem.loadGranularSet(name)
+                    s.granular_set_name = name
+                end
+                UItk.NextColumn()
+                if Btn("gdel_" .. name, "X") then
+                    UI.presetsystem.deleteGranularSet(name)
+                end
+                UItk.EndColumns()
+            end
+            UItk.EndChild()
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- XY PAD
+-- ---------------------------------------------------------------------------
+local function drawXYPad(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
+    if not sectionHeader("pad", "XY PAD", theme) then return end
+
+    if Btn("pad_reset", "Reset") then
+        s.gesture_x, s.gesture_y = 0.5, 0.5
+        s.gesture_base_x, s.gesture_base_y = 0.5, 0.5
+        UI.gesture.updateJSFXFromGesture()
+        UI.fxmanager.captureBaseValues()
+        if s.pad_mode == 1 then
+            if not s.granular_grains or #s.granular_grains == 0 then
+                UI.gesture.initializeGranularGrid()
+            end
+            UI.gesture.applyGranularGesture(s.gesture_x, s.gesture_y)
+        else
+            UI.gesture.applyGestureToSelection(s.gesture_x, s.gesture_y)
+        end
+    end
+
+    -- Square pad sized to the actual available width of its column. Using
+    -- Layout.GetAvailableWidth keeps it tight against the column edges even
+    -- when the user resizes the window. Crosshair/grid are drawn manually
+    -- below with stronger contrast than the toolkit Canvas defaults.
+    local pad_size = UItk.GetAvailableWidth()
+    if pad_size < 80 then pad_size = 80 end
+    local canvas = UItk.Canvas("xy_pad", {
+        width = pad_size, height = pad_size,
+    })
+
+    -- Center crosshair (more prominent than the Canvas built-in alpha=0.2).
+    do
+        local sc = theme.colors.separator
+        local mid_x = canvas.x + math.floor(canvas.w / 2)
+        local mid_y = canvas.y + math.floor(canvas.h / 2)
+        UItk.Core.DrawLine(mid_x, canvas.y, mid_x, canvas.y + canvas.h,
+            sc[1], sc[2], sc[3], 0.55)
+        UItk.Core.DrawLine(canvas.x, mid_y, canvas.x + canvas.w, mid_y,
+            sc[1], sc[2], sc[3], 0.55)
+    end
+
+    -- Granular grid (only in granular mode)
+    if s.pad_mode == 1 then
+        local grid = s.granular_grid_size or 3
+        local sc = theme.colors.separator
+        for i = 1, grid - 1 do
+            local lx = canvas.x + math.floor(canvas.w * i / grid)
+            local ly = canvas.y + math.floor(canvas.h * i / grid)
+            UItk.Core.DrawLine(lx, canvas.y, lx, canvas.y + canvas.h,
+                sc[1], sc[2], sc[3], 0.35)
+            UItk.Core.DrawLine(canvas.x, ly, canvas.x + canvas.w, ly,
+                sc[1], sc[2], sc[3], 0.35)
+        end
+    end
+
+    if canvas.dragging or canvas.clicked then
+        local cx = canvas.norm_x
+        local cy = 1.0 - canvas.norm_y
+        if not s.gesture_active then
+            s.gesture_active = true
+            s.gesture_base_x = s.gesture_x
+            s.gesture_base_y = s.gesture_y
+            UI.fxmanager.captureBaseValues()
+            local dot_nx, dot_ny = s.gesture_x, 1.0 - s.gesture_y
+            local dx = canvas.norm_x - dot_nx
+            local dy = canvas.norm_y - dot_ny
+            local dist = math.sqrt(dx * dx + dy * dy)
+            -- Dead zone radius scaled to pad size: ~10% of edge.
+            if dist <= 0.10 then
+                s.click_offset_x = s.gesture_x - cx
+                s.click_offset_y = s.gesture_y - cy
+            else
+                s.click_offset_x = 0
+                s.click_offset_y = 0
+            end
+        end
+
+        cx = clamp(cx + s.click_offset_x, 0, 1)
+        cy = clamp(cy + s.click_offset_y, 0, 1)
+
+        if s.navigation_mode == 1 then s.random_walk_active = false
+        elseif s.navigation_mode == 2 then s.figures_active = false end
+
+        if s.navigation_mode == 1 or s.navigation_mode == 2 or s.smooth_speed == 0 then
+            s.gesture_x, s.gesture_y = cx, cy
+            UI.gesture.updateJSFXFromGesture()
+            if s.pad_mode == 1 then
+                if not s.granular_grains or #s.granular_grains == 0 then
+                    UI.gesture.initializeGranularGrid()
+                end
+                UI.gesture.applyGranularGesture(cx, cy)
+            else
+                UI.gesture.applyGestureToSelection(cx, cy)
+            end
+        else
+            s.target_gesture_x = cx
+            s.target_gesture_y = cy
+        end
+    elseif s.gesture_active and not canvas.dragging then
+        s.gesture_active = false
+        s.click_offset_x = 0
+        s.click_offset_y = 0
+    end
+
+    -- Granular grains (only in granular mode)
+    if s.pad_mode == 1 and s.granular_grains then
+        local grid = s.granular_grid_size or 3
+        for _, grain in ipairs(s.granular_grains) do
+            local gx = canvas.x + grain.x * canvas.w
+            local gy = canvas.y + (1.0 - grain.y) * canvas.h
+            local gr = canvas.w / grid * 0.5
+            UItk.DrawCircle(gx, gy, gr,
+                theme.colors.text_disabled[1],
+                theme.colors.text_disabled[2],
+                theme.colors.text_disabled[3], 0.25, false)
+            UItk.DrawCircle(gx, gy, 3,
+                theme.colors.text[1], theme.colors.text[2], theme.colors.text[3], 1, true)
+        end
+    end
+
+    -- Cursor dot (size scales with the pad)
+    local dot_r = math.max(4, math.floor(pad_size * 0.025))
+    local dot_x = canvas.x + s.gesture_x * canvas.w
+    local dot_y = canvas.y + (1.0 - s.gesture_y) * canvas.h
+    UItk.DrawCircle(dot_x, dot_y, dot_r,
+        theme.colors.accent[1], theme.colors.accent[2], theme.colors.accent[3], 1, true)
+    UItk.DrawCircle(dot_x, dot_y, dot_r + 1,
+        theme.colors.text[1], theme.colors.text[2], theme.colors.text[3], 1, false)
+
+    if s.navigation_mode == 0 and (s.smooth_speed or 0) > 0 then
+        local tx = canvas.x + s.target_gesture_x * canvas.w
+        local ty = canvas.y + (1.0 - s.target_gesture_y) * canvas.h
+        UItk.DrawCircle(tx, ty, dot_r - 1,
+            theme.colors.text_disabled[1],
+            theme.colors.text_disabled[2],
+            theme.colors.text_disabled[3], 0.6, false)
+    end
+
+    UItk.SetFontMono()
+    UItk.Text(string.format("Position: %.2f, %.2f", s.gesture_x, s.gesture_y))
+    UItk.SetFontBody()
+end
+
+-- ---------------------------------------------------------------------------
+-- PRESETS
+-- ---------------------------------------------------------------------------
+local function drawPresets(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
+    if not sectionHeader("presets", "PRESETS", theme) then return end
+
+    local locked = not UI.license.isFull()
+
+    UItk.BeginColumns("preset_btns", { 0.5, 0.5 }, { gap = theme.item_spacing })
+    if Btn("psave", locked and "Save 🔒" or "Save") then
+        if locked then s.show_license_window = true
+        else
+            if s.current_loaded_preset ~= "" then
+                UI.presetsystem.savePreset(s.current_loaded_preset)
+            else
+                local ok, name = UI.r.GetUserInputs("Save preset", 1, "Name:", "")
+                if ok and name ~= "" then
+                    UI.presetsystem.savePreset(name)
+                    s.current_loaded_preset = name
+                    UI.fxmanager.saveTrackSelection()
+                end
+            end
+        end
+    end
+    UItk.NextColumn()
+    if Btn("psaveas", locked and "Save As 🔒" or "Save As") then
+        if locked then s.show_license_window = true
+        else
+            local ok, name = UI.r.GetUserInputs("Save preset as", 1, "Name:",
+                s.current_loaded_preset)
+            if ok and name ~= "" then
+                UI.presetsystem.savePreset(name)
+                s.current_loaded_preset = name
+                UI.fxmanager.saveTrackSelection()
+            end
+        end
+    end
+    UItk.EndColumns()
+
+    local names = {}
+    for n, _ in pairs(s.presets) do names[#names + 1] = n end
+    table.sort(names)
+    local cur_idx = 0
+    for i, n in ipairs(names) do if n == s.current_loaded_preset then cur_idx = i; break end end
+
+    if #names > 0 then
+        local cc, ci = Combo("preset_pick", "", cur_idx, names)
+        if cc and ci > 0 then
+            if locked then s.show_license_window = true
+            else UI.presetsystem.loadPreset(names[ci]) end
+        end
+    end
+
+    UItk.BeginColumns("preset_act", { 0.5, 0.5 }, { gap = theme.item_spacing })
+    if Btn("prn", locked and "Rename 🔒" or "Rename")
+       and s.current_loaded_preset ~= "" then
+        if locked then s.show_license_window = true
+        else
+            local ok, n = UI.r.GetUserInputs("Rename preset", 1, "New name:",
+                s.current_loaded_preset)
+            if ok and n ~= "" and n ~= s.current_loaded_preset then
+                UI.presetsystem.renamePreset(s.current_loaded_preset, n)
+                s.current_loaded_preset = n
+                UI.fxmanager.saveTrackSelection()
+            end
+        end
+    end
+    UItk.NextColumn()
+    if Btn("pdel", locked and "Delete 🔒" or "Delete")
+       and s.current_loaded_preset ~= "" then
+        if locked then s.show_license_window = true
+        else
+            local ans = UI.r.ShowMessageBox(
+                "Delete preset '" .. s.current_loaded_preset .. "'?",
+                "Delete preset", 4)
+            if ans == 6 then
+                UI.presetsystem.deletePreset(s.current_loaded_preset)
+                s.current_loaded_preset = ""
+            end
+        end
+    end
+    UItk.EndColumns()
+
+    UItk.SetFontH2Bold()
+    UItk.Text(locked and "SNAPSHOTS 🔒" or "SNAPSHOTS")
+    UItk.SetFontBody()
+    UItk.Separator()
+
+    local nc, nv = Input("snap_name", "", s.snapshot_name, { hint = "Snapshot name" })
+    if nc then s.snapshot_name = nv end
+    if Btn("snap_save", locked and "Save 🔒" or "Save") then
+        if locked then s.show_license_window = true
+        elseif s.snapshot_name and s.snapshot_name ~= "" then
+            UI.presetsystem.saveSnapshot(s.snapshot_name)
+        end
+    end
+
+    local cur = s.current_loaded_preset
+    if cur ~= "" and s.presets[cur] and s.presets[cur].snapshots then
+        UItk.BeginChild("snap_list", 0, theme.button_height * 5,
+            { scrollable = true, border = true })
+        for n, _ in pairs(s.presets[cur].snapshots) do
+            UItk.BeginColumns("snap_" .. n,
+                { 0, theme.button_height, theme.button_height },
+                { gap = theme.item_spacing })
+            if Btn("sl_" .. n, n) then
+                if locked then s.show_license_window = true
+                else
+                    UI.presetsystem.loadSnapshot(n)
+                    s.snapshot_name = UI.presetsystem.getNextSnapshotName()
+                end
+            end
+            UItk.NextColumn()
+            if Btn("sr_" .. n, "R") then
+                local ok, nn = UI.r.GetUserInputs("Rename snapshot", 1, "Name:", n)
+                if ok and nn ~= "" and nn ~= n
+                   and s.presets[cur].snapshots[n] then
+                    s.presets[cur].snapshots[nn] = s.presets[cur].snapshots[n]
+                    s.presets[cur].snapshots[n] = nil
+                    UI.persistence.schedulePresetSave()
+                end
+            end
+            UItk.NextColumn()
+            if Btn("sx_" .. n, "X") then
+                UI.presetsystem.deleteSnapshot(n)
+            end
+            UItk.EndColumns()
+        end
+        UItk.EndChild()
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- RANDOMIZER
+-- ---------------------------------------------------------------------------
+local function drawRandomizer(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
+    if not sectionHeader("randomizer", "RANDOMIZER", theme) then return end
+
+    if UI.license.isFull() then
+        if Btn("ultra_rand", "ULTRA RANDOM",
+               { height = math.floor(theme.button_height * 1.2) }) then
+            UI.fxmanager.ultraRandom()
+            UI.gesture.updateJSFXFromGesture()
+        end
+    end
+
+    if Btn("rnd_fxorder", "FX Order") then
+        UI.fxmanager.randomizeFXOrder()
+    end
+
+    UItk.BeginColumns("rnd_byp_row", { 0.5, 0.5 }, { gap = theme.item_spacing })
+    if Btn("rnd_byp", "Bypass") then UI.fxmanager.randomBypassFX() end
+    UItk.NextColumn()
+    local bc, bv = Slid("rnd_byp_pct",
+        "", s.random_bypass_percentage * 100, 0, 100,
+        { format = fmtVal("%.0f%%", s.random_bypass_percentage * 100) })
+    if bc then
+        s.random_bypass_percentage = bv / 100
+        UI.persistence.scheduleSave()
+    end
+    UItk.EndColumns()
+
+    -- XY/checkbox in left half, N button in right half. The checkbox sits
+    -- to the right of the XY button, sharing the left half evenly.
+    UItk.BeginColumns("rnd_xy_row", { 0.5, 0.5 }, { gap = theme.item_spacing })
+    UItk.BeginColumns("rnd_xy_left", { 0, theme.button_height },
+                      { gap = theme.item_spacing })
+    if Btn("rnd_xy", "XY") then UI.fxmanager.globalRandomXYAssign() end
+    UItk.NextColumn()
+    local ec, ev = Chk("rnd_excl", "", s.exclusive_xy)
+    if ec then s.exclusive_xy = ev; UI.persistence.scheduleSave() end
+    UItk.EndColumns()
+    UItk.NextColumn()
+    if Btn("rnd_inv", "N") then UI.fxmanager.globalRandomInvert() end
+    UItk.EndColumns()
+
+    if Btn("rnd_ranges", "Ranges") then UI.fxmanager.globalRandomRanges() end
+    local rc, rmin, rmax = RngSlid("rnd_range",
+        "", s.range_min, s.range_max, 0, 1, { format = "%.2f" })
+    if rc then
+        s.range_min = rmin
+        s.range_max = rmax
+        UI.persistence.scheduleSave()
+    end
+
+    if Btn("rnd_bases", "Bases") then UI.fxmanager.randomizeAllBases() end
+    local ic, iv = Slid("rnd_intensity", "Int", s.randomize_intensity, 0, 1,
+        { format = fmtVal("%.2f", s.randomize_intensity) })
+    if ic then s.randomize_intensity = iv end
+    local bc2, bmin, bmax = RngSlid("rnd_base_rng",
+        "", s.randomize_min, s.randomize_max, 0, 1, { format = "%.2f" })
+    if bc2 then
+        s.randomize_min = bmin
+        s.randomize_max = bmax
+        UI.persistence.scheduleSave()
+    end
+
+    if Btn("rnd_params", "Parameters") then
+        UI.fxmanager.globalRandomSelect()
+        UI.fxmanager.saveTrackSelection()
+    end
+
+    UItk.BeginColumns("rnd_pcount", { 0.5, 0.5 }, { gap = theme.item_spacing })
+    local mc, mv = SlidInt("rnd_pmin", "", s.random_min, 1, 300)
+    if mc then s.random_min = mv end
+    UItk.NextColumn()
+    local mc2, mv2 = SlidInt("rnd_pmax", "", s.random_max, 1, 300)
+    if mc2 then s.random_max = math.max(mv2, s.random_min) end
+    UItk.EndColumns()
+end
+
+-- ---------------------------------------------------------------------------
+-- PARAM ROW (one row per FX parameter inside an FX card)
+-- ---------------------------------------------------------------------------
+local function drawParamRow(theme, fx_id, param_id, param_data)
+    local UItk = UI.tk
+    local id = "p_" .. fx_id .. "_" .. param_id
+
+    -- All toggle/checkbox cells use 1 unit (button_height) — tight row.
+    UItk.BeginColumns(id,
+        { theme.checkbox_size, 0,
+          theme.button_height, theme.button_height, theme.button_height,
+          0.5 },  -- last column = remaining ~half of row for the slider
+        { gap = theme.item_spacing })
+
+    local cc, cv = Chk(id .. "_sel", "", param_data.selected)
+    if cc then
+        param_data.selected = cv
+        UI.fxmanager.updateSelectedCount()
+        if cv then param_data.base_value = param_data.current_value end
+        UI.fxmanager.saveTrackSelection()
+    end
+    UItk.NextColumn()
+
+    local name = param_data.name or "?"
+    UItk.Text(name)
+    UItk.Tooltip(name)
+    UItk.NextColumn()
+
+    local invert = UI.fxmanager.getParamInvert(fx_id, param_id)
+    local tn, on = Tgl(id .. "_n", "N", invert)
+    if tn then UI.fxmanager.setParamInvert(fx_id, param_id, on) end
+    UItk.NextColumn()
+
+    local x_ass, y_ass = UI.fxmanager.getParamXYAssign(fx_id, param_id)
+    local tx, ox = Tgl(id .. "_x", "X", x_ass)
+    if tx then UI.fxmanager.setParamXYAssign(fx_id, param_id, "x", ox) end
+    UItk.NextColumn()
+
+    local ty, oy = Tgl(id .. "_y", "Y", y_ass)
+    if ty then UI.fxmanager.setParamXYAssign(fx_id, param_id, "y", oy) end
+    UItk.NextColumn()
+
+    -- Value-range slider — three handles in one widget:
+    --   • value dot (drag to set the live value, written to the plugin)
+    --   • min / max bars (drag to resize the randomization window)
+    --   • middle-drag → translate range + value together
+    -- Mapping: the param's `range` scalar is shown as a window of width
+    -- `range` centered on the current value, clamped to [0, 1].
+    local cur_value = param_data.base_value or param_data.current_value or 0.5
+    local range = UI.fxmanager.getParamRange(fx_id, param_id) or 1.0
+    local v_min = clamp(cur_value - range * 0.5, 0, 1)
+    local v_max = clamp(cur_value + range * 0.5, 0, 1)
+
+    -- Show the current value in the param's real units (Hz, dB, %, …).
+    local real_min = param_data.min_val or 0
+    local real_max = param_data.max_val or 1
+    local real_cur = UI.core.denormalizeParamValue(cur_value, real_min, real_max)
+    local readout
+    if param_data.step_count and param_data.step_count == 2 then
+        readout = cur_value > 0.5 and "ON" or "OFF"
+    elseif param_data.step_count and param_data.step_count > 2
+           and param_data.step_count <= 5 then
+        local idx = math.floor(cur_value * (param_data.step_count - 1) + 0.5)
+        readout = tostring(idx + 1) .. "/" .. param_data.step_count
+    else
+        readout = string.format("%.2f", real_cur)
+    end
+
+    local vc, new_v, rc, new_min, new_max = ValRngSlid(id .. "_vrng", "",
+        cur_value, v_min, v_max, 0, 1, { format = readout })
+
+    if vc then
+        local v = new_v
+        if param_data.step_count and param_data.step_count > 0 then
+            v = UI.core.snapToDiscreteValue(v, param_data.step_count)
+        end
+        UI.fxmanager.updateParamBaseValue(fx_id, param_id, v)
+    end
+    if rc then
+        local span = clamp(new_max - new_min, 0, 1)
+        UI.fxmanager.setParamRange(fx_id, param_id, span)
+    end
+
+    -- Tooltip with real-units values
+    local real_base = UI.core.denormalizeParamValue(param_data.base_value or 0,
+                                                    real_min, real_max)
+    local tip = string.format("%s\nCurrent: %.3f, Base: %.3f\nRange: %.2f",
+        name, real_cur, real_base, range)
+    if real_min ~= 0 or real_max ~= 1 then
+        tip = tip .. string.format("\n(%.2f to %.2f)", real_min, real_max)
+    end
+    if x_ass and y_ass then tip = tip .. " [XY]"
+    elseif x_ass then tip = tip .. " [X]"
+    elseif y_ass then tip = tip .. " [Y]" end
+    if invert then tip = tip .. " [INVERTED]" end
+    UItk.Tooltip(tip)
+
+    UItk.EndColumns()
+end
+
+-- ---------------------------------------------------------------------------
+-- FX CARD
+-- ---------------------------------------------------------------------------
+local function drawFXCard(theme, fx_id, fx_data, card_w)
+    local UItk = UI.tk
+    local s = UI.core.state
+    local collapsed = s.fx_collapsed[fx_id] or false
+
+    UItk.BeginPanel("fxcard_" .. fx_id, {
+        style = "groupbox",
+        width = card_w,
+        bg = theme.colors.frame_bg,
+    })
+
+    -- Header: collapse | name | enabled
+    UItk.BeginColumns("fxcard_hd_" .. fx_id,
+        { theme.button_height, 0, theme.checkbox_size },
+        { gap = theme.item_spacing })
+    if Btn("fxcol_" .. fx_id, collapsed and "+" or "−") then
+        s.fx_collapsed[fx_id] = not collapsed
+    end
+    UItk.NextColumn()
+    local fx_label = (fx_data.name and fx_data.name ~= "") and fx_data.name
+                     or ("FX " .. fx_id)
+    if Btn("fxopen_" .. fx_id, fx_label) then
+        local actual = fx_data.actual_fx_id or fx_id
+        local visible = UI.r.TrackFX_GetOpen(s.track, actual)
+        UI.r.TrackFX_Show(s.track, actual, visible and 2 or 3)
+    end
+    UItk.NextColumn()
+    local ec, ev = Chk("fxen_" .. fx_id, "", fx_data.enabled)
+    if ec then
+        local actual = fx_data.actual_fx_id or fx_id
+        UI.r.TrackFX_SetEnabled(s.track, actual, ev)
+        fx_data.enabled = ev
+    end
+    UItk.EndColumns()
+
+    if collapsed then
+        UItk.EndPanel()
+        return
+    end
+
+    -- Action row: All / Cont / None / Rnd / [count]
+    UItk.BeginColumns("fxact_" .. fx_id,
+        { 0.2, 0.2, 0.2, 0.2, 0.2 }, { gap = theme.item_spacing })
+    if Btn("fxall_" .. fx_id, "All") then
+        UI.fxmanager.selectAllParams(fx_data.params, true)
+        UI.fxmanager.saveTrackSelection()
+    end
+    UItk.NextColumn()
+    if Btn("fxcont_" .. fx_id, "Cont") then
+        UI.fxmanager.selectAllContinuousParams(fx_data.params, true)
+        UI.fxmanager.saveTrackSelection()
+    end
+    UItk.NextColumn()
+    if Btn("fxnone_" .. fx_id, "None") then
+        UI.fxmanager.selectAllParams(fx_data.params, false)
+        UI.fxmanager.saveTrackSelection()
+    end
+    UItk.NextColumn()
+    if Btn("fxrnd_" .. fx_id, "Rnd") then
+        UI.fxmanager.randomSelectParams(fx_data.params, fx_id)
+        UI.fxmanager.saveTrackSelection()
+    end
+    UItk.NextColumn()
+    local fx_key = UI.core.getFXKey(fx_id)
+    local cur_max = (fx_key and UI.core.state.fx_random_max[fx_key]) or 3
+    local sc, sv = SlidInt("fxmax_" .. fx_id, "", cur_max, 1, 10)
+    if sc and fx_key then
+        UI.core.state.fx_random_max[fx_key] = sv
+        UI.fxmanager.saveTrackSelection()
+    end
+    UItk.EndColumns()
+
+    -- Action row 2
+    UItk.BeginColumns("fxact2_" .. fx_id,
+        { 0.34, 0.33, 0.33 }, { gap = theme.item_spacing })
+    if Btn("fxrxy_" .. fx_id, "RandXY") then
+        UI.fxmanager.randomizeXYAssign(fx_data.params, fx_id)
+    end
+    UItk.NextColumn()
+    if Btn("fxrrng_" .. fx_id, "RandRng") then
+        UI.fxmanager.randomizeRanges(fx_data.params, fx_id)
+    end
+    UItk.NextColumn()
+    if Btn("fxrbase_" .. fx_id, "RndBase") then
+        UI.fxmanager.randomizeBaseValues(fx_data.params, fx_id)
+    end
+    UItk.EndColumns()
+
+    UItk.Separator()
+
+    -- Params (sorted)
+    local pids = {}
+    for pid, _ in pairs(fx_data.params) do pids[#pids + 1] = pid end
+    table.sort(pids)
+    for _, pid in ipairs(pids) do
+        drawParamRow(theme, fx_id, pid, fx_data.params[pid])
+    end
+
+    UItk.EndPanel()
+end
+
+-- ---------------------------------------------------------------------------
+-- FX SETTINGS
+-- ---------------------------------------------------------------------------
+local function drawFXSettings(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
+
+    local extra = " | Selected: " .. (s.selected_count or 0)
+    if s.current_loaded_preset ~= "" then
+        extra = extra .. " | " .. s.current_loaded_preset
+    end
+    if not sectionHeader("fx_settings", "FX SETTINGS", theme, extra) then return end
+
+    -- Two-column body: sidebar (action buttons) + flex (FX cards horizontal scroll)
+    local sidebar_w = math.floor(theme.button_height * 4.5)
+    UItk.BeginColumns("fxsec_root",
+        { sidebar_w, 0 }, { gap = theme.item_spacing })
+
+    if Btn("fx_addfx", "Add FX...") then
+        if not UI.openFXBrowser() then
+            -- Fallback: in-window modal if the standalone script can't launch.
+            s.show_fxmanager_window = not s.show_fxmanager_window
+        end
+    end
+    if Btn("fx_filters", s.show_filters_window and "Hide Filters" or "Show Filters") then
+        s.show_filters_window = not s.show_filters_window
+    end
+    if Btn("fx_showall", "Show All FX") then UI.presetsystem.showAllFloatingFX() end
+    if Btn("fx_closeall", "Close All FX") then UI.presetsystem.closeAllFloatingFX() end
+    if Btn("fx_collapse", "Collapse All") then
+        s.all_fx_collapsed = true
+        for fid, _ in pairs(s.fx_data) do s.fx_collapsed[fid] = true end
+    end
+    if Btn("fx_expand", "Expand All") then
+        s.all_fx_collapsed = false
+        for fid, _ in pairs(s.fx_data) do s.fx_collapsed[fid] = false end
+    end
+    if Btn("fx_selall", "All") then
+        for _, fd in pairs(s.fx_data) do UI.fxmanager.selectAllParams(fd.params, true) end
+        UI.fxmanager.saveTrackSelection()
+    end
+    if Btn("fx_selcont", "All Cont") then
+        for _, fd in pairs(s.fx_data) do
+            UI.fxmanager.selectAllContinuousParams(fd.params, true)
+        end
+        UI.fxmanager.saveTrackSelection()
+    end
+    if Btn("fx_selclr", "Clear") then
+        for _, fd in pairs(s.fx_data) do UI.fxmanager.selectAllParams(fd.params, false) end
+        UI.fxmanager.saveTrackSelection()
+    end
+
+    UItk.NextColumn()
+
+    -- FX cards: horizontal scrolling child. The new toolkit feature
+    -- (scrollable_x) lets us lay all cards in a single row with SameLine
+    -- and scroll them with a horizontal scrollbar / Shift+wheel.
+    UItk.BeginChild("fx_cards", 0, 0,
+        { scrollable = false, scrollable_x = true, border = false,
+          padding = theme.frame_padding_x })
+
+    local ids = {}
+    for fid, _ in pairs(s.fx_data) do ids[#ids + 1] = fid end
+    table.sort(ids)
+
+    if #ids == 0 then
+        UItk.SetFontCaption()
+        UItk.Text("No FX on track. Click \"Add FX...\" to start.")
+        UItk.SetFontBody()
+    else
+        local card_w = math.floor(theme.button_height * 14)  -- ~336px @ scale 1
+        for i, fid in ipairs(ids) do
+            if i > 1 then UItk.SameLine(theme.item_spacing) end
+            drawFXCard(theme, fid, s.fx_data[fid], card_w)
+        end
+    end
+
+    UItk.EndChild()
+    UItk.EndColumns()
+end
+
+-- ---------------------------------------------------------------------------
+-- LICENSE MODAL
+-- ---------------------------------------------------------------------------
+local function drawLicenseModal()
+    if not UI.core.state.show_license_window then return end
+    local UItk = UI.tk
+    UItk.BeginModal("license_modal", "FX Constellation — License",
+        { width = 420, height = 320 })
+
+    local status = UI.license.getStatus()
+    if status == "FULL" then
+        UItk.TextColored("✓ Licensed", 0.2, 1.0, 0.2, 1)
+        UItk.Text("Thank you for supporting FX Constellation!")
+        if Btn("lic_close", "Close") then
+            UI.core.state.show_license_window = false
+        end
+    else
+        if status == "INVALID" then
+            UItk.TextColored("✗ Invalid License Key", 1.0, 0.3, 0.3, 1)
+        end
+        UItk.SetFontH2Bold()
+        UItk.Text("FX Constellation FREE")
+        UItk.SetFontBody()
+        UItk.Separator()
+        UItk.Text("Upgrade to unlock:")
+        UItk.Text("  • Sound Generator")
+        UItk.Text("  • Unlimited FX (FREE: max 5)")
+        UItk.Text("  • Granular mode")
+        UItk.Text("  • Random Walk & Figures")
+        UItk.Text("  • Ultra Random")
+        UItk.Text("Enter License Key:")
+        local kc, kv = Input("lic_key", "", UI.license_key_input,
+            { hint = "key…" })
+        if kc then UI.license_key_input = kv end
+        UItk.BeginColumns("lic_btns", { 0.5, 0.5 }, { gap = 8 })
+        if Btn("lic_act", "Activate") then
+            if UI.license_key_input == "" then
+                UI.license_msg = "Please enter a license key"
+            elseif UI.license.validate(UI.license_key_input) then
+                UI.license.setKey(UI.license_key_input)
+                UI.license_msg = "License activated successfully!"
+                UI.license_key_input = ""
+            else
+                UI.license_msg = "Invalid license key."
+            end
+            UI.license_msg_time = UI.r.time_precise()
+        end
+        UItk.NextColumn()
+        if Btn("lic_cancel", "Cancel") then
+            UI.core.state.show_license_window = false
+            UI.license_key_input = ""
+            UI.license_msg = ""
+        end
+        UItk.EndColumns()
+
+        if UI.license_msg ~= "" and (UI.r.time_precise() - UI.license_msg_time < 5) then
+            local is_ok = UI.license_msg:find("success")
+            if is_ok then
+                UItk.TextColored(UI.license_msg, 0.2, 1.0, 0.2, 1)
+            else
+                UItk.TextColored(UI.license_msg, 1.0, 0.3, 0.3, 1)
+            end
+        end
+    end
+
+    UItk.EndModal()
+end
+
+-- ---------------------------------------------------------------------------
+-- SETTINGS MODAL
+-- ---------------------------------------------------------------------------
+local function drawSettingsModal()
+    if not UI.core.state.show_settings_window then return end
+    local UItk = UI.tk
+    UItk.BeginModal("settings_modal", "Settings",
+        { width = 420, height = 380 })
+    UItk.SetFontH2Bold()
+    UItk.Text("ULTRA RANDOM SETTINGS")
+    UItk.SetFontBody()
+    UItk.Separator()
+
+    local urs = UI.core.state.ultra_random_settings
+    local function flag(id, label, key)
+        local c, v = Chk(id, label, urs[key])
+        if c then urs[key] = v; UI.persistence.scheduleSave() end
+    end
+    flag("urs_xy",   "Randomize XY Assignments", "xy_assignments")
+    flag("urs_r",    "Randomize Ranges",          "ranges")
+    flag("urs_b",    "Randomize Bases",           "bases")
+    flag("urs_byp",  "Randomize Bypass",          "bypass")
+    flag("urs_ord",  "Randomize FX Order",        "fx_order")
+    flag("urs_inv",  "Randomize Invert",          "invert")
+    flag("urs_sf",   "Randomize Sound Generator Frequency", "sound_frequency")
+
+    UItk.Separator()
+    UItk.SetFontH2Bold()
+    UItk.Text("FILTERS")
+    UItk.SetFontBody()
+    local pf, pv = Input("set_param_filter", "Param", UI.core.state.param_filter)
+    if pf then
+        UI.core.state.param_filter = pv
+        UI.fxmanager.scanTrackFX()
+    end
+
+    if Btn("set_close", "Close") then
+        UI.core.state.show_settings_window = false
+    end
+
+    UItk.EndModal()
+end
+
+-- ---------------------------------------------------------------------------
+-- TRACK SYNC
+-- ---------------------------------------------------------------------------
+local function syncTrack()
+    local s = UI.core.state
+    UI.persistence.checkSave()
+    UI.gesture.updateGestureMotion()
+
+    if not s.track_locked then
+        local new_track = UI.r.GetSelectedTrack(0, 0)
+        if new_track ~= s.track then
+            if s.track then UI.fxmanager.saveTrackSelection() end
+            s.track = new_track
+            if s.track then
+                UI.fxmanager.scanTrackFX()
+                s.jsfx_automation_index = UI.gesture.findAutomationJSFX()
+                s.jsfx_automation_enabled = s.jsfx_automation_index >= 0
+            end
+        end
+    elseif s.locked_track and UI.r.ValidatePtr(s.locked_track, "MediaTrack*") then
+        s.track = s.locked_track
+    else
+        s.track_locked = false
+        s.locked_track = nil
+    end
+
+    if UI.core.isTrackValid() then
+        UI.fxmanager.checkForFXChanges()
+        UI.presetsystem.checkPresetModification()
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- COLLAPSED COLUMN (narrow strip with the section title drawn vertically)
+-- ---------------------------------------------------------------------------
+local SECTION_LABELS = {
+    soundgen    = "SOUND GENERATOR",
+    navigation  = "NAVIGATION",
+    mode        = "MODE",
+    pad         = "XY PAD",
+    presets     = "PRESETS",
+    randomizer  = "RANDOMIZER",
+    fx_settings = "FX SETTINGS",
+}
+
+local function drawCollapsedColumn(theme, key)
+    local UItk = UI.tk
+    local s = UI.core.state
+
+    local w = UItk.GetAvailableWidth()
+    local h = UItk.GetAvailableHeight()
+    if h < theme.combo_height then h = theme.combo_height end
+
+    -- Cursor screen position BEFORE the button so we can overlay text on
+    -- top after Button advances the layout cursor.
+    local x, y = UItk.GetCursorPos()
+
+    -- Big click target that fills the whole collapsed column.
+    local clicked = UItk.Button("col_collapsed_" .. key, "",
+        { width = w, height = h })
+    if clicked then
+        s.section_collapsed[key] = false
+        UI.persistence.scheduleSave()
+    end
+
+    -- Vertical title — gfx can't rotate glyphs, so we stack characters one
+    -- per line, centered on the column. Fits the chevron at the top.
+    local label = SECTION_LABELS[key] or key
+    local tc = theme.colors.text
+    local _, ch = UItk.Core.MeasureText("M")  -- a single char's height
+    local line_h = ch + 1
+
+    -- Start a few px below the top with a chevron pointing right.
+    local cy = y + theme.frame_padding_y
+    local cx_center = x + math.floor(w / 2)
+
+    -- Chevron icon (◀ → "expand")
+    if UItk.Icons and UItk.Icons.TriangleRight then
+        UItk.Icons.TriangleRight(cx_center - math.floor(line_h / 2),
+                                 cy, line_h, tc[1], tc[2], tc[3], tc[4] or 1)
+    else
+        UItk.Core.DrawText(">", cx_center - 4, cy, tc[1], tc[2], tc[3], tc[4] or 1)
+    end
+    cy = cy + line_h + 4
+
+    for i = 1, #label do
+        local ch_str = label:sub(i, i)
+        if ch_str == " " then
+            cy = cy + math.floor(line_h * 0.4)
+        else
+            local cw = UItk.Core.MeasureText(ch_str)
+            UItk.Core.DrawText(ch_str,
+                cx_center - math.floor(cw / 2), cy,
+                tc[1], tc[2], tc[3], tc[4] or 1)
+            cy = cy + line_h
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- FRAME (main entry called once per CP_Toolkit frame)
+-- ---------------------------------------------------------------------------
+local SECTION_RENDERERS = {
+    soundgen     = drawSoundGen,
+    navigation   = drawNavigation,
+    mode         = drawMode,
+    pad          = drawXYPad,
+    presets      = drawPresets,
+    randomizer   = drawRandomizer,
+    fx_settings  = drawFXSettings,
+}
+
+function UI.frame(theme)
+    local UItk = UI.tk
+
+    drawStatusBar(theme)
+    syncTrack()
+
+    -- Animated navigation modes (random walk + figures) must redraw every
+    -- frame, otherwise the toolkit's idle-throttle pauses the loop and the
+    -- gesture freezes between user input. The XY pad's smooth-speed
+    -- interpolation has the same constraint.
+    local s = UI.core.state
+    if s.navigation_mode == 1 or s.navigation_mode == 2
+       or (s.smooth_speed and s.smooth_speed > 0
+           and (s.gesture_x ~= s.target_gesture_x
+                or s.gesture_y ~= s.target_gesture_y)) then
+        UItk.RequestRedraw()
+    end
+
+    if not UI.core.isTrackValid() then
+        UItk.SetFontH1()
+        UItk.Text("No track selected.")
+        UItk.SetFontBody()
+        UItk.Text("Select a track in REAPER, or use the Lock button to pin to one.")
+        return
+    end
+
+    -- Compute per-section widths from theme + collapsed state.
+    local collapsed_w = math.floor(theme.button_height * 0.9)
+    local widths = {}
+    for _, k in ipairs(UI.section_order) do
+        if s.section_collapsed[k] then
+            widths[#widths + 1] = collapsed_w
+        else
+            widths[#widths + 1] = sectionW(theme, k)
+        end
+    end
+
+    -- Capture the row's screen origin so we can overlay splitters on the
+    -- column boundaries after EndColumns.
+    local row_x, row_y = UItk.GetCursorPos()
+    local row_h = UItk.GetAvailableHeight()
+    local col_gap = math.floor(theme.window_padding * 1.0)
+
+    UItk.BeginColumns("main_cols", widths, { gap = col_gap })
+    for i, k in ipairs(UI.section_order) do
+        if i > 1 then UItk.NextColumn() end
+        if s.section_collapsed[k] then
+            drawCollapsedColumn(theme, k)
+        else
+            SECTION_RENDERERS[k](theme)
+        end
+    end
+    UItk.EndColumns()
+
+    -- Splitter overlays — one between each pair of consecutive sections,
+    -- skipped if the LEFT section is fx_settings (the flex column has no
+    -- explicit width). Hover/drag adjusts the LEFT section's stored width.
+    s.section_widths_user = s.section_widths_user or {}
+    local cursor_x = row_x
+    local SPLITTER_W = math.max(4, math.floor(theme.frame_padding_x * 0.7))
+    for i = 1, #UI.section_order - 1 do
+        local left_key = UI.section_order[i]
+        cursor_x = cursor_x + widths[i]
+        local sx = cursor_x + math.floor((col_gap - SPLITTER_W) / 2)
+        local sy = row_y
+        local sw = SPLITTER_W
+        local sh = row_h
+
+        -- Don't allow resizing the flex column from its right edge (no
+        -- meaningful width to set), and don't allow resizing collapsed
+        -- columns either.
+        local can_drag = (SECTION_DEFAULT_W[left_key] or 0) > 0
+                         and not s.section_collapsed[left_key]
+
+        if can_drag then
+            local hovered = UItk.Core.MouseInRect(sx - 2, sy, sw + 4, sh)
+            local drag_id = "split_" .. left_key
+            if hovered then
+                UItk.SetCursor("size_we")
+                if UItk.Core.MouseClicked(1) then
+                    UItk.Core.SetActive(drag_id)
+                end
+            end
+            if UItk.Core.IsActive(drag_id) then
+                UItk.SetCursor("size_we")
+                if UItk.Core.MouseDown(1) then
+                    local dx, _ = UItk.Core.MouseDelta()
+                    if dx ~= 0 then
+                        local cur_w = widths[i]
+                        local min_w = math.floor(theme.button_height * 2.5)
+                        local new_w = math.max(min_w, cur_w + dx)
+                        s.section_widths_user[left_key] = new_w
+                        UI.persistence.scheduleSave()
+                        UItk.RequestRedraw()
+                    end
+                else
+                    UItk.Core.ClearActive()
+                end
+            end
+            -- Visible thumb (subtle line, only highlights on hover/drag)
+            local active = (hovered or UItk.Core.IsActive(drag_id))
+            local sc = active and theme.colors.accent or theme.colors.separator
+            local alpha = active and 0.7 or 0.25
+            UItk.Core.DrawRect(sx + math.floor(sw / 2),
+                sy, 1, sh, sc[1], sc[2], sc[3], alpha)
+        end
+        cursor_x = cursor_x + col_gap
+    end
+
+    drawLicenseModal()
+    drawSettingsModal()
+    if UI.fxmanagerui and UI.fxmanagerui.draw then
+        UI.fxmanagerui.draw(theme)
+    end
 end
 
 return UI

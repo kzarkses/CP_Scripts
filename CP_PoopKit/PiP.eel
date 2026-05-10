@@ -1,0 +1,83 @@
+// CP_PoopKit — Picture-in-Picture
+// Overlays the video from another track over the current image.
+// Place this VP on the BACKGROUND track's item; the foreground video
+// must live on a separate track ABOVE this one (track index relative
+// to current — track_idx 0 = first track above with a video item).
+
+//@param1:src_track 'Source track (above)' 0 0 16 0 1
+//@param2:px 'PiP center X' 0.75 0 1 0.5 0.001
+//@param3:py 'PiP center Y' 0.25 0 1 0.5 0.001
+//@param4:psize 'PiP size' 0.3 0.05 1 0.3 0.001
+//@param5:opacity 'Opacity' 1 0 1 0.5 0.001
+//@param6:border 'Border (px)' 4 0 32 4 1
+//@param7:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+// First: blit the underlying video from this item normally.
+input_info(0, iw, ih) ? (
+    src_aspect  = iw / ih;
+    proj_aspect = project_w / project_h;
+    src_aspect > proj_aspect ? (
+        dw = project_w; dh = project_w / src_aspect;
+        dx = 0; dy = (project_h - dh) * 0.5;
+    ) : (
+        dh = project_h; dw = project_h * src_aspect;
+        dx = (project_w - dw) * 0.5; dy = 0;
+    );
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, project_w, project_h);
+    gfx_blit(0, 0, dx, dy, dw, dh);
+);
+
+// Then: overlay the foreground video from a track above.
+fg = input_track(src_track);
+fg && input_info(fg, fw, fh) ? (
+    // PiP destination rect inside the canvas, preserving fg aspect.
+    fg_aspect = fw / fh;
+    proj_aspect = project_w / project_h;
+
+    // Size given as fraction of the smaller canvas dimension.
+    base = min(project_w, project_h) * psize;
+    fg_aspect >= 1 ? (
+        pip_w = base * fg_aspect;
+        pip_h = base;
+    ) : (
+        pip_w = base;
+        pip_h = base / fg_aspect;
+    );
+
+    // Center on px/py (normalized within the canvas).
+    pip_x = project_w * px - pip_w * 0.5;
+    pip_y = project_h * py - pip_h * 0.5;
+
+    // Optional border behind the PiP.
+    border > 0 ? (
+        gfx_set(0, 0, 0, opacity);
+        gfx_fillrect(pip_x - border, pip_y - border,
+                     pip_w + border * 2, pip_h + border * 2);
+    );
+
+    gfx_a = opacity;
+    gfx_blit(fg, 0, pip_x, pip_y, pip_w, pip_h);
+    gfx_a = 1;
+
+    // Edit frame overlay on the PiP rect.
+    show_frame > 0.5 ? (
+        thick = max(2, pip_h / 80);
+        gfx_set(0.2, 0.7, 1, 0.9);
+        gfx_fillrect(pip_x, pip_y, pip_w, thick);
+        gfx_fillrect(pip_x, pip_y + pip_h - thick, pip_w, thick);
+        gfx_fillrect(pip_x, pip_y, thick, pip_h);
+        gfx_fillrect(pip_x + pip_w - thick, pip_y, thick, pip_h);
+
+        clen = pip_w * 0.08;
+        gfx_set(0.4, 0.9, 1, 1);
+        gfx_fillrect(pip_x, pip_y, clen, thick);
+        gfx_fillrect(pip_x, pip_y, thick, clen);
+        gfx_fillrect(pip_x + pip_w - clen, pip_y, clen, thick);
+        gfx_fillrect(pip_x + pip_w - thick, pip_y, thick, clen);
+        gfx_fillrect(pip_x, pip_y + pip_h - thick, clen, thick);
+        gfx_fillrect(pip_x, pip_y + pip_h - clen, thick, clen);
+        gfx_fillrect(pip_x + pip_w - clen, pip_y + pip_h - thick, clen, thick);
+        gfx_fillrect(pip_x + pip_w - thick, pip_y + pip_h - clen, thick, clen);
+    );
+);

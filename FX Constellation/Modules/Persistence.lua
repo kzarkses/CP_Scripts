@@ -185,7 +185,10 @@ function Persistence.saveSettings()
 			current_loaded_preset = state.current_loaded_preset,
 			random_fx_count = state.random_fx_count,
 			random_fx_favorites_only = state.random_fx_favorites_only,
-			fxmanager_auto_open = state.fxmanager_auto_open
+			fxmanager_auto_open = state.fxmanager_auto_open,
+			section_collapsed = state.section_collapsed,
+			section_widths_user = state.section_widths_user,
+			section_order = state.section_order
 		}
 		Persistence.r.SetExtState("CP_FXConstellation", "state", Persistence.serialize(save_data), false)
 	end

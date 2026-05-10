@@ -1,0 +1,43 @@
+// CP_VideoKit — Pixelate
+// Downsamples the source to a low-resolution image then upscales it
+// with nearest-neighbor (filter off), creating chunky pixels.
+
+//@param1:size 'Pixel size' 16 1 200 16 1
+//@param2:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+
+    pw = project_w; ph = project_h;
+    psz = max(1, size | 0);
+
+    // Downscale into a tiny image, then blit it back up with no filter.
+    // gfx_mode bit 0x100 enables filtering; we leave it off for hard pixels.
+    low_w = max(1, (pw / psz) | 0);
+    low_h = max(1, (ph / psz) | 0);
+
+    tmp = gfx_img_alloc(low_w, low_h, 1) | 0;
+    tmp >= 0 ? (
+        prev_dest = gfx_dest;
+        gfx_dest = tmp;
+        gfx_set(0, 0, 0, 1);
+        gfx_fillrect(0, 0, low_w, low_h);
+        // Blit source down to tmp size.
+        gfx_mode = 0x100;  // enable filter for the downscale
+        gfx_blit(0, 0, 0, 0, low_w, low_h);
+        gfx_dest = prev_dest;
+
+        // Now blit tmp up with no filtering for chunky pixels.
+        gfx_mode = 0;
+        gfx_blit(tmp, 0, 0, 0, pw, ph);
+        gfx_img_free(tmp);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

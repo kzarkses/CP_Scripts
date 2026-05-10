@@ -1,0 +1,120 @@
+desc:CP_VideoKit Audio-Reactive Sender
+//tags: analysis utility
+//author: Cedric Pamalio
+
+// Computes audio features (RMS, peak, transient, band energies) and writes
+// them to gmem slots. CP_VideoKit video processor presets read these slots
+// to drive parameters from the audio.
+//
+// Suggested gmem layout (the user picks one slot per send):
+//   slot 0..31 = user-assignable. Free routing. Each slot is an envelope-
+//   followed value in [0..1].
+//
+// All gmem values are normalized 0..1 (with smoothing) so they can be used
+// as direct multipliers in the video presets.
+
+slider1:slot=0<0,31,1>Slot index (gmem)
+slider2:source=0<0,5,1{RMS,Peak,Transient,Band low,Band mid,Band high}>Source
+slider3:gain_db=0<-24,24,0.1>Input gain (dB)
+slider4:attack_ms=10<0.5,500,0.5>Attack (ms)
+slider5:release_ms=200<5,2000,1>Release (ms)
+slider6:floor_db=-60<-90,-20,0.5>Floor (dB)
+slider7:ceiling_db=0<-24,12,0.5>Ceiling (dB)
+slider8:scale=1<0,5,0.01>Output scale
+slider9:freeze=0<0,1,1{Off,Freeze}>Freeze
+slider10:visible=0<0,1,0.001>(readout)
+
+@init
+ext_noinit = 1;
+gain = 10^(gain_db / 20);
+
+// Simple one-pole envelope follower
+env = 0;
+peak = 0;
+peak_decay = 0.999;
+last_sample = 0;
+
+// Band filters (one-pole HP/LP cascade — rough but cheap)
+low_b = 0; mid_b = 0; high_b = 0;
+prev_low = 0; prev_mid = 0;
+
+// Smoothing constants (recomputed when sliders change)
+att_co = 0;
+rel_co = 0;
+
+@slider
+gain = 10^(gain_db / 20);
+att_co = exp(-1 / (attack_ms  * 0.001 * srate));
+rel_co = exp(-1 / (release_ms * 0.001 * srate));
+
+@sample
+sl = spl0 * gain;
+sr = spl1 * gain;
+mono = (sl + sr) * 0.5;
+
+source == 0 ? (
+    // RMS-ish: envelope of |x|
+    a = abs(mono);
+    coef = (a > env) ? att_co : rel_co;
+    env = a + coef * (env - a);
+    raw = env;
+) :
+source == 1 ? (
+    a = abs(mono);
+    a > peak ? (peak = a;) : (peak *= peak_decay;);
+    raw = peak;
+) :
+source == 2 ? (
+    // Transient: difference between current and last sample, half-wave
+    diff = mono - last_sample;
+    diff = diff > 0 ? diff : 0;
+    last_sample = mono;
+    coef = (diff > env) ? att_co : rel_co;
+    env = diff + coef * (env - diff);
+    raw = env * 4;
+) :
+source == 3 ? (
+    // Low band — one-pole LP at ~250 Hz
+    cf = exp(-2 * $pi * 250 / srate);
+    low_b = mono * (1 - cf) + low_b * cf;
+    a = abs(low_b);
+    coef = (a > env) ? att_co : rel_co;
+    env = a + coef * (env - a);
+    raw = env;
+) :
+source == 4 ? (
+    // Mid band — band-pass approx 250..2000 Hz
+    cf_lp = exp(-2 * $pi * 2000 / srate);
+    mid_b = mono * (1 - cf_lp) + mid_b * cf_lp;
+    cf_hp = exp(-2 * $pi * 250 / srate);
+    bp = mid_b - prev_mid * cf_hp;
+    prev_mid = mid_b;
+    a = abs(bp);
+    coef = (a > env) ? att_co : rel_co;
+    env = a + coef * (env - a);
+    raw = env;
+) :
+source == 5 ? (
+    // High band — HP above 2000 Hz
+    cf = exp(-2 * $pi * 2000 / srate);
+    high_b = mono * (1 - cf) - prev_low + high_b * cf;
+    prev_low = mono;
+    a = abs(high_b);
+    coef = (a > env) ? att_co : rel_co;
+    env = a + coef * (env - a);
+    raw = env;
+);
+
+@block
+freeze < 0.5 ? (
+    // Convert dB range to 0..1
+    db = raw > 0 ? 20 * log10(raw) : floor_db;
+    db < floor_db ? db = floor_db;
+    db > ceiling_db ? db = ceiling_db;
+    norm = (db - floor_db) / (ceiling_db - floor_db);
+    norm *= scale;
+    norm < 0 ? norm = 0;
+    norm > 1 ? norm = 1;
+    gmem[slot] = norm;
+    visible = norm;
+);

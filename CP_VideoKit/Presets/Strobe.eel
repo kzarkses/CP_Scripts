@@ -1,0 +1,44 @@
+// CP_VideoKit — Strobe
+// Alternates between showing the source frame and a flat color (default
+// black) at a configurable rate, optionally synced to project tempo.
+
+//@param1:rate 'Rate (Hz)' 8 0.1 30 8 0.1
+//@param2:duty 'Duty (visible ratio)' 0.5 0 1 0.5 0.001
+//@param3:sync_qn 'Sync to QN (0=off)' 0 0 1 0.5 1
+//@param4:qn_div 'Beats per cycle' 0.5 0.0625 8 1 0.0625
+//@param5:flash_r 'Flash R' 0 0 1 0 0.001
+//@param6:flash_g 'Flash G' 0 0 1 0 0.001
+//@param7:flash_b 'Flash B' 0 0 1 0 0.001
+//@param8:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    sync_qn > 0.5 ? (
+        // Phase based on quarter notes; one cycle = qn_div quarter notes.
+        cycle_qn = max(0.0001, qn_div);
+        phase = (project_time_qn / cycle_qn) - floor(project_time_qn / cycle_qn);
+    ) : (
+        // Phase based on real time and rate Hz.
+        cycle = 1 / max(0.01, rate);
+        phase = (project_time / cycle) - floor(project_time / cycle);
+    );
+
+    visible = phase < duty;
+
+    visible ? (
+        gfx_blit(0, 0);
+    ) : (
+        gfx_set(flash_r, flash_g, flash_b, 1);
+        gfx_fillrect(0, 0, pw, ph);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

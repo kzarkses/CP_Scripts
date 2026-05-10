@@ -1,0 +1,63 @@
+// CP_VideoKit — RGB Shift (chromatic aberration)
+// Reads the source per-pixel and writes each channel from a shifted location,
+// so the R/G/B planes appear offset.
+
+//@param1:r_dx 'R offset X' 0 -100 100 0 1
+//@param2:r_dy 'R offset Y' 0 -100 100 0 1
+//@param3:g_dx 'G offset X' 0 -100 100 0 1
+//@param4:g_dy 'G offset Y' 0 -100 100 0 1
+//@param5:b_dx 'B offset X' 0 -100 100 0 1
+//@param6:b_dy 'B offset Y' 0 -100 100 0 1
+//@param7:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+
+    // Render base image first so the destination buffer holds the source.
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, project_w, project_h);
+    gfx_blit(0, 0);
+
+    // Use evalrect with the source (input 0) as src to read shifted pixels.
+    // _0 is the thread index; we use simpler per-pixel logic.
+    // sr/sg/sb come from the src argument at the matching position; to fake
+    // an offset, we shift the destination position when calling evalrect.
+    //
+    // Trick: call evalrect on a destination region offset by (-dx, -dy)
+    // for each channel. The kernel reads source at (x, y) and writes to
+    // (x + dx, y + dy) with only that channel's alpha modulated.
+    //
+    // Simpler: we run 3 separate evalrects, each replacing one channel
+    // with a shifted source pixel. Use a temp image to avoid feedback.
+    tmp = gfx_img_alloc(project_w, project_h, 1) | 0;
+    tmp >= 0 ? (
+        // Snapshot the framebuffer into tmp.
+        prev_dest = gfx_dest;
+        gfx_dest = tmp;
+        gfx_blit(-1, 0);
+        gfx_dest = prev_dest;
+
+        // Now overwrite each channel using shifted pixel reads from tmp.
+        // The kernel: dst.r = src.r at (x - r_dx, y - r_dy).
+        // evalrect with src=tmp gives sr/sg/sb at the corresponding pixel
+        // — to read a shifted pixel, we offset the destination rect.
+        gfx_evalrect(0, 0, project_w, project_h,
+            "r = sr;", 0, tmp);
+        gfx_evalrect(r_dx, r_dy, project_w, project_h,
+            "r = sr;", 0, tmp);
+        gfx_evalrect(g_dx, g_dy, project_w, project_h,
+            "g = sg;", 0, tmp);
+        gfx_evalrect(b_dx, b_dy, project_w, project_h,
+            "b = sb;", 0, tmp);
+
+        gfx_img_free(tmp);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, project_w, 1);
+        gfx_fillrect(0, project_h - 1, project_w, 1);
+        gfx_fillrect(0, 0, 1, project_h);
+        gfx_fillrect(project_w - 1, 0, 1, project_h);
+    );
+);

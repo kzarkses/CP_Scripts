@@ -1,0 +1,103 @@
+// CP_VideoKit — Vignette
+
+//@param1:size 'Size' 0.7 0 1 0.7 0.001
+//@param2:softness 'Softness' 0.4 0 1 0.4 0.001
+//@param3:strength 'Strength' 1 0 1 1 0.001
+//@param4:cx 'Center X' 0.5 0 1 0.5 0.001
+//@param5:cy 'Center Y' 0.5 0 1 0.5 0.001
+//@param6:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, pw, ph);
+    gfx_blit(0, 0);
+
+    code = "
+        // Distance from center, normalized so the canvas corner = 1.
+        nx = _x / pw - cx;
+        ny = _y / ph - cy;
+        d = sqrt(nx * nx + ny * ny);
+        // Inner radius = size; falloff = softness.
+        inner = size * 0.5;
+        outer = inner + softness * 0.5;
+        t = (d - inner) / max(0.001, outer - inner);
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        // Smooth (smoothstep)
+        t = t * t * (3 - 2 * t);
+        attenuation = 1 - t * strength;
+        r *= attenuation;
+        g *= attenuation;
+        b *= attenuation;
+    ";
+
+    init_code = "
+        // Per-pixel position is implicit; use thread-local accumulators.
+    ";
+
+    // We need _x/_y per pixel — the standard kernel doesn't expose them
+    // directly, but we can index using r[0]/g[0] tricks. Easier: run
+    // multiple thin horizontal strips. Here we approximate with a
+    // gradient image computed with gfx_gradrect.
+    //
+    // Actually evalrect kernels do not expose per-pixel coords. Use
+    // gfx_gradrect on a tmp alpha to build the vignette mask, then
+    // multiply.
+
+    tmp = gfx_img_alloc(pw, ph, 1) | 0;
+    tmp >= 0 ? (
+        prev_dest = gfx_dest;
+        gfx_dest = tmp;
+        // Fill tmp with white, then darken corners using radial gradient
+        // approximated by a ramp from center.
+        gfx_set(1, 1, 1, 1);
+        gfx_fillrect(0, 0, pw, ph);
+        // Build a darkening gradient: 4 quadrant gradients converging.
+        center_x = pw * cx;
+        center_y = ph * cy;
+        max_d = sqrt(center_x * center_x + center_y * center_y);
+        // Use evalrect with the position trick: write attenuation into r/g/b.
+        // We pass src=-1 (no source), kernel uses _x/_y? Not available.
+        // Workaround: 4 gradrects from the center.
+        // For simplicity, draw a black radial darkening using stacked
+        // alpha-blended ellipses.
+        steps = 24;
+        i = 0;
+        loop(steps,
+            t = i / steps;
+            inner_r = size * max_d;
+            outer_r = inner_r + softness * max_d * 0.7;
+            r_step = inner_r + (outer_r - inner_r) * t;
+            alpha = strength * t / steps;
+            gfx_set(0, 0, 0, alpha);
+            // Square approximation of a circle
+            gfx_fillrect(center_x - r_step, center_y - r_step,
+                         r_step * 2, r_step * 2);
+            i += 1;
+        );
+        // Fill outside outer with full black
+        gfx_set(0, 0, 0, strength);
+        outer_r = (size + softness) * max_d;
+        // Top/bottom/left/right strips beyond outer_r
+        gfx_fillrect(0, 0, pw, max(0, center_y - outer_r));
+        gfx_fillrect(0, center_y + outer_r, pw, max(0, ph - (center_y + outer_r)));
+        gfx_fillrect(0, 0, max(0, center_x - outer_r), ph);
+        gfx_fillrect(center_x + outer_r, 0, max(0, pw - (center_x + outer_r)), ph);
+        gfx_dest = prev_dest;
+
+        gfx_set(1, 1, 1, 1);
+        gfx_mode = 0;
+        gfx_blit(tmp, 0, 0, 0, pw, ph);
+        gfx_img_free(tmp);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

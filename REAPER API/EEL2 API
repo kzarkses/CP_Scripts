@@ -1,0 +1,800 @@
+ReaScript/EEL2 Built-in Function List
+
+EEL2: abs(value)
+
+Returns the absolute value of the parameter.
+
+
+EEL2: acos(value)
+
+Returns the arc cosine of the value specified (return value is in radians). If the parameter is not between -1.0 and 1.0 inclusive, the return value is undefined.
+
+
+EEL2: asin(value)
+
+Returns the arc sine of the value specified (return value is in radians). If the parameter is not between -1.0 and 1.0 inclusive, the return value is undefined.
+
+
+EEL2: atan(value)
+
+Returns the arc tangent of the value specified (return value is in radians). If the parameter is not between -1.0 and 1.0 inclusive, the return value is undefined.
+
+
+EEL2: atan2(numerator,denominator)
+
+Returns the arc tangent of the numerator divided by the denominator, allowing the denominator to be 0, and using their signs to produce a more meaningful result.
+
+
+EEL2: atexit("code")
+
+Adds code to be executed when the script finishes or is ended by the user. Typically used to clean up after the user terminates defer() or runloop() code.
+
+
+EEL2: ceil(value)
+
+Returns the value rounded to the next highest integer (ceil(3.1)==4, ceil(-3.9)==-3).
+
+
+EEL2: convolve_c(dest,src,size)
+
+Multiplies each of size complex pairs in dest by the complex pairs in src. Often used for convolution.
+
+
+EEL2: cos(angle)
+
+Returns the cosine of the angle specified (specified in radians).
+
+
+EEL2: defer("code")
+
+Adds code to be called back by REAPER. Used to create persistent ReaScripts that continue to run and respond to input, while the user does other tasks. Identical to runloop().
+Note that no undo point will be automatically created when the script finishes, unless you create it explicitly.
+
+
+EEL2: eval("code")
+
+Executes code passed in. Code can use functions, but functions created in code can't be used elsewhere.
+
+
+EEL2: exp(exponent)
+
+Returns the number e ($e, approximately 2.718) raised to the parameter-th power. This function is significantly faster than pow() or the ^ operator.
+
+
+EEL2: extension_api("function_name"[,...])
+
+Used to call functions exported by extension plugins. The first parameter must be the exported function name, then its own parameters (as if the function was called directly).
+
+
+EEL2: fclose(fp)
+
+Closes a file previously opened with fopen().
+
+
+EEL2: feof(fp)
+
+Returns nonzero if the file fp is at the end of file.
+
+
+EEL2: fflush(fp)
+
+If file fp is open for writing, flushes out any buffered data to disk.
+
+
+EEL2: fft(buffer,size)
+
+Performs a FFT on the data in the local memory buffer at the offset specified by the first parameter. The size of the FFT is specified by the second parameter, which must be 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, or 32768. The outputs are permuted, so if you plan to use them in-order, call fft_permute(buffer, size) before and fft_ipermute(buffer,size) after your in-order use. Your inputs or outputs will need to be scaled down by 1/size, if used.
+Note that fft()/ifft() require real / imaginary input pairs, so a 256 point FFT actually works with 512 items.
+Note that fft()/ifft() must NOT cross a 65,536 item boundary, so be sure to specify the offset accordingly.
+
+
+EEL2: fft_ipermute(buffer,size)
+
+Permute the input for ifft(), taking bands from in-order to the order ifft() requires. See fft() for more information.
+
+
+EEL2: fft_permute(buffer,size)
+
+Permute the output of fft() to have bands in-order. See fft() for more information.
+
+
+EEL2: fft_real(buffer,size)
+
+Performs an FFT, but takes size input samples and produces size/2 complex output pairs. Usually used along with fft_permute(size/2). Inputs/outputs will need to be scaled by 0.5/size.
+
+
+EEL2: fgetc(fp)
+
+Reads a character from file fp, returns -1 if EOF.
+
+
+EEL2: fgets(fp,#str)
+
+Reads a line from file fp into #str. Returns length of #str read.
+
+
+EEL2: floor(value)
+
+Returns the value rounded to the next lowest integer (floor(3.9)==3, floor(-3.1)==-4).
+
+
+EEL2: fopen("fn","mode")
+
+Opens a file "fn" with mode "mode". For read, use "r" or "rb", write "w" or "wb". Returns a positive integer on success.
+
+
+EEL2: fprintf(fp,"format"[,...])
+
+Formats a string and writes it to file fp. For more information on format specifiers, see sprintf(). Returns bytes written to file.
+
+
+EEL2: fread(fp,#str,length)
+
+Reads from file fp into #str, up to length bytes. Returns actual length read, or negative if error.
+
+
+EEL2: freembuf(address)
+
+Hints the runtime that memory above the address specified may no longer be used. The runtime may, at its leisure, choose to lose the contents of memory above the address specified.
+
+
+EEL2: fseek(fp,offset,whence)
+
+Seeks file fp, offset bytes from whence reference. Whence negative specifies start of file, positive whence specifies end of file, and zero whence specifies current file position.
+
+
+EEL2: ftell(fp)
+
+Retunrs the current file position.
+
+
+EEL2: fwrite(fp,#str,len)
+
+Writes up to len characters of #str to file fp. If len is less than 1, the full contents of #str will be written. Returns the number of bytes written to file.
+
+
+EEL2: get_action_context(#filename,sectionID,cmdID,mode,resolution,val,contextstr)
+
+Queries contextual information about the script, typically MIDI/OSC input values.
+Returns true if a new value has been updated.
+val will be set to a relative or absolute value depending on mode (=0: absolute mode, >0: relative modes).
+resolution=127 for 7-bit resolution, =16383 for 14-bit resolution.
+sectionID, and cmdID will be set to -1 if the script is not part of the action list.
+mode, resolution and val will be set to -1 if the script was not triggered via MIDI/OSC.
+contextstr may be empty or one of:
+
+midi:XX[:YY] (one or two bytes hex)
+[wheel|hwheel|mtvert|mthorz|mtzoom|mtrot|mediakbd]:flags
+key:flags:keycode
+osc:/msg[:f=FloatValue|:s=StringValue]
+KBD_OnMainActionEx
+(flags may include V=virtkey, S=shift, A=alt/option, C=control/command, W=win/control)
+
+
+
+EEL2: gfx VARIABLES
+
+The following global variables are special and will be used by the graphics system:
+
+gfx_r - current red component (0..1) used by drawing operations.
+gfx_g - current green component (0..1) used by drawing operations.
+gfx_b - current blue component (0..1) used by drawing operations.
+gfx_a2 - current alpha component (0..1) used by drawing operations when writing solid colors (normally ignored but useful when creating transparent images).
+gfx_a - alpha for drawing (1=normal).
+gfx_mode - blend mode for drawing. Set mode to 0 for default options. Add 1.0 for additive blend mode (if you wish to do subtractive, set gfx_a to negative and use gfx_mode as additive). Add 2.0 to disable source alpha for gfx_blit(). Add 4.0 to disable filtering for gfx_blit().
+gfx_w - width of the UI framebuffer.
+gfx_h - height of the UI framebuffer.
+gfx_x - current graphics position X. Some drawing functions use as start position and update.
+gfx_y - current graphics position Y. Some drawing functions use as start position and update.
+gfx_clear - if greater than -1.0, framebuffer will be cleared to that color. the color for this one is packed RGB (0..255), i.e. red+green*256+blue*65536. The default is 0 (black).
+gfx_dest - destination for drawing operations, -1 is main framebuffer, set to 0..1024-1 to have drawing operations go to an offscreen buffer (or loaded image).
+gfx_texth - the (READ-ONLY) height of a line of text in the current font. Do not modify this variable.
+gfx_ext_retina - to support hidpi/retina, callers should set to 1.0 on initialization, this value will be updated to value greater than 1.0 (such as 2.0) if retina/hidpi. On macOS gfx_w/gfx_h/etc will be doubled, but on other systems gfx_w/gfx_h will remain the same and gfx_ext_retina is a scaling hint for drawing.
+mouse_x - current X coordinate of the mouse relative to the graphics window.
+mouse_y - current Y coordinate of the mouse relative to the graphics window.
+mouse_wheel - wheel position, will change typically by 120 or a multiple thereof, the caller should clear the state to 0 after reading it.
+mouse_hwheel - horizontal wheel positions, will change typically by 120 or a multiple thereof, the caller should clear the state to 0 after reading it.
+mouse_cap - a bitfield of mouse and keyboard modifier state. Note that a script must call gfx_getchar() at least once in order to get modifier state when the mouse is not captured by the window. Bitfield bits:
+1: left mouse button
+2: right mouse button
+4: Control (Windows) or Command (macOS) key
+8: Shift key
+16: Alt (Windows) or Option (macOS) key
+32: Windows (Windows) or Control (macOS) key
+64: middle mouse button
+
+
+
+EEL2: gfx_arc(x,y,r,ang1,ang2[,antialias])
+
+Draws an arc of the circle centered at x,y, with ang1/ang2 being specified in radians.
+
+
+EEL2: gfx_blit(source[, scale, rotation, srcx, srcy, srcw, srch, destx, desty, destw, desth, rotxoffs, rotyoffs])
+
+Copies from source (-1 = main framebuffer, or an image from gfx_loadimg() etc), using current opacity and copy mode (set with gfx_a, gfx_mode).
+If destx/desty are not specified, gfx_x/gfx_y will be used as the destination position.
+scale (1.0 is unscaled) will be used only if destw/desth are not specified.
+rotation is an angle in radians
+srcx/srcy/srcw/srch specify the source rectangle (if omitted srcw/srch default to image size)
+destx/desty/destw/desth specify destination rectangle (if not specified destw/desth default to srcw/srch * scale).
+
+
+EEL2: gfx_blitext(source,coordinatelist,rotation)
+
+Deprecated, use gfx_blit instead.
+
+
+EEL2: gfx_blurto(x,y)
+
+Blurs the region of the screen between gfx_x,gfx_y and x,y, and updates gfx_x,gfx_y to x,y.
+
+
+EEL2: gfx_circle(x,y,r[,fill,antialias])
+
+Draws a circle, optionally filling/antialiasing.
+
+
+EEL2: gfx_clienttoscreen(x,y)
+
+Converts client coordinates x,y to screen coordinates.
+
+
+EEL2: gfx_deltablit(srcimg,srcs,srct,srcw,srch,destx,desty,destw,desth,dsdx,dtdx,dsdy,dtdy,dsdxdy,dtdxdy[,usecliprect=1])
+
+Blits from srcimg(srcx,srcy,srcw,srch) to destination (destx,desty,destw,desth). Source texture coordinates are s/t, dsdx represents the change in s coordinate for each x pixel, dtdy represents the change in t coordinate for each y pixel, etc. dsdxdy represents the change in dsdx for each line. If usecliprect is specified and 0, then srcw/srch are ignored.
+
+
+EEL2: gfx_dock(v[,wx,wy,ww,wh])
+
+Call with v=-1 to query docked state, otherwise v>=0 to set docked state. State is &1 if docked, second byte is docker index (or last docker index if undocked). If wx-wh are specified, they will be filled with the undocked window position/size
+
+
+EEL2: gfx_drawchar(char)
+
+Draws the character (can be a numeric ASCII code as well), to gfx_x, gfx_y, and moves gfx_x over by the size of the character.
+
+
+EEL2: gfx_drawnumber(n,ndigits)
+
+Draws the number n with ndigits of precision to gfx_x, gfx_y, and updates gfx_x to the right side of the drawing. The text height is gfx_texth.
+
+
+EEL2: gfx_drawstr("str"[,flags,right,bottom])
+
+Draws a string at gfx_x, gfx_y, and updates gfx_x/gfx_y so that subsequent draws will occur in a similar place.
+
+If flags, right ,bottom passed in:
+flags&1: center horizontally
+flags&2: right justify
+flags&4: center vertically
+flags&8: bottom justify
+flags&256: ignore right/bottom, otherwise text is clipped to (gfx_x, gfx_y, right, bottom)
+
+
+EEL2: gfx_getchar([char, unichar])
+
+If char is 0 or omitted, returns a character from the keyboard queue, or 0 if no character is available, or -1 if the graphics window is not open. If char is specified and nonzero, that character's status will be checked, and the function will return greater than 0 if it is pressed. Note that calling gfx_getchar() at least once causes mouse_cap to reflect keyboard modifiers even when the mouse is not captured.
+
+Common values are standard ASCII, such as 'a', 'A', '=' and '1', but for many keys multi-byte values are used, including 'home', 'up', 'down', 'left', 'rght', 'f1'.. 'f12', 'pgup', 'pgdn', 'ins', and 'del'.
+
+Modified and special keys can also be returned, including:
+
+Ctrl/Cmd+A..Ctrl+Z as 1..26
+Ctrl/Cmd+Alt+A..Z as 257..282
+Alt+A..Z as 'A'+256..'Z'+256
+27 for ESC
+13 for Enter
+' ' for space
+65536 for query of special flags, returns: &1 (supported), &2=window has focus, &4=window is visible, &8=mouse click would hit window. 65537 queries special flags but does not do the mouse click hit testing (faster).
+If unichar is specified, it will be set to the unicode value of the key if available (and the return value may be the unicode value or a raw key value as described above, depending). If unichar is not specified, unicode codepoints greater than 255 will be returned as 'u'<<24 + value
+
+
+
+EEL2: gfx_getdropfile(idx[,#str])
+
+Enumerates any drag/dropped files. call gfx_dropfile(-1) to clear the list when finished. Returns 1 if idx is valid, 0 if idx is out of range.
+
+
+EEL2: gfx_getfont([#str])
+
+Returns current font index. If a string is passed, it will receive the actual font face used by this font, if available.
+
+
+EEL2: gfx_getimgdim(image,w,h)
+
+Retreives the dimensions of image (representing a filename: index number) into w and h. Sets these values to 0 if an image failed loading (or if the filename index is invalid).
+
+
+EEL2: gfx_getpixel(r,g,b)
+
+Gets the value of the pixel at gfx_x,gfx_y into r,g,b.
+
+
+EEL2: gfx_gradrect(x,y,w,h, r,g,b,a[, drdx, dgdx, dbdx, dadx, drdy, dgdy, dbdy, dady])
+
+Fills a gradient rectangle with the color and alpha specified. drdx-dadx reflect the adjustment (per-pixel) applied for each pixel moved to the right, drdy-dady are the adjustment applied for each pixel moved toward the bottom. Normally drdx=adjustamount/w, drdy=adjustamount/h, etc.
+
+
+EEL2: gfx_init("name"[,width,height,dockstate,xpos,ypos])
+
+Initializes the graphics window with title name. Suggested width and height can be specified. If window is already open, a non-empty name will re-title window, or an empty title will resize window.
+
+Once the graphics window is open, gfx_update() should be called periodically.
+
+
+EEL2: gfx_line(x,y,x2,y2[,aa])
+
+Draws a line from x,y to x2,y2, and if aa is not specified or 0.5 or greater, it will be antialiased.
+
+
+EEL2: gfx_lineto(x,y[,aa])
+
+Draws a line from gfx_x,gfx_y to x,y. If aa is 0.5 or greater, then antialiasing is used. Updates gfx_x and gfx_y to x,y.
+
+
+EEL2: gfx_loadimg(image,"filename")
+
+Load image from filename into slot 0..1024-1 specified by image. Returns the image index if success, otherwise -1 if failure. The image will be resized to the dimensions of the image file.
+
+
+EEL2: gfx_measurechar(codepoint,&w,&h)
+
+Measures the drawing dimensions of a character (for example, ascii code point 97 is 'a') with the current font (as set by gfx_setfont).
+
+
+EEL2: gfx_measurestr("str",&w,&h)
+
+Measures the drawing dimensions of a string with the current font (as set by gfx_setfont).
+
+
+EEL2: gfx_muladdrect(x,y,w,h,mul_r,mul_g,mul_b[,mul_a,add_r,add_g,add_b,add_a])
+
+Multiplies each pixel by mul_* and adds add_*, and updates in-place. Useful for changing brightness/contrast, or other effects.
+
+
+EEL2: gfx_printf("format"[, ...])
+
+Formats and draws a string at gfx_x, gfx_y, and updates gfx_x/gfx_y accordingly (the latter only if the formatted string contains newline). For more information on format strings, see sprintf()
+
+
+EEL2: gfx_quit()
+
+Closes the graphics window.
+
+
+EEL2: gfx_rect(x,y,w,h[,filled])
+
+Fills a rectangle at x,y, w,h pixels in dimension, filled by default.
+
+
+EEL2: gfx_rectto(x,y)
+
+Fills a rectangle from gfx_x,gfx_y to x,y. Updates gfx_x,gfx_y to x,y.
+
+
+EEL2: gfx_roundrect(x,y,w,h,radius[,antialias])
+
+Draws a rectangle with rounded corners.
+
+
+EEL2: gfx_screentoclient(x,y)
+
+Converts screen coordinates x,y to client coordinates.
+
+
+EEL2: gfx_set(r[,g,b,a,mode,dest,a2])
+
+Sets gfx_r/gfx_g/gfx_b/gfx_a/gfx_mode/gfx_a2, sets gfx_dest if final parameter specified
+
+
+EEL2: gfx_setcursor(resource_id,custom_cursor_name)
+
+Specify 0 resource_id and custom_cursor_name from https://www.reaper.fm/sdk/cursors/cursors.php (e.g. 'arrow') to set the cursor. Alternatively can specify resource_id for a Windows cursor or built-in REAPER cursor.
+
+
+EEL2: gfx_setfont(idx[,"fontface", sz, flags])
+
+Can select a font and optionally configure it. idx=0 for default bitmapped font, no configuration is possible for this font. idx=1..16 for a configurable font, specify fontface such as "Arial", sz of 8-100, and optionally specify flags, which is a multibyte character, which can include 'i' for italics, 'u' for underline, or 'b' for bold. These flags may or may not be supported depending on the font and OS. After calling gfx_setfont(), gfx_texth may be updated to reflect the new average line height.
+
+
+EEL2: gfx_setimgdim(image,w,h)
+
+Resize image referenced by index 0..1024-1, width and height must be 0-8192. The contents of the image will be undefined after the resize.
+
+
+EEL2: gfx_setpixel(r,g,b)
+
+Writes a pixel of r,g,b to gfx_x,gfx_y.
+
+
+EEL2: gfx_showmenu("str")
+
+Shows a popup menu at gfx_x,gfx_y. str is a list of fields separated by | characters. Each field represents a menu item.
+Fields can start with special characters:
+
+# : grayed out
+! : checked
+> : this menu item shows a submenu
+< : last item in the current submenu
+
+An empty field will appear as a separator in the menu. gfx_showmenu returns 0 if the user selected nothing from the menu, 1 if the first field is selected, etc.
+Example:
+
+gfx_showmenu("first item, followed by separator||!second item, checked|>third item which spawns a submenu|#first item in submenu, grayed out|<second and last item in submenu|fourth item in top menu")
+
+
+EEL2: gfx_transformblit(srcimg,destx,desty,destw,desth,div_w,div_h,table)
+
+Blits to destination at (destx,desty), size (destw,desth). div_w and div_h should be 2..64, and table should point to a table of 2*div_w*div_h values (this table must not cross a 65536 item boundary). Each pair in the table represents a S,T coordinate in the source image, and the table is treated as a left-right, top-bottom list of texture coordinates, which will then be rendered to the destination.
+
+
+EEL2: gfx_triangle(x1,y1,x2,y2,x3,y3[x4,y4...])
+
+Draws a filled triangle, or any convex polygon.
+
+
+EEL2: gfx_update()
+
+Updates the graphics display, if opened
+
+
+EEL2: ifft(buffer,size)
+
+Perform an inverse FFT. For more information see fft().
+
+
+EEL2: ifft_real(buffer,size)
+
+Performs an inverse FFT, but takes size/2 complex input pairs and produces size real output values. Usually used along with fft_ipermute(size/2).
+
+
+EEL2: invsqrt(value)
+
+Returns a fast inverse square root (1/sqrt(x)) approximation of the parameter.
+
+
+EEL2: log(value)
+
+Returns the natural logarithm (base e) of the parameter. If the value is not greater than 0, the return value is undefined.
+
+
+EEL2: log10(value)
+
+Returns the base-10 logarithm of the parameter. If the value is not greater than 0, the return value is undefined.
+
+
+EEL2: loop(count,expression)
+
+Evaluates count once, and then executes expression count, but not more than 1048576, times.
+
+
+EEL2: match("needle","haystack"[, ...])
+
+Searches for the first parameter in the second parameter, using a simplified regular expression syntax.
+
+* = match 0 or more characters
+*? = match 0 or more characters, lazy
++ = match 1 or more characters
++? = match 1 or more characters, lazy
+? = match one character
+
+You can also use format specifiers to match certain types of data, and optionally put that into a variable:
+
+%s means 1 or more chars
+%0s means 0 or more chars
+%5s means exactly 5 chars
+%5-s means 5 or more chars
+%-10s means 1-10 chars
+%3-5s means 3-5 chars
+%0-5s means 0-5 chars
+%x, %d, %u, and %f are available for use similarly
+%c can be used, but can't take any length modifiers
+Use uppercase (%S, %D, etc) for lazy matching
+
+See also sprintf() for other notes, including specifying direct variable references via {}.
+
+
+EEL2: matchi("needle","haystack"[, ...])
+
+Case-insensitive version of match().
+
+
+EEL2: max(&value,&value)
+
+Returns (by reference) the maximum value of the two parameters. Since max() returns by reference, expressions such as max(x,y) = 5 are possible.
+
+
+EEL2: mem_get_values(offset, ...)
+
+Reads values from memory starting at offset into variables specified. Slower than regular memory reads for less than a few variables, faster for more than a few. Undefined behavior if used with more than 32767 variables.
+
+
+EEL2: mem_insert_shuffle(buf,len,value)
+
+Shuffles contents of buf right by 1, inserts value at buf[0], returns previous buf[len-1].
+
+
+EEL2: mem_multiply_sum(src1,src2,length)
+
+Calculates the sum of the products of values pointed to by src1 and src2. If src1 is -1, then calculates the sum of squares of src2, if -2, the sum of the absolute values of src2, if -3, calculates the sum of the values of src2. Other negative values are undefined.
+
+
+EEL2: mem_set_values(offset, ...)
+
+Writes values to memory starting at offset from variables specified. Slower than regular memory writes for less than a few variables, faster for more than a few. Undefined behavior if used with more than 32767 variables.
+
+
+EEL2: memcpy(dest,src,length)
+
+Copies length items of memory from src to dest. Regions are permitted to overlap.
+
+
+EEL2: memset(offset,value,length)
+
+Sets length items of memory at offset to value.
+
+
+EEL2: min(&value,&value)
+
+Returns (by reference) the minimum value of the two parameters. Since min() returns by reference, expressions such as min(x,y) = 5 are possible.
+
+
+EEL2: pow(base,exponent)
+
+Raises base to the exponent power. The preferred syntax for this is the ^ operator, however pow() is provided for its similarity to C.
+
+
+EEL2: printf("format"[, ...])
+
+Output formatted string to system-specific destination, see sprintf() for more information
+
+
+EEL2: rand([max])
+
+Returns a pseudorandom real number between 0 and the parameter, inclusive. If the parameter is omitted or less than 1.0, 1.0 is used as a maximum instead.
+
+
+EEL2: runloop("code")
+
+Adds code to be called back by REAPER. Used to create persistent ReaScripts that continue to run and respond to input, while the user does other tasks. Identical to defer().
+Note that no undo point will be automatically created when the script finishes, unless you create it explicitly.
+
+
+EEL2: set_action_options(flags)
+
+Sets action options for the script.
+flag&1: script will auto-terminate if re-launched while already running
+flag&2: if (flag&1) is set, script will re-launch after auto-terminating. otherwise, re-launch is ignored.
+flag&4: set script toggle state on
+flag&8: set script toggle state off
+
+
+
+EEL2: sign(value)
+
+Returns 1.0 if the parameter is greater than 0, -1.0 if the parameter is less than 0, or 0 if the parameter is 0.
+
+
+EEL2: sin(angle)
+
+Returns the sine of the angle specified (specified in radians -- to convert from degrees to radians, multiply by $pi/180, or 0.017453).
+
+
+EEL2: sleep(ms)
+
+Yields the CPU for the millisecond count specified, calling Sleep() on Windows or usleep() on other platforms.
+
+
+EEL2: sprintf(#dest,"format"[, ...])
+
+Formats a string and stores it in #dest. Format specifiers begin with %, and may include:
+
+%% = %
+%s = string from parameter
+%d = parameter as integer
+%i = parameter as integer
+%u = parameter as unsigned integer
+%x = parameter as hex (lowercase) integer
+%X = parameter as hex (uppercase) integer
+%c = parameter as character
+%f = parameter as floating point
+%e = parameter as floating point (scientific notation, lowercase)
+%E = parameter as floating point (scientific notation, uppercase)
+%g = parameter as floating point (shortest representation, lowercase)
+%G = parameter as floating point (shortest representation, uppercase)
+
+Many standard C printf() modifiers can be used, including:
+
+%.10s = string, but only print up to 10 characters
+%-10s = string, left justified to 10 characters
+%10s = string, right justified to 10 characters
+%+f = floating point, always show sign
+%.4f = floating point, minimum of 4 digits after decimal point
+%10d = integer, minimum of 10 digits (space padded)
+%010f = integer, minimum of 10 digits (zero padded)
+
+Values for format specifiers can be specified as additional parameters to sprintf, or within {} in the format specifier (such as %{varname}d, in that case a global variable is always used).
+
+
+EEL2: sqr(value)
+
+Returns the square of the parameter (similar to value*value, but only evaluating value once).
+
+
+EEL2: sqrt(value)
+
+Returns the square root of the parameter. If the parameter is negative, the return value is undefined.
+
+
+EEL2: stack_exch(&value)
+
+Exchanges a value with the top of the stack, and returns a reference to the parameter (with the new value).
+
+
+EEL2: stack_peek(index)
+
+Returns a reference to the item on the top of the stack (if index is 0), or to the Nth item on the stack if index is greater than 0.
+
+
+EEL2: stack_pop(&value)
+
+Pops a value from the user stack into value, or into a temporary buffer if value is not specified, and returns a reference to where the stack was popped. Note that no checking is done to determine if the stack is empty, and as such stack_pop() will never fail.
+
+
+EEL2: stack_push(&value)
+
+Pushes value onto the user stack, returns a reference to the parameter.
+
+
+EEL2: str_delsub(#str,pos,len)
+
+Deletes len characters at offset pos from #str, and returns #str.
+
+
+EEL2: str_getchar("str",offset[,type])
+
+Returns the data at byte-offset offset of str. If offset is negative, position is relative to end of string.type defaults to signed char, but can be specified to read raw binary data in other formats (note the single quotes, these are single/multi-byte characters):
+
+'c' - signed char
+'cu' - unsigned char
+'s' - signed short
+'S' - signed short, big endian
+'su' - unsigned short
+'Su' - unsigned short, big endian
+'i' - signed int
+'I' - signed int, big endian
+'iu' - unsigned int
+'Iu' - unsigned int, big endian
+'f' - float
+'F' - float, big endian
+'d' - double
+'D' - double, big endian
+
+
+
+EEL2: str_insert(#str,"srcstr",pos)
+
+Inserts srcstr into #str at offset pos. Returns #str
+
+
+EEL2: str_setchar(#str,offset,val[,type]))
+
+Sets value at offset offset, type optional. offset may be negative to refer to offset relative to end of string, or between 0 and length, inclusive, and if set to length it will lengthen string. See str_getchar() for more information on types.
+
+
+EEL2: str_setlen(#str,len)
+
+Sets length of #str (if increasing, will be space-padded), and returns #str.
+
+
+EEL2: strcat(#str,"srcstr")
+
+Appends srcstr to #str, and returns #str
+
+
+EEL2: strcmp("str","str2")
+
+Compares strings, returning 0 if equal
+
+
+EEL2: strcpy(#str,"srcstr")
+
+Copies the contents of srcstr to #str, and returns #str
+
+
+EEL2: strcpy_from(#str,"srcstr",offset)
+
+Copies srcstr to #str, but starts reading srcstr at offset offset
+
+
+EEL2: strcpy_substr(#str,"srcstr",offs,ml))
+
+PHP-style (start at offs, offs<0 means from end, ml for maxlen, ml<0 = reduce length by this amt)
+
+
+EEL2: stricmp("str","str2")
+
+Compares strings ignoring case, returning 0 if equal
+
+
+EEL2: strlen("str")
+
+Returns the length of the string passed as a parameter
+
+
+EEL2: strncat(#str,"srcstr",maxlen)
+
+Appends srcstr to #str, stopping after maxlen characters of srcstr. Returns #str.
+
+
+EEL2: strncmp("str","str2",maxlen)
+
+Compares strings giving up after maxlen characters, returning 0 if equal
+
+
+EEL2: strncpy(#str,"srcstr",maxlen)
+
+Copies srcstr to #str, stopping after maxlen characters. Returns #str.
+
+
+EEL2: strnicmp("str","str2",maxlen)
+
+Compares strings giving up after maxlen characters, ignoring case, returning 0 if equal
+
+
+EEL2: tan(angle)
+
+Returns the tangent of the angle specified (specified in radians).
+
+
+EEL2: tcp_close(connection)
+
+Closes a TCP connection created by tcp_listen() or tcp_connect().
+
+
+EEL2: tcp_connect("address",port[,block])
+
+Create a new TCP connection to address:port. If block is specified and 0, connection will be made nonblocking. Returns TCP connection ID greater than 0 on success.
+
+
+EEL2: tcp_listen(port[,"interface",#ip_out])
+
+Listens on port specified. Returns less than 0 if could not listen, 0 if no new connection available, or greater than 0 (as a TCP connection ID) if a new connection was made. If a connection made and #ip_out specified, it will be set to the remote IP. interface can be empty for all interfaces, otherwise an interface IP as a string.
+
+
+EEL2: tcp_listen_end(port)
+
+Ends listening on port specified.
+
+
+EEL2: tcp_recv(connection,#str[,maxlen])
+
+Receives data from a connection to #str. If maxlen is specified, no more than maxlen bytes will be received. If non-blocking, 0 will be returned if would block. Returns less than 0 if error.
+
+
+EEL2: tcp_send(connection,"str"[,len])
+
+Sends a string to connection. Returns -1 on error, 0 if connection is non-blocking and would block, otherwise returns length sent. If len is specified and not less than 1, only the first len bytes of the string parameter will be sent.
+
+
+EEL2: tcp_set_block(connection,block)
+
+Sets whether a connection blocks.
+
+
+EEL2: time([&val])
+
+Sets the parameter (or a temporary buffer if omitted) to the number of seconds since January 1, 1970, and returns a reference to that value. The granularity of the value returned is 1 second.
+
+
+EEL2: time_precise([&val])
+
+Sets the parameter (or a temporary buffer if omitted) to a system-local timestamp in seconds, and returns a reference to that value. The granularity of the value returned is system defined (but generally significantly smaller than one second).
+
+
+EEL2: while(expression)
+
+Executes expression until expression evaluates to zero, or until 1048576iterations occur. An alternate and more useful syntax is while (expression) ( statements ), which evaluates statements after every non-zero evaluation of expression.
+
+

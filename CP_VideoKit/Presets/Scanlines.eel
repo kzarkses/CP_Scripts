@@ -1,0 +1,44 @@
+// CP_VideoKit — Scanlines (CRT/VHS look)
+
+//@param1:spacing 'Spacing (px)' 4 1 40 4 1
+//@param2:thickness 'Thickness (px)' 1 1 20 1 1
+//@param3:darkness 'Darkness' 0.5 0 1 0.5 0.001
+//@param4:orient 'Orientation 0=H 1=V' 0 0 1 0.5 1
+//@param5:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, pw, ph);
+    gfx_blit(0, 0);
+
+    gfx_mode = 0;
+    gfx_set(0, 0, 0, darkness);
+    sp = max(2, spacing | 0);
+    th = max(1, thickness | 0);
+
+    orient < 0.5 ? (
+        // Horizontal lines
+        y = 0;
+        while (y < ph) (
+            gfx_fillrect(0, y, pw, th);
+            y += sp;
+        );
+    ) : (
+        x = 0;
+        while (x < pw) (
+            gfx_fillrect(x, 0, th, ph);
+            x += sp;
+        );
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

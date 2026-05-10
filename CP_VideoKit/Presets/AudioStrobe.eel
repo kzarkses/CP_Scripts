@@ -1,0 +1,47 @@
+// CP_VideoKit — Audio Strobe
+// Flashes the image to a configurable color when a gmem slot rises above
+// a threshold. Useful for kick-driven flashes on snares, etc.
+
+//@param1:slot 'gmem slot' 0 0 31 0 1
+//@param2:threshold 'Trigger threshold' 0.5 0 1 0.5 0.001
+//@param3:hold_ms 'Hold (ms)' 60 0 500 60 1
+//@param4:flash_r 'Flash R' 1 0 1 1 0.001
+//@param5:flash_g 'Flash G' 1 0 1 1 0.001
+//@param6:flash_b 'Flash B' 1 0 1 1 0.001
+//@param7:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    audio = gmem[slot];
+
+    // Persistent state across frames (top-level vars in EEL2 keep their
+    // values between calls).
+    audio >= threshold && prev_audio < threshold ? (
+        last_trigger_t = project_time;
+    );
+    prev_audio = audio;
+
+    last_trigger_t > 0 ? (
+        elapsed_ms = (project_time - last_trigger_t) * 1000;
+        flashing = elapsed_ms < hold_ms;
+    ) : (
+        flashing = 0;
+    );
+
+    flashing ? (
+        gfx_set(flash_r, flash_g, flash_b, 1);
+        gfx_fillrect(0, 0, pw, ph);
+    ) : (
+        gfx_blit(0, 0);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

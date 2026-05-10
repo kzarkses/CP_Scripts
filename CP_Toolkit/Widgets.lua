@@ -295,9 +295,9 @@ function Widgets.BeginPanel(id, theme, opts)
     local pad_y = opts.padding_y or opts.padding or theme.frame_padding_y
     local title = opts.title
 
-    -- Position relative to parent cursor
-    local abs_x = parent.x + parent.cursor_x
-    local abs_y = parent.y + parent.cursor_y - (parent.scrollable and parent.scroll_y or 0)
+    -- Position relative to parent cursor (mirror both scroll axes)
+    local abs_x = parent.x + parent.cursor_x - (parent.scrollable_x and parent.scroll_x or 0)
+    local abs_y = parent.y + parent.cursor_y - (parent.scrollable   and parent.scroll_y   or 0)
 
     -- Auto-width: fill remaining width unless explicit
     local w = opts.width
@@ -554,6 +554,10 @@ function Widgets.Button(id, label, theme, opts)
 
     local tw, th = Core.MeasureText(label)
     local w = opts.width or (tw + fp_x * 2)
+    -- width = -1 → fill the available width of the parent container/column
+    -- (matches the ImGui idiom). Resolved here so callers don't have to
+    -- query Layout.GetAvailableWidth() everywhere.
+    if w == -1 then w = Layout.GetAvailableWidth() end
     local h = opts.height or theme.button_height
 
     -- Pre-check wrap before getting position
@@ -631,9 +635,12 @@ end
 -- ============================================================================
 -- CHECKBOX
 -- ============================================================================
-function Widgets.Checkbox(id, label, checked, theme)
+function Widgets.Checkbox(id, label, checked, theme, opts)
+    opts = opts or {}
     local x, y = Layout.GetCursorPos()
-    local size = theme.checkbox_size
+    -- opts.size lets the caller align the box on a taller row (e.g. matching
+    -- a sibling button's height). Defaults to theme.checkbox_size.
+    local size = opts.size or theme.checkbox_size
     -- Truncate label so the widget (box + gap + label) never overflows the
     -- container's remaining width. Label-less widgets are untouched.
     local avail_w = Layout.GetAvailableWidth()
@@ -707,24 +714,30 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
 
+    -- width = -1 → fill (alias for nil). Sliders always default to fill.
+    local fixed_w = opts.width
+    if fixed_w == -1 then fixed_w = nil end
+
     -- Truncate label first so the widget (label + gap + control) can never
     -- overflow the container. Reserved control width = opts.width if set,
     -- else 40px (min usable slider track).
     local tw, th = Core.MeasureText(label)
-    local reserved_w = opts.width or 40
-    local max_label_w = max(0, avail_w - reserved_w - 12)
+    local has_label = label and label ~= ""
+    local label_gap = has_label and 8 or 0
+    local reserved_w = fixed_w or 40
+    local max_label_w = max(0, avail_w - reserved_w - label_gap)
     if tw > max_label_w then
         label, tw = Core.TruncateText(label, max_label_w)
     end
-    local slider_w = opts.width or max(20, avail_w - tw - 12)
-    local h = theme.slider_height
-    local total_w = slider_w + tw + 12
+    local slider_w = fixed_w or max(20, avail_w - tw - label_gap)
+    local h = opts.height or theme.slider_height
+    local total_w = slider_w + (has_label and (tw + label_gap) or 0)
 
     local changed = false
     local new_value = value
 
-    -- Slider track area
-    local sx = x + tw + 8
+    -- Slider track area (no leading gap when there's no label).
+    local sx = x + (has_label and (tw + label_gap) or 0)
     local sy = y + floor((max(h, th) - h) / 2)
 
     local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h) and not Core.HasPopup()
@@ -829,16 +842,29 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
 
-    -- Truncate label so combo never overflows container.
+    -- Width handling. Default behavior = fill the remaining width after the
+    -- label. `opts.width = -1` is an explicit alias for "fill". A positive
+    -- number = fixed width.
+    local fixed_w = opts.width
+    if fixed_w == -1 then fixed_w = nil end
+
+    -- Empty label → no gap reserved
     local tw, th = Core.MeasureText(label)
-    local reserved_w = opts.width or 50
-    local max_label_w = max(0, avail_w - reserved_w - 12)
+    local has_label = label and label ~= ""
+    local label_gap = has_label and 8 or 0
+
+    -- Truncate label if combo would otherwise overflow.
+    local reserved_w = fixed_w or 50
+    local max_label_w = max(0, avail_w - reserved_w - label_gap)
     if tw > max_label_w then
         label, tw = Core.TruncateText(label, max_label_w)
     end
-    local combo_w = opts.width or max(20, avail_w - tw - 12)
-    local h = theme.combo_height
-    local total_w = combo_w + tw + 12
+    -- Combo fills the remaining width by default. Total widget width never
+    -- exceeds avail_w (so it lines up edge-to-edge with neighbouring fill
+    -- widgets like Button(width=-1)).
+    local combo_w = fixed_w or max(20, avail_w - tw - label_gap)
+    local h = opts.height or theme.combo_height
+    local total_w = combo_w + (has_label and (tw + label_gap) or 0)
 
     -- Check for pending selection from popup (set on previous frame)
     local data = Core.GetWidgetSubData("combo", id)
@@ -851,8 +877,8 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
         -- (data is already a reference to the stored table; mutation persists)
     end
 
-    -- Combo button area
-    local cx = x + tw + 8
+    -- Combo button area (no leading offset when label is empty)
+    local cx = x + (has_label and (tw + label_gap) or 0)
     local cy = y
 
     -- Block when ANY popup is open (prevents click-through)
@@ -909,8 +935,14 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
                 end
 
                 local tc = theme.colors.text
-                local text_y = iy + floor((item_h - th) / 2)
-                Core.DrawText(popup_items[i], popup_x + 8, text_y, tc[1], tc[2], tc[3], tc[4])
+                local item_text = popup_items[i]
+                -- Vertical centering uses the item text's own height, NOT
+                -- the label's th (which is 0 when the combo has no label).
+                local item_tw, item_th = Core.MeasureText(item_text)
+                local text_y = iy + floor((item_h - item_th) / 2)
+                local item_tx = popup_x + floor((popup_w - item_tw) / 2)
+                if item_tx < popup_x + 6 then item_tx = popup_x + 6 end
+                Core.DrawText(item_text, item_tx, text_y, tc[1], tc[2], tc[3], tc[4])
 
                 -- Select item on click (not on the open frame)
                 if not is_new and item_hovered and Core.MouseClicked(1) then
@@ -934,10 +966,13 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
 
     -- Draw combo button
     if Core.IsVisible(x, y, total_w, h) then
-        -- Label
         local tc = theme.colors.text
-        local ly = y + floor((h - th) / 2)
-        Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
+
+        -- Label baseline (only meaningful if a label is present)
+        if has_label then
+            local ly = y + floor((h - th) / 2)
+            Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
+        end
 
         -- Button background
         local bg = (hovered and not Core.HasPopup()) and theme.colors.frame_hovered or theme.colors.frame_bg
@@ -945,10 +980,18 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
 
         draw_win32_bevel(cx, cy, combo_w, h, theme, "sunken")
 
-        -- Current value text
+        -- Current value text — centered inside the combo button (the arrow
+        -- on the right takes h pixels, so the text region is combo_w - h).
+        -- Vertical centering uses the value text's own height, NOT the
+        -- (possibly empty) label's height.
         local display_idx = changed and selected or current_index
         local val_text = items[display_idx] or ""
-        Core.DrawText(val_text, cx + 6, ly, tc[1], tc[2], tc[3], tc[4])
+        local vw, vh = Core.MeasureText(val_text)
+        local text_region = max(8, combo_w - h)
+        local text_x = cx + floor((text_region - vw) / 2)
+        if text_x < cx + 4 then text_x = cx + 4 end  -- min left padding
+        local val_ly = cy + floor((h - vh) / 2)
+        Core.DrawText(val_text, text_x, val_ly, tc[1], tc[2], tc[3], tc[4])
 
         -- Arrow icon
         if Icons then
@@ -2974,21 +3017,26 @@ function Widgets.InputText(id, label, text, theme, opts)
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
 
+    -- width = -1 → fill (alias for nil). Positive number = fixed width.
+    local fixed_w = opts.width
+    if fixed_w == -1 then fixed_w = nil end
+
     local tw, th = 0, 0
     if label and label ~= "" then
         tw, th = Core.MeasureText(label)
     end
+    local label_gap = (tw > 0) and 8 or 0
     -- Truncate label so widget never overflows container.
     if tw > 0 then
-        local reserved_w = opts.width or 40
-        local max_label_w = max(0, avail_w - reserved_w - 12)
+        local reserved_w = fixed_w or 40
+        local max_label_w = max(0, avail_w - reserved_w - label_gap)
         if tw > max_label_w then
             label, tw = Core.TruncateText(label, max_label_w)
         end
     end
-    local input_w = opts.width or max(20, avail_w - tw - 12)
-    local h = theme.combo_height
-    local total_w = input_w + (tw > 0 and (tw + 8) or 0)
+    local input_w = fixed_w or max(20, avail_w - tw - label_gap)
+    local h = opts.height or theme.combo_height
+    local total_w = input_w + (tw > 0 and (tw + label_gap) or 0)
     local pad = theme.frame_padding_x
 
     local ix = x + (tw > 0 and (tw + 8) or 0)
@@ -3378,6 +3426,7 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
     local tw, th = Core.MeasureText(label)
     local fp_x = theme.frame_padding_x
     local w = opts.width or (tw + fp_x * 2)
+    if w == -1 then w = Layout.GetAvailableWidth() end
     local h = opts.height or theme.button_height
 
     if Layout.IsWrapping() then Layout.WrapPreCheck(w) end
@@ -3427,35 +3476,42 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
 
+    -- width = -1 → fill (alias for nil).
+    local fixed_w = opts.width
+    if fixed_w == -1 then fixed_w = nil end
+
     local tw, th = 0, 0
     if label and label ~= "" then
         tw, th = Core.MeasureText(label)
     end
+    local has_label = tw > 0
+    local label_gap = has_label and 8 or 0
 
     -- Truncate label so range slider never overflows container.
-    if tw > 0 then
-        local reserved_w = opts.width or 40
-        local max_label_w = max(0, avail_w - reserved_w - 12)
+    if has_label then
+        local reserved_w = fixed_w or 40
+        local max_label_w = max(0, avail_w - reserved_w - label_gap)
         if tw > max_label_w then
             label, tw = Core.TruncateText(label, max_label_w)
         end
     end
-    local slider_w = opts.width or max(20, avail_w - tw - 12)
-    local h = theme.slider_height
-    local total_w = slider_w + (tw > 0 and (tw + 8) or 0)
+    local slider_w = fixed_w or max(20, avail_w - tw - label_gap)
+    local h = opts.height or theme.slider_height
+    local total_w = slider_w + (has_label and (tw + label_gap) or 0)
 
-    local sx = x + (tw > 0 and (tw + 8) or 0)
+    local sx = x + (has_label and (tw + label_gap) or 0)
     local sy = y + floor((max(h, th) - h) / 2)
 
     local changed = false
     local new_min = val_min
     local new_max = val_max
 
-    -- Two grab handles
+    -- Two grab handles + middle drag zone (translate the whole range).
     local range = range_max - range_min
     local ratio_min = (val_min - range_min) / range
     local ratio_max = (val_max - range_min) / range
     local grab_w = 8
+    local edge_zone = grab_w  -- pixels around each handle that count as "grab handle"
 
     local min_px = sx + floor(ratio_min * slider_w)
     local max_px = sx + floor(ratio_max * slider_w)
@@ -3463,15 +3519,29 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h) and not Core.HasPopup()
     if hovered then Core.SetHot(id) end
 
-    -- Determine which handle to drag
+    -- Three drag modes: min handle, max handle, middle (translate both).
     local drag_id_min = id .. "_min"
     local drag_id_max = id .. "_max"
+    local drag_id_mid = id .. "_mid"
+
+    -- Cache the click anchor for middle-drag so the range translates by the
+    -- absolute mouse delta from press, not relative to the current position
+    -- (avoids drift when clamped against 0 or 1).
+    local rd = Core.GetWidgetSubData("rslider", id)
 
     if hovered and Core.MouseClicked(1) then
         local mx = Core.GetState().mouse_x
         local dist_min = abs(mx - min_px)
         local dist_max = abs(mx - max_px)
-        if dist_min <= dist_max then
+        local in_middle = (mx > min_px + edge_zone) and (mx < max_px - edge_zone)
+            and (max_px - min_px > edge_zone * 2)
+
+        if in_middle then
+            Core.SetActive(drag_id_mid)
+            rd.drag_anchor_mx = mx
+            rd.drag_anchor_min = val_min
+            rd.drag_anchor_max = val_max
+        elseif dist_min <= dist_max then
             Core.SetActive(drag_id_min)
         else
             Core.SetActive(drag_id_max)
@@ -3502,12 +3572,56 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
         end
     end
 
+    -- Drag middle: translate both endpoints by the same amount, clamped to
+    -- [range_min, range_max]. The width (max - min) is preserved.
+    if Core.IsActive(drag_id_mid) then
+        if Core.MouseDown(1) then
+            local mx = Core.GetState().mouse_x
+            local anchor_mx = rd.drag_anchor_mx or mx
+            local anchor_min = rd.drag_anchor_min or val_min
+            local anchor_max = rd.drag_anchor_max or val_max
+            local span = anchor_max - anchor_min
+            local delta_ratio = (mx - anchor_mx) / slider_w
+            local delta_val = delta_ratio * range
+            local target_min = anchor_min + delta_val
+            -- Clamp without shrinking the span.
+            if target_min < range_min then target_min = range_min end
+            if target_min + span > range_max then target_min = range_max - span end
+            local target_max = target_min + span
+            if target_min ~= val_min or target_max ~= val_max then
+                new_min = target_min
+                new_max = target_max
+                changed = true
+            end
+        else
+            Core.ClearActive()
+            rd.drag_anchor_mx = nil
+            rd.drag_anchor_min = nil
+            rd.drag_anchor_max = nil
+        end
+    end
+
     -- Recalc positions after potential change
     if changed then
         ratio_min = (new_min - range_min) / range
         ratio_max = (new_max - range_min) / range
         min_px = sx + floor(ratio_min * slider_w)
         max_px = sx + floor(ratio_max * slider_w)
+    end
+
+    -- Cursor feedback while hovering or dragging.
+    if hovered or Core.IsActive(drag_id_min) or Core.IsActive(drag_id_max)
+       or Core.IsActive(drag_id_mid) then
+        if Core.IsActive(drag_id_mid) then
+            Core.SetCursor("size_all")
+        elseif hovered and not Core.IsActive(drag_id_min) and not Core.IsActive(drag_id_max) then
+            local mx = Core.GetState().mouse_x
+            local in_middle = (mx > min_px + edge_zone) and (mx < max_px - edge_zone)
+                and (max_px - min_px > edge_zone * 2)
+            Core.SetCursor(in_middle and "size_all" or "size_we")
+        else
+            Core.SetCursor("size_we")
+        end
     end
 
     -- Draw
@@ -3546,7 +3660,6 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
         -- Value display — cache compound format and final string in widget data
         -- (only re-format when min/max values or format change).
         local format = opts.format or "%.1f"
-        local rd = Core.GetWidgetSubData("rslider", id)
         if rd._fmt_src ~= format then
             rd._fmt_src = format
             rd._fmt = format .. " - " .. format
@@ -3571,6 +3684,326 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
 
     Layout.AdvanceCursor(total_w, max(h, th))
     return changed, changed and new_min or val_min, changed and new_max or val_max
+end
+
+-- ============================================================================
+-- VALUE RANGE SLIDER (range window + a draggable current-value point)
+-- ============================================================================
+-- A dual-thumb range slider with an additional "value" marker drawn as a
+-- filled circle inside the range window. The value is constrained to the
+-- range [val_min, val_max] (handles cannot pass through the value, and the
+-- value is clamped if the range narrows around it).
+--
+-- Use cases:
+--   • FX parameter rows where you want to see the live value AND the
+--     randomization window in a single compact widget.
+--
+-- Interaction zones (priority left → right):
+--   • Click on the value point  → drag the value (writes through callback).
+--   • Click near min handle      → drag min only (cannot cross value).
+--   • Click near max handle      → drag max only (cannot cross value).
+--   • Click in the middle (away from value/handles) → translate the whole
+--     range (value moves with it; span preserved, clamped to slider bounds).
+--
+-- Returns:
+--   value_changed (bool), new_value,
+--   range_changed (bool), new_val_min, new_val_max
+function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
+                                  range_min, range_max, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+    local avail_w = Layout.GetAvailableWidth()
+
+    local fixed_w = opts.width
+    if fixed_w == -1 then fixed_w = nil end
+
+    local tw, th = 0, 0
+    if label and label ~= "" then
+        tw, th = Core.MeasureText(label)
+    end
+    local has_label = tw > 0
+    local label_gap = has_label and 8 or 0
+
+    if has_label then
+        local reserved_w = fixed_w or 40
+        local max_label_w = max(0, avail_w - reserved_w - label_gap)
+        if tw > max_label_w then
+            label, tw = Core.TruncateText(label, max_label_w)
+        end
+    end
+    local slider_w = fixed_w or max(20, avail_w - tw - label_gap)
+    local h = opts.height or theme.slider_height
+    local total_w = slider_w + (has_label and (tw + label_gap) or 0)
+
+    local sx = x + (has_label and (tw + label_gap) or 0)
+    local sy = y + floor((max(h, th) - h) / 2)
+
+    -- Sanitize and clamp the model
+    local span = range_max - range_min
+    if span <= 0 then span = 1 end
+    local function ratio(v) return (v - range_min) / span end
+    local function unratio(r)
+        local rr = r
+        if rr < 0 then rr = 0 elseif rr > 1 then rr = 1 end
+        return range_min + rr * span
+    end
+
+    -- Force the invariants val_min ≤ value ≤ val_max
+    if val_min > val_max then val_min, val_max = val_max, val_min end
+    if value < val_min then value = val_min end
+    if value > val_max then value = val_max end
+
+    local r_min  = ratio(val_min)
+    local r_max  = ratio(val_max)
+    local r_val  = ratio(value)
+
+    local new_min   = val_min
+    local new_max   = val_max
+    local new_value = value
+
+    local value_changed = false
+    local range_changed = false
+
+    local handle_w   = 8                 -- min/max grab handle width
+    local edge_zone  = handle_w          -- pixel zone counted as "on the handle"
+    -- Small dot — just a marker for the current value, not a grab knob.
+    -- The dot stays out of the way so the user can still read the min/max
+    -- range fill underneath.
+    local value_r    = max(2, floor(h * 0.18))
+
+    local min_px = sx + floor(r_min * slider_w)
+    local max_px = sx + floor(r_max * slider_w)
+    local val_px = sx + floor(r_val * slider_w)
+
+    local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h)
+                    and not Core.HasPopup()
+    if hovered then Core.SetHot(id) end
+
+    -- Drag IDs (one per interaction zone)
+    local id_min = id .. "_min"
+    local id_max = id .. "_max"
+    local id_mid = id .. "_mid"
+    local id_val = id .. "_val"
+
+    local rd = Core.GetWidgetSubData("vrslider", id)
+
+    -- ---- Click → pick the right interaction --------------------------------
+    if hovered and Core.MouseClicked(1) then
+        local mx = Core.GetState().mouse_x
+
+        -- Priority: value dot first. Hit test is generous (5 px around the
+        -- dot) so the user can grab it even though the visual is tiny.
+        local value_hit = max(value_r, 5)
+        local on_value = abs(mx - val_px) <= value_hit
+        local on_min   = abs(mx - min_px) <= edge_zone
+        local on_max   = abs(mx - max_px) <= edge_zone
+
+        if on_value then
+            Core.SetActive(id_val)
+        elseif on_min and (not on_max or abs(mx - min_px) <= abs(mx - max_px)) then
+            Core.SetActive(id_min)
+        elseif on_max then
+            Core.SetActive(id_max)
+        else
+            -- Empty zone inside the range → translate the whole window
+            local in_middle = (mx > min_px + edge_zone) and (mx < max_px - edge_zone)
+                              and (max_px - min_px > edge_zone * 2)
+            if in_middle then
+                Core.SetActive(id_mid)
+                rd.drag_anchor_mx  = mx
+                rd.drag_anchor_min = val_min
+                rd.drag_anchor_max = val_max
+                rd.drag_anchor_val = value
+            else
+                -- Clicked in the empty track outside the range → snap nearest
+                -- handle to the click (matches RangeSlider behaviour).
+                local dist_min = abs(mx - min_px)
+                local dist_max = abs(mx - max_px)
+                if dist_min <= dist_max then
+                    Core.SetActive(id_min)
+                else
+                    Core.SetActive(id_max)
+                end
+            end
+        end
+    end
+
+    -- ---- Drag value -------------------------------------------------------
+    if Core.IsActive(id_val) then
+        if Core.MouseDown(1) then
+            local mx = Core.GetState().mouse_x
+            local target = unratio((mx - sx) / slider_w)
+            -- Clamp inside [val_min, val_max] (the range stays still)
+            if target < val_min then target = val_min end
+            if target > val_max then target = val_max end
+            if target ~= value then
+                new_value = target
+                value_changed = true
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+
+    -- ---- Drag min handle --------------------------------------------------
+    if Core.IsActive(id_min) then
+        if Core.MouseDown(1) then
+            local mx = Core.GetState().mouse_x
+            local target = unratio((mx - sx) / slider_w)
+            -- Min cannot cross the value (so the value never falls outside
+            -- the range mid-drag).
+            if target > value then target = value end
+            if target < range_min then target = range_min end
+            if target ~= val_min then
+                new_min = target
+                range_changed = true
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+
+    -- ---- Drag max handle --------------------------------------------------
+    if Core.IsActive(id_max) then
+        if Core.MouseDown(1) then
+            local mx = Core.GetState().mouse_x
+            local target = unratio((mx - sx) / slider_w)
+            if target < value then target = value end
+            if target > range_max then target = range_max end
+            if target ~= val_max then
+                new_max = target
+                range_changed = true
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+
+    -- ---- Drag middle (translate range + value together) ------------------
+    if Core.IsActive(id_mid) then
+        if Core.MouseDown(1) then
+            local mx       = Core.GetState().mouse_x
+            local anc_mx   = rd.drag_anchor_mx  or mx
+            local anc_min  = rd.drag_anchor_min or val_min
+            local anc_max  = rd.drag_anchor_max or val_max
+            local anc_val  = rd.drag_anchor_val or value
+            local span_mm  = anc_max - anc_min
+            local delta_v  = ((mx - anc_mx) / slider_w) * span
+            local target_min = anc_min + delta_v
+            -- Clamp without shrinking
+            if target_min < range_min then target_min = range_min end
+            if target_min + span_mm > range_max then
+                target_min = range_max - span_mm
+            end
+            local target_max = target_min + span_mm
+            local target_val = anc_val + (target_min - anc_min)  -- value follows
+
+            if target_min ~= val_min or target_max ~= val_max then
+                new_min, new_max = target_min, target_max
+                range_changed = true
+            end
+            if target_val ~= value then
+                new_value = target_val
+                value_changed = true
+            end
+        else
+            Core.ClearActive()
+            rd.drag_anchor_mx, rd.drag_anchor_min = nil, nil
+            rd.drag_anchor_max, rd.drag_anchor_val = nil, nil
+        end
+    end
+
+    -- Recompute pixel positions if anything changed
+    if value_changed or range_changed then
+        r_min = ratio(new_min)
+        r_max = ratio(new_max)
+        r_val = ratio(new_value)
+        min_px = sx + floor(r_min * slider_w)
+        max_px = sx + floor(r_max * slider_w)
+        val_px = sx + floor(r_val * slider_w)
+    end
+
+    -- ---- Cursor feedback --------------------------------------------------
+    if hovered or Core.IsActive(id_min) or Core.IsActive(id_max)
+       or Core.IsActive(id_mid) or Core.IsActive(id_val) then
+        if Core.IsActive(id_val) then
+            Core.SetCursor("size_we")
+        elseif Core.IsActive(id_mid) then
+            Core.SetCursor("size_all")
+        elseif hovered then
+            local mx = Core.GetState().mouse_x
+            local value_hit = max(value_r, 5)
+            if abs(mx - val_px) <= value_hit then
+                Core.SetCursor("hand")
+            elseif abs(mx - min_px) <= edge_zone or abs(mx - max_px) <= edge_zone then
+                Core.SetCursor("size_we")
+            else
+                local in_middle = (mx > min_px + edge_zone) and (mx < max_px - edge_zone)
+                                  and (max_px - min_px > edge_zone * 2)
+                Core.SetCursor(in_middle and "size_all" or "size_we")
+            end
+        else
+            Core.SetCursor("size_we")
+        end
+    end
+
+    -- ---- Draw -------------------------------------------------------------
+    if Core.IsVisible(x, y, total_w, max(h, th)) then
+        -- Label
+        if has_label then
+            local tc = theme.colors.text
+            local ly = y + floor((max(h, th) - th) / 2)
+            Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
+        end
+
+        -- Track
+        local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
+        Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
+        draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
+
+        -- Range fill (translucent accent between handles)
+        local ac = theme.colors.accent
+        local fill_w = max_px - min_px
+        if fill_w > 0 then
+            Core.DrawRect(min_px, sy, fill_w, h, ac[1], ac[2], ac[3], 0.35)
+        end
+
+        -- Min / max handles
+        local min_grab_x = max(sx, min_px - handle_w / 2)
+        local max_grab_x = min(sx + slider_w - handle_w, max_px - handle_w / 2)
+        local mc = Core.IsActive(id_min) and theme.colors.accent_active or
+                   (hovered and theme.colors.accent_hovered or theme.colors.accent)
+        Core.DrawRect(min_grab_x, sy, handle_w, h, mc[1], mc[2], mc[3], mc[4])
+        local Mc = Core.IsActive(id_max) and theme.colors.accent_active or
+                   (hovered and theme.colors.accent_hovered or theme.colors.accent)
+        Core.DrawRect(max_grab_x, sy, handle_w, h, Mc[1], Mc[2], Mc[3], Mc[4])
+
+        -- Value dot (drawn last so it sits on top of the range fill).
+        -- Outline for contrast against the accent fill.
+        local dot_y = sy + floor(h / 2)
+        local dot_col = Core.IsActive(id_val) and theme.colors.text or
+                        (hovered and theme.colors.text or theme.colors.text)
+        local outline = theme.colors.window_bg
+        Core.DrawCircle(val_px, dot_y, value_r + 1,
+            outline[1], outline[2], outline[3], 1, true)
+        Core.DrawCircle(val_px, dot_y, value_r,
+            dot_col[1], dot_col[2], dot_col[3], 1, true)
+
+        -- Value text — caller can override via opts.format (literal string).
+        local format = opts.format
+        if format then
+            local vw, vh = Core.MeasureText(format)
+            local vx = sx + floor((slider_w - vw) / 2)
+            local vy = sy + floor((h - vh) / 2)
+            local tc = theme.colors.text
+            Core.DrawText(format, vx, vy, tc[1], tc[2], tc[3], tc[4])
+        end
+    end
+
+    Layout.AdvanceCursor(total_w, max(h, th))
+    return value_changed, value_changed and new_value or value,
+           range_changed, range_changed and new_min or val_min,
+           range_changed and new_max or val_max
 end
 
 -- ============================================================================

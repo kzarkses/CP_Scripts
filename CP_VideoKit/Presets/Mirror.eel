@@ -1,0 +1,76 @@
+// CP_VideoKit — Mirror
+// Modes:
+//   0 None, 1 Horizontal (mirror around vertical axis),
+//   2 Vertical, 3 Quadrant (4-way), 4 Kaleido (N branches)
+
+//@param1:mode 'Mode 0=N 1=H 2=V 3=Quad 4=Kaleido' 0 0 4 2 1
+//@param2:axis 'Axis (0..1)' 0.5 0 1 0.5 0.001
+//@param3:branches 'Kaleido branches' 6 2 16 6 1
+//@param4:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+
+    pw = project_w; ph = project_h;
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, pw, ph);
+
+    mode == 0 ? (
+        gfx_blit(0, 0);
+    );
+
+    mode == 1 ? (
+        // Horizontal mirror around vertical axis at x = pw * axis.
+        ax = pw * axis;
+        // Left side: original
+        gfx_blit(0, 0, 0, 0, ax, ph, 0, 0, iw * axis, ih);
+        // Right side: flipped from the same source region (negative width)
+        gfx_blit(0, 0, ax, 0, pw - ax, ph,
+                 iw * axis, 0, -(iw * axis), ih);
+    );
+
+    mode == 2 ? (
+        ay = ph * axis;
+        gfx_blit(0, 0, 0, 0, pw, ay, 0, 0, iw, ih * axis);
+        gfx_blit(0, 0, 0, ay, pw, ph - ay,
+                 0, ih * axis, iw, -(ih * axis));
+    );
+
+    mode == 3 ? (
+        // 4-way quadrant mirror. Source is the top-left quarter, flipped
+        // into the other three.
+        hw = pw * 0.5; hh = ph * 0.5;
+        sw = iw * 0.5; sh = ih * 0.5;
+        gfx_blit(0, 0, 0, 0, hw, hh, 0, 0, sw, sh);              // TL
+        gfx_blit(0, 0, hw, 0, hw, hh, sw, 0, -sw, sh);            // TR (H flip)
+        gfx_blit(0, 0, 0, hh, hw, hh, 0, sh, sw, -sh);            // BL (V flip)
+        gfx_blit(0, 0, hw, hh, hw, hh, sw, sh, -sw, -sh);         // BR (both)
+    );
+
+    mode == 4 ? (
+        // Kaleidoscope: N triangular wedges around the canvas center.
+        // We use rotoblit to rotate the source by 2*pi*k/N for each wedge.
+        cx = pw * 0.5; cy = ph * 0.5;
+        radius = sqrt(cx * cx + cy * cy);
+        i = 0;
+        n = max(2, branches);
+        loop(n,
+            angle = i * 2 * $pi / n;
+            // For odd wedges, flip horizontally to create kaleido symmetry.
+            sw = iw; (i % 2 == 1) ? sw = -iw;
+            gfx_rotoblit(0, angle,
+                cx - radius, cy - radius, radius * 2, radius * 2,
+                (sw < 0) ? iw : 0, 0, sw, ih);
+            i += 1;
+        );
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

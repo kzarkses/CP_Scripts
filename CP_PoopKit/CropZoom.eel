@@ -1,0 +1,89 @@
+// CP_PoopKit — Crop & Zoom video processor preset
+// Based on REAPER's stock "Track opacity/zoom/pan" pattern.
+//
+// Slider order (param indices) — keep in sync with the Lua side:
+//   0 cx, 1 cy, 2 zoom, 3 rot, 4 flip, 5 show_frame
+
+//@param1:cx 'Center X' 0.5 0 1 0.5 0.001
+//@param2:cy 'Center Y' 0.5 0 1 0.5 0.001
+//@param3:zoom 'Zoom' 1 1 8 1 0.01
+//@param4:rot 'Rotate (deg)' 0 -180 180 0 0.5
+//@param5:flip 'Flip 0=N 1=H 2=V 3=HV' 0 0 3 0 1
+//@param6:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+
+    // Compute the destination rect that preserves source aspect inside the
+    // project canvas. Image fills the smaller dimension and is letterboxed
+    // on the other.
+    src_aspect  = iw / ih;
+    proj_aspect = project_w / project_h;
+    src_aspect > proj_aspect ? (
+        // Source wider than canvas → fit width, letterbox vertically
+        dw = project_w;
+        dh = project_w / src_aspect;
+        dx = 0;
+        dy = (project_h - dh) * 0.5;
+    ) : (
+        // Source taller than canvas → fit height, letterbox horizontally
+        dh = project_h;
+        dw = project_h * src_aspect;
+        dx = (project_w - dw) * 0.5;
+        dy = 0;
+    );
+
+    // Black background
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, project_w, project_h);
+
+    // Source crop rect from cx/cy/zoom (in source pixels)
+    half_w = (iw * 0.5) / zoom;
+    half_h = (ih * 0.5) / zoom;
+    sx = iw * cx - half_w;
+    sy = ih * cy - half_h;
+    sw = iw / zoom;
+    sh = ih / zoom;
+
+    flip == 1 || flip == 3 ? (sx += sw; sw = -sw;);
+    flip == 2 || flip == 3 ? (sy += sh; sh = -sh;);
+
+    rot == 0 ? (
+        gfx_blit(0, 0, dx, dy, dw, dh, sx, sy, sw, sh);
+    ) : (
+        gfx_rotoblit(0, rot * $pi / 180,
+            dx, dy, dw, dh,
+            sx, sy, sw, sh);
+    );
+
+    // Edit frame overlay — drawn on the actual rendered image bounds
+    // (dx, dy, dw, dh), so it always hugs the picture, not the canvas.
+    show_frame > 0.5 ? (
+        thick = max(2, dh / 360);
+
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(dx, dy, dw, thick);
+        gfx_fillrect(dx, dy + dh - thick, dw, thick);
+        gfx_fillrect(dx, dy, thick, dh);
+        gfx_fillrect(dx + dw - thick, dy, thick, dh);
+
+        // Corner ticks
+        clen = dw * 0.04;
+        gfx_set(1, 0.85, 0.3, 1);
+        gfx_fillrect(dx, dy, clen, thick);
+        gfx_fillrect(dx, dy, thick, clen);
+        gfx_fillrect(dx + dw - clen, dy, clen, thick);
+        gfx_fillrect(dx + dw - thick, dy, thick, clen);
+        gfx_fillrect(dx, dy + dh - thick, clen, thick);
+        gfx_fillrect(dx, dy + dh - clen, thick, clen);
+        gfx_fillrect(dx + dw - clen, dy + dh - thick, clen, thick);
+        gfx_fillrect(dx + dw - thick, dy + dh - clen, thick, clen);
+
+        // Center crosshair
+        cross_len = dw * 0.02;
+        ccx = dx + dw * 0.5;
+        ccy = dy + dh * 0.5;
+        gfx_fillrect(ccx - cross_len, ccy - thick * 0.5, cross_len * 2, thick);
+        gfx_fillrect(ccx - thick * 0.5, ccy - cross_len, thick, cross_len * 2);
+    );
+);

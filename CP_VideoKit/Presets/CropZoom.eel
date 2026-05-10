@@ -1,0 +1,81 @@
+// CP_VideoKit — Crop
+// Crops the picture from each side. The cropped image can be repositioned
+// (pos_x/pos_y) and the content inside the crop rect can be stretched
+// (zoomed without changing the rect itself) via stretch_x/stretch_y.
+
+//@param1:crop_l 'Crop left'   0 0 0.49 0 0.001
+//@param2:crop_t 'Crop top'    0 0 0.49 0 0.001
+//@param3:crop_r 'Crop right'  0 0 0.49 0 0.001
+//@param4:crop_b 'Crop bottom' 0 0 0.49 0 0.001
+//@param5:pos_x 'Position X'   0 -1 1 0 0.001
+//@param6:pos_y 'Position Y'   0 -1 1 0 0.001
+//@param7:stretch_x 'Stretch X' 1 0.1 8 1 0.01
+//@param8:stretch_y 'Stretch Y' 1 0.1 8 1 0.01
+//@param9:rot 'Rotate (deg)' 0 -180 180 0 0.5
+//@param10:flip 'Flip 0=N 1=H 2=V 3=HV' 0 0 3 0 1
+//@param11:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+
+    src_aspect  = iw / ih;
+    proj_aspect = project_w / project_h;
+    src_aspect > proj_aspect ? (
+        bw = project_w; bh = project_w / src_aspect;
+        bx = 0; by = (project_h - bh) * 0.5;
+    ) : (
+        bh = project_h; bw = project_h * src_aspect;
+        bx = (project_w - bw) * 0.5; by = 0;
+    );
+
+    dx = bx + bw * crop_l + pos_x * project_w * 0.5;
+    dy = by + bh * crop_t + pos_y * project_h * 0.5;
+    dw = bw * (1 - crop_l - crop_r);
+    dh = bh * (1 - crop_t - crop_b);
+
+    // Source rect — width/height divided by stretch (zoom into the source).
+    // Centered around the crop midpoint so stretching happens around the
+    // current center of the cropped region.
+    src_cx = iw * (crop_l + (1 - crop_l - crop_r) * 0.5);
+    src_cy = ih * (crop_t + (1 - crop_t - crop_b) * 0.5);
+    sw = iw * (1 - crop_l - crop_r) / stretch_x;
+    sh = ih * (1 - crop_t - crop_b) / stretch_y;
+    sx = src_cx - sw * 0.5;
+    sy = src_cy - sh * 0.5;
+
+    flip == 1 || flip == 3 ? (sx += sw; sw = -sw;);
+    flip == 2 || flip == 3 ? (sy += sh; sh = -sh;);
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, project_w, project_h);
+
+    rot == 0 ? (
+        gfx_blit(0, 0, dx, dy, dw, dh, sx, sy, sw, sh);
+    ) : (
+        gfx_rotoblit(0, rot * $pi / 180, dx, dy, dw, dh, sx, sy, sw, sh);
+    );
+
+    show_frame > 0.5 ? (
+        // 1px outline
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(dx, dy, dw, 1);
+        gfx_fillrect(dx, dy + dh - 1, dw, 1);
+        gfx_fillrect(dx, dy, 1, dh);
+        gfx_fillrect(dx + dw - 1, dy, 1, dh);
+
+        // Small filled corner squares (6×6)
+        hsz = 6;
+        gfx_set(1, 0.85, 0.3, 1);
+        gfx_fillrect(dx - hsz * 0.5,      dy - hsz * 0.5,      hsz, hsz);
+        gfx_fillrect(dx + dw - hsz * 0.5, dy - hsz * 0.5,      hsz, hsz);
+        gfx_fillrect(dx - hsz * 0.5,      dy + dh - hsz * 0.5, hsz, hsz);
+        gfx_fillrect(dx + dw - hsz * 0.5, dy + dh - hsz * 0.5, hsz, hsz);
+
+        // Edge midpoint dots (4×4)
+        msz = 4;
+        gfx_fillrect(dx + dw * 0.5 - msz * 0.5, dy - msz * 0.5,            msz, msz);
+        gfx_fillrect(dx + dw * 0.5 - msz * 0.5, dy + dh - msz * 0.5,       msz, msz);
+        gfx_fillrect(dx - msz * 0.5,            dy + dh * 0.5 - msz * 0.5, msz, msz);
+        gfx_fillrect(dx + dw - msz * 0.5,       dy + dh * 0.5 - msz * 0.5, msz, msz);
+    );
+);

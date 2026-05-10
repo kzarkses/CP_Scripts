@@ -1,0 +1,46 @@
+// CP_VideoKit — Frame Freeze
+// While freeze > 0.5, the buffer keeps showing the last frame captured
+// before freeze was enabled.
+
+//@param1:freeze 'Freeze' 0 0 1 0.5 1
+//@param2:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    // Allocate or resize the freeze buffer when needed.
+    fbuf < 0 || fbuf_w != pw || fbuf_h != ph ? (
+        fbuf >= 0 ? gfx_img_free(fbuf);
+        fbuf = gfx_img_alloc(pw, ph, 1) | 0;
+        fbuf_w = pw;
+        fbuf_h = ph;
+        last_freeze = 0;
+    );
+
+    fbuf >= 0 ? (
+        // Capture the current frame whenever freeze has just been turned on.
+        (freeze > 0.5 && last_freeze < 0.5) ? (
+            prev_dest = gfx_dest;
+            gfx_dest = fbuf;
+            gfx_blit(0, 0, 0, 0, pw, ph);
+            gfx_dest = prev_dest;
+        );
+        last_freeze = freeze;
+
+        gfx_set(0, 0, 0, 1);
+        gfx_fillrect(0, 0, pw, ph);
+        freeze > 0.5 ? gfx_blit(fbuf, 0, 0, 0, pw, ph)
+                     : gfx_blit(0, 0);
+    ) : (
+        gfx_blit(0, 0);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

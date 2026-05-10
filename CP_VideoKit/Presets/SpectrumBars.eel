@@ -1,0 +1,45 @@
+// CP_VideoKit — Spectrum Bars
+// Reads 8 consecutive gmem slots starting at base_slot and draws them as
+// vertical bars overlaid on the source.
+
+//@param1:base_slot 'Base slot' 0 0 24 0 1
+//@param2:n_bars 'Number of bars' 8 1 16 8 1
+//@param3:height_pct 'Height (%)' 30 0 100 30 1
+//@param4:opacity 'Opacity' 0.7 0 1 0.7 0.001
+//@param5:color_r 'Color R' 0.2 0 1 0.2 0.001
+//@param6:color_g 'Color G' 0.9 0 1 0.9 0.001
+//@param7:color_b 'Color B' 1 0 1 1 0.001
+//@param8:y_anchor 'Y anchor 0=top 1=bottom' 1 0 1 0.5 1
+//@param9:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    gfx_blit(0, 0);
+
+    n = max(1, n_bars | 0);
+    bar_w = pw / n;
+    max_h = ph * (height_pct / 100);
+
+    gfx_set(color_r, color_g, color_b, opacity);
+    i = 0;
+    loop(n,
+        v = gmem[base_slot + i];
+        v < 0 ? v = 0;
+        v > 1 ? v = 1;
+        bh = v * max_h;
+        bx = i * bar_w;
+        by = y_anchor > 0.5 ? ph - bh : 0;
+        gfx_fillrect(bx + 1, by, bar_w - 2, bh);
+        i += 1;
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

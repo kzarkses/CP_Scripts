@@ -1,0 +1,40 @@
+// CP_VideoKit — Invert
+// 0 = none, 1 = invert RGB, 2 = invert luma only
+
+//@param1:mode 'Mode' 1 0 2 1 1
+//@param2:amount 'Amount' 1 0 1 1 0.001
+//@param3:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+    pw = project_w; ph = project_h;
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, pw, ph);
+    gfx_blit(0, 0);
+
+    mode != 0 ? (
+        code = mode == 2 ? "
+            luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            new_luma = 255 - luma;
+            ratio = (luma > 0.001) ? (new_luma / luma) : 1;
+            // Mix between original and inverted-luma version.
+            r = r + amount * (r * ratio - r);
+            g = g + amount * (g * ratio - g);
+            b = b + amount * (b * ratio - b);
+        " : "
+            r = r + amount * (255 - r - r);
+            g = g + amount * (255 - g - g);
+            b = b + amount * (255 - b - b);
+        ";
+        gfx_evalrect(0, 0, pw, ph, code);
+    );
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

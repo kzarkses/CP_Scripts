@@ -1,0 +1,77 @@
+// CP_VideoKit — Color Adjust
+// Per-pixel brightness, contrast, saturation, hue, gamma adjustment.
+
+//@param1:brightness 'Brightness' 0 -1 1 0 0.001
+//@param2:contrast 'Contrast' 1 0 4 1 0.001
+//@param3:saturation 'Saturation' 1 0 3 1 0.001
+//@param4:hue 'Hue rotate (deg)' 0 -180 180 0 0.5
+//@param5:gamma 'Gamma' 1 0.1 4 1 0.001
+//@param6:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+(bg = input_ismaster() ? -2 : input_track(0)) ? (
+    input_info(0, iw, ih);
+
+    pw = project_w; ph = project_h;
+
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, pw, ph);
+    gfx_blit(0, 0);
+
+    // Run a single evalrect pass on the framebuffer applying every step.
+    // The kernel works in 0..255 RGB.
+    code = "
+        // brightness: shift along 0..255
+        bb = brightness * 255;
+        r += bb; g += bb; b += bb;
+
+        // contrast around 128
+        r = (r - 128) * contrast + 128;
+        g = (g - 128) * contrast + 128;
+        b = (b - 128) * contrast + 128;
+
+        // saturation: mix with luma
+        luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        r = luma + (r - luma) * saturation;
+        g = luma + (g - luma) * saturation;
+        b = luma + (b - luma) * saturation;
+
+        // hue rotate (rotation matrix in YIQ-ish space)
+        cosA = cos(hue_rad);
+        sinA = sin(hue_rad);
+        m00 = 0.299 + 0.701 * cosA + 0.168 * sinA;
+        m01 = 0.587 - 0.587 * cosA + 0.330 * sinA;
+        m02 = 0.114 - 0.114 * cosA - 0.497 * sinA;
+        m10 = 0.299 - 0.299 * cosA - 0.328 * sinA;
+        m11 = 0.587 + 0.413 * cosA + 0.035 * sinA;
+        m12 = 0.114 - 0.114 * cosA + 0.292 * sinA;
+        m20 = 0.299 - 0.300 * cosA + 1.250 * sinA;
+        m21 = 0.587 - 0.588 * cosA - 1.050 * sinA;
+        m22 = 0.114 + 0.886 * cosA - 0.203 * sinA;
+        nr = m00 * r + m01 * g + m02 * b;
+        ng = m10 * r + m11 * g + m12 * b;
+        nb = m20 * r + m21 * g + m22 * b;
+        r = nr; g = ng; b = nb;
+
+        // gamma
+        r = r < 0 ? 0 : r > 255 ? 255 : r;
+        g = g < 0 ? 0 : g > 255 ? 255 : g;
+        b = b < 0 ? 0 : b > 255 ? 255 : b;
+        r = pow(r / 255, 1 / gamma) * 255;
+        g = pow(g / 255, 1 / gamma) * 255;
+        b = pow(b / 255, 1 / gamma) * 255;
+    ";
+
+    init_code = "
+        hue_rad = hue * 3.14159265 / 180;
+    ";
+
+    gfx_evalrect(0, 0, pw, ph, code, 0, -1, init_code);
+
+    show_frame > 0.5 ? (
+        gfx_set(1, 0.55, 0.1, 0.9);
+        gfx_fillrect(0, 0, pw, 1);
+        gfx_fillrect(0, ph - 1, pw, 1);
+        gfx_fillrect(0, 0, 1, ph);
+        gfx_fillrect(pw - 1, 0, 1, ph);
+    );
+);

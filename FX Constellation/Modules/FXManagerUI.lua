@@ -1,660 +1,290 @@
+-- ============================================================================
+-- FXManagerUI — Add FX dialog (CP_Toolkit port)
+--
+-- Replaces the old ReaImGui-based FX browser with a CP_Toolkit modal-style
+-- panel. The window opens when state.show_fxmanager_window is true.
+--
+-- The full ReaImGui version supported drag&drop reordering directly in the
+-- track FX chain. The toolkit port keeps the core flow (search → filter by
+-- category → add) and exposes selection + reorder via simple buttons.
+-- ============================================================================
+
 local FXManagerUI = {}
 
-function FXManagerUI.init(reaper, core, fxmanager, fxdatabase, style_loader)
-	FXManagerUI.r = reaper
-	FXManagerUI.core = core
-	FXManagerUI.fxmanager = fxmanager
-	FXManagerUI.fxdatabase = fxdatabase
-	FXManagerUI.style_loader = style_loader
-	FXManagerUI.ctx = nil
-	FXManagerUI.pushed_colors = 0
-	FXManagerUI.pushed_vars = 0
-	FXManagerUI.double_click_time = 0
-	FXManagerUI.double_click_plugin = nil
+function FXManagerUI.init(reaper_api, core, fxmanager, fxdatabase, toolkit)
+    FXManagerUI.r           = reaper_api
+    FXManagerUI.core        = core
+    FXManagerUI.fxmanager   = fxmanager
+    FXManagerUI.fxdatabase  = fxdatabase
+    FXManagerUI.tk          = toolkit
+    FXManagerUI._sort_mode  = "az"  -- "az" | "za" | "none"
 end
 
-function FXManagerUI.getStyleValue(path, default_value)
-	if FXManagerUI.style_loader then
-		return FXManagerUI.style_loader.GetValue(path, default_value)
-	end
-	return default_value
+local function selectedPlugins(plugins)
+    local sel = {}
+    for _, p in ipairs(plugins) do
+        if FXManagerUI.core.state.fxdb_selected_plugins[p.name] then
+            sel[#sel + 1] = p
+        end
+    end
+    return sel
 end
 
-function FXManagerUI.getStyleFont(font_name, context)
-	return FXManagerUI.style_loader and FXManagerUI.style_loader.getFont(context or FXManagerUI.ctx, font_name) or nil
+local function addPlugins(plugins, auto_open, auto_close)
+    for _, p in ipairs(plugins) do
+        local fx_name = FXManagerUI.fxmanager.buildFXName(p)
+        FXManagerUI.fxmanager.addFXByName(fx_name, auto_open, true)
+    end
+    if auto_close then
+        FXManagerUI.core.state.show_fxmanager_window = false
+    end
 end
 
-function FXManagerUI.drawWindow()
-	if not FXManagerUI.core.state.show_fxmanager_window then return end
+-- ---------------------------------------------------------------------------
+-- DRAW (called every frame from UI.frame after the main layout)
+-- ---------------------------------------------------------------------------
+function FXManagerUI.draw(theme)
+    local s = FXManagerUI.core.state
+    if not s.show_fxmanager_window then return end
 
-	if not FXManagerUI.ctx or not FXManagerUI.r.ImGui_ValidatePtr(FXManagerUI.ctx, "ImGui_Context*") then
-		FXManagerUI.ctx = FXManagerUI.r.ImGui_CreateContext('FX Constellation - FX Manager')
-		if FXManagerUI.style_loader then
-			FXManagerUI.style_loader.ApplyFontsToContext(FXManagerUI.ctx)
-		end
-	end
+    local UItk = FXManagerUI.tk
 
-	if FXManagerUI.style_loader then
-		local success, colors, vars = FXManagerUI.style_loader.applyToContext(FXManagerUI.ctx)
-		if success then
-			FXManagerUI.pushed_colors = colors
-			FXManagerUI.pushed_vars = vars
-		end
-	end
+    UItk.BeginModal("fxmgr_modal", "FX Browser",
+                    { width = 760, height = 520 })
 
-	FXManagerUI.r.ImGui_SetNextWindowSize(FXManagerUI.ctx, 800, 600, FXManagerUI.r.ImGui_Cond_FirstUseEver())
+    -- Top toolbar: search + scan + sort
+    UItk.BeginColumns("fxmgr_toolbar", { 0.55, 0.15, 0.15, 0.15 }, { gap = 6 })
 
-	local window_flags = FXManagerUI.r.ImGui_WindowFlags_NoTitleBar() | FXManagerUI.r.ImGui_WindowFlags_NoCollapse()
-	local visible, open = FXManagerUI.r.ImGui_Begin(FXManagerUI.ctx, 'FX Manager', true, window_flags)
+    local sc, sv = UItk.InputText("fxmgr_search", "", s.fxdb_search_query or "",
+                                  { hint = "Search FX…" })
+    if sc then s.fxdb_search_query = sv end
+    UItk.NextColumn()
 
-	if visible then
-		local main_font = FXManagerUI.getStyleFont("main")
-		local header_font = FXManagerUI.getStyleFont("header")
+    if UItk.Button("fxmgr_scan", "Scan") then
+        local n = FXManagerUI.fxdatabase.scanPlugins()
+        s.fxdb_scan_message = "Scanned " .. n .. " plugins"
+        s.fxdb_scan_time = FXManagerUI.r.time_precise()
+    end
+    UItk.NextColumn()
 
-		if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-			FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "FX MANAGER")
-			FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
-		else
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "FX MANAGER")
-		end
+    local sort_lbl = (FXManagerUI._sort_mode == "az") and "Z-A" or "A-Z"
+    if UItk.Button("fxmgr_sort", sort_lbl) then
+        FXManagerUI._sort_mode = (FXManagerUI._sort_mode == "az") and "za" or "az"
+    end
+    UItk.NextColumn()
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-		local header_font_size = FXManagerUI.getStyleValue("fonts.header.size", 16)
-		local item_spacing_x = FXManagerUI.getStyleValue("spacing.item_spacing_x", 6)
-		local window_padding_x = FXManagerUI.getStyleValue("spacing.window_padding_x", 8)
-		local close_button_size = header_font_size + 6
-		local auto_open_button_size = close_button_size
-		local auto_close_button_size = close_button_size
-		local scan_button_width = 60
-		local buttons_width = scan_button_width + auto_open_button_size + auto_close_button_size + close_button_size + item_spacing_x * 3
-		local buttons_x = FXManagerUI.r.ImGui_GetWindowWidth(FXManagerUI.ctx) - buttons_width - window_padding_x
+    if UItk.Button("fxmgr_close", "Close") then
+        s.show_fxmanager_window = false
+    end
+    UItk.EndColumns()
 
-		FXManagerUI.r.ImGui_SetCursorPosX(FXManagerUI.ctx, buttons_x)
-		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Scan", scan_button_width, close_button_size) then
-			local count = FXManagerUI.fxdatabase.scanPlugins()
-			FXManagerUI.core.state.fxdb_scan_message = "Scanned " .. count .. " plugins"
-			FXManagerUI.core.state.fxdb_scan_time = FXManagerUI.r.time_precise()
-		end
+    -- Status line
+    if s.fxdb_scan_message and s.fxdb_scan_time
+       and (FXManagerUI.r.time_precise() - s.fxdb_scan_time) < 3.0 then
+        UItk.SetFontCaption()
+        UItk.TextColored(s.fxdb_scan_message,
+            theme.colors.text_disabled[1],
+            theme.colors.text_disabled[2],
+            theme.colors.text_disabled[3], 1)
+        UItk.SetFontBody()
+    end
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-		if not FXManagerUI.core.state.fxmanager_auto_open then
-			FXManagerUI.core.state.fxmanager_auto_open = false
-		end
-		local auto_open_label = FXManagerUI.core.state.fxmanager_auto_open and "O*" or "O"
-		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, auto_open_label, auto_open_button_size, close_button_size) then
-			FXManagerUI.core.state.fxmanager_auto_open = not FXManagerUI.core.state.fxmanager_auto_open
-		end
-		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
-			FXManagerUI.r.ImGui_SetTooltip(FXManagerUI.ctx, "Auto-open FX windows after adding")
-		end
+    UItk.Separator()
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-		local auto_close_label = FXManagerUI.core.state.fxmanager_auto_close and "A*" or "A"
-		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, auto_close_label, auto_close_button_size, close_button_size) then
-			FXManagerUI.core.state.fxmanager_auto_close = not FXManagerUI.core.state.fxmanager_auto_close
-		end
-		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
-			FXManagerUI.r.ImGui_SetTooltip(FXManagerUI.ctx, "Auto-close window after adding FX")
-		end
+    -- Three-column body: categories | plugins list | track FX chain
+    UItk.BeginColumns("fxmgr_body", { 0.20, 0.55, 0.25 }, { gap = 6 })
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "X", close_button_size, close_button_size) then
-			open = false
-		end
+    -- ── Categories ─────────────────────────────────────────────────────────
+    UItk.BeginChild("fxmgr_cats", 0, 320, { scrollable = true, border = true })
+    UItk.SetFontH2Bold()
+    UItk.Text("Categories")
+    UItk.SetFontBody()
+    UItk.Spacing(2)
+    local cats = FXManagerUI.fxdatabase.getCategories()
+    local sel_cat = s.fxdb_selected_category or "All"
+    for _, cat in ipairs(cats) do
+        local is_sel = sel_cat == cat.name
+        local label = (is_sel and "● " or "  ") .. cat.name
+        if UItk.Button("cat_" .. cat.name, label) then
+            s.fxdb_selected_category = cat.name
+        end
+    end
+    UItk.EndChild()
+    UItk.NextColumn()
 
-		if main_font and FXManagerUI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
-			FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, main_font, 0)
-		end
+    -- ── Plugins list ───────────────────────────────────────────────────────
+    UItk.BeginChild("fxmgr_plugins", 0, 320, { scrollable = true, border = true })
+    UItk.SetFontH2Bold()
+    UItk.Text("Plugins")
+    UItk.SetFontBody()
+    UItk.Spacing(2)
 
-		FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
+    local plugins = FXManagerUI.fxdatabase.searchPlugins(
+        s.fxdb_search_query or "",
+        sel_cat
+    )
 
-		local content_width = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx)
+    local function name_lower(p) return (p.display_name or p.name):lower() end
+    if FXManagerUI._sort_mode == "az" then
+        table.sort(plugins, function(a, b) return name_lower(a) < name_lower(b) end)
+    elseif FXManagerUI._sort_mode == "za" then
+        table.sort(plugins, function(a, b) return name_lower(a) > name_lower(b) end)
+    end
 
-		FXManagerUI.r.ImGui_SetNextItemWidth(FXManagerUI.ctx, content_width - 70 - item_spacing_x)
-		local changed, new_search = FXManagerUI.r.ImGui_InputText(FXManagerUI.ctx, "##search", FXManagerUI.core.state.fxdb_search_query)
-		if changed then
-			FXManagerUI.core.state.fxdb_search_query = new_search
-		end
+    s.fxdb_selected_plugins = s.fxdb_selected_plugins or {}
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-		if not FXManagerUI.core.state.fxdb_sort_mode then
-			FXManagerUI.core.state.fxdb_sort_mode = "none"
-		end
-		local sort_label = FXManagerUI.core.state.fxdb_sort_mode == "az" and "Z-A" or "A-Z"
-		if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, sort_label, 70) then
-			if FXManagerUI.core.state.fxdb_sort_mode == "none" or FXManagerUI.core.state.fxdb_sort_mode == "za" then
-				FXManagerUI.core.state.fxdb_sort_mode = "az"
-			else
-				FXManagerUI.core.state.fxdb_sort_mode = "za"
-			end
-		end
+    for i, plugin in ipairs(plugins) do
+        local is_sel = s.fxdb_selected_plugins[plugin.name] == true
+        local fav    = FXManagerUI.fxdatabase.isFavorite(plugin.name)
+        local label  = (is_sel and "▣ " or "  ")
+                       .. (fav and "★ " or "☆ ")
+                       .. (plugin.display_name or plugin.name)
 
-		if FXManagerUI.core.state.fxdb_scan_message and (FXManagerUI.r.time_precise() - FXManagerUI.core.state.fxdb_scan_time) < 3.0 then
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, FXManagerUI.core.state.fxdb_scan_message)
-		end
+        UItk.BeginColumns("plg_row_" .. i, { 0.10, 0.90 }, { gap = 2 })
+        if UItk.Button("fav_" .. i, fav and "★" or "☆", { width = 0 }) then
+            FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
+        end
+        UItk.NextColumn()
+        if UItk.Button("plg_" .. i, label) then
+            -- Single-click: select. Could be Ctrl/Shift extended later.
+            local ctrl = FXManagerUI.tk.Core.ModCtrl
+                         and FXManagerUI.tk.Core.ModCtrl() or false
+            if not ctrl then
+                s.fxdb_selected_plugins = {}
+            end
+            s.fxdb_selected_plugins[plugin.name] = not is_sel or true
+            s.fxdb_last_clicked_plugin = plugin.name
+        end
+        UItk.EndColumns()
+    end
 
-		FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
+    UItk.EndChild()
+    UItk.NextColumn()
 
-		local categories_width = content_width * 0.20
-		local fxchain_width = content_width * 0.25
-		local plugins_width = content_width - categories_width - fxchain_width - item_spacing_x * 2
-		local child_height = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx) - 80
+    -- ── Track FX chain ─────────────────────────────────────────────────────
+    UItk.BeginChild("fxmgr_chain", 0, 320, { scrollable = true, border = true })
+    UItk.SetFontH2Bold()
+    UItk.Text("Track FX Chain")
+    UItk.SetFontBody()
+    UItk.Spacing(2)
 
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "Categories", categories_width, child_height) then
-			FXManagerUI.drawCategories(header_font)
-			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
-		end
+    if not FXManagerUI.core.isTrackValid() then
+        UItk.SetFontCaption()
+        UItk.Text("No track selected.")
+        UItk.SetFontBody()
+    else
+        local track = s.track
+        local fx_count = FXManagerUI.r.TrackFX_GetCount(track)
+        if fx_count == 0 then
+            UItk.SetFontCaption()
+            UItk.Text("No FX on track.")
+            UItk.SetFontBody()
+        else
+            for fx_idx = 0, fx_count - 1 do
+                local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
+                local display = FXManagerUI.core.extractFXName(fx_name)
+                local raw_low = (fx_name or ""):lower()
+                if not (raw_low:find("sound generator") or raw_low:find("jsfx sound")) then
+                    local enabled = FXManagerUI.r.TrackFX_GetEnabled(track, fx_idx)
+                    local label = (fx_idx + 1) .. ". " .. display
+                                  .. (enabled and "" or " (bypassed)")
+                    UItk.BeginColumns("chain_" .. fx_idx,
+                                      { 0.7, 0.15, 0.15 }, { gap = 2 })
+                    if UItk.Button("ch_open_" .. fx_idx, label) then
+                        FXManagerUI.r.TrackFX_Show(track, fx_idx, 3)
+                    end
+                    UItk.NextColumn()
+                    if UItk.Button("ch_byp_" .. fx_idx, enabled and "ON" or "off") then
+                        FXManagerUI.r.TrackFX_SetEnabled(track, fx_idx, not enabled)
+                    end
+                    UItk.NextColumn()
+                    if UItk.Button("ch_del_" .. fx_idx, "X") then
+                        FXManagerUI.r.TrackFX_Delete(track, fx_idx)
+                    end
+                    UItk.EndColumns()
+                end
+            end
+        end
+    end
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+    UItk.EndChild()
+    UItk.EndColumns()
 
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "PluginsList", plugins_width, child_height) then
-			FXManagerUI.drawPluginsList(header_font)
-			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
-		end
+    -- ── Footer: actions + random insertion ─────────────────────────────────
+    UItk.Separator()
+    UItk.Spacing(4)
 
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
+    local sel = selectedPlugins(plugins)
+    UItk.SetFontCaption()
+    UItk.Text(string.format("%d plugin%s · %d selected",
+        #plugins, #plugins == 1 and "" or "s", #sel))
+    UItk.SetFontBody()
 
-		if FXManagerUI.r.ImGui_BeginChild(FXManagerUI.ctx, "FXChain", fxchain_width, child_height) then
-			FXManagerUI.drawFXChain(header_font)
-			FXManagerUI.r.ImGui_EndChild(FXManagerUI.ctx)
-		end
+    UItk.BeginColumns("fxmgr_footer", { 0.25, 0.25, 0.25, 0.25 }, { gap = 6 })
 
-		FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
-		FXManagerUI.drawRandomFXInsertion(header_font)
+    -- Auto open / auto close toggles
+    local oc, ov = UItk.Checkbox("fxmgr_autoopen", "Auto-open",
+                                 s.fxmanager_auto_open or false)
+    if oc then s.fxmanager_auto_open = ov end
+    UItk.NextColumn()
+    local cc, cv = UItk.Checkbox("fxmgr_autoclose", "Close after add",
+                                 s.fxmanager_auto_close or false)
+    if cc then s.fxmanager_auto_close = cv end
+    UItk.NextColumn()
+    if UItk.Button("fxmgr_cancel", "Cancel") then
+        s.show_fxmanager_window = false
+    end
+    UItk.NextColumn()
+    if UItk.Button("fxmgr_add", "Add to Track") then
+        local to_add = sel
+        if #to_add == 0 and s.fxdb_last_clicked_plugin then
+            for _, p in ipairs(plugins) do
+                if p.name == s.fxdb_last_clicked_plugin then
+                    to_add = { p }
+                    break
+                end
+            end
+        end
+        if #to_add > 0 then
+            addPlugins(to_add, s.fxmanager_auto_open, s.fxmanager_auto_close)
+        end
+    end
+    UItk.EndColumns()
 
-		if main_font and FXManagerUI.r.ImGui_ValidatePtr(main_font, "ImGui_Font*") then
-			FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
-		end
+    -- Random FX insertion
+    UItk.Spacing(4)
+    UItk.Separator()
+    UItk.SetFontH2Bold()
+    UItk.Text("Random FX Insertion")
+    UItk.SetFontBody()
 
-		FXManagerUI.r.ImGui_End(FXManagerUI.ctx)
-	end
+    s.random_fx_count = s.random_fx_count or 3
+    if s.random_fx_favorites_only == nil then
+        s.random_fx_favorites_only = false
+    end
 
-	if not open then
-		FXManagerUI.core.state.show_fxmanager_window = false
-	end
+    UItk.BeginColumns("fxmgr_rand", { 0.45, 0.30, 0.25 }, { gap = 6 })
+    local rc, rv = UItk.SliderInt("fxmgr_rcount", "FX",
+                                  s.random_fx_count, 1, 10)
+    if rc then s.random_fx_count = rv; FXManagerUI.fxmanager.persistence.scheduleSave() end
+    UItk.NextColumn()
+    local fc, fv = UItk.Checkbox("fxmgr_rfav", "Favorites only",
+                                 s.random_fx_favorites_only)
+    if fc then s.random_fx_favorites_only = fv; FXManagerUI.fxmanager.persistence.scheduleSave() end
+    UItk.NextColumn()
+    if UItk.Button("fxmgr_radd", "Add Random") then
+        local ok = FXManagerUI.fxmanager.addRandomFX(
+            s.random_fx_count, s.random_fx_favorites_only)
+        if ok and s.fxmanager_auto_close then
+            s.show_fxmanager_window = false
+        end
+    end
+    UItk.EndColumns()
 
-	if FXManagerUI.style_loader then
-		FXManagerUI.style_loader.clearStyles(FXManagerUI.ctx, FXManagerUI.pushed_colors, FXManagerUI.pushed_vars)
-	end
+    UItk.EndModal()
 end
 
-function FXManagerUI.drawCategories(header_font)
-	local categories = FXManagerUI.fxdatabase.getCategories()
-
-	for _, category in ipairs(categories) do
-		local is_selected = FXManagerUI.core.state.fxdb_selected_category == category.name
-		local flags = is_selected and FXManagerUI.r.ImGui_TreeNodeFlags_Selected() or 0
-		flags = flags | FXManagerUI.r.ImGui_TreeNodeFlags_Leaf() | FXManagerUI.r.ImGui_TreeNodeFlags_NoTreePushOnOpen()
-
-		FXManagerUI.r.ImGui_TreeNodeEx(FXManagerUI.ctx, category.name, category.name, flags)
-
-		if FXManagerUI.r.ImGui_IsItemClicked(FXManagerUI.ctx) then
-			FXManagerUI.core.state.fxdb_selected_category = category.name
-		end
-	end
-end
-
-function FXManagerUI.drawPluginsList(header_font)
-	local selected_category = FXManagerUI.core.state.fxdb_selected_category
-	local search_query = FXManagerUI.core.state.fxdb_search_query
-	local plugins = FXManagerUI.fxdatabase.searchPlugins(search_query, selected_category)
-
-	if FXManagerUI.core.state.fxdb_sort_mode == "az" then
-		table.sort(plugins, function(a, b)
-			local name_a = (a.display_name or a.name):lower()
-			local name_b = (b.display_name or b.name):lower()
-			return name_a < name_b
-		end)
-	elseif FXManagerUI.core.state.fxdb_sort_mode == "za" then
-		table.sort(plugins, function(a, b)
-			local name_a = (a.display_name or a.name):lower()
-			local name_b = (b.display_name or b.name):lower()
-			return name_a > name_b
-		end)
-	end
-
-	local slider_grab_color = FXManagerUI.getStyleValue("colors.slider_grab", 0x3F7FBFFF)
-	local slider_grab_active_color = FXManagerUI.getStyleValue("colors.slider_grab_active", 0x5F9FDFFF)
-
-	local r_val = ((slider_grab_color >> 24) & 0xFF)
-	local g_val = ((slider_grab_color >> 16) & 0xFF)
-	local b_val = ((slider_grab_color >> 8) & 0xFF)
-	local selection_color = (r_val << 24) | (g_val << 16) | (b_val << 8) | 0x99
-
-	local r_hover = ((slider_grab_active_color >> 24) & 0xFF)
-	local g_hover = ((slider_grab_active_color >> 16) & 0xFF)
-	local b_hover = ((slider_grab_active_color >> 8) & 0xFF)
-	local hover_color = (r_hover << 24) | (g_hover << 16) | (b_hover << 8) | 0xCC
-
-	local active_color = (r_hover << 24) | (g_hover << 16) | (b_hover << 8) | 0xFF
-
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Header(), selection_color)
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderHovered(), hover_color)
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderActive(), active_color)
-
-	for i, plugin in ipairs(plugins) do
-		FXManagerUI.r.ImGui_PushID(FXManagerUI.ctx, i)
-
-		local star_icon = plugin.favorite and "⭐" or "☆"
-
-		if FXManagerUI.r.ImGui_SmallButton(FXManagerUI.ctx, star_icon .. "##fav") then
-			FXManagerUI.fxdatabase.toggleFavorite(plugin.name)
-		end
-
-		FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx)
-
-		local is_selected = FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] == true
-		local flags = FXManagerUI.r.ImGui_SelectableFlags_SpanAllColumns()
-		local display_text = plugin.display_name or plugin.name
-
-		if FXManagerUI.r.ImGui_Selectable(FXManagerUI.ctx, display_text .. "##sel", is_selected, flags) then
-			local ctrl_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Ctrl())
-			local shift_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Shift())
-
-			if shift_down and FXManagerUI.core.state.fxdb_last_clicked_plugin then
-				local start_idx = nil
-				local end_idx = nil
-
-				for idx, p in ipairs(plugins) do
-					if p.name == FXManagerUI.core.state.fxdb_last_clicked_plugin then
-						start_idx = idx
-					end
-					if p.name == plugin.name then
-						end_idx = idx
-					end
-				end
-
-				if start_idx and end_idx then
-					if start_idx > end_idx then
-						start_idx, end_idx = end_idx, start_idx
-					end
-
-					for idx = start_idx, end_idx do
-						FXManagerUI.core.state.fxdb_selected_plugins[plugins[idx].name] = true
-					end
-				end
-			elseif ctrl_down then
-				FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] = not is_selected
-			else
-				FXManagerUI.core.state.fxdb_selected_plugins = {}
-				FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] = true
-			end
-
-			FXManagerUI.core.state.fxdb_last_clicked_plugin = plugin.name
-		end
-
-		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
-			if FXManagerUI.r.ImGui_IsMouseDoubleClicked(FXManagerUI.ctx, 0) then
-				local fx_name = FXManagerUI.fxmanager.buildFXName(plugin)
-				local should_open = FXManagerUI.core.state.fxmanager_auto_open == true
-				FXManagerUI.fxmanager.addFXByName(fx_name, should_open, true)
-				if FXManagerUI.core.state.fxmanager_auto_close then
-					FXManagerUI.core.state.show_fxmanager_window = false
-				end
-			end
-			if FXManagerUI.r.ImGui_IsMouseReleased(FXManagerUI.ctx, 1) then
-				FXManagerUI.r.ImGui_OpenPopup(FXManagerUI.ctx, "PluginListContextMenu")
-			end
-		end
-
-		if FXManagerUI.r.ImGui_BeginPopup(FXManagerUI.ctx, "PluginListContextMenu") then
-			if FXManagerUI.r.ImGui_MenuItem(FXManagerUI.ctx, "Insert FX at End") then
-				local selected_plugins = {}
-				for _, p in ipairs(plugins) do
-					if FXManagerUI.core.state.fxdb_selected_plugins[p.name] then
-						table.insert(selected_plugins, p)
-					end
-				end
-				if #selected_plugins == 0 then
-					table.insert(selected_plugins, plugin)
-				end
-				for _, p in ipairs(selected_plugins) do
-					local fx_name = FXManagerUI.fxmanager.buildFXName(p)
-					local should_open = FXManagerUI.core.state.fxmanager_auto_open == true
-					FXManagerUI.fxmanager.addFXByName(fx_name, should_open, true)
-				end
-				if FXManagerUI.core.state.fxmanager_auto_close then
-					FXManagerUI.core.state.show_fxmanager_window = false
-				end
-			end
-			FXManagerUI.r.ImGui_EndPopup(FXManagerUI.ctx)
-		end
-
-		if FXManagerUI.r.ImGui_BeginDragDropSource(FXManagerUI.ctx) then
-			if not is_selected then
-				FXManagerUI.core.state.fxdb_selected_plugins = {}
-				FXManagerUI.core.state.fxdb_selected_plugins[plugin.name] = true
-			end
-			local selected_plugins = {}
-			for _, p in ipairs(plugins) do
-				if FXManagerUI.core.state.fxdb_selected_plugins[p.name] then
-					table.insert(selected_plugins, p)
-				end
-			end
-			
-			if #selected_plugins == 0 then
-				table.insert(selected_plugins, plugin)
-			end
-			
-			local drag_text = #selected_plugins == 1 and selected_plugins[1].display_name or (#selected_plugins .. " plugins")
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, drag_text)
-			
-			local payload_data = ""
-			for idx, p in ipairs(selected_plugins) do
-				if idx > 1 then payload_data = payload_data .. "|" end
-				payload_data = payload_data .. p.name .. "::" .. p.type .. "::" .. (p.instrument and "1" or "0")
-			end
-			
-			FXManagerUI.r.ImGui_SetDragDropPayload(FXManagerUI.ctx, "FX_ADD", payload_data)
-			FXManagerUI.r.ImGui_EndDragDropSource(FXManagerUI.ctx)
-		end
-
-		FXManagerUI.r.ImGui_PopID(FXManagerUI.ctx)
-	end
-
-	FXManagerUI.r.ImGui_Dummy(FXManagerUI.ctx, 0, 20)
-	if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
-		local ret_add, payload_add = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
-		if ret_add then
-			local plugins_data = {}
-			for plugin_str in payload_add:gmatch("[^|]+") do
-				local name, ptype, is_inst = plugin_str:match("^(.-)::(.-)::(.-)$")
-				if name and ptype then
-					local plugin_info = {
-						name = name,
-						type = ptype,
-						instrument = is_inst == "1"
-					}
-					table.insert(plugins_data, plugin_info)
-				end
-			end
-			
-			for _, p_info in ipairs(plugins_data) do
-				local fx_name = FXManagerUI.fxmanager.buildFXName(p_info)
-				local should_open = FXManagerUI.core.state.fxmanager_auto_open == true
-				FXManagerUI.fxmanager.addFXByName(fx_name, should_open, true)
-			end
-		end
-		FXManagerUI.r.ImGui_EndDragDropTarget(FXManagerUI.ctx)
-	end
-
-	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx, 3)
-end
-
-function FXManagerUI.drawRandomFXInsertion(header_font)
-	if not FXManagerUI.core.state.random_fx_count then
-		FXManagerUI.core.state.random_fx_count = 3
-	end
-	if FXManagerUI.core.state.random_fx_favorites_only == nil then
-		FXManagerUI.core.state.random_fx_favorites_only = false
-	end
-
-	if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
-		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Random FX Insertion")
-		FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
-	else
-		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Random FX Insertion")
-	end
-
-	local content_width = FXManagerUI.r.ImGui_GetContentRegionAvail(FXManagerUI.ctx)
-	local item_spacing_x = FXManagerUI.getStyleValue("spacing.item_spacing_x", 6)
-	local slider_width = content_width * 0.4
-	local button_width = 120
-
-	FXManagerUI.r.ImGui_SetNextItemWidth(FXManagerUI.ctx, slider_width)
-	local changed, new_count = FXManagerUI.r.ImGui_SliderInt(FXManagerUI.ctx, "##randomfxcount", FXManagerUI.core.state.random_fx_count, 1, 10, "%d FX")
-	if changed then
-		FXManagerUI.core.state.random_fx_count = new_count
-		if FXManagerUI.fxmanager.persistence then
-			FXManagerUI.fxmanager.persistence.scheduleSave()
-		end
-	end
-
-	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, item_spacing_x)
-	local checkbox_changed, checkbox_value = FXManagerUI.r.ImGui_Checkbox(FXManagerUI.ctx, "Favorites Only", FXManagerUI.core.state.random_fx_favorites_only)
-	if checkbox_changed then
-		FXManagerUI.core.state.random_fx_favorites_only = checkbox_value
-		if FXManagerUI.fxmanager.persistence then
-			FXManagerUI.fxmanager.persistence.scheduleSave()
-		end
-	end
-
-	FXManagerUI.r.ImGui_SameLine(FXManagerUI.ctx, 0, item_spacing_x)
-	if FXManagerUI.r.ImGui_Button(FXManagerUI.ctx, "Add Random FX", button_width) then
-		local success = FXManagerUI.fxmanager.addRandomFX(FXManagerUI.core.state.random_fx_count, FXManagerUI.core.state.random_fx_favorites_only)
-		if success and FXManagerUI.core.state.fxmanager_auto_close then
-			FXManagerUI.core.state.show_fxmanager_window = false
-		end
-	end
-end
-
-function FXManagerUI.drawFXChain(header_font)
-	if header_font and FXManagerUI.r.ImGui_ValidatePtr(header_font, "ImGui_Font*") then
-		FXManagerUI.r.ImGui_PushFont(FXManagerUI.ctx, header_font, 0)
-		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Track FX Chain")
-		FXManagerUI.r.ImGui_PopFont(FXManagerUI.ctx)
-	else
-		FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, "Track FX Chain")
-	end
-
-	FXManagerUI.r.ImGui_Separator(FXManagerUI.ctx)
-
-	if not FXManagerUI.core.isTrackValid() then
-		FXManagerUI.r.ImGui_TextDisabled(FXManagerUI.ctx, "No track selected")
-		return
-	end
-
-	local track = FXManagerUI.core.state.track
-	local fx_count = FXManagerUI.r.TrackFX_GetCount(track)
-
-	if fx_count == 0 then
-		FXManagerUI.r.ImGui_TextDisabled(FXManagerUI.ctx, "No FX on track")
-		FXManagerUI.r.ImGui_Dummy(FXManagerUI.ctx, 0, 40)
-		if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
-			local ret_add, payload_add = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
-			if ret_add then
-				local plugins_data = {}
-				for plugin_str in payload_add:gmatch("[^|]+") do
-					local name, ptype, is_inst = plugin_str:match("^(.-)::(.-)::(.-)$")
-					if name and ptype then
-						local plugin_info = {
-							name = name,
-							type = ptype,
-							instrument = is_inst == "1"
-						}
-						table.insert(plugins_data, plugin_info)
-					end
-				end
-
-				for idx, p_info in ipairs(plugins_data) do
-					local fx_name = FXManagerUI.fxmanager.buildFXName(p_info)
-					local should_open = FXManagerUI.core.state.fxmanager_auto_open == true
-					FXManagerUI.fxmanager.addFXByName(fx_name, should_open, true)
-				end
-			end
-			FXManagerUI.r.ImGui_EndDragDropTarget(FXManagerUI.ctx)
-		end
-		return
-	end
-
-	local slider_grab_color = FXManagerUI.getStyleValue("colors.slider_grab", 0x3F7FBFFF)
-	local slider_grab_active_color = FXManagerUI.getStyleValue("colors.slider_grab_active", 0x5F9FDFFF)
-
-	local r_val = ((slider_grab_color >> 24) & 0xFF)
-	local g_val = ((slider_grab_color >> 16) & 0xFF)
-	local b_val = ((slider_grab_color >> 8) & 0xFF)
-	local selection_color = (r_val << 24) | (g_val << 16) | (b_val << 8) | 0x99
-
-	local r_hover = ((slider_grab_active_color >> 24) & 0xFF)
-	local g_hover = ((slider_grab_active_color >> 16) & 0xFF)
-	local b_hover = ((slider_grab_active_color >> 8) & 0xFF)
-	local hover_color = (r_hover << 24) | (g_hover << 16) | (b_hover << 8) | 0xCC
-
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_Header(), selection_color)
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderHovered(), hover_color)
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_HeaderActive(), hover_color)
-	FXManagerUI.r.ImGui_PushStyleColor(FXManagerUI.ctx, FXManagerUI.r.ImGui_Col_DragDropTarget(), 0x00000000)
-
-	if not FXManagerUI.core.state.fxchain_drag_target then
-		FXManagerUI.core.state.fxchain_drag_target = -1
-	end
-
-	for fx_idx = 0, fx_count - 1 do
-		local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
-		local display_name = FXManagerUI.core.extractFXName(fx_name)
-
-		if display_name:find("JSFX Sound") or display_name:find("FX Constellation Sound Generator") then
-			goto continue
-		end
-
-		local is_enabled = FXManagerUI.r.TrackFX_GetEnabled(track, fx_idx)
-
-		FXManagerUI.r.ImGui_PushID(FXManagerUI.ctx, fx_idx)
-
-		local item_text = (fx_idx + 1) .. ". " .. display_name
-		if not is_enabled then
-			item_text = item_text .. " (bypassed)"
-		end
-
-		if not FXManagerUI.core.state.fxchain_selected_fx then
-			FXManagerUI.core.state.fxchain_selected_fx = {}
-		end
-
-		local is_selected = FXManagerUI.core.state.fxchain_selected_fx[fx_idx] == true
-		local flags = FXManagerUI.r.ImGui_SelectableFlags_AllowDoubleClick()
-		if FXManagerUI.r.ImGui_Selectable(FXManagerUI.ctx, item_text, is_selected, flags) then
-			local ctrl_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Ctrl())
-			local shift_down = FXManagerUI.r.ImGui_IsKeyDown(FXManagerUI.ctx, FXManagerUI.r.ImGui_Mod_Shift())
-
-			if FXManagerUI.r.ImGui_IsMouseDoubleClicked(FXManagerUI.ctx, 0) then
-				FXManagerUI.r.TrackFX_Show(track, fx_idx, 3)
-			elseif shift_down and FXManagerUI.core.state.fxchain_last_clicked_fx then
-				local start_idx = FXManagerUI.core.state.fxchain_last_clicked_fx
-				local end_idx = fx_idx
-				if start_idx > end_idx then
-					start_idx, end_idx = end_idx, start_idx
-				end
-				for idx = start_idx, end_idx do
-					FXManagerUI.core.state.fxchain_selected_fx[idx] = true
-				end
-			elseif ctrl_down then
-				FXManagerUI.core.state.fxchain_selected_fx[fx_idx] = not is_selected
-			else
-				FXManagerUI.core.state.fxchain_selected_fx = {}
-				FXManagerUI.core.state.fxchain_selected_fx[fx_idx] = true
-			end
-
-			FXManagerUI.core.state.fxchain_last_clicked_fx = fx_idx
-		end
-
-		if FXManagerUI.r.ImGui_IsItemHovered(FXManagerUI.ctx) then
-			if FXManagerUI.r.ImGui_IsMouseDown(FXManagerUI.ctx, 1) and not is_selected then
-				FXManagerUI.core.state.fxchain_selected_fx = {}
-				FXManagerUI.core.state.fxchain_selected_fx[fx_idx] = true
-			end
-			if FXManagerUI.r.ImGui_IsMouseReleased(FXManagerUI.ctx, 1) then
-				FXManagerUI.r.ImGui_OpenPopup(FXManagerUI.ctx, "FXChainContextMenu")
-			end
-		end
-
-		if FXManagerUI.r.ImGui_BeginPopup(FXManagerUI.ctx, "FXChainContextMenu") then
-			if FXManagerUI.r.ImGui_MenuItem(FXManagerUI.ctx, "Delete Selected FX") then
-				local indices_to_delete = {}
-				for idx, selected in pairs(FXManagerUI.core.state.fxchain_selected_fx) do
-					if selected then
-						table.insert(indices_to_delete, idx)
-					end
-				end
-				table.sort(indices_to_delete, function(a, b) return a > b end)
-				for _, idx in ipairs(indices_to_delete) do
-					FXManagerUI.r.TrackFX_Delete(track, idx)
-				end
-				FXManagerUI.core.state.fxchain_selected_fx = {}
-			end
-			FXManagerUI.r.ImGui_EndPopup(FXManagerUI.ctx)
-		end
-
-		if FXManagerUI.r.ImGui_BeginDragDropSource(FXManagerUI.ctx) then
-			if not is_selected then
-				FXManagerUI.core.state.fxchain_selected_fx = {}
-				FXManagerUI.core.state.fxchain_selected_fx[fx_idx] = true
-			end
-			FXManagerUI.r.ImGui_SetDragDropPayload(FXManagerUI.ctx, "FX_REORDER", tostring(fx_idx))
-			FXManagerUI.r.ImGui_Text(FXManagerUI.ctx, display_name)
-			FXManagerUI.r.ImGui_EndDragDropSource(FXManagerUI.ctx)
-		end
-
-		local item_x_min, item_y_min = FXManagerUI.r.ImGui_GetItemRectMin(FXManagerUI.ctx)
-		local item_x_max, item_y_max = FXManagerUI.r.ImGui_GetItemRectMax(FXManagerUI.ctx)
-		local item_y_mid = item_y_min + (item_y_max - item_y_min) / 2
-
-		if FXManagerUI.r.ImGui_BeginDragDropTarget(FXManagerUI.ctx) then
-			local mouse_x, mouse_y = FXManagerUI.r.ImGui_GetMousePos(FXManagerUI.ctx)
-			local insert_before = mouse_y < item_y_mid
-			local target_pos = insert_before and fx_idx or (fx_idx + 1)
-
-			FXManagerUI.core.state.fxchain_drag_target = target_pos
-			FXManagerUI.core.state.fxchain_drag_y = insert_before and item_y_min or item_y_max
-			FXManagerUI.core.state.fxchain_drag_x_min = item_x_min
-			FXManagerUI.core.state.fxchain_drag_x_max = item_x_max
-
-			local ret_add, payload_add = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_ADD")
-			if ret_add then
-				local plugins_data = {}
-				for plugin_str in payload_add:gmatch("[^|]+") do
-					local name, ptype, is_inst = plugin_str:match("^(.-)::(.-)::(.-)$")
-					if name and ptype then
-						local plugin_info = {
-							name = name,
-							type = ptype,
-							instrument = is_inst == "1"
-						}
-						table.insert(plugins_data, plugin_info)
-					end
-				end
-
-				for _, p_info in ipairs(plugins_data) do
-					local fx_name = FXManagerUI.fxmanager.buildFXName(p_info)
-					local should_open = FXManagerUI.core.state.fxmanager_auto_open == true
-					local recFX = false
-					local insert_pos = should_open and target_pos or (-1000 - target_pos)
-					FXManagerUI.r.TrackFX_AddByName(track, fx_name, recFX, insert_pos)
-				end
-				FXManagerUI.core.state.fxchain_drag_target = -1
-			end
-
-			local ret_reorder, payload_reorder = FXManagerUI.r.ImGui_AcceptDragDropPayload(FXManagerUI.ctx, "FX_REORDER")
-			if ret_reorder then
-				local source_fx = tonumber(payload_reorder)
-				if source_fx and source_fx ~= target_pos then
-					FXManagerUI.r.TrackFX_CopyToTrack(track, source_fx, track, target_pos, true)
-				end
-				FXManagerUI.core.state.fxchain_drag_target = -1
-			end
-
-			FXManagerUI.r.ImGui_EndDragDropTarget(FXManagerUI.ctx)
-		else
-			FXManagerUI.core.state.fxchain_drag_target = -1
-		end
-
-
-		FXManagerUI.r.ImGui_PopID(FXManagerUI.ctx)
-		::continue::
-	end
-
-	if FXManagerUI.core.state.fxchain_drag_target and FXManagerUI.core.state.fxchain_drag_target >= 0 then
-		if FXManagerUI.core.state.fxchain_drag_y and FXManagerUI.core.state.fxchain_drag_x_min and FXManagerUI.core.state.fxchain_drag_x_max then
-			local draw_list = FXManagerUI.r.ImGui_GetWindowDrawList(FXManagerUI.ctx)
-			local y = FXManagerUI.core.state.fxchain_drag_y
-			local x1 = FXManagerUI.core.state.fxchain_drag_x_min
-			local x2 = FXManagerUI.core.state.fxchain_drag_x_max
-			FXManagerUI.r.ImGui_DrawList_AddLine(draw_list, x1, y, x2, y, 0xFFFFFFFF, 2)
-		end
-	end
-
-	FXManagerUI.r.ImGui_PopStyleColor(FXManagerUI.ctx, 4)
-end
+-- Backwards-compat alias for the old name used in CP_FXConstellation.lua
+FXManagerUI.drawWindow = FXManagerUI.draw
 
 return FXManagerUI

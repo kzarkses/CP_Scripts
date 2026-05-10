@@ -54,9 +54,12 @@ UI.SetFontMono()       -- values, time codes, dB
 ```lua
 -- Standard button. Returns: clicked (bool)
 UI.Button(id, label, opts)              -- opts: {width, height}
+    -- width = -1 → fill the available width of the parent column / container
+    --             (the standard ImGui idiom)
 
 -- ON/OFF toggle. Returns: toggled (bool), new_state (bool)
 UI.ToggleButton(id, label, is_on, opts) -- opts: {width, height}
+    -- width = -1 → fill (same semantic as Button)
 
 -- Checkbox (filled square). Returns: toggled, new_checked
 UI.Checkbox(id, label, checked)
@@ -79,6 +82,28 @@ UI.SliderDouble(id, label, value, min, max, opts)
 -- Dual-thumb range. Returns: changed, new_min, new_max
 UI.RangeSlider(id, label, val_min, val_max, range_min, range_max, opts)
     -- opts: {width, format="%.1f"}
+    -- Three drag zones:
+    --   • Click near min handle  → drag the lower bound only
+    --   • Click near max handle  → drag the upper bound only
+    --   • Click in the middle    → translate both bounds together
+    --                              (the span max-min is preserved, clamped
+    --                              to [range_min, range_max])
+    -- Cursor: size_we for handles, size_all for the middle drag zone.
+
+-- Range slider with a current-value point (3-thumb).
+-- Returns: value_changed, new_value, range_changed, new_min, new_max
+UI.ValueRangeSlider(id, label, value, val_min, val_max,
+                    range_min, range_max, opts)
+    -- opts: {width, height, format=string}
+    -- The value is drawn as a filled circle inside the range fill, and is
+    -- clamped to [val_min, val_max] (the handles cannot cross the value).
+    -- Drag zones:
+    --   • Click on the value dot → drag the value (writes through your
+    --     own callback when you receive value_changed=true)
+    --   • Click near min/max handle → drag that bound only
+    --   • Click between the handles (away from the value) → translate the
+    --     range AND the value together (span preserved)
+    --   • Click in the empty track outside the range → snap nearest handle
 
 -- Number input (drag or double-click to edit). Returns: changed, new_value
 UI.NumberInput(id, label, value, min, max, opts)
@@ -180,8 +205,13 @@ local size_a = UI.Splitter(id, "horizontal", total_w, 0.5, opts)
 ### Scrollable Child Region
 ```lua
 UI.BeginChild(id, width, height, opts)
-    -- opts: {scrollable=true, border=true, padding=6, bg={r,g,b,a}}
+    -- opts: {scrollable=true, scrollable_x=false, border=true,
+    --        padding=6, bg={r,g,b,a}}
     -- width=0 or height=0 → fill available space
+    -- scrollable    = vertical scroll (default true)
+    -- scrollable_x  = horizontal scroll (default false). When enabled,
+    --                 content can extend past the right edge and the user
+    --                 scrolls with the bottom scrollbar or Shift+wheel.
 UI.EndChild()
 ```
 

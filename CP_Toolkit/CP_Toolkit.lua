@@ -257,8 +257,8 @@ function UI.Button(id, label, opts)
 end
 
 -- Checkbox
-function UI.Checkbox(id, label, checked)
-    return Widgets.Checkbox(id, label, checked, UI._theme)
+function UI.Checkbox(id, label, checked, opts)
+    return Widgets.Checkbox(id, label, checked, UI._theme, opts)
 end
 
 -- Sliders
@@ -426,6 +426,12 @@ function UI.SetPosition(x, y)
     Core.SetPosition(x, y)
 end
 
+-- Resize the gfx window at runtime (mainly useful for frameless overlays
+-- whose content size depends on dynamic data). Returns true on success.
+function UI.SetSize(w, h)
+    return Core.SetSize(w, h)
+end
+
 function UI.SetTopMost(topmost)
     Core.SetTopMost(topmost)
 end
@@ -497,6 +503,14 @@ function UI.RangeSlider(id, label, val_min, val_max, range_min, range_max, opts)
     return Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, UI._theme, opts)
 end
 
+-- Range Slider with a draggable current-value point inside the range.
+-- Returns: value_changed, new_value, range_changed, new_min, new_max
+function UI.ValueRangeSlider(id, label, value, val_min, val_max,
+                             range_min, range_max, opts)
+    return Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
+                                    range_min, range_max, UI._theme, opts)
+end
+
 -- Action List
 function UI.ActionList(id, items, actions, opts)
     return Widgets.ActionList(id, items, actions, UI._theme, opts)
@@ -538,6 +552,24 @@ end
 
 function UI.Indent(amount)
     Layout.Indent(amount)
+end
+
+-- Width / height available in the current container (after the cursor).
+-- Useful when sizing widgets that should match the column width, like a
+-- square Canvas that needs to take the full section width.
+function UI.GetAvailableWidth()
+    return Layout.GetAvailableWidth()
+end
+
+function UI.GetAvailableHeight()
+    return Layout.GetAvailableHeight()
+end
+
+-- Absolute screen position of the layout cursor (where the next widget
+-- would be drawn). Useful for custom widgets that need to draw against
+-- screen coordinates rather than container-relative ones.
+function UI.GetCursorPos()
+    return Layout.GetCursorPos()
 end
 
 function UI.Unindent(amount)

@@ -33,7 +33,7 @@ end
 --   spacing       = vertical spacing between widgets
 --   id            = container ID string
 
-local function new_container(id, x, y, w, h, pad_x, pad_y, spacing, scrollable)
+local function new_container(id, x, y, w, h, pad_x, pad_y, spacing, scrollable, scrollable_x)
     return {
         id = id,
         x = x,
@@ -45,8 +45,11 @@ local function new_container(id, x, y, w, h, pad_x, pad_y, spacing, scrollable)
         cursor_x = pad_x or 8,
         cursor_y = pad_y or 8,
         content_h = 0,
+        content_w = 0,
         scroll_y = 0,
-        scrollable = scrollable or false,
+        scroll_x = 0,
+        scrollable   = scrollable   or false,  -- vertical scroll
+        scrollable_x = scrollable_x or false,  -- horizontal scroll
         same_line = false,
         same_line_x = 0,
         max_row_h = 0,
@@ -153,10 +156,13 @@ function Layout.BeginChild(id, w, h, opts)
     local spacing = opts.spacing or (parent.spacing)
     local border = opts.border ~= false
     local scrollable = opts.scrollable ~= false
+    -- Horizontal scroll is opt-in. When enabled, content can extend past the
+    -- right edge and the user scrolls with the scrollbar or Shift+wheel.
+    local scrollable_x = opts.scrollable_x == true
 
     -- Resolve position from parent cursor
-    local abs_x = parent.x + parent.cursor_x
-    local abs_y = parent.y + parent.cursor_y - (parent.scrollable and parent.scroll_y or 0)
+    local abs_x = parent.x + parent.cursor_x - (parent.scrollable_x and parent.scroll_x or 0)
+    local abs_y = parent.y + parent.cursor_y - (parent.scrollable   and parent.scroll_y   or 0)
 
     -- Auto-width: fill remaining space
     if not w or w <= 0 then
@@ -170,12 +176,16 @@ function Layout.BeginChild(id, w, h, opts)
     local data = Core.GetWidgetSubData("child", id)
     if data._init == nil then
         data.scroll_y = 0
+        data.scroll_x = 0
         data.content_h = 0
+        data.content_w = 0
         data._init = true
     end
+    data.scroll_x = data.scroll_x or 0
 
-    local c = new_container(id, abs_x, abs_y, w, h, pad, pad, spacing, scrollable)
+    local c = new_container(id, abs_x, abs_y, w, h, pad, pad, spacing, scrollable, scrollable_x)
     c.scroll_y = data.scroll_y
+    c.scroll_x = data.scroll_x
 
     -- Draw child background
     if opts.bg then
@@ -202,30 +212,42 @@ function Layout.EndChild()
         return
     end
 
-    -- Calculate total content height
+    -- Calculate total content height + width
     local content_h = c.cursor_y + c.max_row_h
+    local content_w = (c.content_w or 0) + c.pad_x  -- + trailing padding
     local data = Core.GetWidgetSubData("child", c.id)
     data.content_h = content_h
+    data.content_w = content_w
 
     -- Handle scroll wheel inside child. Notch-based step (see Layout.End).
-    if c.scrollable and content_h > c.h then
+    -- Shift+wheel scrolls horizontally when scrollable_x is enabled,
+    -- regular wheel scrolls vertically when scrollable is enabled.
+    local has_v_scroll = c.scrollable   and content_h > c.h
+    local has_h_scroll = c.scrollable_x and content_w > c.w
+    if (has_v_scroll or has_h_scroll) then
         local state = Core.GetState()
         if Core.MouseInRect(c.x, c.y, c.w, c.h) and not Core.HasPopup() and not Core.IsWheelConsumed() then
             local wheel = state.mouse_wheel
             if wheel ~= 0 then
                 local SCROLL_STEP = 40
                 local dir = wheel > 0 and -1 or 1
-                data.scroll_y = max(0, min(data.scroll_y + dir * SCROLL_STEP,
-                    content_h - c.h + c.pad_y * 2))
-                Core.ConsumeWheel()  -- prevent parent from also scrolling
+                local horizontal = Core.ModShift() and has_h_scroll
+                if has_v_scroll and not horizontal then
+                    data.scroll_y = max(0, min(data.scroll_y + dir * SCROLL_STEP,
+                        content_h - c.h + c.pad_y * 2))
+                    Core.ConsumeWheel()
+                elseif has_h_scroll then
+                    data.scroll_x = max(0, min(data.scroll_x + dir * SCROLL_STEP,
+                        content_w - c.w + c.pad_x * 2))
+                    Core.ConsumeWheel()
+                end
             end
         end
-
-        -- Draw scrollbar
-        Layout._DrawScrollbar(c, data)
-    else
-        data.scroll_y = 0
+        if has_v_scroll then Layout._DrawScrollbar(c, data) end
+        if has_h_scroll then Layout._DrawScrollbarH(c, data) end
     end
+    if not has_v_scroll then data.scroll_y = 0 end
+    if not has_h_scroll then data.scroll_x = 0 end
     -- data is a reference from GetWidgetData; mutations persist without SetWidgetData.
     Core.PopClipRect()
     Core.PopContainer()
@@ -283,6 +305,52 @@ function Layout._DrawScrollbar(c, data)
     end
 end
 
+-- Horizontal scrollbar (mirror of _DrawScrollbar). Drawn at the bottom of
+-- the container; height = scrollbar_thickness from the theme (falls back
+-- to the same 6 px the vertical bar uses).
+function Layout._DrawScrollbarH(c, data)
+    local bar_h = 6
+    local bar_x = c.x + 2
+    local bar_y = c.y + c.h - bar_h - 2
+    local bar_w = c.w - 4
+
+    local visible_ratio = c.w / data.content_w
+    local thumb_w = max(20, bar_w * visible_ratio)
+    local scroll_range = data.content_w - c.w + c.pad_x * 2
+    local scroll_ratio = scroll_range > 0 and (data.scroll_x / scroll_range) or 0
+    local thumb_x = bar_x + (bar_w - thumb_w) * scroll_ratio
+
+    -- Track background
+    Core.DrawRect(bar_x, bar_y, bar_w, bar_h, 0.2, 0.2, 0.2, 0.3)
+
+    -- Thumb
+    local hover = Core.MouseInRect(thumb_x, bar_y - 2, thumb_w, bar_h + 4)
+    local drag_id = "scrollbar_h_" .. c.id
+
+    if hover or Core.IsActive(drag_id) then
+        Core.DrawRect(thumb_x, bar_y, thumb_w, bar_h, 0.5, 0.5, 0.5, 0.7)
+    else
+        Core.DrawRect(thumb_x, bar_y, thumb_w, bar_h, 0.4, 0.4, 0.4, 0.5)
+    end
+
+    -- Drag scrollbar thumb
+    if hover and Core.MouseClicked(1) then
+        Core.SetActive(drag_id)
+    end
+    if Core.IsActive(drag_id) then
+        if Core.MouseDown(1) then
+            local dx, _ = Core.MouseDelta()
+            if dx ~= 0 and bar_w > thumb_w then
+                local scroll_per_pixel = scroll_range / (bar_w - thumb_w)
+                data.scroll_x = data.scroll_x + dx * scroll_per_pixel
+                data.scroll_x = max(0, min(data.scroll_x, scroll_range))
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+end
+
 -- ============================================================================
 -- LAYOUT CURSOR MANAGEMENT
 -- ============================================================================
@@ -291,6 +359,13 @@ function Layout._AdvanceCursor(c, widget_w, widget_h)
     c.last_widget_end_x = c.cursor_x + widget_w
     c.last_widget_y = c.cursor_y
     c.last_widget_h = widget_h
+
+    -- Track the rightmost X reached so horizontal-scrolling containers can
+    -- compute content_w. We sample the widget's right edge regardless of
+    -- the SameLine flag.
+    if c.last_widget_end_x > (c.content_w or 0) then
+        c.content_w = c.last_widget_end_x
+    end
 
     if c.same_line then
         -- Horizontal: advance X, stay on same Y
@@ -388,8 +463,8 @@ function Layout.GetCursorPos()
     local c = Core.CurrentContainer()
     if not c then return 0, 0 end
     _flush_pending_row(c)
-    local x = c.x + c.cursor_x
-    local y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
+    local x = c.x + c.cursor_x - (c.scrollable_x and c.scroll_x or 0)
+    local y = c.y + c.cursor_y - (c.scrollable   and c.scroll_y or 0)
     return x, y
 end
 
@@ -400,7 +475,7 @@ function Layout.GetCursorPosAligned(widget_h)
     local c = Core.CurrentContainer()
     if not c then return 0, 0 end
     _flush_pending_row(c)
-    local x = c.x + c.cursor_x
+    local x = c.x + c.cursor_x - (c.scrollable_x and c.scroll_x or 0)
     local base_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
     -- If on a SameLine row with taller widgets, center vertically
     if c.max_row_h > widget_h then
@@ -598,10 +673,11 @@ function Layout.BeginColumns(id, ratios, opts)
         end
     end
 
-    -- Calculate absolute X positions
+    -- Calculate absolute X positions (account for any horizontal scroll on
+    -- the parent container; scroll_y is applied separately on col_y).
     local col_positions = {}
-    local abs_x = c.x + c.cursor_x
-    local abs_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
+    local abs_x = c.x + c.cursor_x - (c.scrollable_x and c.scroll_x or 0)
+    local abs_y = c.y + c.cursor_y - (c.scrollable   and c.scroll_y   or 0)
     for i = 1, #col_widths do
         col_positions[i] = abs_x
         abs_x = abs_x + col_widths[i] + gap
@@ -649,13 +725,18 @@ function Layout.NextColumn()
     local cols = column_stack[#column_stack]
     if not cols then return end
 
-    -- Pop current column container
+    -- Pop current column container. Same logic as EndColumns: cursor_y
+    -- already includes a trailing spacing after the last widget — strip it
+    -- so cols.max_h matches the visible content height.
     local old_c = Core.CurrentContainer()
     if old_c then
-        local col_content_h = old_c.cursor_y + old_c.max_row_h
+        local col_content_h
         if old_c.sameline_pending then
-            col_content_h = old_c.cursor_y + old_c.max_row_h + old_c.spacing
+            col_content_h = old_c.cursor_y + old_c.max_row_h
+        else
+            col_content_h = old_c.cursor_y - (old_c.spacing or 0)
         end
+        if col_content_h < 0 then col_content_h = 0 end
         cols.max_h = max(cols.max_h, col_content_h)
     end
     Core.PopClipRect()
@@ -694,13 +775,20 @@ function Layout.EndColumns()
     local cols = column_stack[#column_stack]
     if not cols then return end
 
-    -- Pop last column
+    -- Pop last column. After _AdvanceCursor, the column's cursor_y already
+    -- sits at "past the last widget + trailing spacing", so the content end
+    -- is cursor_y minus the trailing spacing the helper appended. When a
+    -- SameLine row is still pending, cursor_y didn't advance for that row
+    -- yet — we add max_row_h to account for it.
     local old_c = Core.CurrentContainer()
     if old_c then
-        local col_content_h = old_c.cursor_y + old_c.max_row_h
+        local col_content_h
         if old_c.sameline_pending then
-            col_content_h = old_c.cursor_y + old_c.max_row_h + old_c.spacing
+            col_content_h = old_c.cursor_y + old_c.max_row_h
+        else
+            col_content_h = old_c.cursor_y - (old_c.spacing or 0)
         end
+        if col_content_h < 0 then col_content_h = 0 end
         cols.max_h = max(cols.max_h, col_content_h)
     end
     Core.PopClipRect()
@@ -708,7 +796,9 @@ function Layout.EndColumns()
 
     column_stack[#column_stack] = nil
 
-    -- Advance parent cursor past the tallest column
+    -- Advance parent cursor past the tallest column. Parent gets one
+    -- spacing unit (matches the post-widget cadence of _AdvanceCursor so
+    -- the row of widgets that follows lines up consistently).
     local parent = Core.CurrentContainer()
     if parent then
         parent.cursor_y = cols.start_y + cols.max_h + parent.spacing

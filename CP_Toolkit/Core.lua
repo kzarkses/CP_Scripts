@@ -283,24 +283,129 @@ end
 -- ============================================================================
 -- Note: each wrapper increments _stats._draw_count. Cost is one local table
 -- write per call, ~10ns. Always on (cheap enough not to gate behind a flag).
+--
+-- Clip stack (defined here so the draw helpers below can read it). The
+-- corresponding Push/Pop functions live further down with the rest of the
+-- public layout API; they all operate on these same arrays.
+local clip_x = {}
+local clip_y = {}
+local clip_w = {}
+local clip_h = {}
+local clip_top = 0
+
+-- Clamp (x, y, w, h) to the active clip rect. Returns the visible portion
+-- or nil if fully outside the clip. Called by primitive Draw* helpers so
+-- that scroll containers can hide content that extends past their edges.
+local function _clip_rect(x, y, w, h)
+    if clip_top == 0 then return x, y, w, h end
+    local cx, cy, cw, ch = clip_x[clip_top], clip_y[clip_top],
+                           clip_w[clip_top], clip_h[clip_top]
+    local x2 = x + w
+    local y2 = y + h
+    local cx2 = cx + cw
+    local cy2 = cy + ch
+    if x >= cx2 or y >= cy2 or x2 <= cx or y2 <= cy then return nil end
+    if x < cx then x = cx end
+    if y < cy then y = cy end
+    if x2 > cx2 then x2 = cx2 end
+    if y2 > cy2 then y2 = cy2 end
+    return x, y, x2 - x, y2 - y
+end
+
 function Core.DrawRect(x, y, w, h, r, g, b, a, filled)
     _stats._draw_count = _stats._draw_count + 1
-    gfx.set(r, g, b, a or 1)
     if filled ~= false then
-        gfx.rect(x, y, w, h, 1)
+        local cx, cy, cw, ch = _clip_rect(x, y, w, h)
+        if not cx then return end
+        gfx.set(r, g, b, a or 1)
+        gfx.rect(cx, cy, cw, ch, 1)
     else
+        -- Outline rectangles can't be uniformly clipped (corners would be
+        -- cropped weirdly). Skip the rect entirely if its bounding box is
+        -- fully outside the clip; otherwise let it draw — gfx itself will
+        -- still respect the rect's coordinates.
+        if clip_top > 0 then
+            local cx = clip_x[clip_top]; local cy = clip_y[clip_top]
+            if x + w <= cx or y + h <= cy
+               or x >= cx + clip_w[clip_top]
+               or y >= cy + clip_h[clip_top] then return end
+        end
+        gfx.set(r, g, b, a or 1)
         gfx.rect(x, y, w, h, 0)
+    end
+end
+
+-- Cohen–Sutherland line clipping against the active clip rect. Modifies
+-- the endpoints in place so the line is fully inside the rect (or returns
+-- nil when the line is fully outside).
+local function _clip_line(x1, y1, x2, y2)
+    if clip_top == 0 then return x1, y1, x2, y2 end
+    local cx = clip_x[clip_top]
+    local cy = clip_y[clip_top]
+    local cw = clip_w[clip_top]
+    local ch = clip_h[clip_top]
+    local cx2 = cx + cw
+    local cy2 = cy + ch
+
+    local function code(x, y)
+        local c = 0
+        if x < cx  then c = c | 1
+        elseif x > cx2 then c = c | 2 end
+        if y < cy  then c = c | 4
+        elseif y > cy2 then c = c | 8 end
+        return c
+    end
+
+    local c1 = code(x1, y1)
+    local c2 = code(x2, y2)
+    while true do
+        if (c1 | c2) == 0 then return x1, y1, x2, y2 end          -- inside
+        if (c1 & c2) ~= 0 then return nil end                       -- outside
+        local cout = (c1 ~= 0) and c1 or c2
+        local x, y
+        if (cout & 8) ~= 0 then        -- bottom
+            x = x1 + (x2 - x1) * (cy2 - y1) / (y2 - y1)
+            y = cy2
+        elseif (cout & 4) ~= 0 then    -- top
+            x = x1 + (x2 - x1) * (cy - y1) / (y2 - y1)
+            y = cy
+        elseif (cout & 2) ~= 0 then    -- right
+            y = y1 + (y2 - y1) * (cx2 - x1) / (x2 - x1)
+            x = cx2
+        else                            -- left
+            y = y1 + (y2 - y1) * (cx - x1) / (x2 - x1)
+            x = cx
+        end
+        if cout == c1 then x1, y1, c1 = x, y, code(x, y)
+        else               x2, y2, c2 = x, y, code(x, y) end
     end
 end
 
 function Core.DrawLine(x1, y1, x2, y2, r, g, b, a)
     _stats._draw_count = _stats._draw_count + 1
+    local cx1, cy1, cx2, cy2 = _clip_line(x1, y1, x2, y2)
+    if not cx1 then return end
     gfx.set(r, g, b, a or 1)
-    gfx.line(x1, y1, x2, y2)
+    gfx.line(cx1, cy1, cx2, cy2)
 end
 
+-- DrawText: skip if any part of the text would extend past the active
+-- clip rect. gfx has no per-glyph scissor, so partial clipping isn't
+-- possible without offscreen buffers — dropping the whole label as soon
+-- as it doesn't fully fit is the closest visual match (an FX card label
+-- disappears the moment its panel starts to scroll out).
 function Core.DrawText(text, x, y, r, g, b, a)
     _stats._draw_count = _stats._draw_count + 1
+    if clip_top > 0 then
+        local cx = clip_x[clip_top]
+        local cy = clip_y[clip_top]
+        local cw = clip_w[clip_top]
+        local ch = clip_h[clip_top]
+        local tw, th = gfx.measurestr(text)
+        if x < cx or y < cy or x + tw > cx + cw or y + th > cy + ch then
+            return
+        end
+    end
     gfx.set(r, g, b, a or 1)
     gfx.x, gfx.y = x, y
     gfx.drawstr(text)
@@ -424,14 +529,11 @@ function Core.SetFontPrimaryBold()  Core.SetFontTitle() end
 -- ============================================================================
 -- CLIPPING (software-based scissor via off-screen buffer)
 -- ============================================================================
--- gfx doesn't have hardware scissor, but we can skip draw calls
--- outside the clip rect. Widgets should call Core.IsVisible() before drawing.
--- Parallel arrays avoid per-push table allocation.
-local clip_x = {}
-local clip_y = {}
-local clip_w = {}
-local clip_h = {}
-local clip_top = 0
+-- gfx doesn't have hardware scissor, but we can skip draw calls outside the
+-- clip rect. Widgets should call Core.IsVisible() before drawing; the
+-- primitive Core.DrawRect/DrawText also bail out when fully outside the
+-- clip. The clip stack arrays themselves are declared above (so that the
+-- draw helpers can see them).
 
 function Core.PushClipRect(x, y, w, h)
     -- Intersect with current clip rect if any
@@ -631,6 +733,20 @@ function Core.SetPosition(x, y)
     end
 end
 
+-- Resize the gfx window. Works for frameless overlays (uses
+-- JS_Window_Resize) and for regular windows (re-applies via gfx state).
+-- Returns true if resize was attempted.
+function Core.SetSize(w, h)
+    if w == nil or h == nil then return false end
+    state.win_w = w
+    state.win_h = h
+    if win_hwnd and reaper.JS_Window_Resize then
+        reaper.JS_Window_Resize(win_hwnd, w, h)
+        return true
+    end
+    return false
+end
+
 -- Set window always on top
 function Core.SetTopMost(topmost)
     if win_hwnd and reaper.JS_Window_SetZOrder then
@@ -640,13 +756,77 @@ function Core.SetTopMost(topmost)
 end
 
 -- ============================================================================
--- ANCHOR SYSTEM (follow REAPER main window position)
+-- ANCHOR SYSTEM (follow a REAPER window position)
 -- ============================================================================
--- anchor = { x = 0.5, y = 0.0, offset_x = 0, offset_y = 30 }
--- x/y = 0.0-1.0 proportional position on REAPER window
--- offset_x/y = pixel offset from that position
+-- anchor = {
+--     target = "main"                     -- "main" (default) | "mixer" | "transport"
+--                                         -- | "media_explorer" | "arrange"
+--                                         -- | hwnd userdata | function() -> hwnd
+--     snap = "free",                      -- "free" | "left" | "right"
+--                                         --   left  → align to target.left + offset_x
+--                                         --   right → align to target.right - win_w - offset_x
+--                                         --   free  → use proportional x (anchor.x)
+--     x = 0.5, y = 0.0,                   -- 0.0-1.0 proportional on target rect
+--     offset_x = 0, offset_y = 30,        -- pixel offset
+--     hide_when_target_hidden = true,     -- auto hide when target not visible
+--     auto_hide_min_width  = 0,           -- hide when target.w < this (0 = disabled)
+--     auto_hide_min_height = 0,           -- hide when target.h < this (0 = disabled)
+-- }
 local anchor = nil
-local reaper_hwnd = nil
+local anchor_target_hwnd = nil
+local anchor_last_target_lookup = 0
+local anchor_was_hidden = false
+
+-- Target rect throttle: GetRect costs ~5µs but adds up at 60Hz. The user's
+-- target window only resizes when they drag it, so polling at 10Hz misses
+-- nothing perceptible. Anchor moves still happen at frame rate using the
+-- cached rect.
+local RECT_POLL_INTERVAL = 0.1
+local rect_last_check = 0
+local rect_cache_left, rect_cache_top, rect_cache_right, rect_cache_bottom = 0, 0, 0, 0
+local rect_cache_valid = false
+
+-- Last applied window position — skip JS_Window_Move when the computed
+-- target position is identical to where we already are. In steady state
+-- (target window not moving, anchor not animated) this turns ~60 syscalls/s
+-- into 0.
+local last_applied_x, last_applied_y = nil, nil
+
+-- Set to true on the frames where UpdateAnchor actually moved the window.
+-- The idle-skip predicate looks at this so anchored overlays can still go
+-- idle when their target hasn't moved.
+local anchor_moved_this_frame = false
+
+local function resolve_target_hwnd(target)
+    if target == nil or target == "main" then
+        return reaper.GetMainHwnd()
+    end
+    if type(target) == "function" then
+        local ok, h = pcall(target)
+        if ok then return h end
+        return nil
+    end
+    if type(target) == "userdata" then
+        return target
+    end
+    if type(target) ~= "string" then return nil end
+    if not reaper.JS_Window_Find then return reaper.GetMainHwnd() end
+
+    local lookups = {
+        mixer          = "mixer",
+        transport      = "transport",
+        media_explorer = "Media Explorer",
+        arrange        = "trackview",
+        ruler          = "ruler",
+        action_list    = "Actions",
+        track_manager  = "Track Manager",
+        region_manager = "Region/Marker Manager",
+    }
+    local title = lookups[target] or target
+    local ok, h = pcall(reaper.JS_Window_Find, title, true)
+    if ok and h then return h end
+    return nil
+end
 
 function Core.SetAnchor(opts)
     if not reaper.JS_Window_GetRect then
@@ -654,31 +834,129 @@ function Core.SetAnchor(opts)
         return false
     end
     anchor = opts
-    -- Cache REAPER main window handle
-    reaper_hwnd = reaper.GetMainHwnd()
+    anchor_target_hwnd = resolve_target_hwnd(opts and opts.target)
+    anchor_last_target_lookup = reaper.time_precise()
+    -- Invalidate caches: target may have changed, geometry params too.
+    rect_cache_valid = false
+    last_applied_x, last_applied_y = nil, nil
     return true
 end
 
 function Core.ClearAnchor()
     anchor = nil
+    anchor_target_hwnd = nil
+    rect_cache_valid = false
+    last_applied_x, last_applied_y = nil, nil
 end
 
 -- Called each frame to reposition window if anchored
 function Core.UpdateAnchor()
-    if not anchor or not reaper_hwnd or not win_hwnd then return end
+    if not anchor or not win_hwnd then return end
     if not reaper.JS_Window_GetRect then return end
 
-    local ok, r_left, r_top, r_right, r_bottom = reaper.JS_Window_GetRect(reaper_hwnd)
-    if not ok then return end
+    -- Re-resolve the target hwnd periodically (windows can be opened/closed
+    -- during the session — e.g. mixer toggle).
+    local now = reaper.time_precise()
+    if not anchor_target_hwnd or (now - anchor_last_target_lookup) > 1.0 then
+        anchor_target_hwnd = resolve_target_hwnd(anchor.target)
+        anchor_last_target_lookup = now
+    end
 
+    local target_hwnd = anchor_target_hwnd
+    if not target_hwnd then
+        if anchor.hide_when_target_hidden and not anchor_was_hidden and reaper.JS_Window_Show then
+            reaper.JS_Window_Show(win_hwnd, "HIDE")
+            anchor_was_hidden = true
+        end
+        return
+    end
+
+    -- Auto-hide when target is not visible
+    if anchor.hide_when_target_hidden and reaper.JS_Window_IsVisible then
+        local visible = false
+        local ok, v = pcall(reaper.JS_Window_IsVisible, target_hwnd)
+        if ok then visible = v end
+        if not visible then
+            if not anchor_was_hidden and reaper.JS_Window_Show then
+                reaper.JS_Window_Show(win_hwnd, "HIDE")
+                anchor_was_hidden = true
+            end
+            return
+        elseif anchor_was_hidden and reaper.JS_Window_Show then
+            reaper.JS_Window_Show(win_hwnd, "SHOWNA")
+            anchor_was_hidden = false
+        end
+    end
+
+    -- (Focus-based auto-hide was removed: with topmost=false the toolbar
+    -- naturally falls behind any window that comes in front, so an
+    -- explicit hide-on-defocus added bugs without a real visual benefit.
+    -- hide_when_target_hidden + IsVisible still cover the REAPER-minimised
+    -- case below.)
+
+    -- Throttle GetRect to 10Hz; reuse last result in between. Target
+    -- windows only move/resize when the user drags them, so polling at
+    -- frame rate is wasteful. The first frame primes the cache.
+    local now3 = reaper.time_precise()
+    if not rect_cache_valid or (now3 - rect_last_check) >= RECT_POLL_INTERVAL then
+        rect_last_check = now3
+        local ok, r_left, r_top, r_right, r_bottom = reaper.JS_Window_GetRect(target_hwnd)
+        if not ok then return end
+        rect_cache_left, rect_cache_top   = r_left, r_top
+        rect_cache_right, rect_cache_bottom = r_right, r_bottom
+        rect_cache_valid = true
+    end
+    local r_left, r_top   = rect_cache_left, rect_cache_top
+    local r_right, r_bottom = rect_cache_right, rect_cache_bottom
     local r_w = r_right - r_left
     local r_h = r_bottom - r_top
 
-    local target_x = r_left + floor(r_w * (anchor.x or 0)) + (anchor.offset_x or 0)
-    local target_y = r_top + floor(r_h * (anchor.y or 0)) + (anchor.offset_y or 0)
+    -- Auto-hide when the target window is too small (mirrors the legacy
+    -- CP_CustomToolbars behaviour). Useful for toolbars anchored to the
+    -- mixer or arrange view that should disappear when the user drags
+    -- those panes very narrow/short.
+    local min_w = anchor.auto_hide_min_width or 0
+    local min_h = anchor.auto_hide_min_height or 0
+    if (min_w > 0 and r_w < min_w) or (min_h > 0 and r_h < min_h) then
+        if not anchor_was_hidden and reaper.JS_Window_Show then
+            reaper.JS_Window_Show(win_hwnd, "HIDE")
+            anchor_was_hidden = true
+        end
+        return
+    elseif anchor_was_hidden and reaper.JS_Window_Show then
+        reaper.JS_Window_Show(win_hwnd, "SHOWNA")
+        anchor_was_hidden = false
+    end
 
-    reaper.JS_Window_Move(win_hwnd, target_x, target_y)
+    local snap = anchor.snap or "free"
+    local off_x = anchor.offset_x or 0
+    local off_y = anchor.offset_y or 0
+
+    local target_x
+    if snap == "left" then
+        target_x = r_left + off_x
+    elseif snap == "right" then
+        -- Anchor to the right edge: position so the toolbar's right edge
+        -- ends at target.right - off_x. We need our own window width for
+        -- this; fall back to 0 if we don't have a current size yet.
+        local our_w = (state and state.win_w) or 0
+        target_x = r_right - our_w - off_x
+    else
+        target_x = r_left + floor(r_w * (anchor.x or 0)) + off_x
+    end
+
+    local target_y = r_top + floor(r_h * (anchor.y or 0)) + off_y
+
+    -- Skip the syscall if our window is already at the computed position.
+    -- In a static scene this turns a per-frame Win32 SetWindowPos into a
+    -- single integer comparison.
+    if target_x ~= last_applied_x or target_y ~= last_applied_y then
+        reaper.JS_Window_Move(win_hwnd, target_x, target_y)
+        last_applied_x, last_applied_y = target_x, target_y
+        anchor_moved_this_frame = true
+    end
 end
+
 
 -- ============================================================================
 -- CURSOR SYSTEM
@@ -986,12 +1264,40 @@ end
 
 function Core.DrawCircle(x, y, radius, r, g, b, a, filled, antialias)
     _stats._draw_count = _stats._draw_count + 1
+    -- Skip only when the bounding box is FULLY outside the clip rect. gfx
+    -- has no per-pixel scissor; circles partially overlapping the clip
+    -- still draw cleanly enough that we don't need a hard cutoff (matches
+    -- the toolkit Demo's XY-pad cursor that hugs the edges).
+    if clip_top > 0 then
+        local cx = clip_x[clip_top]
+        local cy = clip_y[clip_top]
+        local cw = clip_w[clip_top]
+        local ch = clip_h[clip_top]
+        if x + radius < cx or y + radius < cy
+           or x - radius > cx + cw or y - radius > cy + ch then
+            return
+        end
+    end
     gfx.set(r, g, b, a or 1)
     gfx.circle(x, y, radius, filled and 1 or 0, antialias ~= false and 1 or 0)
 end
 
 function Core.DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a)
     _stats._draw_count = _stats._draw_count + 1
+    -- Skip only when the bounding box is FULLY outside the clip rect.
+    if clip_top > 0 then
+        local cx = clip_x[clip_top]
+        local cy = clip_y[clip_top]
+        local cw = clip_w[clip_top]
+        local ch = clip_h[clip_top]
+        local minx = x1 < x2 and (x1 < x3 and x1 or x3) or (x2 < x3 and x2 or x3)
+        local maxx = x1 > x2 and (x1 > x3 and x1 or x3) or (x2 > x3 and x2 or x3)
+        local miny = y1 < y2 and (y1 < y3 and y1 or y3) or (y2 < y3 and y2 or y3)
+        local maxy = y1 > y2 and (y1 > y3 and y1 or y3) or (y2 > y3 and y2 or y3)
+        if maxx < cx or maxy < cy or minx > cx + cw or miny > cy + ch then
+            return
+        end
+    end
     gfx.set(r, g, b, a or 1)
     gfx.triangle(x1, y1, x2, y2, x3, y3)
 end
@@ -1088,9 +1394,19 @@ local function _can_skip_frame()
     if state.focus ~= nil then return false end
     if state.popup_layer ~= nil then return false end
     if state.tooltip_layer ~= nil then return false end
-    if anchor ~= nil then return false end
     if state._has_active_animation then return false end
     if state._request_redraw then return false end
+
+    -- Anchored overlays can skip *if* the anchor target didn't move
+    -- this frame. We tick the anchor here in the cheap path so it can
+    -- update its caches, then check whether it actually relocated us.
+    if anchor ~= nil then
+        Core.UpdateAnchor()
+        if anchor_moved_this_frame then
+            anchor_moved_this_frame = false
+            return false
+        end
+    end
 
     local now = reaper.time_precise()
 
@@ -1163,8 +1479,12 @@ function Core.Run(loop_fn)
             Log.BeginFrame(state.frame, state)
         end
 
-        -- Update anchor position (if overlay is anchored to REAPER)
+        -- Update anchor position (if overlay is anchored to REAPER).
+        -- Reset the moved-flag first so the predicate sees a clean state
+        -- on the next idle check.
+        anchor_moved_this_frame = false
         Core.UpdateAnchor()
+        anchor_moved_this_frame = false
 
         -- Reset per-frame flags
         state.hot = nil

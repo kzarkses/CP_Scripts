@@ -1,0 +1,68 @@
+// CP_VideoKit — Picture-in-Picture (with independent X/Y sizing)
+
+//@param1:src_track 'Source track (above)' 0 0 16 0 1
+//@param2:px 'PiP center X' 0.75 0 1 0.5 0.001
+//@param3:py 'PiP center Y' 0.25 0 1 0.5 0.001
+//@param4:psize_x 'PiP width' 0.3 0.05 1 0.3 0.001
+//@param5:psize_y 'PiP height' 0.3 0.05 1 0.3 0.001
+//@param6:opacity 'Opacity' 1 0 1 0.5 0.001
+//@param7:border 'Border (px)' 4 0 32 4 1
+//@param8:show_frame 'Show edit frame' 0 0 1 0.5 1
+
+input_info(0, iw, ih) ? (
+    src_aspect  = iw / ih;
+    proj_aspect = project_w / project_h;
+    src_aspect > proj_aspect ? (
+        dw = project_w; dh = project_w / src_aspect;
+        dx = 0; dy = (project_h - dh) * 0.5;
+    ) : (
+        dh = project_h; dw = project_h * src_aspect;
+        dx = (project_w - dw) * 0.5; dy = 0;
+    );
+    gfx_set(0, 0, 0, 1);
+    gfx_fillrect(0, 0, project_w, project_h);
+    gfx_blit(0, 0, dx, dy, dw, dh);
+);
+
+fg = input_track(src_track);
+fg && input_info(fg, fw, fh) ? (
+    // PiP rect — independent width/height in normalized canvas space.
+    base_w = min(project_w, project_h);
+    base_h = base_w;
+    pip_w = base_w * psize_x;
+    pip_h = base_h * psize_y;
+
+    pip_x = project_w * px - pip_w * 0.5;
+    pip_y = project_h * py - pip_h * 0.5;
+
+    border > 0 ? (
+        gfx_set(0, 0, 0, opacity);
+        gfx_fillrect(pip_x - border, pip_y - border,
+                     pip_w + border * 2, pip_h + border * 2);
+    );
+
+    gfx_a = opacity;
+    gfx_blit(fg, 0, pip_x, pip_y, pip_w, pip_h);
+    gfx_a = 1;
+
+    show_frame > 0.5 ? (
+        gfx_set(0.2, 0.7, 1, 0.9);
+        gfx_fillrect(pip_x, pip_y, pip_w, 1);
+        gfx_fillrect(pip_x, pip_y + pip_h - 1, pip_w, 1);
+        gfx_fillrect(pip_x, pip_y, 1, pip_h);
+        gfx_fillrect(pip_x + pip_w - 1, pip_y, 1, pip_h);
+
+        hsz = 6;
+        gfx_set(0.4, 0.9, 1, 1);
+        gfx_fillrect(pip_x - hsz * 0.5,         pip_y - hsz * 0.5,         hsz, hsz);
+        gfx_fillrect(pip_x + pip_w - hsz * 0.5, pip_y - hsz * 0.5,         hsz, hsz);
+        gfx_fillrect(pip_x - hsz * 0.5,         pip_y + pip_h - hsz * 0.5, hsz, hsz);
+        gfx_fillrect(pip_x + pip_w - hsz * 0.5, pip_y + pip_h - hsz * 0.5, hsz, hsz);
+
+        msz = 4;
+        gfx_fillrect(pip_x + pip_w * 0.5 - msz * 0.5, pip_y - msz * 0.5,            msz, msz);
+        gfx_fillrect(pip_x + pip_w * 0.5 - msz * 0.5, pip_y + pip_h - msz * 0.5,    msz, msz);
+        gfx_fillrect(pip_x - msz * 0.5,               pip_y + pip_h * 0.5 - msz * 0.5, msz, msz);
+        gfx_fillrect(pip_x + pip_w - msz * 0.5,       pip_y + pip_h * 0.5 - msz * 0.5, msz, msz);
+    );
+);
