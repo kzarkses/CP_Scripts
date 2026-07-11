@@ -316,6 +316,19 @@ end
 function FXManager.loadTrackSelection()
 	local guid = FXManager.core.getTrackGUID()
 	if not guid then return end
+	-- Re-read track_selections from ExtState so cross-process writes (e.g. by
+	-- the standalone FX Browser) become visible without a script restart. The
+	-- ExtState write itself is cheap (RAM-only, persist=false by the writers
+	-- that need it cross-process). We deserialize and merge to keep any local
+	-- in-memory state we don't want to clobber.
+	local saved = FXManager.r.GetExtState("CP_FXConstellation", "track_selections")
+	if saved and saved ~= "" and FXManager.persistence
+	   and FXManager.persistence.deserialize then
+		local fresh = FXManager.persistence.deserialize(saved)
+		if type(fresh) == "table" then
+			FXManager.core.state.track_selections = fresh
+		end
+	end
 	local track_data = FXManager.core.state.track_selections[guid]
 	if not track_data then
 		FXManager.core.state.current_loaded_preset = ""

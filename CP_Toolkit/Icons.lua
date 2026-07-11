@@ -455,4 +455,164 @@ function Icons.Pipette(x, y, size, r, g, b, a)
     gfx.circle(cx - s * 0.8, cy + s * 0.8, scale(size, 0.05), 1, 1)
 end
 
+-- ============================================================================
+-- EXTENDED ICONS (added 2026-05-10 for FX Browser refonte V2)
+-- ============================================================================
+
+-- 5-point star outline (favorite indicator, off state)
+function Icons.Star(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local outer = scale(size, 0.36)
+    local inner = scale(size, 0.15)
+    local pi = math.pi
+    local pts = {}
+    for i = 0, 9 do
+        local rad = (i % 2 == 0) and outer or inner
+        local ang = -pi / 2 + (i * pi / 5)
+        pts[#pts + 1] = cx + math.cos(ang) * rad
+        pts[#pts + 1] = cy + math.sin(ang) * rad
+    end
+    -- Draw outline (10 line segments connecting consecutive points)
+    for i = 1, 19, 2 do
+        local nx = (i + 2 > 20) and pts[1] or pts[i + 2]
+        local ny = (i + 2 > 20) and pts[2] or pts[i + 3]
+        gfx.line(pts[i], pts[i + 1], nx, ny, 1)
+    end
+end
+
+-- Filled star (favorite indicator, on state) — uses native gfx.triangle for fill
+function Icons.StarFilled(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local outer = scale(size, 0.36)
+    local inner = scale(size, 0.15)
+    local pi = math.pi
+    local pts = {}
+    for i = 0, 9 do
+        local rad = (i % 2 == 0) and outer or inner
+        local ang = -pi / 2 + (i * pi / 5)
+        pts[#pts + 1] = cx + math.cos(ang) * rad
+        pts[#pts + 1] = cy + math.sin(ang) * rad
+    end
+    -- Fan-fill from center: each pair (i, i+1) → triangle (center, p_i, p_{i+1})
+    for i = 1, 19, 2 do
+        local x1, y1 = pts[i], pts[i + 1]
+        local x2, y2 = (i + 2 > 20) and pts[1] or pts[i + 2],
+                       (i + 2 > 20) and pts[2] or pts[i + 3]
+        gfx.triangle(cx, cy, x1, y1, x2, y2)
+    end
+end
+
+-- Analog clock (recents indicator)
+function Icons.Clock(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local rad = scale(size, 0.36)
+    -- Outline
+    gfx.circle(cx, cy, rad, 0, 1)
+    -- Hands: hour up, minute right (10:10-style)
+    gfx.line(cx, cy, cx, cy - scale(size, 0.22), 1)
+    gfx.line(cx, cy, cx + scale(size, 0.20), cy, 1)
+    -- Center dot
+    gfx.circle(cx, cy, scale(size, 0.05), 1, 1)
+end
+
+-- Scan: magnifier with horizontal scan line crossing the lens
+function Icons.Scan(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local rad = scale(size, 0.22)
+    -- Lens
+    gfx.circle(cx - scale(size, 0.05), cy - scale(size, 0.05), rad, 0, 1)
+    -- Scan line through the lens
+    gfx.line(cx - scale(size, 0.05) - rad, cy - scale(size, 0.05),
+             cx - scale(size, 0.05) + rad, cy - scale(size, 0.05), 1)
+    -- Handle
+    gfx.line(cx + scale(size, 0.13), cy + scale(size, 0.13),
+             cx + scale(size, 0.30), cy + scale(size, 0.30), 1)
+end
+
+-- Sort A→Z arrows (down arrow with two stacked bars)
+function Icons.Sort(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local s = scale(size, 0.25)
+    -- Down arrow on left
+    gfx.line(cx - s * 1.2, cy - s, cx - s * 1.2, cy + s, 1)
+    gfx.line(cx - s * 1.2 - s * 0.4, cy + s * 0.4, cx - s * 1.2, cy + s, 1)
+    gfx.line(cx - s * 1.2, cy + s, cx - s * 1.2 + s * 0.4, cy + s * 0.4, 1)
+    -- Three lines on the right (decreasing length)
+    gfx.line(cx, cy - s, cx + s * 1.2, cy - s, 1)
+    gfx.line(cx, cy, cx + s * 0.8, cy, 1)
+    gfx.line(cx, cy + s, cx + s * 0.4, cy + s, 1)
+end
+
+-- Dice (random — 6-face with 5-pip pattern)
+function Icons.Dice(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local half = scale(size, 0.30)
+    -- Square
+    gfx.line(cx - half, cy - half, cx + half, cy - half, 1)
+    gfx.line(cx + half, cy - half, cx + half, cy + half, 1)
+    gfx.line(cx + half, cy + half, cx - half, cy + half, 1)
+    gfx.line(cx - half, cy + half, cx - half, cy - half, 1)
+    -- Five pips (corners + center)
+    local pip = scale(size, 0.05)
+    local off = scale(size, 0.16)
+    gfx.circle(cx, cy, pip, 1, 1)
+    gfx.circle(cx - off, cy - off, pip, 1, 1)
+    gfx.circle(cx + off, cy - off, pip, 1, 1)
+    gfx.circle(cx - off, cy + off, pip, 1, 1)
+    gfx.circle(cx + off, cy + off, pip, 1, 1)
+end
+
+-- Erase (eraser block — for "Clear chain")
+function Icons.Erase(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local w = scale(size, 0.30)
+    local h = scale(size, 0.18)
+    -- Rectangle slightly tilted (drawn axis-aligned for simplicity)
+    gfx.rect(cx - w, cy - h, w * 2, h * 2, 0)
+    -- Diagonal split line (separates "tip" from "block")
+    gfx.line(cx, cy - h, cx, cy + h, 1)
+    -- Action lines (motion)
+    local ml = scale(size, 0.08)
+    gfx.line(cx + w + 2, cy - h * 0.5, cx + w + 2 + ml, cy - h * 0.5, 1)
+    gfx.line(cx + w + 2, cy + h * 0.5, cx + w + 2 + ml, cy + h * 0.5, 1)
+end
+
+-- Grip (drag handle: 6 dots in 2 columns, like ⋮⋮)
+function Icons.Grip(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local dot = scale(size, 0.04)
+    local sx = scale(size, 0.10)
+    local sy = scale(size, 0.18)
+    for col = -1, 1, 2 do
+        for row = -1, 1 do
+            gfx.circle(cx + col * sx, cy + row * sy, dot, 1, 1)
+        end
+    end
+end
+
+-- Layers (stacked rhombi — for tabs / collections)
+function Icons.Layers(x, y, size, r, g, b, a)
+    set_color(r, g, b, a)
+    local cx, cy = center(x, y, size)
+    local hw = scale(size, 0.30)
+    local hh = scale(size, 0.10)
+    local off = scale(size, 0.10)
+    -- Three diamond outlines stacked vertically
+    for i = -1, 1 do
+        local oy = cy + i * off
+        gfx.line(cx - hw, oy, cx, oy - hh, 1)
+        gfx.line(cx, oy - hh, cx + hw, oy, 1)
+        gfx.line(cx + hw, oy, cx, oy + hh, 1)
+        gfx.line(cx, oy + hh, cx - hw, oy, 1)
+    end
+end
+
 return Icons

@@ -430,10 +430,18 @@ theme.colors.value_normal / value_modified / value_negative
 theme.colors.list_bg / list_alt_bg / list_text / list_grid
 theme.colors.list_selected / list_selected_text / list_hover
 
+-- Surface hierarchy + semantic accents (added for compact list/tab UIs)
+theme.colors.surface / surface2 / border_soft / text_mute
+theme.colors.accent_dim / danger / bypass
+
 theme.fonts.face / title / h1 / h2 / body / caption / mono_face / mono_size
 theme.window_padding / frame_padding_x / frame_padding_y / item_spacing / indent
 theme.separator_pad / checkbox_size / slider_height / button_height / tab_height
 theme.combo_height / header_height / scrollbar_width / scale
+
+-- Compact list / chip rows (FX Browser-style dense UIs)
+theme.chip_h / row_h / row_h_large / pad_small / pad_large
+theme.gap / gap_large / splitter_w
 
 theme.widget_style  -- "flat" (default) | "windows"
                     -- "windows" enables Win32-style bevels on buttons (3D),
@@ -478,7 +486,7 @@ UI.ClearAnchor()
 
 ---
 
-## Icons (41 available)
+## Icons (50 available)
 
 ```lua
 UI.Icons.ChevronDown(x, y, size, r, g, b, a)
@@ -493,6 +501,7 @@ UI.Icons.ChevronDown(x, y, size, r, g, b, a)
 -- Audio: Waveform, MIDI, FX
 -- Files: Folder, File
 -- Tools: Crosshair, Pipette
+-- Lists/tabs: Star, StarFilled, Clock, Scan, Sort, Dice, Erase, Grip, Layers
 ```
 
 ---

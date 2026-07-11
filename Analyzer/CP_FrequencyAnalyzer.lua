@@ -7,7 +7,6 @@ r.gmem_attach("CP_FrequencyAnalyzer")
 local config = {
     update_rate = 0.016,
     octave_smoothing = 0,
-    interpolation_steps = 4,
     main_color = "#1ABC98",
     peak_color = "#1ABC98",
     fill_color = "#1ABC98",
@@ -30,12 +29,17 @@ local state = {
     last_update = 0,
     fft_size = 4096,
     sample_rate = 48000,
-    x_cache = {},
     log_min = math.log(20),
     log_max = 0,
     raw_fft_size = nil,
     raw_sample_rate = nil,
-    raw_num_bins = nil
+    raw_num_bins = nil,
+    pixel_bins = nil,
+    pixel_cache_w = 0,
+    pixel_cache_sr = 0,
+    pixel_cache_nb = 0,
+    col_spec = {},
+    col_peak = {}
 }
 
 local main_r, main_g, main_b
@@ -84,151 +88,175 @@ function LoadState()
     end
 end
 
+function RebuildPixelMap(width)
+    if width <= 0 then return end
+    if state.pixel_cache_w == width
+        and state.pixel_cache_sr == state.sample_rate
+        and state.pixel_cache_nb == state.num_bins
+        and state.pixel_bins then
+        return
+    end
+
+    local pixel_bins = {}
+    local log_min = state.log_min
+    local log_range = state.log_max - state.log_min
+    local nyquist = state.sample_rate / 2
+    local num_bins = state.num_bins
+    local inv_width = 1 / width
+    local bins_per_hz = num_bins / nyquist
+
+    for px = 0, width - 1 do
+        local norm_center = (px + 0.5) * inv_width
+        local freq_c = math.exp(log_min + norm_center * log_range)
+        local bin_f = freq_c * bins_per_hz
+
+        local norm_a = px * inv_width
+        local norm_b = (px + 1) * inv_width
+        local freq_a = math.exp(log_min + norm_a * log_range)
+        local freq_b = math.exp(log_min + norm_b * log_range)
+        local bin_a = math.floor(freq_a * bins_per_hz)
+        local bin_b = math.floor(freq_b * bins_per_hz)
+        if bin_a < 0 then bin_a = 0 end
+        if bin_b >= num_bins then bin_b = num_bins - 1 end
+
+        if bin_b - bin_a >= 1 then
+            -- multiple bins per pixel: max
+            pixel_bins[px + 1] = {mode = 0, a = bin_a, b = bin_b}
+        else
+            -- less than 1 bin per pixel: lerp between neighbors
+            local i0 = math.floor(bin_f)
+            if i0 < 0 then i0 = 0 end
+            if i0 > num_bins - 2 then i0 = num_bins - 2 end
+            local t = bin_f - i0
+            if t < 0 then t = 0 elseif t > 1 then t = 1 end
+            pixel_bins[px + 1] = {mode = 1, i0 = i0, t = t}
+        end
+    end
+
+    state.pixel_bins = pixel_bins
+    state.pixel_cache_w = width
+    state.pixel_cache_sr = state.sample_rate
+    state.pixel_cache_nb = state.num_bins
+    state.col_spec = {}
+    state.col_peak = {}
+end
+
 function ReadFFTData()
     local gmem_offset = 0
-    
+
     local raw_fft_size = r.gmem_read(gmem_offset)
     local raw_sample_rate = r.gmem_read(gmem_offset + 1)
     local raw_num_bins = r.gmem_read(gmem_offset + 2)
-    
+
     state.raw_fft_size = raw_fft_size
     state.raw_sample_rate = raw_sample_rate
     state.raw_num_bins = raw_num_bins
-    
+
     state.fft_size = raw_fft_size or 4096
     local new_sample_rate = raw_sample_rate or 48000
     local new_num_bins = raw_num_bins or 1024
-    
+
     if new_sample_rate ~= state.sample_rate then
         state.sample_rate = new_sample_rate
         state.log_max = math.log(state.sample_rate / 2)
-        state.x_cache = {}
+        state.pixel_bins = nil
     end
-    
+
     if new_num_bins ~= state.num_bins then
         state.num_bins = new_num_bins
-        state.x_cache = {}
-        
-        state.spectrum_data = {}
-        state.peak_data = {}
-        
-        for i = 1, state.num_bins do
-            state.spectrum_data[i] = -96
-            state.peak_data[i] = -96
-        end
+        state.pixel_bins = nil
     end
-    
-    if #state.spectrum_data == 0 then
-        for i = 1, state.num_bins do
-            state.spectrum_data[i] = -96
-            state.peak_data[i] = -96
-        end
-    end
-    
-    for i = 0, state.num_bins - 1 do
-        local mag_db = r.gmem_read(gmem_offset + 3 + i) or -96
-        local peak_db = r.gmem_read(gmem_offset + 3 + state.num_bins + i) or -96
-        
-        state.spectrum_data[i + 1] = mag_db
-        state.peak_data[i + 1] = peak_db
-    end
-    
-    if config.octave_smoothing > 0 then
-        ApplyOctaveSmoothing()
-    end
-end
 
-function ApplyOctaveSmoothing()
-    local smoothing_factors = {0, 24, 12, 6, 3}
-    local octave_fraction = smoothing_factors[config.octave_smoothing + 1]
-    
-    if octave_fraction == 0 then return end
-    
-    local smoothed_spectrum = {}
-    local smoothed_peaks = {}
-    
-    for i = 1, state.num_bins do
-        local bin_index = i - 1
-        local center_freq = (bin_index / state.num_bins) * (state.sample_rate / 2)
-        
-        if center_freq < 20 then center_freq = 20 end
-        
-        local bandwidth = center_freq * (2^(1/octave_fraction) - 2^(-1/octave_fraction))
-        local freq_low = center_freq - bandwidth / 2
-        local freq_high = center_freq + bandwidth / 2
-        
-        local sum_mag = 0
-        local sum_peak = 0
-        local count = 0
-        
-        for j = 1, state.num_bins do
-            local j_bin_index = j - 1
-            local j_freq = (j_bin_index / state.num_bins) * (state.sample_rate / 2)
-            
-            if j_freq >= freq_low and j_freq <= freq_high then
-                local mag_val = state.spectrum_data[j]
-                local peak_val = state.peak_data[j]
-                
-                if mag_val and peak_val then
-                    sum_mag = sum_mag + mag_val
-                    sum_peak = sum_peak + peak_val
-                    count = count + 1
+    local width = gfx.w
+    if width > 0 then
+        RebuildPixelMap(width)
+    end
+
+    local pixel_bins = state.pixel_bins
+    if not pixel_bins then return end
+
+    local col_spec = state.col_spec
+    local col_peak = state.col_peak
+    local peak_base = gmem_offset + 3 + state.num_bins
+    local spec_base = gmem_offset + 3
+    local show_peak = state.show_peak_hold
+
+    for px = 1, #pixel_bins do
+        local pb = pixel_bins[px]
+        if pb.mode == 0 then
+            local bin_a, bin_b = pb.a, pb.b
+            local max_s = -200
+            local sum_s = 0
+            local max_p = -200
+            local sum_p = 0
+            local cnt = 0
+            for b = bin_a, bin_b do
+                local s = r.gmem_read(spec_base + b) or -96
+                if s > max_s then max_s = s end
+                sum_s = sum_s + s
+                if show_peak then
+                    local p = r.gmem_read(peak_base + b) or -96
+                    if p > max_p then max_p = p end
+                    sum_p = sum_p + p
                 end
+                cnt = cnt + 1
+            end
+            col_spec[px] = max_s * 0.5 + (sum_s / cnt) * 0.5
+            if show_peak then col_peak[px] = max_p * 0.5 + (sum_p / cnt) * 0.5 end
+        else
+            local i0, t = pb.i0, pb.t
+            local im1 = i0 - 1; if im1 < 0 then im1 = 0 end
+            local i2 = i0 + 2; if i2 >= state.num_bins then i2 = state.num_bins - 1 end
+            local sm1 = r.gmem_read(spec_base + im1) or -96
+            local s0 = r.gmem_read(spec_base + i0) or -96
+            local s1 = r.gmem_read(spec_base + i0 + 1) or -96
+            local s2 = r.gmem_read(spec_base + i2) or -96
+            local t2 = t * t
+            local t3 = t2 * t
+            col_spec[px] = 0.5 * ((2 * s0) + (-sm1 + s1) * t + (2 * sm1 - 5 * s0 + 4 * s1 - s2) * t2 + (-sm1 + 3 * s0 - 3 * s1 + s2) * t3)
+            if show_peak then
+                local pm1 = r.gmem_read(peak_base + im1) or -96
+                local p0 = r.gmem_read(peak_base + i0) or -96
+                local p1 = r.gmem_read(peak_base + i0 + 1) or -96
+                local p2 = r.gmem_read(peak_base + i2) or -96
+                col_peak[px] = 0.5 * ((2 * p0) + (-pm1 + p1) * t + (2 * pm1 - 5 * p0 + 4 * p1 - p2) * t2 + (-pm1 + 3 * p0 - 3 * p1 + p2) * t3)
             end
         end
-        
-        if count > 0 then
-            smoothed_spectrum[i] = sum_mag / count
-            smoothed_peaks[i] = sum_peak / count
-        else
-            smoothed_spectrum[i] = state.spectrum_data[i] or -96
-            smoothed_peaks[i] = state.peak_data[i] or -96
+    end
+
+    for i = #col_spec, #pixel_bins + 1, -1 do
+        col_spec[i] = nil
+        col_peak[i] = nil
+    end
+
+    -- 5-tap gaussian smoothing (kernel 1/4/6/4/1 / 16)
+    local n = #col_spec
+    if n >= 5 then
+        local tmp = {}
+        for i = 1, n do tmp[i] = col_spec[i] end
+        for i = 3, n - 2 do
+            col_spec[i] = (tmp[i-2] + tmp[i-1] * 4 + tmp[i] * 6 + tmp[i+1] * 4 + tmp[i+2]) * 0.0625
+        end
+        if show_peak then
+            for i = 1, n do tmp[i] = col_peak[i] end
+            for i = 3, n - 2 do
+                col_peak[i] = (tmp[i-2] + tmp[i-1] * 4 + tmp[i] * 6 + tmp[i+1] * 4 + tmp[i+2]) * 0.0625
+            end
         end
     end
-    
-    state.spectrum_data = smoothed_spectrum
-    state.peak_data = smoothed_peaks
-end
-
-function FreqToX(bin_index, canvas_x, canvas_width)
-    local cached = state.x_cache[bin_index]
-    if cached then
-        return canvas_x + cached * canvas_width
-    end
-    
-    local freq = (bin_index / state.num_bins) * (state.sample_rate / 2)
-    if freq < 20 then freq = 20 end
-    
-    local log_freq = math.log(freq)
-    local norm = (log_freq - state.log_min) / (state.log_max - state.log_min)
-    
-    state.x_cache[bin_index] = norm
-    return canvas_x + norm * canvas_width
 end
 
 function DBToY(db, canvas_y, canvas_height)
-    local min_db = -96
-    local max_db = 0
-    
-    if not db then db = -96 end
-    if db < min_db then db = min_db end
-    if db > max_db then db = max_db end
-    
-    local norm = (db - min_db) / (max_db - min_db)
-    
+    if not db or db < -96 then db = -96 end
+    if db > 0 then db = 0 end
+    local norm = (db + 96) * 0.010416666666666666
     return canvas_y + canvas_height - (norm * canvas_height)
 end
 
-function CatmullRomInterpolate(t, p0, p1, p2, p3)
-    local t2 = t * t
-    local t3 = t2 * t
-    
-    return 0.5 * (
-        (2 * p1) +
-        (-p0 + p2) * t +
-        (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
-        (-p0 + 3 * p1 - 3 * p2 + p3) * t3
-    )
+function FreqToXLog(freq, canvas_x, canvas_width)
+    if freq < 20 then freq = 20 end
+    local norm = (math.log(freq) - state.log_min) / (state.log_max - state.log_min)
+    return canvas_x + norm * canvas_width
 end
 
 function DrawDebugInfo()
@@ -343,11 +371,10 @@ function DrawGrid(canvas_x, canvas_y, canvas_width, canvas_height)
         if line_info.freq < state.sample_rate / 2 then
             local alpha = line_info.is_main and config.grid_alpha * 1.5 or config.grid_alpha * 0.5
             gfx.set(1, 1, 1, alpha)
-            
-            local bin_index = (line_info.freq / (state.sample_rate / 2)) * state.num_bins
-            local x = FreqToX(bin_index, canvas_x, canvas_width)
+
+            local x = FreqToXLog(line_info.freq, canvas_x, canvas_width)
             gfx.line(x, canvas_y, x, canvas_y + canvas_height)
-            
+
             if line_info.label ~= "" then
                 gfx.set(1, 1, 1, config.label_alpha)
                 gfx.x = x + 3
@@ -361,167 +388,53 @@ end
 function DrawSpectrum()
     local canvas_width = gfx.w
     local canvas_height = gfx.h
-    
     local canvas_x = 0
     local canvas_y = 0
-    
+
     gfx.set(0, 0, 0, 1)
     gfx.rect(0, 0, canvas_width, canvas_height, 1)
-    
+
     DrawGrid(canvas_x, canvas_y, canvas_width, canvas_height)
-    
-    local num_points = state.num_bins
-    
-    if num_points < 2 then
-        return
-    end
-    
+
+    local col_spec = state.col_spec
+    local n = #col_spec
+    if n < 2 then return end
+
+    local bottom_y = canvas_y + canvas_height
+
     if state.show_fill then
-        local bottom_y = canvas_y + canvas_height
-        
-        if config.interpolation_steps == 0 then
-            for i = 1, num_points - 1 do
-                local bin1 = i - 1
-                local bin2 = i
-                
-                local x1 = FreqToX(bin1, canvas_x, canvas_width)
-                local y1 = DBToY(state.spectrum_data[i], canvas_y, canvas_height)
-                local x2 = FreqToX(bin2, canvas_x, canvas_width)
-                local y2 = DBToY(state.spectrum_data[i + 1], canvas_y, canvas_height)
-                
-                gfx.set(fill_r, fill_g, fill_b, config.fill_alpha)
-                gfx.triangle(x1, y1, x2, y2, x1, bottom_y, 1)
-                gfx.triangle(x2, y2, x2, bottom_y, x1, bottom_y, 1)
-            end
-        else
-            for i = 1, num_points - 1 do
-                local db0 = state.spectrum_data[math.max(1, i - 1)] or -96
-                local db1 = state.spectrum_data[i] or -96
-                local db2 = state.spectrum_data[i + 1] or -96
-                local db3 = state.spectrum_data[math.min(num_points, i + 2)] or -96
-                
-                local bin1 = i - 1
-                local bin2 = i
-                
-                local x1 = FreqToX(bin1, canvas_x, canvas_width)
-                local x2 = FreqToX(bin2, canvas_x, canvas_width)
-                
-                local prev_x, prev_y
-                
-                for step = 0, config.interpolation_steps do
-                    local t = step / config.interpolation_steps
-                    
-                    local x = x1 + (x2 - x1) * t
-                    local db_interp = CatmullRomInterpolate(t, db0, db1, db2, db3)
-                    local y = DBToY(db_interp, canvas_y, canvas_height)
-                    
-                    if step > 0 then
-                        gfx.set(fill_r, fill_g, fill_b, config.fill_alpha)
-                        gfx.triangle(prev_x, prev_y, x, y, prev_x, bottom_y, 1)
-                        gfx.triangle(x, y, x, bottom_y, prev_x, bottom_y, 1)
-                    end
-                    
-                    prev_x = x
-                    prev_y = y
-                end
-            end
+        gfx.set(fill_r, fill_g, fill_b, config.fill_alpha)
+        local prev_y = DBToY(col_spec[1], canvas_y, canvas_height)
+        for px = 2, n do
+            local y = DBToY(col_spec[px], canvas_y, canvas_height)
+            local x1 = canvas_x + (px - 2)
+            local x2 = canvas_x + (px - 1)
+            gfx.triangle(x1, prev_y, x2, y, x2, bottom_y, x1, bottom_y)
+            prev_y = y
         end
     end
-    
+
     gfx.set(main_r, main_g, main_b, 1.0)
-    
-    if config.interpolation_steps == 0 then
-        for i = 1, num_points - 1 do
-            local bin1 = i - 1
-            local bin2 = i
-            
-            local x1 = FreqToX(bin1, canvas_x, canvas_width)
-            local y1 = DBToY(state.spectrum_data[i], canvas_y, canvas_height)
-            local x2 = FreqToX(bin2, canvas_x, canvas_width)
-            local y2 = DBToY(state.spectrum_data[i + 1], canvas_y, canvas_height)
-            
-            gfx.line(x1, y1, x2, y2)
-        end
-    else
-        for i = 1, num_points - 1 do
-            local db0 = state.spectrum_data[math.max(1, i - 1)] or -96
-            local db1 = state.spectrum_data[i] or -96
-            local db2 = state.spectrum_data[i + 1] or -96
-            local db3 = state.spectrum_data[math.min(num_points, i + 2)] or -96
-            
-            local bin1 = i - 1
-            local bin2 = i
-            
-            local x1 = FreqToX(bin1, canvas_x, canvas_width)
-            local x2 = FreqToX(bin2, canvas_x, canvas_width)
-            
-            local prev_x, prev_y
-            
-            for step = 0, config.interpolation_steps do
-                local t = step / config.interpolation_steps
-                
-                local x = x1 + (x2 - x1) * t
-                local db_interp = CatmullRomInterpolate(t, db0, db1, db2, db3)
-                local y = DBToY(db_interp, canvas_y, canvas_height)
-                
-                if step > 0 then
-                    gfx.line(prev_x, prev_y, x, y)
-                end
-                
-                prev_x = x
-                prev_y = y
-            end
-        end
+    local prev_y = DBToY(col_spec[1], canvas_y, canvas_height)
+    for px = 2, n do
+        local y = DBToY(col_spec[px], canvas_y, canvas_height)
+        gfx.line(canvas_x + (px - 2), prev_y, canvas_x + (px - 1), y)
+        prev_y = y
     end
-    
+
     if state.show_peak_hold then
-        gfx.set(peak_r, peak_g, peak_b, 1.0)
-        
-        if config.interpolation_steps == 0 then
-            for i = 1, num_points - 1 do
-                local bin1 = i - 1
-                local bin2 = i
-                
-                local x1 = FreqToX(bin1, canvas_x, canvas_width)
-                local y1 = DBToY(state.peak_data[i], canvas_y, canvas_height)
-                local x2 = FreqToX(bin2, canvas_x, canvas_width)
-                local y2 = DBToY(state.peak_data[i + 1], canvas_y, canvas_height)
-                
-                gfx.line(x1, y1, x2, y2)
-            end
-        else
-            for i = 1, num_points - 1 do
-                local db0 = state.peak_data[math.max(1, i - 1)] or -96
-                local db1 = state.peak_data[i] or -96
-                local db2 = state.peak_data[i + 1] or -96
-                local db3 = state.peak_data[math.min(num_points, i + 2)] or -96
-                
-                local bin1 = i - 1
-                local bin2 = i
-                
-                local x1 = FreqToX(bin1, canvas_x, canvas_width)
-                local x2 = FreqToX(bin2, canvas_x, canvas_width)
-                
-                local prev_x, prev_y
-                
-                for step = 0, config.interpolation_steps do
-                    local t = step / config.interpolation_steps
-                    
-                    local x = x1 + (x2 - x1) * t
-                    local db_interp = CatmullRomInterpolate(t, db0, db1, db2, db3)
-                    local y = DBToY(db_interp, canvas_y, canvas_height)
-                    
-                    if step > 0 then
-                        gfx.line(prev_x, prev_y, x, y)
-                    end
-                    
-                    prev_x = x
-                    prev_y = y
-                end
+        local col_peak = state.col_peak
+        if #col_peak >= 2 then
+            gfx.set(peak_r, peak_g, peak_b, 1.0)
+            local prev_py = DBToY(col_peak[1], canvas_y, canvas_height)
+            for px = 2, n do
+                local y = DBToY(col_peak[px], canvas_y, canvas_height)
+                gfx.line(canvas_x + (px - 2), prev_py, canvas_x + (px - 1), y)
+                prev_py = y
             end
         end
     end
-    
+
     DrawDebugInfo()
 end
 

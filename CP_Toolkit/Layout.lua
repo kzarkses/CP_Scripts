@@ -106,12 +106,20 @@ end
 function Layout.End()
     local c = Core.CurrentContainer()
     if c then
-        -- Calculate content height (cursor_y + last row)
-        local content_h = c.cursor_y + c.max_row_h + c.pad_y
-        -- Flush sameline pending
+        -- After _AdvanceCursor, cursor_y already points BELOW the last widget
+        -- (it includes widget_h + item_spacing). So we subtract that trailing
+        -- spacing and add the bottom pad. Without this, content_h overshoots
+        -- by spacing + widget_h, causing a phantom scrollbar even when the
+        -- content visually fits the window.
+        -- A pending SameLine row hasn't been closed yet → cursor_y is still
+        -- on the row's top, so we add max_row_h instead.
+        local content_h
         if c.sameline_pending then
-            content_h = c.cursor_y + c.max_row_h + c.spacing + c.pad_y
+            content_h = c.cursor_y + c.max_row_h + c.pad_y
+        else
+            content_h = c.cursor_y - c.spacing + c.pad_y
         end
+        if content_h < c.pad_y * 2 then content_h = c.pad_y * 2 end
 
         local data = Core.GetWidgetSubData("root", c.id)
         data.content_h = content_h
@@ -212,8 +220,15 @@ function Layout.EndChild()
         return
     end
 
-    -- Calculate total content height + width
-    local content_h = c.cursor_y + c.max_row_h
+    -- See Layout.End() — cursor_y already includes the trailing item_spacing,
+    -- so subtract it to avoid a phantom scrollbar when content visually fits.
+    local content_h
+    if c.sameline_pending then
+        content_h = c.cursor_y + c.max_row_h + c.pad_y
+    else
+        content_h = c.cursor_y - c.spacing + c.pad_y
+    end
+    if content_h < c.pad_y * 2 then content_h = c.pad_y * 2 end
     local content_w = (c.content_w or 0) + c.pad_x  -- + trailing padding
     local data = Core.GetWidgetSubData("child", c.id)
     data.content_h = content_h

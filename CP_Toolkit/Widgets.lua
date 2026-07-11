@@ -799,22 +799,27 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
 
         -- Value text (on top of slider) — formatted string is cached in
         -- widget_data so we only re-format when display_val actually changes.
-        -- opts.format: fixed string override (e.g., an item-name from a lookup
-        -- table). When present, it wins over the numeric display.
+        -- opts.format is a printf-style template ("%d Hz", "%.1f dB", ...).
+        -- A plain string with no % directive is used verbatim (lookup labels).
         local sd = Core.GetWidgetSubData("slider", id)
         local val_str
-        local fmt_override = opts.format
-        if fmt_override then
-            val_str = fmt_override
-        elseif sd.fv_val == display_val and sd.fv_str then
+        local fmt = opts.format
+        if sd.fv_val == display_val and sd.fv_fmt == fmt and sd.fv_str then
             val_str = sd.fv_str
         else
-            if is_int then
+            if fmt then
+                if fmt:find("%%[%-+ 0#]*%d*%.?%d*[dixXoufgGeEcs]") then
+                    val_str = string.format(fmt, is_int and floor(display_val) or display_val)
+                else
+                    val_str = fmt
+                end
+            elseif is_int then
                 val_str = tostring(floor(display_val))
             else
                 val_str = string.format("%.2f", display_val)
             end
             sd.fv_val = display_val
+            sd.fv_fmt = fmt
             sd.fv_str = val_str
         end
         local vw, vh = Core.MeasureText(val_str)

@@ -64,6 +64,19 @@ function Theme.Default()
             title_text      = { 0.70, 0.70, 0.72, 1.0 },
             close_btn       = { 0.80, 0.25, 0.25, 1.0 },
             close_btn_hover = { 0.95, 0.30, 0.30, 1.0 },
+
+            -- Surface hierarchy (added 2026-05-10 for FX Browser refonte).
+            -- surface  = elevated panels above window_bg (footer, toolbar);
+            -- surface2 = next layer up (hover row, alt list).
+            surface         = { 0.16, 0.16, 0.17, 1.0 },
+            surface2        = { 0.20, 0.20, 0.22, 1.0 },
+            border_soft     = { 0.22, 0.22, 0.24, 0.6 },
+            text_mute       = { 0.40, 0.40, 0.42, 1.0 },
+
+            -- Semantic accent variants for state coloring.
+            accent_dim      = { 0.25, 0.42, 0.58, 1.0 },  -- selected row bg, primary btn bg
+            danger          = { 0.78, 0.32, 0.32, 1.0 },  -- delete / clear
+            bypass          = { 0.78, 0.62, 0.32, 1.0 },  -- amber for bypassed FX
         },
 
         -- Font settings (sizes are scaled)
@@ -113,6 +126,16 @@ function Theme.Default()
         button_height   = 24,
         tab_height      = 26,
         combo_height    = 22,
+
+        -- Compact list / chip rows (added 2026-05-10 for FX Browser refonte).
+        chip_h          = 20,    -- filter pills, user tabs
+        row_h           = 22,    -- standard list row (matches combo_height)
+        row_h_large     = 26,    -- chain row (matches tab_height)
+        pad_small       = 4,     -- tight padding
+        pad_large       = 10,    -- aerated padding (matches window_padding)
+        gap             = 4,     -- inter-element horizontal gap
+        gap_large       = 8,     -- inter-section gap
+        splitter_w      = 3,     -- splitter handle width
     }
 end
 
@@ -160,6 +183,14 @@ function Theme.ApplyScale(t, scale)
     t.combo_height    = s(t.combo_height)
     t.header_height   = s(t.header_height)
     t.separator_pad   = s(t.separator_pad)
+    if t.chip_h      then t.chip_h      = s(t.chip_h)      end
+    if t.row_h       then t.row_h       = s(t.row_h)       end
+    if t.row_h_large then t.row_h_large = s(t.row_h_large) end
+    if t.pad_small   then t.pad_small   = s(t.pad_small)   end
+    if t.pad_large   then t.pad_large   = s(t.pad_large)   end
+    if t.gap         then t.gap         = s(t.gap)         end
+    if t.gap_large   then t.gap_large   = s(t.gap_large)   end
+    if t.splitter_w  then t.splitter_w  = s(t.splitter_w)  end
 
     return t
 end
@@ -364,6 +395,14 @@ function Theme.Save(t, name)
         combo_height = t.combo_height,
         scrollbar_width = t.scrollbar_width,
         widget_style = t.widget_style,
+        chip_h = t.chip_h,
+        row_h = t.row_h,
+        row_h_large = t.row_h_large,
+        pad_small = t.pad_small,
+        pad_large = t.pad_large,
+        gap = t.gap,
+        gap_large = t.gap_large,
+        splitter_w = t.splitter_w,
     }
 
     for key, c in pairs(t.colors) do
@@ -434,6 +473,14 @@ function Theme.LoadSaved(name)
     t.combo_height = data.combo_height or t.combo_height
     t.scrollbar_width = data.scrollbar_width or t.scrollbar_width
     t.widget_style = data.widget_style or t.widget_style
+    t.chip_h      = data.chip_h      or t.chip_h
+    t.row_h       = data.row_h       or t.row_h
+    t.row_h_large = data.row_h_large or t.row_h_large
+    t.pad_small   = data.pad_small   or t.pad_small
+    t.pad_large   = data.pad_large   or t.pad_large
+    t.gap         = data.gap         or t.gap
+    t.gap_large   = data.gap_large   or t.gap_large
+    t.splitter_w  = data.splitter_w  or t.splitter_w
 
     return t
 end

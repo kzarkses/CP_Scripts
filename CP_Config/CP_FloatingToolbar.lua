@@ -33,14 +33,28 @@ return {
           native_icon = "AI_Function_Settings_Preferences_DF.png"
         },
         {
-          command_id = 42073
+          command_id = "_RS669e329908d211113ee1a48fa3f60701d10132b2",
+          native_icon = "AI_Function_Stereo_DF.png"
+        },
+        {
+          command_id = "_RS1205701e2cb7da9fb404435c9ce5158b1877476b",
+          native_icon = "00 - Toggle Spectral Peaks.png"
+        },
+        {
+          builtin_icon = "Delete",
+          command_id = "_RSe92e062f29527a8f1564cd06dfc88e41c00646ce",
+          native_icon = "toolbar_envelope_LFO_generator_and_shaper.png"
+        },
+        {
+          command_id = "_RSdbf64708ea8abea46b82a08cabc050148d65176c",
+          native_icon = "AI_Function_Sample_View_Show_SampleTrack_Waveform_DF.png"
         }
       },
       anchor = {
         auto_hide_min_width = 1800,
         hide_when_target_hidden = false,
-        offset_x = 539,
-        offset_y = 6,
+        offset_x = 337,
+        offset_y = 4,
         snap = "left",
         target = "transport",
         x = 0,
@@ -49,14 +63,14 @@ return {
       enabled = true,
       id = "98298282831",
       layout = {
-        bg_alpha = 1,
-        bg_border = true,
+        bg_alpha = 0,
+        bg_border = false,
         bg_color = {
-          0.195122,
-          0.193787,
-          0.195313
+          0.289063,
+          0.289063,
+          0.289063
         },
-        bg_radius = 20,
+        bg_radius = 0,
         direction = "horizontal",
         icon_size = 30,
         padding = 1,

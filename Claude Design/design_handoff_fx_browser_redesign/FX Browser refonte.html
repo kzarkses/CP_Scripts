@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FX Browser — Refonte</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0f0f10; color: #d4d4d4; font-family: 'Inter', system-ui, sans-serif; }
+  *, *::before, *::after { box-sizing: border-box; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #363638; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #4a4a4c; }
+  button { font-family: inherit; }
+  button:focus-visible { outline: 1px solid #7aa2c4; outline-offset: 1px; }
+  input { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="theme.jsx"></script>
+<script type="text/babel" src="icons.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="mock-data.jsx"></script>
+<script type="text/babel" src="layout-shared.jsx"></script>
+<script type="text/babel" src="layout-v1.jsx"></script>
+<script type="text/babel" src="layout-v2.jsx"></script>
+<script type="text/babel" src="layout-v3.jsx"></script>
+
+<script type="text/babel" data-presets="react">
+const Tx = window.CP_THEME;
+
+// Description card for each artboard
+const Note = ({ title, body, tags }) => (
+  <div style={{
+    padding: '14px 16px', background: '#19191a', color: '#bdbdbf',
+    borderRadius: 4, border: '1px solid #2a2a2c',
+    font: "12px/1.5 'Inter', system-ui, sans-serif", maxWidth: 340,
+  }}>
+    <div style={{ fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', color: '#7a7a7c', marginBottom: 6 }}>{title}</div>
+    <div style={{ color: '#e0e0e2', marginBottom: tags ? 8 : 0 }}>{body}</div>
+    {tags && (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+        {tags.map((t, i) => (
+          <span key={i} style={{
+            font: "10px 'JetBrains Mono', monospace", padding: '2px 5px',
+            background: '#252526', border: '1px solid #363638', borderRadius: 2, color: '#9a9a9c',
+          }}>{t}</span>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+// Wrap each layout at the target window size (555×750)
+const Window = ({ children, w = 555, h = 750 }) => (
+  <div style={{
+    width: w, height: h,
+    background: Tx.colors.bg,
+    border: `1px solid ${Tx.colors.border}`,
+    borderRadius: 4,
+    boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+    overflow: 'hidden',
+    display: 'flex', flexDirection: 'column',
+  }}>
+    {/* Fake REAPER-ish window chrome to set the scene */}
+    <div style={{
+      height: 22, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 6,
+      background: '#141415', borderBottom: `1px solid ${Tx.colors.border}`,
+      font: "10.5px 'Inter', system-ui, sans-serif", color: Tx.colors.textMute, flexShrink: 0,
+    }}>
+      <span style={{ display: 'inline-flex', gap: 4 }}>
+        <span style={{ width: 9, height: 9, borderRadius: 9, background: '#444' }} />
+        <span style={{ width: 9, height: 9, borderRadius: 9, background: '#444' }} />
+        <span style={{ width: 9, height: 9, borderRadius: 9, background: '#444' }} />
+      </span>
+      <span style={{ flex: 1, textAlign: 'center', letterSpacing: 0.3 }}>FX Browser — track 03 · Lead Synth</span>
+      <span style={{ font: "10px 'JetBrains Mono', monospace" }}>{w}×{h}</span>
+    </div>
+    <div style={{ flex: 1, minHeight: 0 }}>
+      {children}
+    </div>
+  </div>
+);
+
+const App = () => (
+  <DesignCanvas
+    docTitle="FX Browser — refonte"
+    docSubtitle="Trois directions de layout · cible 555×750 sans troncature"
+    initialZoom={0.7}
+  >
+    <DCSection id="intent" title="Intent">
+      <DCArtboard id="brief" label="Brief résumé" width={680} height={420} bg="#19191a">
+        <div style={{ padding: 28, color: '#d4d4d4', font: "13px/1.55 'Inter', system-ui, sans-serif" }}>
+          <div style={{ fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase', color: '#7aa2c4', marginBottom: 10 }}>FX Browser refonte · CP_Scripts</div>
+          <h2 style={{ font: "600 22px/1.2 'Inter'", margin: '0 0 14px', color: '#fafafa' }}>Cible : 555×750 utilisable, zéro troncature</h2>
+          <p style={{ margin: '0 0 12px', color: '#bdbdbf' }}>
+            Layout actuel hardcodé en colonnes proportionnelles + body_h fixe → labels coupés
+            (« Add selec… », « kHs Pitch S… »), chips qui wrap, footer dense imbriqué.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px', font: "12px/1.5 'Inter'", color: '#bdbdbf' }}>
+            <span style={{ color: '#7a7a7c' }}>Strat. compactage</span><span>Icon-first sur Scan/Sort/⚙ et actions chain row (révélées au hover)</span>
+            <span style={{ color: '#7a7a7c' }}>Footer</span><span>Disparu en V1, condensé en V2, intégré aux view-tabs en V3</span>
+            <span style={{ color: '#7a7a7c' }}>Settings</span><span>Auto-open / Replace / Favs only / From visible → ContextMenu ⚙</span>
+            <span style={{ color: '#7a7a7c' }}>Chips</span><span>Filtres types compactés (★ ⏱ V3 V JS B), tabs scrollables horizontalement</span>
+            <span style={{ color: '#7a7a7c' }}>Body</span><span>Splitter resizable + body_h adaptatif via UI.GetAvailableHeight()</span>
+            <span style={{ color: '#7a7a7c' }}>Theme</span><span>Aucune valeur en dur — tout vient de UI.GetTheme().sizes/colors</span>
+          </div>
+        </div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="v1" title="V1 — Compact (recommandé)">
+      <DCArtboard id="v1-window" label="555 × 750 — pane-local mini-toolbars" width={555 + 2} height={750 + 22 + 2} bg="transparent">
+        <Window w={555} h={750}>
+          <FXBrowserV1 />
+        </Window>
+      </DCArtboard>
+      <DCArtboard id="v1-note" label="Notes" width={360} height={400} bg="#0f0f10">
+        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Note title="Idée" body="Chaque pane porte sa propre mini-toolbar. Le footer disparaît : Random + slider + Clear vivent au-dessus de la chain pane (c'est une opération chain). Auto-open / Replace / Favs only sont planqués dans ⚙."
+            tags={['mini-toolbars', 'no footer', '⚙ menu', 'splitter resize']} />
+          <Note title="Wins" body="Search occupe ~75 % de la toolbar. Les actions de chain row (Open / Bypass / Trash) ne consomment plus 132 px en permanence — elles apparaissent au hover. Chain row gagne ~110 px de label." />
+          <Note title="Toolkit mapping" body="UI.BeginColumns avec largeurs fixes pour les icon-buttons, UI.BeginWrap → UI.BeginScrollX pour la row de tabs, UI.ContextMenu pour ⚙. body_h = UI.GetAvailableHeight()."
+            tags={['BeginScrollX', 'ContextMenu', 'GetAvailableHeight']} />
+        </div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="v2" title="V2 — Single bottom-bar">
+      <DCArtboard id="v2-window" label="555 × 750 — bottom-bar tight + ⚙ menu" width={555 + 2} height={750 + 22 + 2} bg="transparent">
+        <Window w={555} h={750}>
+          <FXBrowserV2 />
+        </Window>
+      </DCArtboard>
+      <DCArtboard id="v2-note" label="Notes" width={360} height={400} bg="#0f0f10">
+        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Note title="Idée" body="Footer 1 ligne : Add (avec compteur), séparateur, Random + slider, Clear, ⚙. Tout le reste passe en menu. Plus proche de l'existant — moins de réorganisation, plus rassurant à porter."
+            tags={['1-row footer', 'icon-only secondary', 'familiar']} />
+          <Note title="Trade-off" body="Random reste dans le footer global même si ça concerne la chain — moins « propre » sémantiquement que V1, mais plus simple à câbler en Lua (un seul UI.BeginColumns en bas)." />
+          <Note title="Toolkit mapping" body="UI.BeginPanel pour le bottom-bar, UI.BeginColumns avec largeurs intrinsèques (icon-only = chipH×chipH), UI.SliderInt à largeur fixe."
+            tags={['BeginPanel', 'BeginColumns intrinsic']} />
+        </div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="v3" title="V3 — Tabbed (Plugins ↔ Chain)">
+      <DCArtboard id="v3-window" label="555 × 750 — single full-width pane" width={555 + 2} height={750 + 22 + 2} bg="transparent">
+        <Window w={555} h={750}>
+          <FXBrowserV3 />
+        </Window>
+      </DCArtboard>
+      <DCArtboard id="v3-note" label="Notes" width={360} height={400} bg="#0f0f10">
+        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Note title="Idée" body="Plugins / Chain en view-tabs (pas split). Chaque vue prend toute la largeur → labels jamais coupés même à 420 px. Actions contextuelles à droite des tabs. Chips se cachent quand on est sur Chain."
+            tags={['toggle tabs', 'full-width', 'small mode friendly']} />
+          <Note title="Trade-off" body="On perd la vue simultanée plugins+chain — gênant pour DnD plugin → chain. Mitigé en gardant le DnD vers les view-tabs (drop sur l'onglet Chain pour switcher + ajouter)." />
+          <Note title="Quand l'utiliser" body="Si tu veux un mode confort à 420×600 ou si tes utilisateurs préfèrent travailler en vue mono-pane. Peut être un toggle dans ⚙ : « Compact view »."
+            tags={['settings toggle', 'small windows']} />
+        </div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="states" title="États & détails">
+      <DCArtboard id="row-states" label="Chain row — états" width={520} height={300} bg={Tx.colors.surface}>
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ font: "10px 'Inter'", letterSpacing: 1, textTransform: 'uppercase', color: Tx.colors.textMute, marginBottom: 4 }}>Idle (pas de hover)</div>
+          <div style={{ background: Tx.colors.bg, padding: 4, border: `1px solid ${Tx.colors.borderSoft}`, borderRadius: 2 }}>
+            <div style={{ height: 26, padding: '0 6px 0 4px', display: 'flex', alignItems: 'center', gap: 4, color: Tx.colors.text, font: `${Tx.sizes.fontBase}px ${Tx.fonts.ui}` }}>
+              <span style={{ width: 12, color: Tx.colors.textMute, opacity: 0.4 }}><Icon name="grip" size={10} /></span>
+              <span style={{ width: 16, font: `${Tx.sizes.fontSm}px ${Tx.fonts.mono}`, color: Tx.colors.textMute }}>02</span>
+              <span style={{ flex: 1 }}>Pro-Q 3</span>
+              <span style={{ font: `${Tx.sizes.fontSm}px ${Tx.fonts.mono}`, color: Tx.colors.textMute, width: 22, textAlign: 'right' }}>VST3</span>
+            </div>
+          </div>
+          <div style={{ font: "10px 'Inter'", letterSpacing: 1, textTransform: 'uppercase', color: Tx.colors.textMute, margin: '6px 0 4px' }}>Hover — actions révélées</div>
+          <div style={{ background: Tx.colors.bg, padding: 4, border: `1px solid ${Tx.colors.borderSoft}`, borderRadius: 2 }}>
+            <div style={{ height: 26, padding: '0 6px 0 4px', display: 'flex', alignItems: 'center', gap: 4, background: Tx.colors.surface2, borderRadius: 2, color: Tx.colors.text, font: `${Tx.sizes.fontBase}px ${Tx.fonts.ui}` }}>
+              <span style={{ width: 12, color: Tx.colors.textMute }}><Icon name="grip" size={10} /></span>
+              <span style={{ width: 16, font: `${Tx.sizes.fontSm}px ${Tx.fonts.mono}`, color: Tx.colors.textMute }}>02</span>
+              <span style={{ flex: 1 }}>Pro-Q 3</span>
+              <span style={{ font: `${Tx.sizes.fontSm}px ${Tx.fonts.mono}`, color: Tx.colors.textMute, width: 22, textAlign: 'right' }}>VST3</span>
+              <span style={{ display: 'inline-flex', gap: 2, color: Tx.colors.textDim }}>
+                <span style={{ width: 18, height: 18, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 2 }}><Icon name="play" size={11} /></span>
+                <span style={{ width: 18, height: 18, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 2 }}><Icon name="eye" size={11} /></span>
+                <span style={{ width: 18, height: 18, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 2, color: Tx.colors.danger }}><Icon name="trash" size={11} /></span>
+              </span>
+            </div>
+          </div>
+          <div style={{ font: "10px 'Inter'", letterSpacing: 1, textTransform: 'uppercase', color: Tx.colors.textMute, margin: '6px 0 4px' }}>Bypassed — texte tamisé + barré</div>
+          <div style={{ background: Tx.colors.bg, padding: 4, border: `1px solid ${Tx.colors.borderSoft}`, borderRadius: 2 }}>
+            <div style={{ height: 26, padding: '0 6px 0 4px', display: 'flex', alignItems: 'center', gap: 4, color: Tx.colors.textMute, font: `${Tx.sizes.fontBase}px ${Tx.fonts.ui}` }}>
+              <span style={{ width: 12, opacity: 0.4 }}><Icon name="grip" size={10} /></span>
+              <span style={{ width: 16, font: `${Tx.sizes.fontSm}px ${Tx.fonts.mono}` }}>03</span>
+              <span style={{ flex: 1, textDecoration: 'line-through' }}>ReaComp</span>
+              <span style={{ font: `${Tx.sizes.fontSm}px ${Tx.fonts.mono}`, width: 22, textAlign: 'right' }}>JS</span>
+            </div>
+          </div>
+        </div>
+      </DCArtboard>
+      <DCArtboard id="filter-detail" label="Chips — détail" width={520} height={300} bg={Tx.colors.surface}>
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ font: "10px 'Inter'", letterSpacing: 1, textTransform: 'uppercase', color: Tx.colors.textMute }}>Filtres types : compactés en 1–2 caractères</div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <window.CP.Pill label="All" active />
+            <window.CP.Pill icon="starF" title="Favorites" />
+            <window.CP.Pill icon="clock" title="Recents" />
+            <window.CP.Pill label="V3" title="VST3" />
+            <window.CP.Pill label="V" title="VST" />
+            <window.CP.Pill label="JS" title="JS" />
+            <window.CP.Pill label="B" title="Bundled" />
+          </div>
+          <div style={{ font: "10px 'Inter'", letterSpacing: 1, textTransform: 'uppercase', color: Tx.colors.textMute, marginTop: 4 }}>Tabs custom — scrollable, close au hover</div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <window.CP.Tab label="Bass" />
+            <window.CP.Tab label="Drums" active />
+            <window.CP.Tab label="Vocals" />
+            <window.CP.Tab label="Mastering" />
+          </div>
+          <div style={{ font: "10px 'Inter'", letterSpacing: 1, textTransform: 'uppercase', color: Tx.colors.textMute, marginTop: 4 }}>Overflow : scroll horizontal natif (pas de wrap)</div>
+          <div style={{ color: Tx.colors.textDim, font: "11px/1.5 'Inter'" }}>
+            La row reste sur 1 ligne, peu importe le nombre de tabs. Si ça déborde, scroll horizontal au mouse-wheel ou drag.
+          </div>
+        </div>
+      </DCArtboard>
+    </DCSection>
+  </DesignCanvas>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

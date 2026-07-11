@@ -51,9 +51,22 @@ local state = {
     selected_idx   = 0,                                   -- last clicked plugin row (anchor)
     selected       = {},                                  -- multi-select: { [plugin.name]=true }
     chain_selected = nil,                                 -- selected chain row (fx_idx)
-    rand_count     = cfg.rand_count     or 3,
-    rand_fav_only  = cfg.rand_fav_only  or false,
-    rand_replace   = cfg.rand_replace   or false,
+    rand_count        = cfg.rand_count        or 3,
+    rand_fav_only     = cfg.rand_fav_only     or false,
+    rand_replace      = cfg.rand_replace      or false,
+    rand_from_visible = cfg.rand_from_visible or false,
+    -- Post-insertion macros: actions auto-applied after each FX is added.
+    post_insert       = cfg.post_insert or {
+        enabled          = false,
+        select_mode      = "none",   -- "none" | "all" | "all_cont" | "random"
+        random_count     = 3,
+        randomize_xy     = false,
+        randomize_range  = false,
+        randomize_base   = false,
+        randomize_invert = false,    -- "N" toggle (negate / invert direction)
+        bypass_after     = false,
+    },
+    post_insert_open  = false,      -- modal visibility
     recents        = cfg.recents        or {},            -- list of plugin.name (most-recent first)
     split_left     = cfg.split_left     or 0.62,          -- ratio plugins-pane / chain-pane
     -- Custom tabs: list of { name=string, plugin_names={...} }
@@ -68,20 +81,32 @@ local state = {
     flash_until    = 0,
 }
 
-local TYPE_FILTERS = { "All", "Favorites", "Recents", "VST3", "VST", "JS", "Bundled" }
+-- Built-in filters. `compact` is the chip label (1-3 chars). `tip` shows the
+-- full meaning on hover. `icon_key` (optional) draws a glyph instead of text.
+local BUILTIN_FILTERS = {
+    { key = "All",       compact = "All",  tip = "All plugins" },
+    { key = "Favorites", icon_key = "StarFilled", tip = "Favorites" },
+    { key = "Recents",   icon_key = "Clock",      tip = "Recently added" },
+    { key = "VST3",      compact = "V3",   tip = "VST3" },
+    { key = "VST",       compact = "V",    tip = "VST" },
+    { key = "JS",        compact = "JS",   tip = "JSFX" },
+    { key = "Bundled",   compact = "B",    tip = "Bundled (REAPER + Cockos)" },
+}
 
 local function persistConfig()
     UI.SaveConfig(CONFIG_ID, {
-        sort_mode      = state.sort_mode,
-        auto_open      = state.auto_open,
-        type_filter    = state.type_filter,
-        category       = state.category,
-        rand_count     = state.rand_count,
-        rand_fav_only  = state.rand_fav_only,
-        rand_replace   = state.rand_replace,
-        recents        = state.recents,
-        split_left     = state.split_left,
-        tabs           = state.tabs,
+        sort_mode         = state.sort_mode,
+        auto_open         = state.auto_open,
+        type_filter       = state.type_filter,
+        category          = state.category,
+        rand_count        = state.rand_count,
+        rand_fav_only     = state.rand_fav_only,
+        rand_replace      = state.rand_replace,
+        rand_from_visible = state.rand_from_visible,
+        post_insert       = state.post_insert,
+        recents           = state.recents,
+        split_left        = state.split_left,
+        tabs              = state.tabs,
     })
 end
 
@@ -212,6 +237,106 @@ local function pushRecent(name)
     persistConfig()
 end
 
+-- Apply post-insertion macros to a single FX, identified by its REAPER
+-- (actual) 0-based fx index. FXManager indexes its state.fx_data table by a
+-- "visible_fx_id" that skips Bridge / Sound Generator helpers, so we resolve
+-- the right key by scanning fx_data after refresh.
+-- Debug helper (toggle in cfg.debug_post_insert if you want trace logs)
+local function dbg(...)
+    if not state.post_insert or not state.post_insert.debug then return end
+    local parts = {"[POST-INSERT]"}
+    for i = 1, select("#", ...) do
+        parts[#parts + 1] = tostring(select(i, ...))
+    end
+    r.ShowConsoleMsg(table.concat(parts, " ") .. "\n")
+end
+
+local function applyPostInsert(actual_fx_idx)
+    local pi = state.post_insert
+    if not pi or not pi.enabled then return end
+    if not Core.isTrackValid() then return end
+    if not actual_fx_idx or actual_fx_idx < 0 then return end
+
+    dbg("called with actual_fx_idx=", actual_fx_idx)
+
+    if FXManager.scanTrackFX then FXManager.scanTrackFX() end
+
+    -- Dump fx_data so we know what got scanned
+    if pi.debug then
+        for vid, data in pairs(Core.state.fx_data or {}) do
+            dbg("  fx_data[" .. tostring(vid) .. "] actual=" ..
+                tostring(data.actual_fx_id) ..
+                " name=" .. tostring(data.name))
+        end
+    end
+
+    -- Find the visible_fx_id whose actual_fx_id matches the REAPER index.
+    local fx_id, fx_data = nil, nil
+    for vid, data in pairs(Core.state.fx_data or {}) do
+        if (data.actual_fx_id or vid) == actual_fx_idx then
+            fx_id, fx_data = vid, data
+            break
+        end
+    end
+    if not fx_data or not fx_data.params then
+        dbg("  no fx_data found for actual_fx_idx=", actual_fx_idx)
+        return
+    end
+    dbg("  resolved fx_id=", fx_id, " params=", #fx_data.params)
+
+    local params = fx_data.params
+
+    -- Param selection
+    if pi.select_mode == "all" then
+        FXManager.selectAllParams(params, true)
+    elseif pi.select_mode == "all_cont" then
+        FXManager.selectAllContinuousParams(params, true)
+    elseif pi.select_mode == "random" then
+        local fx_key = Core.getFXKey and Core.getFXKey(fx_id) or nil
+        if fx_key and Core.state.fx_random_max then
+            Core.state.fx_random_max[fx_key] = pi.random_count or 3
+        end
+        FXManager.randomSelectParams(params, fx_id)
+    end
+
+    -- Count what got selected
+    if pi.debug then
+        local sel = 0
+        for _, p in pairs(params) do if p.selected then sel = sel + 1 end end
+        dbg("  after select_mode='" .. tostring(pi.select_mode) ..
+            "' selected_count=" .. sel)
+    end
+
+    -- Randomization passes (only meaningful if at least one param is selected)
+    if pi.randomize_xy    then FXManager.randomizeXYAssign(params, fx_id) end
+    if pi.randomize_range then FXManager.randomizeRanges(params, fx_id)   end
+    if pi.randomize_base  then FXManager.randomizeBaseValues(params, fx_id) end
+    if pi.randomize_invert then
+        -- Per-FX equivalent of FXManager.globalRandomInvert: 50/50 negate.
+        for param_id, param_data in pairs(params) do
+            if param_data.selected then
+                FXManager.setParamInvert(fx_id, param_id, math.random() < 0.5)
+            end
+        end
+    end
+
+    -- Optional: bypass the FX after the macro
+    if pi.bypass_after then
+        FXManager.r.TrackFX_SetEnabled(Core.state.track, actual_fx_idx, false)
+    end
+
+    -- Persist immediately. saveTrackSelection() only flips Persistence.save_flags,
+    -- and the actual ExtState write happens in Persistence.checkSave() which is
+    -- never called from the browser's defer loop. Force a flush now so the main
+    -- FX Constellation app can read the new selection on its next scan.
+    if FXManager.saveTrackSelection then FXManager.saveTrackSelection() end
+    if Persistence.save_flags then
+        Persistence.save_flags.track_selections = true
+    end
+    if Persistence.saveSettings then Persistence.saveSettings() end
+    dbg("  flushed track_selections to ExtState")
+end
+
 local function addPlugin(plugin)
     refreshTrack()
     if not Core.isTrackValid() then
@@ -222,12 +347,12 @@ local function addPlugin(plugin)
     local ok = FXManager.addFXByName(fx_name, state.auto_open, true)
     if ok then
         pushRecent(plugin.name)
-        if not state.auto_open then
-            -- Belt-and-braces: ensure no float window after add.
-            local track = Core.state.track
-            local n = r.TrackFX_GetCount(track)
-            if n > 0 then r.TrackFX_Show(track, n - 1, 2) end
+        local track = Core.state.track
+        local new_idx = r.TrackFX_GetCount(track) - 1
+        if not state.auto_open and new_idx >= 0 then
+            r.TrackFX_Show(track, new_idx, 2)
         end
+        applyPostInsert(new_idx)
         flash("Added: " .. (plugin.display_name or plugin.name))
     else
         flash("Failed to add: " .. (plugin.display_name or plugin.name))
@@ -284,104 +409,153 @@ local function addPluginAt(plugin, dest_idx)
     if not state.auto_open then
         r.TrackFX_Show(track, before, 2)  -- close any floating window for the new FX
     end
+    local final_idx = before
     if dest_idx and dest_idx >= 0 and dest_idx < before then
         -- Move the freshly inserted FX (at index `before`) to dest_idx.
         r.TrackFX_CopyToTrack(track, before, track, dest_idx, true)
+        final_idx = dest_idx
     end
     pushRecent(plugin.name)
+    applyPostInsert(final_idx)
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- UI: top toolbar
+-- UI helpers (V2)
+-- ---------------------------------------------------------------------------
+-- Icon-only square button. Returns clicked.
+local function iconBtn(id, icon_fn, tooltip, opts)
+    local theme = UI.GetTheme()
+    opts = opts or {}
+    local size = opts.size or theme.button_height
+    local Core_tk = UI.Core
+    local cx, cy = UI.GetCursorPos()
+    local clicked = UI.Button(id, "", { width = size, height = size })
+    -- Draw the icon centered over the button face.
+    local color = opts.color or theme.colors.text
+    icon_fn(cx, cy, size, color[1], color[2], color[3], color[4] or 1)
+    if tooltip and Core_tk.MouseInRect(cx, cy, size, size) then
+        UI.Tooltip(tooltip)
+    end
+    return clicked
+end
+
+-- ---------------------------------------------------------------------------
+-- UI: top toolbar (V2)
+--   [Search ........................ flex] [Scan] [Sort A-Z]
 -- ---------------------------------------------------------------------------
 local function drawToolbar()
-    UI.BeginColumns("fxbr_top", { 0.55, 0.15, 0.15, 0.15 }, { gap = 6 })
+    local theme = UI.GetTheme()
+    local btn   = theme.button_height
+    local gap   = theme.gap or 4
+    -- Total available width minus 2 icon buttons + 2 gaps.
+    local avail = UI.GetAvailableWidth()
+    local search_w = math.max(120, avail - (btn + gap) * 2)
 
     local sc, sv = UI.InputText("fxbr_search", "", state.search,
-                                { hint = "Search FX (multi-word)…" })
+        { hint = "Search FX (multi-word)…", width = search_w })
     if sc then
         state.search = sv
         state.selected_idx = 0
     end
-    UI.NextColumn()
-
-    if UI.Button("fxbr_scan", "Scan") then
+    UI.SameLine(gap)
+    if iconBtn("fxbr_scan", UI.Icons.Scan, "Rescan plugin database") then
         local n = FXDatabase.scanPlugins()
         flash("Scanned " .. n .. " plugins")
     end
-    UI.NextColumn()
-
-    local sort_lbl = (state.sort_mode == "az") and "A→Z" or "Z→A"
-    if UI.Button("fxbr_sort", sort_lbl) then
+    UI.SameLine(gap)
+    local sort_tip = (state.sort_mode == "az") and "Sort A→Z (click for Z→A)"
+                                                or  "Sort Z→A (click for A→Z)"
+    if iconBtn("fxbr_sort", UI.Icons.Sort, sort_tip) then
         state.sort_mode = (state.sort_mode == "az") and "za" or "az"
         persistConfig()
     end
-    UI.NextColumn()
-
-    if UI.Button("fxbr_clear", "Clear") then
-        state.search = ""
-        state.selected_idx = 0
-    end
-    UI.EndColumns()
 end
 
 -- ---------------------------------------------------------------------------
--- UI: type filter chip row
+-- UI: type filter chip row (V2 — single line, horizontally scrollable)
+--   [All] [★] [⏱] [V3] [V] [JS] [B] | [tab1] [tab2] … [+]
 -- ---------------------------------------------------------------------------
 local function drawFilterChips()
     local Core_tk = UI.Core
     local theme   = UI.GetTheme()
-    local chip_h  = theme.button_height
-    UI.BeginWrap("fxbr_chips", { gap = 4 })
+    local chip_h  = theme.chip_h or theme.button_height
+    local pad_x   = theme.frame_padding_x
+    local gap     = theme.gap or 4
+    local icon_w  = chip_h
 
-    -- Built-in filter chips
-    for _, name in ipairs(TYPE_FILTERS) do
-        local is_on = (state.type_filter == name)
-        local label = is_on and ("● " .. name) or ("  " .. name)
-        if UI.Button("chip_" .. name, label) then
-            state.type_filter = name
+    local row_h = chip_h + (theme.pad_small or 4) * 2
+    UI.BeginChild("fxbr_chips", 0, row_h,
+        { scrollable = false, scrollable_x = true, border = false,
+          padding = theme.pad_small or 4 })
+
+    -- Built-in chips
+    for _, f in ipairs(BUILTIN_FILTERS) do
+        local is_on = (state.type_filter == f.key)
+        local cx, cy = UI.GetCursorPos()
+        local clicked
+        if f.icon_key then
+            -- Icon-only chip — manual draw to skip the label rendering.
+            local btn_color = is_on and theme.colors.accent or theme.colors.button
+            local hov = Core_tk.MouseInRect(cx, cy, icon_w, chip_h)
+                        and not Core_tk.HasPopup()
+            if hov and not is_on then btn_color = theme.colors.button_hovered end
+            Core_tk.DrawRect(cx, cy, icon_w, chip_h,
+                btn_color[1], btn_color[2], btn_color[3], btn_color[4] or 1)
+            local fg = is_on and theme.colors.list_selected_text
+                              or  theme.colors.text
+            UI.Icons[f.icon_key](cx, cy, chip_h, fg[1], fg[2], fg[3], fg[4] or 1)
+            UI.Layout.AdvanceCursor(icon_w, chip_h)
+            clicked = hov and Core_tk.MouseClicked(1)
+        else
+            local label = is_on and ("● " .. f.compact) or f.compact
+            clicked = UI.Button("chip_" .. f.key, label, { height = chip_h })
+        end
+        if Core_tk.MouseInRect(cx, cy,
+            (f.icon_key and icon_w) or (Core_tk.MeasureText(f.compact) + pad_x * 2),
+            chip_h) then
+            UI.Tooltip(f.tip)
+        end
+        if clicked then
+            state.type_filter = f.key
             state.selected_idx = 0
             persistConfig()
         end
+        UI.SameLine(gap)
     end
 
-    -- Custom tabs (each is a chip with DnD drop target + right-click menu)
-    local fp_x = theme.frame_padding_x
+    -- Visual separator before user tabs
+    if #state.tabs > 0 then
+        local sx, sy = UI.GetCursorPos()
+        local sc = theme.colors.border_soft or theme.colors.separator
+        Core_tk.DrawRect(sx, sy + 2, 1, chip_h - 4,
+            sc[1], sc[2], sc[3], sc[4] or 0.6)
+        UI.Layout.AdvanceCursor(1, chip_h)
+        UI.SameLine(gap)
+    end
+
+    -- Custom tabs
     for i, tab in ipairs(state.tabs) do
         local key   = "T:" .. tab.name
         local is_on = (state.type_filter == key)
-        local label = (is_on and "● " or "▸ ") .. tab.name
-                      .. " (" .. #tab.plugin_names .. ")"
-
-        -- Replicate Button's width calculation so we know the chip rect
-        -- BEFORE drawing it, then overlay the drop target / hover-test.
-        local tw = Core_tk.MeasureText(label)
-        local chip_w = tw + fp_x * 2
-        if UI.Layout.IsWrapping then UI.Layout.WrapPreCheck(chip_w) end
+        local label = (is_on and "● " or "") .. tab.name
+                      .. "  " .. #tab.plugin_names
         local cx, cy = UI.GetCursorPos()
-
-        if UI.Button("chip_tab_" .. i, label) then
+        local w = Core_tk.MeasureText(label) + pad_x * 2
+        if UI.Button("chip_tab_" .. i, label, { height = chip_h }) then
             state.type_filter = key
             state.selected_idx = 0
             persistConfig()
         end
-
-        -- DnD: accept "fx_plugins" payload → add plugin names to this tab
-        local dropped = UI.BeginDropTarget(cx, cy, chip_w, chip_h, "fx_plugins")
+        local dropped = UI.BeginDropTarget(cx, cy, w, chip_h, "fx_plugins")
         if dropped and type(dropped) == "table" then
             local names = {}
             for _, p in ipairs(dropped) do names[#names + 1] = p.name end
             local added = addNamesToTab(tab, names)
             flash(("Added %d to %s"):format(added, tab.name))
         end
-
-        -- Right-click on the chip → context menu. The action runs on the
-        -- popup's frame (N+1), not the right-click frame, so we must write
-        -- to persistent `state` (locals would be re-initialised).
-        if Core_tk.MouseInRect(cx, cy, chip_w, chip_h) then
-            local idx = i
-            local nm  = tab.name
+        if Core_tk.MouseInRect(cx, cy, w, chip_h) then
+            local idx, nm = i, tab.name
             UI.ContextMenu("tabctx_" .. i, {
                 { label = "Rename…", action = function()
                     state.rename_tab_idx  = idx
@@ -392,17 +566,19 @@ local function drawFilterChips()
                 end },
             })
         end
+        UI.SameLine(gap)
     end
 
-    -- "+" chip: open new-tab modal
-    if UI.Button("chip_tab_add", "  +") then
-        state.new_tab_open  = true
-        state.new_tab_name  = ""
+    -- "+" chip
+    if iconBtn("chip_tab_add", UI.Icons.Plus, "New tab",
+               { size = chip_h }) then
+        state.new_tab_open = true
+        state.new_tab_name = ""
     end
 
-    UI.EndWrap()
+    UI.EndChild()
 
-    -- Apply deferred tab deletion (rename is handled by its own modal)
+    -- Apply deferred tab deletion
     if state.delete_tab_idx then
         local idx = state.delete_tab_idx
         state.delete_tab_idx = nil
@@ -416,7 +592,7 @@ local function drawFilterChips()
 end
 
 -- ---------------------------------------------------------------------------
--- UI: track header
+-- UI: track header (V2 — single muted caption line)
 -- ---------------------------------------------------------------------------
 local function drawTrackHeader()
     local track = Core.state.track
@@ -428,45 +604,46 @@ local function drawTrackHeader()
             name = "Track " .. tostring(idx)
         end
         local fx_count = r.TrackFX_GetCount(track)
-        label = "● " .. name .. "   ·   " .. fx_count .. " FX"
+        label = "● " .. name .. "  ·  " .. fx_count .. " FX"
     else
         label = "No track selected — pick a track in REAPER"
     end
-    UI.SetFontH2Bold()
-    UI.Text(label)
+    local theme = UI.GetTheme()
+    local tc = theme.colors.text_mute or theme.colors.text_disabled
+    UI.SetFontCaption()
+    UI.TextColored(label, tc[1], tc[2], tc[3], tc[4] or 1)
     UI.SetFontBody()
 end
 
 -- ---------------------------------------------------------------------------
--- UI: plugins pane (left) — custom rendering with multi-select + drag source
+-- UI: plugins pane (left, V2)
 -- ---------------------------------------------------------------------------
 local function drawPluginsPane(theme, plugins, w, h)
-    UI.BeginChild("fxbr_left", w, h, { scrollable = false, border = true,
-                                        padding = 6 })
+    local Core_tk = UI.Core
+    local pad     = theme.pad_small or 4
+    local row_h   = theme.row_h or theme.combo_height
+    local fav_w   = row_h         -- icon column
 
-    UI.SetFontH2Bold()
-    UI.Text("Plugins")
-    UI.SetFontBody()
-    UI.SameLine(8)
+    UI.BeginChild("fxbr_left", w, h,
+        { scrollable = false, border = false, padding = pad,
+          bg = theme.colors.surface })
+
+    -- Mini header (uppercase, muted) — single line above the list.
     UI.SetFontCaption()
+    local tm = theme.colors.text_mute or theme.colors.text_disabled
     local sel_count = 0
     for _ in pairs(state.selected) do sel_count = sel_count + 1 end
-    if sel_count > 0 then
-        UI.Text(string.format("(%d / %d sel)", #plugins, sel_count))
-    else
-        UI.Text(string.format("(%d)", #plugins))
-    end
+    local hdr = (sel_count > 0)
+        and string.format("PLUGINS  %d  ·  %d sel", #plugins, sel_count)
+        or  string.format("PLUGINS  %d", #plugins)
+    UI.TextColored(hdr, tm[1], tm[2], tm[3], tm[4] or 1)
     UI.SetFontBody()
-    UI.Spacing(2)
 
-    local Core_tk = UI.Core
-    local row_h   = theme.button_height
-    local fav_w   = math.floor(row_h * 1.3)
-
-    -- Inner scrollable region for the row list
-    local list_h = math.max(120, h - 64)
+    -- Inner scrollable region — fills the rest of the pane.
+    local list_h = h - row_h - pad * 2
     UI.BeginChild("fxbr_pluglist", 0, list_h,
-        { scrollable = true, border = false, padding = 2 })
+        { scrollable = true, border = true, padding = 0,
+          bg = theme.colors.list_bg or theme.colors.surface })
 
     local list_x, list_y = UI.GetCursorPos()
     local list_w = UI.GetAvailableWidth()
@@ -478,6 +655,18 @@ local function drawPluginsPane(theme, plugins, w, h)
     local click_intent_idx = nil      -- which row is being clicked
     local click_intent_mode = nil     -- "set" | "toggle" | "range" | "set_deferred"
     local fav_toggle_idx   = nil
+    local rclick_row_idx   = nil      -- right-clicked row index (for context menu)
+
+    -- Helper: clip a label so it fits within a max width, adding "…"
+    local function ellipsis(text, max_w)
+        local tw = Core_tk.MeasureText(text)
+        if tw <= max_w then return text end
+        local s = text
+        while #s > 1 and Core_tk.MeasureText(s .. "…") > max_w do
+            s = s:sub(1, -2)
+        end
+        return s .. "…"
+    end
 
     for i, p in ipairs(plugins) do
         local row_y = list_y + (i - 1) * row_h
@@ -489,32 +678,46 @@ local function drawPluginsPane(theme, plugins, w, h)
 
             -- Background
             if is_sel then
-                local ac = theme.colors.accent
-                Core_tk.DrawRect(list_x, row_y, list_w, row_h - 1,
-                                 ac[1], ac[2], ac[3], 0.30)
+                local ac = theme.colors.accent_dim or theme.colors.accent
+                Core_tk.DrawRect(list_x, row_y, list_w, row_h,
+                                 ac[1], ac[2], ac[3], ac[4] or 1)
             elseif hovered then
-                local hc = theme.colors.header_hovered
-                Core_tk.DrawRect(list_x, row_y, list_w, row_h - 1,
-                                 hc[1], hc[2], hc[3], 0.25)
-            elseif (i % 2) == 0 and theme.colors.list_alt_bg then
-                local ab = theme.colors.list_alt_bg
-                Core_tk.DrawRect(list_x, row_y, list_w, row_h - 1,
-                                 ab[1], ab[2], ab[3], ab[4] or 1)
+                local hc = theme.colors.surface2 or theme.colors.header_hovered
+                Core_tk.DrawRect(list_x, row_y, list_w, row_h,
+                                 hc[1], hc[2], hc[3], hc[4] or 1)
             end
 
-            -- Favorite glyph (clickable)
-            local fav_x  = list_x + 4
-            local fav_my = row_y + math.floor(row_h / 2) - 7
-            local fc = fav and theme.colors.accent or theme.colors.text_disabled
-            Core_tk.DrawText(fav and "★" or "☆",
-                             fav_x, fav_my, fc[1], fc[2], fc[3], fc[4] or 1)
+            -- Favorite icon (left column, clickable)
+            local fav_x = list_x + pad
+            local fc = fav and theme.colors.accent or theme.colors.text_mute
+                         or theme.colors.text_disabled
+            local fav_icon = fav and UI.Icons.StarFilled or UI.Icons.Star
+            fav_icon(fav_x, row_y + math.floor((row_h - row_h * 0.7) / 2),
+                     row_h * 0.7, fc[1], fc[2], fc[3], fc[4] or 1)
 
-            -- Label
+            -- Reserve space for the vertical scrollbar so the rightmost
+            -- column never overlaps it.
+            local sb_w = theme.scrollbar_width or 6
+            local right_edge = list_x + list_w - sb_w - pad
+
+            -- Type indicator (right side, mono-ish dim text — use plugin.type)
+            local type_str = p.type or ""
+            local type_w = Core_tk.MeasureText(type_str)
+            local type_x = right_edge - type_w
+            local tym = theme.colors.text_mute or theme.colors.text_disabled
+            Core_tk.DrawText(type_str, type_x,
+                             row_y + math.floor((row_h - select(2, Core_tk.MeasureText(type_str))) / 2),
+                             tym[1], tym[2], tym[3], tym[4] or 1)
+
+            -- Label (between fav icon and type indicator, ellipsised)
             local label = p.display_name or p.name
+            local label_x = list_x + fav_w + pad
+            local label_max_w = type_x - label_x - pad
+            label = ellipsis(label, label_max_w)
             local _, lh = Core_tk.MeasureText(label)
             local tc = is_sel and theme.colors.list_selected_text or theme.colors.text
-            Core_tk.DrawText(label,
-                             list_x + fav_w, row_y + math.floor((row_h - lh) / 2),
+            Core_tk.DrawText(label, label_x,
+                             row_y + math.floor((row_h - lh) / 2),
                              tc[1], tc[2], tc[3], tc[4] or 1)
 
             -- Click handling
@@ -555,7 +758,53 @@ local function drawPluginsPane(theme, plugins, w, h)
                and not Core_tk.ModAlt() then
                 addPlugin(p)
             end
+
+            -- Right-click on a row → remember which row to anchor the menu on
+            if hovered and Core_tk.MouseClicked(2) then
+                rclick_row_idx = i
+                -- Make sure the row is in the selection so the menu's
+                -- "Add to track" / "Add as favorite" act on it.
+                if not state.selected[p.name] then
+                    state.selected = { [p.name] = true }
+                    state.selected_idx = i
+                end
+            end
         end
+    end
+
+    -- Single ContextMenu rendered once after the loop, anchored on the
+    -- right-clicked row (if any). Widgets.ContextMenu opens itself on the
+    -- frame's MouseClicked(2), so we just provide the items.
+    if rclick_row_idx and plugins[rclick_row_idx] then
+        local p = plugins[rclick_row_idx]
+        local in_tab  = state.type_filter and state.type_filter:sub(1, 2) == "T:"
+        local is_fav  = FXDatabase.isFavorite(p.name)
+        local items = {
+            { label = "Add to track", action = function()
+                  addPlugin(p)
+              end },
+            { separator = true },
+            { label = is_fav and "★ Remove favorite" or "☆ Add to favorites",
+              action = function()
+                  FXDatabase.toggleFavorite(p.name)
+              end },
+        }
+        if in_tab then
+            local tab_name = state.type_filter:sub(3)
+            local _, tab = findTab(tab_name)
+            if tab then
+                items[#items + 1] = { separator = true }
+                items[#items + 1] = {
+                    label = "Remove from " .. tab_name,
+                    action = function()
+                        removeNameFromTab(tab, p.name)
+                        state.selected[p.name] = nil
+                        flash("Removed from " .. tab_name)
+                    end,
+                }
+            end
+        end
+        UI.ContextMenu("fxbr_plug_ctx", items)
     end
 
     -- Apply selection change
@@ -611,59 +860,74 @@ local function drawPluginsPane(theme, plugins, w, h)
 end
 
 -- ---------------------------------------------------------------------------
--- UI: track FX chain pane (right) — custom rendering with selection,
--- DnD reorder (drag header) and DnD drop target for incoming plugins.
+-- UI: track FX chain pane (right, V2)
+--   Mini header → list with grip + index + name + actions hover-only.
 -- ---------------------------------------------------------------------------
 local function drawChainPane(theme, w, h)
-    UI.BeginChild("fxbr_right", w, h, { scrollable = false, border = true,
-                                         padding = 6 })
+    local Core_tk = UI.Core
+    local pad     = theme.pad_small or 4
 
-    UI.SetFontH2Bold()
-    UI.Text("Track FX Chain")
-    UI.SetFontBody()
-    UI.Spacing(2)
+    UI.BeginChild("fxbr_right", w, h,
+        { scrollable = false, border = false, padding = pad,
+          bg = theme.colors.surface })
 
     local track = Core.state.track
+    local fx_count = Core.isTrackValid() and r.TrackFX_GetCount(track) or 0
+
+    -- Build visible items (skip Sound Generator helpers).
+    local visible = {}
+    if Core.isTrackValid() then
+        for fx_idx = 0, fx_count - 1 do
+            local _, fx_name = r.TrackFX_GetFXName(track, fx_idx, "")
+            if not isSoundGenFX(track, fx_idx) then
+                visible[#visible + 1] = {
+                    fx_idx  = fx_idx,
+                    display = Core.extractFXName(fx_name),
+                    type    = (fx_name or ""):match("^([^:]+):") or "",
+                    enabled = r.TrackFX_GetEnabled(track, fx_idx),
+                }
+            end
+        end
+    end
+
+    -- Mini header
+    UI.SetFontCaption()
+    local tm = theme.colors.text_mute or theme.colors.text_disabled
+    UI.TextColored(string.format("CHAIN  %d", #visible),
+        tm[1], tm[2], tm[3], tm[4] or 1)
+    UI.SetFontBody()
+
+    local row_h = theme.row_h_large or theme.tab_height
+    local list_h = h - row_h - pad * 2
+
+    UI.BeginChild("fxbr_chainlist", 0, list_h,
+        { scrollable = true, border = true, padding = 0,
+          bg = theme.colors.list_bg or theme.colors.surface })
+
     if not Core.isTrackValid() then
         UI.SetFontCaption()
-        UI.Text("No track selected.")
+        UI.TextColored("No track selected.", tm[1], tm[2], tm[3], tm[4] or 1)
         UI.SetFontBody()
+        UI.EndChild()
         UI.EndChild()
         return
     end
 
-    local fx_count = r.TrackFX_GetCount(track)
-
-    -- Build visible items (skip Sound Generator helpers from FX Constellation).
-    -- Filter on the FULL fx_name (not display) since extractFXName truncates
-    -- to 25 chars and would hide the giveaway substring.
-    local visible = {}
-    for fx_idx = 0, fx_count - 1 do
-        local _, fx_name = r.TrackFX_GetFXName(track, fx_idx, "")
-        local display = Core.extractFXName(fx_name)
-        local raw_low = (fx_name or ""):lower()
-        if not (raw_low:find("sound generator") or raw_low:find("jsfx sound")) then
-            local enabled = r.TrackFX_GetEnabled(track, fx_idx)
-            visible[#visible + 1] = {
-                fx_idx  = fx_idx,
-                display = display,
-                enabled = enabled,
-            }
-        end
-    end
-
-    local Core_tk = UI.Core
-    local row_h   = theme.button_height
-    local list_h  = math.max(120, h - 56)
-
-    UI.BeginChild("fxbr_chainlist", 0, list_h,
-        { scrollable = true, border = false, padding = 2 })
-
     local list_x, list_y = UI.GetCursorPos()
     local list_w = UI.GetAvailableWidth()
-    local btn_w  = math.floor(row_h * 1.4)
-    local btns_w = btn_w * 3 + 8
+    local btn_w  = row_h          -- square hover-action buttons
     local has_popup = Core_tk.HasPopup and Core_tk.HasPopup() or false
+
+    -- Local ellipsis helper
+    local function ellipsis(text, max_w)
+        local tw = Core_tk.MeasureText(text)
+        if tw <= max_w then return text end
+        local s = text
+        while #s > 1 and Core_tk.MeasureText(s .. "…") > max_w do
+            s = s:sub(1, -2)
+        end
+        return s .. "…"
+    end
 
     -- Pending actions to apply once after the loop (avoid mutating fx during iteration)
     local action      = nil      -- "open" | "bypass" | "delete" | "select"
@@ -674,53 +938,86 @@ local function drawChainPane(theme, w, h)
     local plugin_dst  = nil      -- destination fx_idx
 
     if #visible == 0 then
-        -- Drop target covering the whole empty area for "add at end".
-        local dropped = UI.BeginDropTarget(list_x, list_y, list_w, list_h - 8,
+        local dropped = UI.BeginDropTarget(list_x, list_y, list_w, list_h - pad,
                                            "fx_plugins")
         if dropped then
             plugin_drop = dropped
-            plugin_dst = nil  -- append
+            plugin_dst  = nil  -- append
         end
         UI.SetFontCaption()
-        UI.Text("No FX on track.")
+        UI.TextColored("No FX on track.", tm[1], tm[2], tm[3], tm[4] or 1)
         UI.SetFontBody()
     else
+        local idx_w   = Core_tk.MeasureText("00") + pad * 2
+        local actions_w = btn_w * 3   -- 3 hover-only icons
+
         for i, v in ipairs(visible) do
             local row_y    = list_y + (i - 1) * row_h
             local hovered  = (not has_popup)
                              and Core_tk.MouseInRect(list_x, row_y, list_w, row_h)
             local is_sel   = (state.chain_selected == v.fx_idx)
-            -- Numbering uses the visible index (1-based), so hidden Sound
-            -- Generator slots don't shift the user-visible numbering.
-            local label    = i .. ". " .. v.display
-                             .. (v.enabled and "" or "  (bypassed)")
-            local header_w = list_w - btns_w
+            -- Header zone = whole row minus the actions area
+            local header_w = list_w - (hovered and actions_w or 0)
 
             -- Background
             if is_sel then
-                local ac = theme.colors.accent
-                Core_tk.DrawRect(list_x, row_y, list_w, row_h - 1,
-                                 ac[1], ac[2], ac[3], 0.30)
+                local ac = theme.colors.accent_dim or theme.colors.accent
+                Core_tk.DrawRect(list_x, row_y, list_w, row_h,
+                                 ac[1], ac[2], ac[3], ac[4] or 1)
             elseif hovered then
-                local hc = theme.colors.header_hovered
-                Core_tk.DrawRect(list_x, row_y, list_w, row_h - 1,
-                                 hc[1], hc[2], hc[3], 0.25)
+                local hc = theme.colors.surface2 or theme.colors.header_hovered
+                Core_tk.DrawRect(list_x, row_y, list_w, row_h,
+                                 hc[1], hc[2], hc[3], hc[4] or 1)
             end
 
-            -- Header text
-            local _, lh = Core_tk.MeasureText(label)
-            local tc = is_sel and theme.colors.list_selected_text or theme.colors.text
-            Core_tk.DrawText(label,
-                             list_x + 6, row_y + math.floor((row_h - lh) / 2),
-                             tc[1], tc[2], tc[3], tc[4] or 1)
+            -- Index (1-based, padded to 2 digits, mono-ish)
+            local idx_str = string.format("%02d", i)
+            local idx_tc  = theme.colors.text_mute or theme.colors.text_disabled
+            UI.SetFontMono()
+            local _, idx_h = Core_tk.MeasureText(idx_str)
+            Core_tk.DrawText(idx_str,
+                list_x + pad,
+                row_y + math.floor((row_h - idx_h) / 2),
+                idx_tc[1], idx_tc[2], idx_tc[3], idx_tc[4] or 1)
+            UI.SetFontBody()
 
-            -- Header click area (Alt+Click=delete, plain click=select+drag).
-            -- Ctrl is reserved for the drag-modifier (duplicate-on-drop).
+            -- Label (between index and the right edge), bypassed = amber + strike-through
+            local label_x   = list_x + pad + idx_w
+            local label_max = header_w - label_x + list_x - pad
+            local label = ellipsis(v.display, label_max)
+            local _, lh = Core_tk.MeasureText(label)
+            local label_y = row_y + math.floor((row_h - lh) / 2)
+            local tc
+            if not v.enabled then
+                tc = theme.colors.bypass or theme.colors.text_disabled
+            elseif is_sel then
+                tc = theme.colors.list_selected_text or theme.colors.text
+            else
+                tc = theme.colors.text
+            end
+            Core_tk.DrawText(label, label_x, label_y,
+                tc[1], tc[2], tc[3], tc[4] or 1)
+            -- Strike-through line for bypassed
+            if not v.enabled then
+                local lw = Core_tk.MeasureText(label)
+                Core_tk.DrawLine(label_x,
+                    label_y + math.floor(lh / 2),
+                    label_x + lw,
+                    label_y + math.floor(lh / 2),
+                    tc[1], tc[2], tc[3], tc[4] or 1)
+            end
+
+            -- Header click handling:
+            --   Alt+Click   → delete
+            --   Shift+Click → toggle bypass
+            --   plain Click → select + start drag
             if hovered and Core_tk.MouseClicked(1) then
                 local mx = Core_tk.GetMousePos()
                 if mx and mx < list_x + header_w then
                     if Core_tk.ModAlt() then
                         action = "delete"
+                    elseif Core_tk.ModShift() then
+                        action = "bypass"
                     else
                         action = "select"
                         Core_tk.SetActive("fxbr_chain_drag_" .. v.fx_idx)
@@ -731,7 +1028,7 @@ local function drawChainPane(theme, w, h)
             UI.BeginDragSource("fxbr_chain_drag_" .. v.fx_idx,
                                v.fx_idx, "fx_chain", "↕ " .. v.display)
 
-            -- Drop target on header (reorder)
+            -- Drop targets on the header zone
             local dropped_chain = UI.BeginDropTarget(
                 list_x, row_y, header_w, row_h, "fx_chain")
             if dropped_chain ~= nil then
@@ -745,38 +1042,38 @@ local function drawChainPane(theme, w, h)
                 plugin_dst  = v.fx_idx
             end
 
-            -- Action buttons (right-aligned, drawn as plain rects + text so they
-            -- don't interfere with the drag-source row click).
-            local function actionBtn(label_txt, ax)
-                local bx = list_x + list_w - ax
-                local btn_hov = (not has_popup)
-                                and Core_tk.MouseInRect(bx, row_y + 2,
-                                                        btn_w, row_h - 4)
-                local bg = btn_hov and theme.colors.button_hovered
-                                   or  theme.colors.button
-                Core_tk.DrawRect(bx, row_y + 2, btn_w, row_h - 4,
-                                 bg[1], bg[2], bg[3], bg[4] or 1)
-                local btc = theme.colors.text
-                local tw, th = Core_tk.MeasureText(label_txt)
-                Core_tk.DrawText(label_txt,
-                                 bx + math.floor((btn_w - tw) / 2),
-                                 row_y + math.floor((row_h - th) / 2),
-                                 btc[1], btc[2], btc[3], btc[4] or 1)
-                return btn_hov and Core_tk.MouseClicked(1)
+            -- Hover-only action icons (right-aligned: Open / Bypass / Delete)
+            if hovered then
+                local function chainAction(idx_in_row, icon_fn, color)
+                    local bx = list_x + list_w - btn_w * idx_in_row
+                    local hov = Core_tk.MouseInRect(bx, row_y, btn_w, row_h)
+                                and not has_popup
+                    if hov then
+                        local hc = theme.colors.button_hovered
+                        Core_tk.DrawRect(bx, row_y, btn_w, row_h,
+                            hc[1], hc[2], hc[3], hc[4] or 1)
+                    end
+                    icon_fn(bx, row_y, row_h,
+                        color[1], color[2], color[3], color[4] or 1)
+                    return hov and Core_tk.MouseClicked(1)
+                end
+                if chainAction(3, UI.Icons.Play, theme.colors.text) then
+                    action = "open"; action_fx = v.fx_idx
+                end
+                local eye_color = v.enabled and theme.colors.text
+                                            or  (theme.colors.bypass
+                                                 or theme.colors.text_disabled)
+                local eye_icon = v.enabled and UI.Icons.Eye or UI.Icons.EyeOff
+                if chainAction(2, eye_icon, eye_color) then
+                    action = "bypass"; action_fx = v.fx_idx
+                end
+                if chainAction(1, UI.Icons.Delete,
+                               theme.colors.danger or theme.colors.text) then
+                    action = "delete"; action_fx = v.fx_idx
+                end
             end
 
-            if actionBtn("○", btns_w) then
-                action = "open"; action_fx = v.fx_idx
-            end
-            if actionBtn(v.enabled and "B" or "b", btns_w - btn_w - 4) then
-                action = "bypass"; action_fx = v.fx_idx
-            end
-            if actionBtn("X", btn_w) then
-                action = "delete"; action_fx = v.fx_idx
-            end
-
-            -- Double-click on header → open FX UI (suppressed under Alt to
-            -- avoid triggering after a chain of Alt+Click deletes).
+            -- Double-click on header → open FX UI (suppressed under Alt)
             if hovered and Core_tk.MouseDoubleClicked()
                and not Core_tk.ModAlt() then
                 local mx = Core_tk.GetMousePos()
@@ -853,119 +1150,143 @@ local function drawChainPane(theme, w, h)
 end
 
 -- ---------------------------------------------------------------------------
--- UI: footer (auto-open + random insertion)
+-- Add-selection helper used by both the footer button and the keyboard hooks.
+-- ---------------------------------------------------------------------------
+local function addSelectionToTrack(plugins)
+    local sel = collectSelected(plugins)
+    if #sel == 0 and plugins[state.selected_idx] then
+        sel = { plugins[state.selected_idx] }
+    end
+    if #sel == 0 then return end
+    -- Shift while a custom tab is active → add to tab, not the track.
+    local tab_key = state.type_filter
+    if UI.Core.ModShift() and tab_key and tab_key:sub(1, 2) == "T:" then
+        local _, tab = findTab(tab_key:sub(3))
+        if tab then
+            local names = {}
+            for _, p in ipairs(sel) do names[#names + 1] = p.name end
+            local added = addNamesToTab(tab, names)
+            flash(("Added %d to %s"):format(added, tab.name))
+        end
+        return
+    end
+    r.Undo_BeginBlock()
+    local removed = 0
+    if state.rand_replace then removed = clearChain(Core.state.track) end
+    for _, p in ipairs(sel) do addPlugin(p) end
+    r.Undo_EndBlock(state.rand_replace and "Replace chain with selection"
+                                       or  "Add selected FX", -1)
+    local msg = "Added " .. #sel .. " FX"
+    if state.rand_replace and removed > 0 then
+        msg = msg .. " (replaced " .. removed .. ")"
+    end
+    flash(msg)
+end
+
+-- ---------------------------------------------------------------------------
+-- UI: bottom-bar (V2 — single line)
+--   [Add (N)] | [🎲][▰▰▰▱ count] ··· [⌫][⚙]
 -- ---------------------------------------------------------------------------
 local function drawFooter(theme, plugins)
-    UI.Separator()
-    UI.Spacing(3)
+    local Core_tk = UI.Core
+    local btn     = theme.button_height
+    local pad     = theme.pad_small or 4
+    local gap     = theme.gap or 4
 
-    UI.BeginColumns("fxbr_foot", { 0.22, 0.30, 0.22, 0.26 }, { gap = 6 })
+    -- Footer container with surface bg and top border
+    local footer_h = btn + pad * 2
+    UI.BeginChild("fxbr_footer", 0, footer_h,
+        { scrollable = false, border = false, padding = pad,
+          bg = theme.colors.surface })
 
-    local oc, ov = UI.Checkbox("fxbr_autoopen", "Auto-open FX UI",
-                               state.auto_open)
-    if oc then state.auto_open = ov; persistConfig() end
-    UI.NextColumn()
+    -- Selection count for the Add button label
+    local sel_count = 0
+    for _ in pairs(state.selected) do sel_count = sel_count + 1 end
+    if sel_count == 0 and plugins[state.selected_idx] then sel_count = 1 end
 
-    if UI.Button("fxbr_addsel", "Add selected") then
-        local sel = collectSelected(plugins)
-        if #sel == 0 and plugins[state.selected_idx] then
-            sel = { plugins[state.selected_idx] }
-        end
-        if #sel > 0 then
-            -- If a custom tab is active and Shift is held → add to that tab
-            -- instead of the track. Plain click always adds to track.
-            local tab_key = state.type_filter
-            if UI.Core.ModShift()
-               and tab_key and tab_key:sub(1, 2) == "T:" then
-                local _, tab = findTab(tab_key:sub(3))
-                if tab then
-                    local names = {}
-                    for _, p in ipairs(sel) do names[#names + 1] = p.name end
-                    local added = addNamesToTab(tab, names)
-                    flash(("Added %d to %s"):format(added, tab.name))
-                end
-            else
-                r.Undo_BeginBlock()
-                for _, p in ipairs(sel) do addPlugin(p) end
-                r.Undo_EndBlock("Add selected FX", -1)
-            end
-        end
+    local add_label = "Add"
+    if sel_count > 0 then add_label = string.format("Add (%d)", sel_count) end
+    local add_disabled = (sel_count == 0)
+
+    -- Primary "Add" button
+    if UI.Button("fxbr_addsel", add_label,
+                 { height = btn, disabled = add_disabled }) then
+        addSelectionToTrack(plugins)
     end
-    UI.NextColumn()
+    UI.SameLine(gap)
 
-    local fc, fv = UI.Checkbox("fxbr_rfav", "Favs only",
-                               state.rand_fav_only)
-    if fc then state.rand_fav_only = fv; persistConfig() end
-    UI.NextColumn()
+    -- Visual separator
+    do
+        local sx, sy = UI.GetCursorPos()
+        local sc = theme.colors.border_soft or theme.colors.separator
+        Core_tk.DrawRect(sx, sy + 4, 1, btn - 8,
+            sc[1], sc[2], sc[3], sc[4] or 0.6)
+        UI.Layout.AdvanceCursor(1, btn)
+        UI.SameLine(gap)
+    end
 
-    UI.BeginColumns("fxbr_rand_inner", { 0.20, 0.22, 0.22, 0.18, 0.18 },
-                    { gap = 4 })
-    local rc, rv = UI.SliderInt("fxbr_rcount", "FX",
-                                state.rand_count, 1, 10)
-    if rc then state.rand_count = rv; persistConfig() end
-    UI.NextColumn()
-    if UI.Button("fxbr_radd", "Random (all)") then
+    -- Random dice + count slider
+    if iconBtn("fxbr_dice", UI.Icons.Dice, "Add random FX (uses count)") then
         refreshTrack()
-        if Core.isTrackValid() then
+        if not Core.isTrackValid() then
+            flash("No track selected")
+        else
+            local from_visible = state.rand_from_visible
             local track = Core.state.track
             r.Undo_BeginBlock()
             local removed = 0
             if state.rand_replace then removed = clearChain(track) end
             local before = r.TrackFX_GetCount(track)
-            FXManager.addRandomFX(state.rand_count, state.rand_fav_only)
+            if from_visible and #plugins > 0 then
+                local pool, picks = {}, {}
+                for _, p in ipairs(plugins) do pool[#pool + 1] = p end
+                local n = math.min(state.rand_count, #pool)
+                for _ = 1, n do
+                    local idx = math.random(1, #pool)
+                    picks[#picks + 1] = pool[idx]
+                    table.remove(pool, idx)
+                end
+                for _, p in ipairs(picks) do addPlugin(p) end
+            else
+                FXManager.addRandomFX(state.rand_count, state.rand_fav_only)
+            end
             local after = r.TrackFX_GetCount(track)
             if not state.auto_open then
                 for i = before, after - 1 do r.TrackFX_Show(track, i, 2) end
             end
+            -- Apply post-insert macros to each newly-added FX. The
+            -- "from_visible" path already hits applyPostInsert via addPlugin,
+            -- so we only need to walk new indices for the database-random path.
+            if not from_visible then
+                for i = before, after - 1 do applyPostInsert(i) end
+            end
             r.Undo_EndBlock(state.rand_replace
-                and "Replace chain with random FX"
-                or  "Add random FX", -1)
+                and "Replace chain with random FX" or "Add random FX", -1)
             local msg = "Added " .. (after - before) .. " random FX"
             if state.rand_replace and removed > 0 then
                 msg = msg .. " (replaced " .. removed .. ")"
             end
             flash(msg)
-        else
-            flash("No track selected")
         end
     end
-    UI.NextColumn()
-    if UI.Button("fxbr_radd_vis", "Random (visible)") then
-        refreshTrack()
-        if not Core.isTrackValid() then
-            flash("No track selected")
-        elseif #plugins == 0 then
-            flash("No plugins in current view")
-        else
-            -- Pick N distinct plugins from the currently filtered list.
-            local pool, picks = {}, {}
-            for _, p in ipairs(plugins) do pool[#pool + 1] = p end
-            local n = math.min(state.rand_count, #pool)
-            for _ = 1, n do
-                local idx = math.random(1, #pool)
-                picks[#picks + 1] = pool[idx]
-                table.remove(pool, idx)
-            end
-            r.Undo_BeginBlock()
-            local removed = 0
-            if state.rand_replace then removed = clearChain(Core.state.track) end
-            for _, p in ipairs(picks) do addPlugin(p) end
-            r.Undo_EndBlock(state.rand_replace
-                and "Replace chain with random FX (visible)"
-                or  "Add random FX (visible)", -1)
-            local msg = "Added " .. #picks .. " random FX from view"
-            if state.rand_replace and removed > 0 then
-                msg = msg .. " (replaced " .. removed .. ")"
-            end
-            flash(msg)
-        end
-    end
-    UI.NextColumn()
-    local rpc, rpv = UI.Checkbox("fxbr_rreplace", "Replace",
-                                 state.rand_replace)
-    if rpc then state.rand_replace = rpv; persistConfig() end
-    UI.NextColumn()
-    if UI.Button("fxbr_clear", "Clear chain") then
+    UI.SameLine(gap)
+
+    local slider_w = math.floor(btn * 3.5)
+    local rc, rv = UI.SliderInt("fxbr_rcount", "", state.rand_count, 1, 12,
+                                { width = slider_w, height = btn })
+    if rc then state.rand_count = rv; persistConfig() end
+    UI.SameLine(gap)
+
+    -- Spacer: push remaining buttons to the right.
+    local right_btns = btn * 2 + gap
+    local avail = UI.GetAvailableWidth()
+    local spacer_w = math.max(0, avail - right_btns)
+    UI.Layout.AdvanceCursor(spacer_w, btn)
+    UI.SameLine(0)
+
+    -- Clear chain
+    if iconBtn("fxbr_clear", UI.Icons.Erase, "Clear FX chain",
+               { color = theme.colors.danger }) then
         refreshTrack()
         if Core.isTrackValid() then
             r.Undo_BeginBlock()
@@ -976,18 +1297,142 @@ local function drawFooter(theme, plugins)
             flash("No track selected")
         end
     end
-    UI.EndColumns()
+    UI.SameLine(gap)
 
-    UI.EndColumns()
+    -- Settings ⚙: left-click OR right-click opens the menu.
+    -- We render the icon manually (not via iconBtn → which checks left-click)
+    -- and convert any click on the gear into the right-click that
+    -- Widgets.ContextMenu listens for.
+    local gear_x, gear_y = UI.GetCursorPos()
+    local gear_hov = Core_tk.MouseInRect(gear_x, gear_y, btn, btn)
+                     and not Core_tk.HasPopup()
+    local bg = gear_hov and theme.colors.button_hovered or theme.colors.button
+    Core_tk.DrawRect(gear_x, gear_y, btn, btn,
+        bg[1], bg[2], bg[3], bg[4] or 1)
+    local gc = theme.colors.text
+    UI.Icons.Settings(gear_x, gear_y, btn, gc[1], gc[2], gc[3], gc[4] or 1)
+    UI.Layout.AdvanceCursor(btn, btn)
+    -- Convert a left-click on the gear into a right-click for ContextMenu.
+    -- Core.MouseClicked is a frame-level read-only check, so we can't mutate
+    -- it; instead we manually call Core.SetPopup with the same draw function
+    -- that ContextMenu would build. We hand-roll a tiny popup here.
+    local function openSettingsMenu()
+        local items = {
+            { label = "Auto-open FX on add",
+              checked = state.auto_open,
+              action = function()
+                  state.auto_open = not state.auto_open
+                  persistConfig()
+              end },
+            { label = "Replace chain on add/random",
+              checked = state.rand_replace,
+              action = function()
+                  state.rand_replace = not state.rand_replace
+                  persistConfig()
+              end },
+            { separator = true },
+            { label = "Random from visible only",
+              checked = state.rand_from_visible,
+              action = function()
+                  state.rand_from_visible = not state.rand_from_visible
+                  persistConfig()
+              end },
+            { label = "Random from favorites only",
+              checked = state.rand_fav_only,
+              action = function()
+                  state.rand_fav_only = not state.rand_fav_only
+                  persistConfig()
+              end },
+            { separator = true },
+            { label = "Post-insertion macros",
+              checked = state.post_insert.enabled,
+              action = function()
+                  state.post_insert.enabled = not state.post_insert.enabled
+                  persistConfig()
+              end },
+            { label = "Configure post-insertion…",
+              action = function()
+                  state.post_insert_open = true
+              end },
+        }
+        local item_h = theme.combo_height
+        local menu_w = 240
+        local visible_count = 0
+        for _, it in ipairs(items) do
+            visible_count = visible_count + (it.separator and 0.3 or 1)
+        end
+        local menu_h = math.floor(visible_count * item_h)
+        local px = gear_x + btn - menu_w
+        local py = gear_y - menu_h - 4
 
-    -- Status / flash line
+        Core_tk.SetPopup("fxbr_settings_popup", function()
+            -- Skip same-frame close: the click that OPENED the popup is still
+            -- "fresh" this frame and would immediately trigger close-on-outside.
+            local is_new = Core_tk.IsPopupNewThisFrame
+                           and Core_tk.IsPopupNewThisFrame() or false
+            local pbg = theme.colors.popup_bg
+            Core_tk.DrawRect(px, py, menu_w, menu_h,
+                pbg[1], pbg[2], pbg[3], pbg[4] or 1)
+            local pbc = theme.colors.border
+            Core_tk.DrawRect(px, py, menu_w, menu_h,
+                pbc[1], pbc[2], pbc[3], 0.6, false)
+            local iy = py
+            local closed_this_frame = false
+            for _, it in ipairs(items) do
+                if it.separator then
+                    local sep_h = math.floor(item_h * 0.3)
+                    local sc = theme.colors.separator
+                    Core_tk.DrawLine(px + 4, iy + sep_h / 2,
+                        px + menu_w - 4, iy + sep_h / 2,
+                        sc[1], sc[2], sc[3], sc[4] or 0.5)
+                    iy = iy + sep_h
+                else
+                    local hov = Core_tk.MouseInRect(px, iy, menu_w, item_h)
+                    if hov then
+                        local hc = theme.colors.header_hovered
+                        Core_tk.DrawRect(px + 1, iy, menu_w - 2, item_h,
+                            hc[1], hc[2], hc[3], hc[4] or 1)
+                    end
+                    local mark = it.checked and "✓ " or "    "
+                    local tc = theme.colors.text
+                    local _, th = Core_tk.MeasureText(mark .. it.label)
+                    Core_tk.DrawText(mark .. it.label,
+                        px + 8, iy + math.floor((item_h - th) / 2),
+                        tc[1], tc[2], tc[3], tc[4] or 1)
+                    if not is_new and hov and Core_tk.MouseClicked(1) then
+                        Core_tk.ClearPopup("fxbr_settings_popup")
+                        if it.action then it.action() end
+                        closed_this_frame = true
+                    end
+                    iy = iy + item_h
+                end
+            end
+            -- Close on click outside (skipped on the opening frame)
+            if not is_new and not closed_this_frame
+               and (Core_tk.MouseClicked(1) or Core_tk.MouseClicked(2))
+               and not Core_tk.MouseInRect(px, py, menu_w, menu_h) then
+                Core_tk.ClearPopup("fxbr_settings_popup")
+            end
+        end)
+    end
+
+    if gear_hov then
+        UI.Tooltip("Settings")
+        local already_open = Core_tk.HasPopup
+                             and Core_tk.HasPopup("fxbr_settings_popup")
+        if not already_open
+           and (Core_tk.MouseClicked(1) or Core_tk.MouseClicked(2)) then
+            openSettingsMenu()
+        end
+    end
+
+    UI.EndChild()
+
+    -- Status / flash line drawn just above the footer (uses the spacer area).
     if state.flash_msg ~= "" and r.time_precise() < state.flash_until then
-        UI.Spacing(2)
+        local fc = theme.colors.accent
         UI.SetFontCaption()
-        UI.TextColored(state.flash_msg,
-            theme.colors.accent[1],
-            theme.colors.accent[2],
-            theme.colors.accent[3], 1)
+        UI.TextColored(state.flash_msg, fc[1], fc[2], fc[3], 1)
         UI.SetFontBody()
     end
 end
@@ -1012,22 +1457,70 @@ local function frame(theme)
         UI.BeginDragSource("fxbr_plug_drag", payload, "fx_plugins", lbl)
     end
 
+    local pad = theme.pad_small or 4
+    local pad_l = theme.pad_large or 10
+
+    -- Top: toolbar + chips + track header (rendered with window padding).
+    UI.SetWindowPadding(pad_l)
     drawToolbar()
-    UI.Spacing(2)
+    UI.Spacing(pad)
     drawFilterChips()
-    UI.Separator()
+    UI.Spacing(pad)
     drawTrackHeader()
-    UI.Spacing(4)
+    UI.Spacing(pad)
 
-    local body_h    = 360
-    local left_ratio = state.split_left
+    -- Body fills the rest minus the footer (which we know is btn + 2*pad_small).
+    local btn = theme.button_height
+    local footer_h = btn + pad * 2
+    local body_h = math.max(120, UI.GetAvailableHeight() - footer_h - pad * 2)
 
-    UI.BeginColumns("fxbr_body", { left_ratio, 1 - left_ratio }, { gap = 8 })
+    -- Splitter-driven 2-column body. We compute left/right widths from the
+    -- persisted ratio. UI.Splitter would be ideal but we want full DnD control;
+    -- emulate via fixed-px columns and a manually drawn handle.
+    local total_w = UI.GetAvailableWidth()
+    local sp_w    = theme.splitter_w or 3
+    local left_w  = math.floor((total_w - sp_w) * (state.split_left or 0.6))
+    local right_w = total_w - sp_w - left_w
+
+    -- Splitter drag handle (between the two panes)
+    local Core_tk = UI.Core
+    local sp_id   = "fxbr_splitter"
+
+    UI.BeginColumns("fxbr_body",
+        { left_w, sp_w, right_w },
+        { gap = 0 })
     drawPluginsPane(theme, plugins, 0, body_h)
+    UI.NextColumn()
+    -- Splitter visual + interaction
+    do
+        local sx, sy = UI.GetCursorPos()
+        local sc = theme.colors.border_soft or theme.colors.separator
+        Core_tk.DrawRect(sx, sy, sp_w, body_h,
+            sc[1], sc[2], sc[3], sc[4] or 0.6)
+        local hov = Core_tk.MouseInRect(sx, sy, sp_w, body_h)
+        if hov then UI.SetCursor("size_we") end
+        if hov and Core_tk.MouseClicked(1) then
+            Core_tk.SetActive(sp_id)
+        end
+        if Core_tk.IsActive(sp_id) and Core_tk.MouseDown(1) then
+            local mx = Core_tk.GetMousePos()
+            local pane_x0 = sx - left_w  -- start of the body region
+            local new_ratio = (mx - pane_x0) / total_w
+            if new_ratio < 0.30 then new_ratio = 0.30 end
+            if new_ratio > 0.75 then new_ratio = 0.75 end
+            state.split_left = new_ratio
+        end
+        if Core_tk.IsActive(sp_id) and Core_tk.MouseReleased(1) then
+            Core_tk.ClearActive()
+            persistConfig()
+        end
+        UI.Layout.AdvanceCursor(sp_w, body_h)
+    end
     UI.NextColumn()
     drawChainPane(theme, 0, body_h)
     UI.EndColumns()
 
+    UI.Spacing(pad)
     drawFooter(theme, plugins)
 
     -- New-tab modal -----------------------------------------------------------
@@ -1105,6 +1598,104 @@ local function frame(theme)
         UI.EndModal()
     end
 
+    -- Post-insertion macros config modal --------------------------------------
+    if state.post_insert_open then
+        UI.BeginModal("fxbr_postins", "Post-insertion macros",
+            { width = 400, height = 600 })
+        local pi = state.post_insert
+
+        -- Master toggle
+        local ec, ev = UI.Checkbox("pi_enabled",
+            "Enable post-insertion macros", pi.enabled)
+        if ec then pi.enabled = ev; persistConfig() end
+        UI.Separator()
+        UI.Spacing(4)
+
+        -- Param selection mode (radio group)
+        UI.SetFontH2Bold()
+        UI.Text("After insert, select these params:")
+        UI.SetFontBody()
+        UI.Spacing(2)
+
+        local modes = { "none", "all", "all_cont", "random" }
+        local labels = {
+            "Don't touch selection",
+            "Select all params",
+            "Select all continuous params",
+            "Select N random params",
+        }
+        local cur_idx = 1
+        for i, m in ipairs(modes) do
+            if pi.select_mode == m then cur_idx = i; break end
+        end
+        local rc, rv = UI.RadioGroup("pi_selmode", "", cur_idx, labels)
+        if rc then
+            pi.select_mode = modes[rv]
+            persistConfig()
+        end
+
+        -- Random count slider (only meaningful for "random" mode)
+        if pi.select_mode == "random" then
+            UI.Spacing(4)
+            local sc, sv = UI.SliderInt("pi_count",
+                "Random count", pi.random_count, 1, 16)
+            if sc then pi.random_count = sv; persistConfig() end
+        end
+
+        UI.Spacing(6)
+        UI.Separator()
+        UI.Spacing(4)
+
+        -- Randomization passes
+        UI.SetFontH2Bold()
+        UI.Text("Then randomize on selected params:")
+        UI.SetFontBody()
+        UI.Spacing(2)
+
+        local xc, xv = UI.Checkbox("pi_xy",
+            "X/Y axis assignment", pi.randomize_xy)
+        if xc then pi.randomize_xy = xv; persistConfig() end
+
+        local rrc, rrv = UI.Checkbox("pi_range",
+            "Param ranges (min/max)", pi.randomize_range)
+        if rrc then pi.randomize_range = rrv; persistConfig() end
+
+        local bc, bv = UI.Checkbox("pi_base",
+            "Base values", pi.randomize_base)
+        if bc then pi.randomize_base = bv; persistConfig() end
+
+        local nc, nv = UI.Checkbox("pi_invert",
+            "Invert direction (N — positive/negative)",
+            pi.randomize_invert)
+        if nc then pi.randomize_invert = nv; persistConfig() end
+
+        UI.Spacing(6)
+        UI.Separator()
+        UI.Spacing(4)
+
+        UI.SetFontH2Bold()
+        UI.Text("Then:")
+        UI.SetFontBody()
+        UI.Spacing(2)
+
+        local byc, byv = UI.Checkbox("pi_bypass",
+            "Bypass FX after insertion", pi.bypass_after)
+        if byc then pi.bypass_after = byv; persistConfig() end
+
+        UI.Spacing(6)
+        UI.Separator()
+        UI.Spacing(4)
+        local dbc, dbv = UI.Checkbox("pi_debug",
+            "Debug (log to ReaConsole)", pi.debug or false)
+        if dbc then pi.debug = dbv; persistConfig() end
+
+        UI.Spacing(8)
+        if UI.Button("pi_close", "Close") then
+            state.post_insert_open = false
+        end
+        UI.EndModal()
+    end
+
     -- Drag preview overlay (drawn on top of everything)
     UI.DrawDragPreview()
 end
@@ -1112,10 +1703,10 @@ end
 -- ---------------------------------------------------------------------------
 -- Window setup
 -- ---------------------------------------------------------------------------
-UI.Init("FX Browser", 980, 640, {
+UI.Init("FX Browser", 555, 750, {
     persist    = "CP_FXBrowser",
     scrollable = false,
-    padding    = 8,
+    padding    = 0,                    -- handled per-section so the body fills
 })
 
 UI.OnClose(function()

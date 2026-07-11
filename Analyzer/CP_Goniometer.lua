@@ -20,11 +20,15 @@ local state = {
     window_height = 600,
     show_grid = true,
     dock_state = 0,
-    points = {},
+    points_x = {},
+    points_y = {},
+    points_count = 0,
     has_new_data = false,
     grid_buffer = -1,
     needs_grid_redraw = true,
-    last_update = 0
+    last_update = 0,
+    color_r = 0, color_g = 0, color_b = 0,
+    alpha_lut = {}
 }
 
 function HexToRGB(hex)
@@ -64,36 +68,47 @@ function ResetSettings()
     r.DeleteExtState(script_name, "dock_state", true)
 end
 
+function BuildAlphaLUT()
+    local n = math.min(config.max_points, 4096)
+    local lut = {}
+    for i = 0, n - 1 do
+        lut[i + 1] = (((n - i) / n) ^ config.fade_power) * config.line_alpha
+    end
+    state.alpha_lut = lut
+end
+
 function ReadGoniometerData()
     local gmem_offset = 1000
     local write_pos = r.gmem_read(gmem_offset - 1)
-    
+
     if not write_pos then
-        state.points = {}
+        state.points_count = 0
         state.has_new_data = false
         return
     end
-    
+
     write_pos = math.floor(write_pos)
-    state.points = {}
-    
     local num_points = math.min(config.max_points, 4096)
-    
+    local px = state.points_x
+    local py = state.points_y
+    local count = 0
+
     for i = 0, num_points - 1 do
-        local idx = math.floor((write_pos - i) % 4096)
+        local idx = (write_pos - i) % 4096
         if idx < 0 then idx = idx + 4096 end
-        
+
         local lr = r.gmem_read(gmem_offset + idx * 2)
         local rr = r.gmem_read(gmem_offset + idx * 2 + 1)
-        
+
         if lr and rr then
-            local alpha = ((num_points - i) / num_points) ^ config.fade_power
-            alpha = alpha * config.line_alpha
-            table.insert(state.points, {x = lr, y = rr, alpha = alpha})
+            count = count + 1
+            px[count] = lr
+            py[count] = rr
         end
     end
-    
-    state.has_new_data = #state.points > 0
+
+    state.points_count = count
+    state.has_new_data = count > 0
 end
 
 function DrawGridToBuffer(center_x, center_y, radius)
@@ -151,21 +166,21 @@ function DrawGoniometer()
         gfx.blit(state.grid_buffer, 1.0, 0)
     end
     
-    if #state.points > 1 then
-        local skip = math.max(1, math.floor(#state.points / 2000))
-        local color_r, color_g, color_b = HexToRGB(config.color)
-        
-        for i = skip + 1, #state.points, skip do
-            local curr = state.points[i]
-            local prev = state.points[i - skip]
-            
-            local x = center_x - radius * curr.x
-            local y = center_y - radius * curr.y
-            local prev_x = center_x - radius * prev.x
-            local prev_y = center_y - radius * prev.y
-            
-            gfx.set(color_r, color_g, color_b, curr.alpha)
-            gfx.line(prev_x, prev_y, x, y)
+    local n = state.points_count
+    if n > 1 then
+        local px = state.points_x
+        local py = state.points_y
+        local lut = state.alpha_lut
+        local cr, cg, cb = state.color_r, state.color_g, state.color_b
+        local prev_sx = center_x - radius * px[1]
+        local prev_sy = center_y - radius * py[1]
+        for i = 2, n do
+            local sx = center_x - radius * px[i]
+            local sy = center_y - radius * py[i]
+            gfx.set(cr, cg, cb, lut[i])
+            gfx.line(prev_sx, prev_sy, sx, sy)
+            prev_sx = sx
+            prev_sy = sy
         end
     end
 end
@@ -204,13 +219,16 @@ end
 
 function Init()
     LoadSettings()
-    
+
+    state.color_r, state.color_g, state.color_b = HexToRGB(config.color)
+    BuildAlphaLUT()
+
     gfx.init("CP Goniometer", state.window_width, state.window_height, 0)
-    
+
     if state.dock_state > 0 then
         gfx.dock(state.dock_state)
     end
-    
+
     state.needs_grid_redraw = true
     state.last_update = r.time_precise()
 end

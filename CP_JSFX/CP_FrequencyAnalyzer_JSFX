@@ -1,14 +1,14 @@
 desc: CP_FrequencyAnalyzer_JSFX
 author: Cedric Pelletier
-version: 1.0
+version: 1.1
 
-slider1:fft_size_idx=3<0,5,1{256,512,1024,2048,4096,8192}>FFT Size
+slider1:fft_size_idx=2<0,5,1{256,512,1024,2048,4096,8192}>FFT Size
 slider2:smoothing=50<0,100,1>Smoothing (ms)
 slider3:floor_db=-132<-132,-12,1>Floor (dB)
 slider4:slope=0<-6,6,0.5>Slope (dB/octave)
 slider5:fft_skip=0<0,3,1{Every Frame,Skip 1/2,Skip 2/3,Skip 3/4}>FFT Rate
 
-options:gmem=CP_FrequencyAnalyzer
+options:gmem=CP_FrequencyAnalyzer, no_meter
 
 in_pin:left input
 in_pin:right input
@@ -17,41 +17,72 @@ out_pin:right output
 
 @init
 
+LN10_OVER_20 = 0.115129254649702;  // ln(10)/20, used so 20*log10(x) = log(x)/LN10_OVER_20... we use 10*log(x²)/ln(10) instead
+INV_LN10_TIMES_10 = 4.342944819032518;  // 10 / ln(10)
+INV_LN2 = 1.442695040888963;
+TWO_PI = 6.283185307179586;
+
 function init_fft()
 (
-  fft_sizes = 0;
+  // LUT of FFT sizes, placed at a high offset to never overlap with buffers
+  // (max buffer footprint = 8192*5 = ~40k)
+  fft_sizes = 200000;
   fft_sizes[0] = 256;
   fft_sizes[1] = 512;
   fft_sizes[2] = 1024;
   fft_sizes[3] = 2048;
   fft_sizes[4] = 4096;
   fft_sizes[5] = 8192;
-  
+
   fft_size = fft_sizes[fft_size_idx];
   fft_size != old_fft_size ? (
     old_fft_size = fft_size;
-    
-    buffer_size = fft_size * 2;
+    fft_mask = fft_size - 1;
+    half_fft = fft_size / 2;
+    inv_half_fft = 1 / half_fft;
+
+    // Memory layout (offsets from 0):
+    //   buffer:          [0, fft_size)              circular input buffer
+    //   fft_buffer:      [fft_size, 3*fft_size)     interleaved complex (size = 2*fft_size)
+    //   window_buffer:   [3*fft_size, 4*fft_size)   Hann window
+    //   smooth_buffer:   [4*fft_size, 4.5*fft_size) smoothed magnitudes (size = fft_size/2)
+    //   peak_buffer:     [4.5*fft_size, 5*fft_size) peak hold
+    //   bin_freq_buf:    [5*fft_size, 5.5*fft_size) bin center freqs
+    //   slope_buf:       [5.5*fft_size, 6*fft_size) slope compensation LUT
     buffer = 0;
-    fft_buffer = buffer + buffer_size;
-    window_buffer = fft_buffer + buffer_size;
-    magnitude_buffer = window_buffer + fft_size;
-    smooth_buffer = magnitude_buffer + fft_size/2;
-    peak_buffer = smooth_buffer + fft_size/2;
-    
+    fft_buffer = buffer + fft_size;
+    window_buffer = fft_buffer + 2 * fft_size;
+    smooth_buffer = window_buffer + fft_size;
+    peak_buffer = smooth_buffer + half_fft;
+    bin_freq_buf = peak_buffer + half_fft;
+    slope_buf = bin_freq_buf + half_fft;
+
+    // Pre-compute Hann window
     i = 0;
+    inv_n_minus_1 = TWO_PI / (fft_size - 1);
     loop(fft_size,
-      window_buffer[i] = 0.5 * (1 - cos(2 * $pi * i / (fft_size - 1)));
+      window_buffer[i] = 0.5 * (1 - cos(inv_n_minus_1 * i));
       i += 1;
     );
-    
+
+    // Pre-compute bin frequencies and slope compensation LUT
     i = 0;
-    loop(fft_size/2,
-      smooth_buffer[i] = -96;
-      peak_buffer[i] = -96;
+    loop(half_fft,
+      f = i * inv_half_fft * (srate * 0.5);
+      f < 20 ? f = 20;
+      bin_freq_buf[i] = f;
+      slope_buf[i] = log(f * 0.001) * INV_LN2;  // log2(f/1000), * slope at run time
       i += 1;
     );
-    
+
+    // Init smooth/peak buffers to floor
+    i = 0;
+    loop(half_fft,
+      smooth_buffer[i] = -132;
+      peak_buffer[i] = -132;
+      i += 1;
+    );
+
     write_pos = 0;
     samples_collected = 0;
     need_fft = 0;
@@ -61,11 +92,7 @@ function init_fft()
 init_fft();
 
 gmem_offset = 0;
-
 peak_decay_rate = 0.995;
-
-reference_freq = 1000;
-
 fft_skip_counter = 0;
 
 @slider
@@ -75,19 +102,22 @@ init_fft();
 fft_time = fft_size / srate;
 
 smoothing > 0 ? (
-  smoothing_coeff = pow(0.5, fft_time / (smoothing / 1000));
+  smoothing_coeff = pow(0.5, fft_time / (smoothing * 0.001));
+  one_minus_coeff = 1 - smoothing_coeff;
 ) : (
   smoothing_coeff = 0;
+  one_minus_coeff = 1;
 );
 
-min_magnitude = pow(10, floor_db / 20);
+// In dB-domain we test mag_db > floor, so no need for min_magnitude in mag-domain
+floor_db_clamped = floor_db;
 
 @sample
 
 mono_sample = (spl0 + spl1) * 0.5;
 
 buffer[write_pos] = mono_sample;
-write_pos = (write_pos + 1) % fft_size;
+write_pos = (write_pos + 1) & fft_mask;
 samples_collected += 1;
 
 samples_collected >= fft_size ? (
@@ -98,114 +128,74 @@ samples_collected >= fft_size ? (
 @block
 
 // FFT Skip logic
-fft_skip > 0 ? (
+fft_skip > 0 && need_fft ? (
   fft_skip_counter += 1;
   fft_skip_counter > fft_skip ? (
     fft_skip_counter = 0;
   ) : (
-    need_fft = 0;  // Skip this FFT calculation
+    need_fft = 0;
   );
 );
 
 need_fft ? (
   need_fft = 0;
-  
+
+  // Copy buffer (circular) into fft_buffer with windowing
   read_pos = write_pos;
   i = 0;
   loop(fft_size,
-    idx = (read_pos + i) % fft_size;
+    idx = (read_pos + i) & fft_mask;
     fft_buffer[i * 2] = buffer[idx] * window_buffer[i];
     fft_buffer[i * 2 + 1] = 0;
     i += 1;
   );
-  
+
   fft(fft_buffer, fft_size);
   fft_permute(fft_buffer, fft_size);
-  
+
+  // Combined magnitude + dB + slope + smoothing + peak
+  // mag_squared = re² + im²
+  // mag_normalized² = mag_squared * (2/N)²
+  // dB = 10 * log10(mag²) = 10 * log(mag²) / ln(10)
+  scale_sq = (2.0 / fft_size) * (2.0 / fft_size);
+  scale_log = INV_LN10_TIMES_10;  // = 10 / ln(10)
+
+  use_slope = slope != 0;
+  use_smoothing = smoothing > 0;
+
   i = 0;
-  loop(fft_size / 2,
-    real = fft_buffer[i * 2];
-    imag = fft_buffer[i * 2 + 1];
-    mag = sqrt(real * real + imag * imag) * (2.0 / fft_size);
-    
-    mag < min_magnitude ? mag = min_magnitude;
-    
-    mag_db = 20 * log10(mag);
-    
-    bin_freq = (i / (fft_size / 2)) * (srate / 2);
-    bin_freq < 20 ? bin_freq = 20;
-    
-    slope != 0 ? (
-      slope_compensation = log(bin_freq / reference_freq) / log(2) * slope;
-      mag_db += slope_compensation;
-    );
-    
-    smoothing > 0 ? (
-      smooth_buffer[i] = smooth_buffer[i] * smoothing_coeff + mag_db * (1 - smoothing_coeff);
+  loop(half_fft,
+    re = fft_buffer[i * 2];
+    im = fft_buffer[i * 2 + 1];
+    mag_sq = (re * re + im * im) * scale_sq;
+    mag_sq < 0.0000000000001 ? mag_sq = 0.0000000000001;  // -130 dB floor for log safety
+
+    mag_db = log(mag_sq) * scale_log;
+
+    use_slope ? mag_db += slope_buf[i] * slope;
+
+    use_smoothing ? (
+      smooth_buffer[i] = smooth_buffer[i] * smoothing_coeff + mag_db * one_minus_coeff;
     ) : (
       smooth_buffer[i] = mag_db;
     );
-    
-    smooth_buffer[i] > peak_buffer[i] ? (
-      peak_buffer[i] = smooth_buffer[i];
+
+    sb = smooth_buffer[i];
+    sb > peak_buffer[i] ? (
+      peak_buffer[i] = sb;
     ) : (
       peak_buffer[i] *= peak_decay_rate;
-      peak_buffer[i] < floor_db ? peak_buffer[i] = floor_db;
+      peak_buffer[i] < floor_db_clamped ? peak_buffer[i] = floor_db_clamped;
     );
-    
+
     i += 1;
   );
-  
-  num_bins = fft_size / 2;
-  
+
+  // Write to gmem
   gmem[gmem_offset] = fft_size;
   gmem[gmem_offset + 1] = srate;
-  gmem[gmem_offset + 2] = num_bins;
-  
-  i = 0;
-  loop(num_bins,
-    gmem[gmem_offset + 3 + i] = smooth_buffer[i];
-    gmem[gmem_offset + 3 + num_bins + i] = peak_buffer[i];
-    i += 1;
-  );
+  gmem[gmem_offset + 2] = half_fft;
+
+  memcpy(gmem + gmem_offset + 3, smooth_buffer, half_fft);
+  memcpy(gmem + gmem_offset + 3 + half_fft, peak_buffer, half_fft);
 );
-
-@gfx 400 200
-
-gfx_r = gfx_g = gfx_b = 1;
-gfx_a = 1;
-
-gfx_x = 10;
-gfx_y = 10;
-gfx_drawstr("=== JSFX DEBUG ===");
-
-gfx_x = 10;
-gfx_y = 30;
-gfx_drawnumber(fft_size_idx, 0);
-gfx_drawstr(" <- fft_size_idx (slider)");
-
-gfx_x = 10;
-gfx_y = 50;
-gfx_drawnumber(fft_size, 0);
-gfx_drawstr(" <- fft_size variable");
-
-gfx_x = 10;
-gfx_y = 70;
-gfx_drawnumber(num_bins, 0);
-gfx_drawstr(" <- num_bins");
-
-gfx_x = 10;
-gfx_y = 90;
-gfx_drawstr("gmem[0] = ");
-gfx_drawnumber(gmem[gmem_offset], 1);
-
-gfx_x = 10;
-gfx_y = 110;
-gfx_drawstr("gmem[2] = ");
-gfx_drawnumber(gmem[gmem_offset + 2], 1);
-
-gfx_x = 10;
-gfx_y = 130;
-gfx_drawstr("buffer_size = ");
-gfx_drawnumber(buffer_size, 0);
-
