@@ -109,6 +109,90 @@ function PresetSystem.deleteGranularSet(name)
 	end
 end
 
+-- ---------------------------------------------------------------------------
+-- LFO engine state (CP_Mod banks + pad→rate meta-links). The banks are
+-- internal FX (excluded from fx_chain, the global one lives on the hidden
+-- CP MOD track) — without this block a preset restores the ROUTING but the
+-- LFOs keep whatever shape/rate they currently have.
+-- ---------------------------------------------------------------------------
+local function captureLFOState()
+	local le = PresetSystem.fxmanager.link_engine
+	if not le then return nil end
+	local function grab(get)
+		local slots, any = {}, false
+		for i = 1, le.modjsfx.SLOTS do
+			local sl = get(i)
+			if sl then
+				slots[i] = { on = sl.on, shape = sl.shape, rate = sl.rate,
+					sync = sl.sync, phase = sl.phase }
+				any = true
+			end
+		end
+		return any and slots or nil
+	end
+	local meta = nil
+	local src = PresetSystem.core.state.lfo_meta
+	if src and #src > 0 then
+		meta = {}
+		for i, m in ipairs(src) do
+			meta[i] = { slot = m.slot, axis = m.axis,
+				invert = m.invert, base_rate = m.base_rate }
+		end
+	end
+	return {
+		track_slots = grab(le.getLFOSlot),
+		global_slots = grab(le.getGlobalSlot),
+		meta = meta,
+	}
+end
+
+local function anySlotOn(slots)
+	for _, sl in pairs(slots or {}) do
+		if sl.on then return true end
+	end
+	return false
+end
+
+local function restoreLFOState(saved)
+	local le = PresetSystem.fxmanager.link_engine
+	if not le then return end
+	saved = saved or {}
+	if saved.track_slots then
+		-- Create the bank only when the saved state actually uses it.
+		local idx = le.findModLFO()
+		if idx < 0 and anySlotOn(saved.track_slots) then
+			idx = le.ensureModLFO()
+		end
+		if idx >= 0 then
+			for i = 1, le.modjsfx.SLOTS do
+				if saved.track_slots[i] then
+					le.setLFOSlot(i, saved.track_slots[i])
+				end
+			end
+		end
+	end
+	if saved.global_slots then
+		local mt, mi = le.findGlobalMIDI()
+		if (not mt or mi < 0) and anySlotOn(saved.global_slots) then
+			mt, mi = le.ensureGlobalMIDI()
+		end
+		if mt and mi >= 0 then
+			for i = 1, le.modjsfx.SLOTS do
+				if saved.global_slots[i] then
+					le.setGlobalSlot(i, saved.global_slots[i])
+				end
+			end
+		end
+	end
+	-- Meta-links: the saved state defines them entirely (nil = none).
+	local meta = {}
+	for i, m in ipairs(saved.meta or {}) do
+		meta[i] = { slot = m.slot, axis = m.axis,
+			invert = m.invert, base_rate = m.base_rate }
+	end
+	PresetSystem.core.state.lfo_meta = meta
+end
+
 function PresetSystem.saveSnapshot(name)
 	if name == "" or not PresetSystem.core.isTrackValid() then return end
 
@@ -157,6 +241,9 @@ function PresetSystem.saveSnapshot(name)
 			end
 		end
 	end
+
+	-- LFO engine + meta-links are part of the captured sound.
+	snapshot.lfo = captureLFOState()
 
 	PresetSystem.core.state.presets[current_preset].snapshots[name] = snapshot
 	PresetSystem.core.state.snapshot_name = PresetSystem.getNextSnapshotName()
@@ -270,6 +357,10 @@ function PresetSystem.loadSnapshot(name)
 	PresetSystem.r.Undo_EndBlock("Load FX Constellation snapshot: " .. name, -1)
 	PresetSystem.fxmanager.updateSelectedCount()
 	PresetSystem.fxmanager.captureBaseValues()
+	-- Restore the LFO engine (bank slots + meta-links) the snapshot was
+	-- heard with — old snapshots without the block leave banks untouched
+	-- but clear the metas (they define the full set).
+	restoreLFOState(snapshot.lfo)
 	-- Loaded bases/ranges must reach existing links: force a full rewrite
 	-- (the sweep otherwise leaves intact links untouched).
 	PresetSystem.core.state.links_rebuild = true
@@ -408,6 +499,11 @@ function PresetSystem.captureCompleteState()
 		-- out avoids double instances and index confusion.
 		sound_generator = PresetSystem.captureSoundGeneratorState()
 	}
+	-- LFO engine (bank slots + pad→rate meta-links) and Native Links state
+	-- — both are part of the sound, and the banks are internal FX excluded
+	-- from fx_chain (the global one lives on the hidden CP MOD track).
+	complete_state.lfo = captureLFOState()
+	complete_state.linked = PresetSystem.core.state.linked_mode
 
 	-- Build reverse mapping: REAPER FX index -> visible_fx_id in fx_data
 	local reaper_to_visible = {}
@@ -586,6 +682,15 @@ function PresetSystem.loadPreset(name)
 	end
 
 	PresetSystem.fxmanager.scanTrackFX()
+
+	-- LFO engine the preset was heard with (bank slots + meta-links) and
+	-- Native Links state. After the scan: findModLFO needs the refreshed
+	-- bank index. Old presets without the blocks leave banks/mode as-is
+	-- but clear the metas.
+	restoreLFOState(preset.lfo)
+	if preset.linked ~= nil then
+		PresetSystem.core.state.linked_mode = preset.linked
+	end
 
 	for fx_id in pairs(PresetSystem.core.state.fx_data) do
 		PresetSystem.core.state.fx_collapsed[fx_id] = false
