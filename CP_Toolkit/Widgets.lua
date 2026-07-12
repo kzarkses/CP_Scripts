@@ -145,6 +145,13 @@ local knob_bg_cache = {}
 local knob_next_buf_id = 910
 local KNOB_MAX_BUF = 925
 
+-- Knob sweep: gfx.arc angles are 0 = up, clockwise. The classic 270° knob
+-- starts at 225° (bottom-LEFT) and ends at 495° (bottom-RIGHT, through the
+-- top). The previous 135°..405° range mirrored the travel (0 sat at the
+-- bottom-right).
+local KNOB_ANGLE_MIN = pi * 1.25
+local KNOB_ANGLE_MAX = pi * 2.75
+
 local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, tw)
     local entry = knob_bg_cache[size]
     if entry and entry.bg_r == bg_r and entry.bg_g == bg_g and entry.bg_b == bg_b
@@ -174,11 +181,9 @@ local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, t
     gfx.setimgdim(buf_id, size, size)
     gfx.set(bg_r, bg_g, bg_b, 0.5)
     gfx.circle(cx, cy, radius - 1, 1, 1)
-    local angle_min = pi * 0.75
-    local angle_max = pi * 2.25
     gfx.set(trk_r, trk_g, trk_b, 0.25)
     for i = 0, tw - 1 do
-        gfx.arc(cx, cy, ar - i, angle_min, angle_max, 1)
+        gfx.arc(cx, cy, ar - i, KNOB_ANGLE_MIN, KNOB_ANGLE_MAX, 1)
     end
     gfx.dest = -1
     entry.buf_id = buf_id
@@ -1650,9 +1655,10 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         local cx, cy = x + radius, y + radius
         local display_val = changed and new_value or value
 
-        -- Angle range: 135° to 405° (270° sweep, gap at bottom)
-        local angle_min = pi * 0.75
-        local angle_max = pi * 2.25
+        -- Classic 270° sweep, gap at the bottom: 0 at bottom-left, max at
+        -- bottom-right (KNOB_ANGLE_MIN/MAX).
+        local angle_min = KNOB_ANGLE_MIN
+        local angle_max = KNOB_ANGLE_MAX
         local angle_val = angle_min + (angle_max - angle_min) * display_val
         local ar = radius - 3                                    -- arc radius
         local tw = max(2, floor(radius * 0.1))        -- track thickness
@@ -1770,10 +1776,10 @@ function Widgets.ModKnob(id, label, base, depth, live, theme, opts)
         local d_base = base_changed and new_base or base
         local d_depth = depth_changed and new_depth or depth
 
-        -- Angle range: 135° to 405° (270° sweep, gap at bottom); gfx.arc
-        -- angles are 0 = up, clockwise.
-        local angle_min = pi * 0.75
-        local angle_max = pi * 2.25
+        -- Classic 270° sweep, gap at the bottom (KNOB_ANGLE_MIN/MAX);
+        -- gfx.arc angles are 0 = up, clockwise.
+        local angle_min = KNOB_ANGLE_MIN
+        local angle_max = KNOB_ANGLE_MAX
         local sweep = angle_max - angle_min
         local function angleOf(v) return angle_min + sweep * max(0, min(1, v)) end
         local ar = radius - 3                       -- outer arc radius
