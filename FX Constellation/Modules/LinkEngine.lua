@@ -300,6 +300,22 @@ function LinkEngine.setBaseline(fx_id, param_id, base_value)
 	setMod(s.track, fx_data.actual_fx_id or fx_id, param_id, "baseline", base_value)
 end
 
+-- Push FXC's range/invert into the link scale of one param. The sweep no
+-- longer rewrites intact links, so FXC-side depth edits (range slider,
+-- invert toggle, inspector routing) propagate through this explicit path.
+function LinkEngine.pushDepth(fx_id, param_id)
+	local s = LinkEngine.core.state
+	if not LinkEngine.core.isTrackValid() then return end
+	local fx_data = s.fx_data[fx_id]
+	if not fx_data then return end
+	local target = fx_data.actual_fx_id or fx_id
+	if not ownsLink(s.track, target, param_id) then return end
+	local range = LinkEngine.fxmanager.getParamRange(fx_id, param_id)
+	local span = range * (s.gesture_range or 1.0)
+	if LinkEngine.fxmanager.getParamInvert(fx_id, param_id) then span = -span end
+	setParm(s.track, target, param_id, "scale", span)
+end
+
 -- Does this param currently route through a CP link? (baseline is then the
 -- write target for base edits, not the raw param)
 function LinkEngine.isParamLinked(fx_id, param_id, param_data)
@@ -323,6 +339,10 @@ end
 function LinkEngine.syncLinks()
 	local s = LinkEngine.core.state
 	s.links_dirty = false
+	-- Preset/snapshot loads set links_rebuild: every wanted link is then
+	-- rewritten from FXC state (base/range) instead of being left intact.
+	local rebuild = s.links_rebuild
+	s.links_rebuild = false
 	if not LinkEngine.core.isTrackValid() then
 		s.links_active = false
 		s.links_count = 0
@@ -397,31 +417,50 @@ function LinkEngine.syncLinks()
 				end
 			end
 			if want then
-				local range = LinkEngine.fxmanager.getParamRange(fx_id, param_id)
-				local invert = LinkEngine.fxmanager.getParamInvert(fx_id, param_id)
-				local span = range * (s.gesture_range or 1.0)
-				if invert then span = -span end
-				-- Effective value = baseline + (source + offset) × scale,
-				-- source ∈ [0,1] → source center (0.5) sits exactly on base.
-				if midi_cc then
-					-- MIDI link: effect = -100, msg = 0xB0 (CC class),
-					-- msg2 = 128 + cc selects the 14-bit CC pair (REAPER
-					-- PARMLINK convention; if runtime lands on plain 7-bit,
-					-- adjust the 128 offset here).
-					setParm(track, target, param_id, "effect", -100)
-					setParm(track, target, param_id, "midi_bus", 0)
-					setParm(track, target, param_id, "midi_chan", 1)
-					setParm(track, target, param_id, "midi_msg", 176)
-					setParm(track, target, param_id, "midi_msg2", 128 + midi_cc)
-				else
-					setParm(track, target, param_id, "effect", src_fx)
-					setParm(track, target, param_id, "param", src_param)
+				-- TOPOLOGY-ONLY sweep: if the link already points at the
+				-- expected source, leave scale/baseline UNTOUCHED. Depth and
+				-- base are edited directly on the link (panel knobs, FXC
+				-- fast paths) — rewriting them here from FXC's range on
+				-- every sweep clobbered edits made in the standalone panel
+				-- (depth snapping back to the default range).
+				local intact = false
+				if not rebuild
+				   and getParm(track, target, param_id, "active") == "1" then
+					local eff = tonumber(getParm(track, target, param_id, "effect") or "")
+					if midi_cc then
+						local msg2 = tonumber(getParm(track, target, param_id, "midi_msg2") or "")
+						intact = eff == -100
+							and (msg2 == 128 + midi_cc or msg2 == midi_cc)
+					else
+						local sp = tonumber(getParm(track, target, param_id, "param") or "")
+						intact = eff == src_fx and sp == src_param
+					end
 				end
-				setParm(track, target, param_id, "offset", -0.5)
-				setParm(track, target, param_id, "scale", span)
-				setMod(track, target, param_id, "baseline", param_data.base_value or 0.5)
-				setMod(track, target, param_id, "active", 1)
-				setParm(track, target, param_id, "active", 1)
+				if not intact then
+					local range = LinkEngine.fxmanager.getParamRange(fx_id, param_id)
+					local invert = LinkEngine.fxmanager.getParamInvert(fx_id, param_id)
+					local span = range * (s.gesture_range or 1.0)
+					if invert then span = -span end
+					-- Effective value = baseline + (source + offset) × scale,
+					-- source ∈ [0,1] → source center (0.5) sits on base.
+					if midi_cc then
+						-- MIDI link: effect = -100, msg = 0xB0 (CC class),
+						-- msg2 = 128 + cc selects the 14-bit CC pair.
+						setParm(track, target, param_id, "effect", -100)
+						setParm(track, target, param_id, "midi_bus", 0)
+						setParm(track, target, param_id, "midi_chan", 1)
+						setParm(track, target, param_id, "midi_msg", 176)
+						setParm(track, target, param_id, "midi_msg2", 128 + midi_cc)
+					else
+						setParm(track, target, param_id, "effect", src_fx)
+						setParm(track, target, param_id, "param", src_param)
+					end
+					setParm(track, target, param_id, "offset", -0.5)
+					setParm(track, target, param_id, "scale", span)
+					setMod(track, target, param_id, "baseline", param_data.base_value or 0.5)
+					setMod(track, target, param_id, "active", 1)
+					setParm(track, target, param_id, "active", 1)
+				end
 				count = count + 1
 			else
 				-- Release only what this engine manages: pad links always,

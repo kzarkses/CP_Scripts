@@ -41,8 +41,7 @@ return {
           native_icon = "00 - Toggle Spectral Peaks.png"
         },
         {
-          builtin_icon = "Delete",
-          command_id = "_RSe92e062f29527a8f1564cd06dfc88e41c00646ce",
+          command_id = "_RSe7d701bc5dbac6fff525b296bc0814ccac32f231",
           native_icon = "toolbar_envelope_LFO_generator_and_shaper.png"
         },
         {

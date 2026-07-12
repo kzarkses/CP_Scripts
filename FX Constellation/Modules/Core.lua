@@ -73,6 +73,7 @@ function Core.init(reaper_api)
 		linked_mode = false,
 		links_active = false,
 		links_dirty = false,
+		links_rebuild = false,
 		links_count = 0,
 		link_slew = 0.0,
 		-- Per-param modulation source, keyed by the param base key:

@@ -249,6 +249,9 @@ function PresetSystem.loadSnapshot(name)
 	PresetSystem.r.Undo_EndBlock("Load FX Constellation snapshot: " .. name, -1)
 	PresetSystem.fxmanager.updateSelectedCount()
 	PresetSystem.fxmanager.captureBaseValues()
+	-- Loaded bases/ranges must reach existing links: force a full rewrite
+	-- (the sweep otherwise leaves intact links untouched).
+	PresetSystem.core.state.links_rebuild = true
 	PresetSystem.fxmanager.saveTrackSelection()
 end
 
@@ -618,6 +621,8 @@ function PresetSystem.loadPreset(name)
 	PresetSystem.core.state.current_loaded_preset = name
 	PresetSystem.core.state.preset_base_name = name
 	PresetSystem.core.state.initial_fx_chain_state = PresetSystem.captureFXChainState()
+	-- Loaded bases/ranges must reach existing links: force a full rewrite.
+	PresetSystem.core.state.links_rebuild = true
 	PresetSystem.fxmanager.saveTrackSelection()
 
 	if original_fxfloat >= 0 and PresetSystem.r.SNM_SetIntConfigVar then

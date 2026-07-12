@@ -289,6 +289,11 @@ function FXManager.setParamRange(fx_id, param_id, range)
 	local key = FXManager.core.getParamKey(fx_id, param_id, "range")
 	if key then
 		FXManager.core.state.param_ranges[key] = range
+		-- The link sweep leaves intact links untouched — push the new depth
+		-- to an existing link explicitly.
+		if FXManager.link_engine then
+			FXManager.link_engine.pushDepth(fx_id, param_id)
+		end
 		FXManager.saveTrackSelection()
 	end
 end
@@ -302,6 +307,9 @@ function FXManager.setParamInvert(fx_id, param_id, invert)
 	local key = FXManager.core.getParamKey(fx_id, param_id, "invert")
 	if key then
 		FXManager.core.state.param_invert[key] = invert
+		if FXManager.link_engine then
+			FXManager.link_engine.pushDepth(fx_id, param_id)
+		end
 		FXManager.saveTrackSelection()
 	end
 end
@@ -555,6 +563,11 @@ function FXManager.randomizeBaseValues(params, fx_id)
 			local denormalized_value = FXManager.core.denormalizeParamValue(new_base, param_data.min_val, param_data.max_val)
 			FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
 			param_data.current_value = new_base
+			-- Intact links keep their baseline unless pushed explicitly.
+			if FXManager.link_engine
+			   and FXManager.link_engine.isParamLinked(fx_id, param_id, param_data) then
+				FXManager.link_engine.setBaseline(fx_id, param_id, new_base)
+			end
 		end
 	end
 	FXManager.saveTrackSelection()
@@ -580,6 +593,10 @@ function FXManager.randomizeAllBases()
 					local denormalized_value = FXManager.core.denormalizeParamValue(new_base, param_data.min_val, param_data.max_val)
 					FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
 					param_data.current_value = new_base
+					if FXManager.link_engine
+					   and FXManager.link_engine.isParamLinked(fx_id, param_id, param_data) then
+						FXManager.link_engine.setBaseline(fx_id, param_id, new_base)
+					end
 				end
 			end
 		end

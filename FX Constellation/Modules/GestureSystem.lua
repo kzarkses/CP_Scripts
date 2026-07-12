@@ -91,6 +91,10 @@ function GestureSystem.randomizeSelection()
 				GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, actual_fx_id, param_id, denormalized_value)
 				param_data.current_value = new_value
 				param_data.base_value = new_value
+				local le = GestureSystem.fxmanager.link_engine
+				if le and le.isParamLinked(fx_id, param_id, param_data) then
+					le.setBaseline(fx_id, param_id, new_value)
+				end
 			end
 		end
 	end
