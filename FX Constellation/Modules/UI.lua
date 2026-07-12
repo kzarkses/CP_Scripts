@@ -607,10 +607,13 @@ local function drawNavigation(theme)
     if ltoggled and lstate ~= s.linked_mode then
         s.linked_mode = lstate
         s.links_dirty = true
+        -- Both transitions RE-ANCHOR (sweep-side): the audible value at
+        -- this instant becomes the base and the pad becomes the center.
+        -- Replaying the script-mode math through the link can never be
+        -- exact (asymmetric clamping, gesture min/max, step snapping) —
+        -- freezing the present as the new reference is, by construction.
+        s.links_reanchor = true
         if lstate then
-            -- Re-activation must refresh baseline/offset even on links the
-            -- sweep considers intact: the pad anchor (gesture_base) may
-            -- have moved while the mode was off.
             s.links_rebuild = true
         end
         UI.fxmanager.saveTrackSelection()

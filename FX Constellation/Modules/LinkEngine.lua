@@ -555,6 +555,11 @@ function LinkEngine.syncLinks()
 	-- rewritten from FXC state (base/range) instead of being left intact.
 	local rebuild = s.links_rebuild
 	s.links_rebuild = false
+	-- Linked-mode toggles set links_reanchor: the current AUDIBLE value of
+	-- each pad param becomes its base and the current pad position becomes
+	-- the gesture anchor — the transition is transparent by construction.
+	local reanchor = s.links_reanchor
+	s.links_reanchor = false
 	if not LinkEngine.core.isTrackValid() then
 		s.links_active = false
 		s.links_count = 0
@@ -562,6 +567,11 @@ function LinkEngine.syncLinks()
 	end
 
 	local want_links = s.linked_mode and s.pad_mode == 0
+
+	if reanchor then
+		s.gesture_base_x = s.gesture_x or 0.5
+		s.gesture_base_y = s.gesture_y or 0.5
+	end
 
 	-- The bridge is required (and auto-created) as soon as linked mode is
 	-- on: it is both the link source and the automation surface.
@@ -573,6 +583,26 @@ function LinkEngine.syncLinks()
 	   or LinkEngine.r.TrackFX_GetNumParams(s.track, bridge) < LinkEngine.gesture.BRIDGE_PARAM_COUNT) then
 		-- v1 bridge instance that couldn't be upgraded — stay script-driven.
 		want_links = false
+	end
+
+	if want_links and (reanchor or rebuild) then
+		-- Snap the bridge inputs AND outputs to the pad position BEFORE any
+		-- link is written: the out sliders are the slew state, and a fresh
+		-- (or stale) bridge would otherwise ramp every linked param from
+		-- its old output to the pad over the slew time — the audible
+		-- "stutter" on activation. Snapped, the very first audio block
+		-- computes baseline + (pad − anchor) × span = baseline exactly.
+		local gx = s.gesture_x or 0.5
+		local gy = s.gesture_y or 0.5
+		local r = LinkEngine.r
+		r.TrackFX_SetParam(s.track, bridge, 0, gx)          -- x_pos
+		r.TrackFX_SetParam(s.track, bridge, 1, gy)          -- y_pos
+		r.TrackFX_SetParam(s.track, bridge, SRC_X, gx)      -- x_out (slew state)
+		r.TrackFX_SetParam(s.track, bridge, SRC_Y, gy)      -- y_out
+		r.TrackFX_SetParam(s.track, bridge, SRC_MIX, (gx + gy) / 2)
+		if LinkEngine.gesture.syncBridgeState then
+			LinkEngine.gesture.syncBridgeState()
+		end
 	end
 
 	local track = s.track
@@ -684,8 +714,19 @@ function LinkEngine.syncLinks()
 							if src_param == SRC_X then off = -gbx
 							elseif src_param == SRC_Y then off = -gby
 							else off = -(gbx + gby) / 2 end
-							base = (param_data.key
-								and s.param_base_values[param_data.key]) or base
+							if reanchor then
+								-- The audible value right now becomes the
+								-- base — exact continuity, whatever the
+								-- script-mode math did before.
+								base = param_data.current_value or base
+								param_data.base_value = base
+								if param_data.key then
+									s.param_base_values[param_data.key] = base
+								end
+							else
+								base = (param_data.key
+									and s.param_base_values[param_data.key]) or base
+							end
 						end
 					end
 					setParm(track, target, param_id, "offset", off)
@@ -717,6 +758,13 @@ function LinkEngine.syncLinks()
 						LinkEngine.r.TrackFX_SetParamNormalized(
 							track, target, param_id, live)
 						param_data.current_value = live
+						-- Deactivation re-anchor: script mode resumes with
+						-- the frozen value as its base — no jump-back to the
+						-- pre-link anchor on the next gesture event.
+						param_data.base_value = live
+						if param_data.key then
+							s.param_base_values[param_data.key] = live
+						end
 					end
 				end
 			end
@@ -728,6 +776,13 @@ function LinkEngine.syncLinks()
 	-- LFO-sourced links on THIS track (drives the live-value keepalive).
 	s.lfo_links_count = lfo_count
 	if want_links then LinkEngine.applySlew() end
+	if reanchor then
+		-- Persist the re-anchored bases NOW: adding the bridge triggers a
+		-- rescan whose loadTrackSelection restores the last SAVED bases —
+		-- without this they'd be the pre-toggle ones, leaving state and
+		-- link baselines disagreeing for several frames (audible churn).
+		LinkEngine.fxmanager.saveTrackSelection()
+	end
 end
 
 -- Live display value of a param. TrackFX_GetParam returns the BASE value —
