@@ -859,125 +859,46 @@ local function drawXYPad(theme)
 end
 
 -- ---------------------------------------------------------------------------
--- LFO (CP_Mod LFO bank — toolkit UI, the JSFX window stays closed)
+-- LFO (CP_Mod banks — shared LFOPanel, the JSFX windows stay closed)
 -- ---------------------------------------------------------------------------
-local LFO_SLOT_SHAPES = { "Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Random" }
-local LFO_SLOT_SYNCS = { "Free", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars" }
-
--- Mirror of the JSFX slot shapes, for the waveform preview.
-local function lfoShapeValue(shape, p)
-    if shape == 5 then
-        -- S&H preview: deterministic pseudo-random per cycle
-        local c = math.floor(p)
-        local x = math.sin(c * 78.233 + 12.9898) * 43758.5453
-        return x - math.floor(x)
-    end
-    p = p % 1
-    if shape == 0 then return 0.5 + 0.5 * math.sin(p * 2 * math.pi)
-    elseif shape == 1 then return p < 0.5 and 2 * p or 2 - 2 * p
-    elseif shape == 2 then return p
-    elseif shape == 3 then return 1 - p
-    else return p < 0.5 and 1 or 0 end
-end
-
 local function drawLFOSection(theme)
     local UItk = UI.tk
     local s = UI.core.state
     if not sectionHeader("lfo", "LFO", theme) then return end
     local le = UI.linkengine
-    if not le then return end
+    if not le or not UI.lfopanel then return end
 
-    if (s.modlfo_index or -1) < 0 then
-        UItk.SetFontCaption()
-        UItk.TextWrapped("Shared LFO bank (CP_Mod). Right-click a param to follow a slot.")
-        UItk.SetFontBody()
-        if Btn("lfo_add", "Add LFO Bank") then
-            le.ensureModLFO()
-        end
-        return
+    -- Track bank (per-track LFO, link sources) / Global bank (hidden CP MOD
+    -- track, cross-track 14-bit CC).
+    s.lfo_panel_mode = s.lfo_panel_mode or 1
+    local tch, tidx = UItk.TabBar("lfo_mode_tabs", { "Track", "Global" },
+        s.lfo_panel_mode)
+    if tch then s.lfo_panel_mode = tidx end
+
+    local ctx
+    if s.lfo_panel_mode == 2 then
+        local mtrack, midx = le.findGlobalMIDI()
+        ctx = {
+            present = mtrack ~= nil and midx >= 0,
+            hint = "Global bank: hidden CP MOD track, modulates ANY track through 14-bit CC.",
+            get = le.getGlobalSlot,
+            set = le.setGlobalSlot,
+            add = function() le.ensureGlobalMIDI() end,
+            sel = s.lfo_sel_slot or 1,
+            onSelect = function(i) s.lfo_sel_slot = i end,
+        }
+    else
+        ctx = {
+            present = (s.modlfo_index or -1) >= 0,
+            hint = "Track LFO bank (CP_Mod). Right-click a param to follow a slot.",
+            get = le.getLFOSlot,
+            set = le.setLFOSlot,
+            add = function() le.ensureModLFO() end,
+            sel = s.lfo_sel_slot or 1,
+            onSelect = function(i) s.lfo_sel_slot = i end,
+        }
     end
-
-    -- Slot selector: 8 square cells — click to select; the number is bright
-    -- when the slot is enabled. Same manual hit-testing as the Figures grid.
-    local sel = s.lfo_sel_slot or 1
-    local cell = math.floor(theme.button_height * 1.1)
-    UItk.BeginGrid("lfo_slots", { cell_w = cell, cell_h = cell, gap = theme.item_spacing })
-    for i = 1, 8 do
-        local x, y, w, h = UItk.GridCell("lfo_slots")
-        local slot_i = le.getLFOSlot(i)
-        local active = sel == i
-        local hovered = UItk.Core.MouseInRect(x, y, w, h) and not UItk.Core.HasPopup()
-        local bg = active and theme.colors.accent
-            or (hovered and theme.colors.button_hovered or theme.colors.frame_bg)
-        UItk.Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4] or 1)
-        local bc = theme.colors.border
-        UItk.Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], bc[4] or 0.4, false)
-        local tc = (slot_i and slot_i.on) and theme.colors.text or theme.colors.text_disabled
-        local label = tostring(i)
-        local tw, th = UItk.Core.MeasureText(label)
-        UItk.Core.DrawText(label, x + math.floor((w - tw) / 2), y + math.floor((h - th) / 2),
-            tc[1], tc[2], tc[3], 1)
-        if hovered and UItk.Core.MouseClicked(1) then
-            s.lfo_sel_slot = i
-        end
-    end
-    UItk.EndGrid("lfo_slots")
-
-    local slot = le.getLFOSlot(sel)
-    if not slot then return end
-
-    local tc2, on2 = Tgl("lfo_on", slot.on and "● ON" or "○ OFF", slot.on)
-    if tc2 then le.setLFOSlot(sel, { on = on2 }) end
-
-    local sc, si = Combo("lfo_shape", "Shape", slot.shape + 1, LFO_SLOT_SHAPES)
-    if sc then le.setLFOSlot(sel, { shape = si - 1 }) end
-
-    local yc, yi = Combo("lfo_sync", "Sync", slot.sync + 1, LFO_SLOT_SYNCS)
-    if yc then le.setLFOSlot(sel, { sync = yi - 1 }) end
-
-    if slot.sync == 0 then
-        local rmin, rmax = math.log(0.01), math.log(20)
-        local norm = (math.log(math.max(0.01, slot.rate)) - rmin) / (rmax - rmin)
-        local rc, rv = Slid("lfo_rate", "Rate", norm, 0, 1,
-            { format = fmtVal("%.2f Hz", slot.rate) })
-        if rc then
-            le.setLFOSlot(sel, { rate = math.exp(rmin + rv * (rmax - rmin)) })
-        end
-    end
-
-    local pc, pv = Slid("lfo_phase", "Phase", slot.phase, 0, 1,
-        { format = fmtVal("%.2f", slot.phase) })
-    if pc then le.setLFOSlot(sel, { phase = pv }) end
-
-    -- Waveform preview (2 cycles) + live output marker on the right edge.
-    local w = UItk.GetAvailableWidth()
-    local hgt = math.floor(theme.button_height * 2.5)
-    if w > 40 then
-        local canvas = UItk.Canvas("lfo_prev", { width = w, height = hgt })
-        local segs = 48
-        local col = theme.colors.accent
-        local alpha = slot.on and 1 or 0.35
-        local px, py
-        for i2 = 0, segs do
-            local p = i2 / segs * 2
-            local v = lfoShapeValue(slot.shape, p + slot.phase)
-            local x = canvas.x + (i2 / segs) * canvas.w
-            local y = canvas.y + (1 - v) * (canvas.h - 4) + 2
-            if px then
-                UItk.Core.DrawLine(px, py, x, y, col[1], col[2], col[3], alpha)
-            end
-            px, py = x, y
-        end
-        local oy = canvas.y + (1 - (slot.out or 0.5)) * (canvas.h - 4) + 2
-        UItk.DrawCircle(canvas.x + canvas.w - 6, oy, 4,
-            theme.colors.text[1], theme.colors.text[2], theme.colors.text[3], 1, true)
-    end
-
-    -- The output marker moves on its own — keep the loop alive while the
-    -- section shows an enabled slot.
-    if slot.on then
-        UItk.RequestRedrawAt(UI.r.time_precise() + 1 / 30)
-    end
+    UI.lfopanel.draw(theme, ctx)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1245,7 +1166,11 @@ local function openParamModMenu(fx_id, param_id, param_data)
             UI.fxmanager.updateSelectedCount()
             UI.fxmanager.saveTrackSelection()
         end
-        le.ensureModLFO()
+        if slot > le.GLOBAL_SLOT_BASE then
+            le.ensureGlobalMIDI()
+        else
+            le.ensureModLFO()
+        end
     end
 
     local lfo_children = {}
@@ -1254,6 +1179,15 @@ local function openParamModMenu(fx_id, param_id, param_data)
             label = "CP LFO " .. i,
             checked = src == i,
             action = function() followLFO(i) end,
+        }
+    end
+
+    local global_children = {}
+    for i = 1, 8 do
+        global_children[i] = {
+            label = "Global LFO " .. i,
+            checked = src == le.GLOBAL_SLOT_BASE + i,
+            action = function() followLFO(le.GLOBAL_SLOT_BASE + i) end,
         }
     end
 
@@ -1304,6 +1238,7 @@ local function openParamModMenu(fx_id, param_id, param_data)
         { label = "Follow Pad XY", checked = src == 0 and x_ass and y_ass,
           action = function() followPad(true, true) end },
         { label = "Follow CP LFO", children = lfo_children },
+        { label = "Follow Global LFO", children = global_children },
         { separator = true },
         { label = "Param LFO (native)", children = {
             { label = lfo.active and "Disable" or "Enable",

@@ -32,19 +32,27 @@ local LinkEngine = {}
 local SRC_X, SRC_Y, SRC_MIX = 3, 4, 5
 local SLEW_PARAM = 2
 
--- CP_Mod LFO: standalone 8-slot LFO bank JSFX (the first brick of the
--- CP_Mod ecosystem — any FX param can link to its block-rate outputs, with
--- or without any CP script running). Sliders 1..40 = 5 settings per slot,
--- sliders 41..48 = hidden outputs → 0-based out params 40..47.
-local MODLFO_NAME = "CP_Mod LFO"
-local MODLFO_SLOTS = 8
-local MODLFO_OUT_BASE = 40
+-- Mod-source slot encoding in state.param_mod_source:
+--   0 / absent  = pad XY
+--   1..8        = CP_Mod LFO slot on the current track
+--   101..108    = global CP_Mod MIDI slot (hidden "CP MOD" track, received
+--                 as 14-bit CC through a MIDI send — cross-track modulation)
+local GLOBAL_SLOT_BASE = 100
+LinkEngine.GLOBAL_SLOT_BASE = GLOBAL_SLOT_BASE
 
 function LinkEngine.init(reaper_api, core, fxmanager, gesture)
 	LinkEngine.r = reaper_api
 	LinkEngine.core = core
 	LinkEngine.fxmanager = fxmanager
 	LinkEngine.gesture = gesture
+	-- Shared CP_Mod plumbing (JSFX builders, banks, MOD track) — pure
+	-- module, also used by the standalone CP_ModLFO panel script.
+	LinkEngine.modjsfx = dofile(reaper_api.GetResourcePath()
+		.. "/Scripts/CP_Scripts/FX Constellation/Modules/ModJSFX.lua")
+	-- Refresh the JSFX sources once per session so layout updates reach
+	-- existing instances on the next project (re)load.
+	LinkEngine.modjsfx.writeBankFile(reaper_api, "lfo")
+	LinkEngine.modjsfx.writeBankFile(reaper_api, "midi")
 end
 
 local function setParm(track, fx, param_id, key, value)
@@ -65,151 +73,108 @@ end
 
 -- Is the existing link on (fx, param) one of ours? Ours = source effect is
 -- the bridge or a CP_Mod modulator (matched by name, so it survives chain
--- reorders and a stale cached index).
+-- reorders and a stale cached index), or a MIDI link (effect = -100) inside
+-- the CP_Mod 14-bit CC window.
 local function ownsLink(track, fx, param_id)
 	local active = getParm(track, fx, param_id, "active")
 	if active ~= "1" then return false end
 	local eff = tonumber(getParm(track, fx, param_id, "effect") or "")
-	if not eff or eff < 0 then return false end
+	if not eff then return false end
+	if eff == -100 then
+		local mj = LinkEngine.modjsfx
+		local msg2 = tonumber(getParm(track, fx, param_id, "midi_msg2") or "")
+		if not msg2 then return false end
+		local lo, hi = mj.CC_MSB_BASE, mj.CC_MSB_BASE + mj.SLOTS - 1
+		return (msg2 >= lo and msg2 <= hi)
+		    or (msg2 >= 128 + lo and msg2 <= 128 + hi)
+	end
+	if eff < 0 then return false end
 	local _, name = LinkEngine.r.TrackFX_GetFXName(track, eff, "")
 	return name:find("FX Constellation Bridge") ~= nil
 	    or name:find("CP_Mod", 1, true) ~= nil
 end
 
 -- ---------------------------------------------------------------------------
--- CP_Mod LFO (shared LFO bank)
+-- CP_Mod banks (delegated to the shared, dependency-free ModJSFX module)
 -- ---------------------------------------------------------------------------
-local function buildModLFOSource()
-	local p = {}
-	-- desc must be EXACTLY the AddByName lookup string.
-	p[#p + 1] = "desc: " .. MODLFO_NAME .. "\n"
-	for i = 1, MODLFO_SLOTS do
-		local b = (i - 1) * 5
-		p[#p + 1] = ("slider%d:lfo%d_on=%d<0,1,1{Off,On}>LFO %d On\n")
-			:format(b + 1, i, i == 1 and 1 or 0, i)
-		p[#p + 1] = ("slider%d:lfo%d_shape=0<0,5,1{Sine,Triangle,Saw Up,Saw Down,Square,Random}>LFO %d Shape\n")
-			:format(b + 2, i, i)
-		p[#p + 1] = ("slider%d:lfo%d_rate=1<0.01,20,0.01>LFO %d Rate (Hz)\n")
-			:format(b + 3, i, i)
-		p[#p + 1] = ("slider%d:lfo%d_sync=0<0,6,1{Free,1/16,1/8,1/4,1/2,1 bar,2 bars}>LFO %d Sync\n")
-			:format(b + 4, i, i)
-		p[#p + 1] = ("slider%d:lfo%d_phase=0<0,1,0.01>LFO %d Phase\n")
-			:format(b + 5, i, i)
-	end
-	for i = 1, MODLFO_SLOTS do
-		p[#p + 1] = ("slider%d:lfo%d_out=0.5<0,1,0.0001>-LFO %d Out (mod source)\n")
-			:format(MODLFO_OUT_BASE + i, i, i)
-	end
-	p[#p + 1] = "\n@init\n"
-	for i = 1, MODLFO_SLOTS do
-		p[#p + 1] = ("ph%d = 0; held%d = 0.5; cyc%d = -1;\n"):format(i, i, i)
-	end
-	p[#p + 1] = "\n@block\n"
-	for i = 1, MODLFO_SLOTS do
-		-- Sync divisions in LFO cycles per quarter note: 1/16=4, 1/8=2,
-		-- 1/4=1, 1/2=0.5, 1 bar=0.25, 2 bars=0.125 (4/4 reference). Synced
-		-- slots follow beat_position (freeze when the transport is stopped);
-		-- free slots accumulate wall-clock phase per block.
-		p[#p + 1] = (([[
-lfoI_on > 0.5 ? (
-  lfoI_sync > 0.5 ? (
-    cpb = lfoI_sync < 1.5 ? 4 : lfoI_sync < 2.5 ? 2 : lfoI_sync < 3.5 ? 1 : lfoI_sync < 4.5 ? 0.5 : lfoI_sync < 5.5 ? 0.25 : 0.125;
-    phI = beat_position * cpb;
-  ) : (
-    phI += samplesblock / srate * lfoI_rate;
-  );
-  pp = phI + lfoI_phase;
-  pf = pp - floor(pp);
-  lfoI_shape > 4.5 ? (
-    cc = floor(pp);
-    cc != cycI ? ( heldI = rand(); cycI = cc; );
-    vv = heldI;
-  ) : lfoI_shape > 3.5 ? ( vv = pf < 0.5 ? 1 : 0; )
-  : lfoI_shape > 2.5 ? ( vv = 1 - pf; )
-  : lfoI_shape > 1.5 ? ( vv = pf; )
-  : lfoI_shape > 0.5 ? ( vv = pf < 0.5 ? 2*pf : 2 - 2*pf; )
-  : ( vv = 0.5 + 0.5 * sin(pf * 2 * $pi); );
-  lfoI_out = vv;
-) : ( lfoI_out = 0.5; );
-]]):gsub("I", tostring(i)))
-	end
-	return table.concat(p)
-end
-
 function LinkEngine.findModLFO()
 	local s = LinkEngine.core.state
 	if not LinkEngine.core.isTrackValid() then return -1 end
-	-- scanTrackFX keeps this fresh; fall back to a name sweep otherwise.
+	-- scanTrackFX keeps the cache fresh; validate then fall back to a sweep.
 	if s.modlfo_index and s.modlfo_index >= 0 then
 		local _, name = LinkEngine.r.TrackFX_GetFXName(s.track, s.modlfo_index, "")
-		if name:find(MODLFO_NAME, 1, true) then return s.modlfo_index end
+		if name:find(LinkEngine.modjsfx.LFO_NAME, 1, true) then return s.modlfo_index end
 	end
-	local fx_count = LinkEngine.r.TrackFX_GetCount(s.track)
-	for fx = 0, fx_count - 1 do
-		local _, name = LinkEngine.r.TrackFX_GetFXName(s.track, fx, "")
-		if name:find(MODLFO_NAME, 1, true) then
-			s.modlfo_index = fx
-			return fx
-		end
-	end
-	return -1
+	s.modlfo_index = LinkEngine.modjsfx.findBank(LinkEngine.r, s.track, "lfo")
+	return s.modlfo_index
 end
 
--- Find or create the shared LFO bank on the current track. The JSFX file
--- is (re)written on demand, like the bridge and the sound generator. The
--- instance is added silently — internal JSFX never pop a floating window.
 function LinkEngine.ensureModLFO()
 	local existing = LinkEngine.findModLFO()
 	if existing >= 0 then return existing end
 	if not LinkEngine.core.isTrackValid() then return -1 end
-	local path = LinkEngine.r.GetResourcePath() .. "/Effects/" .. MODLFO_NAME .. ".jsfx"
-	local file = io.open(path, "w")
-	if not file then return -1 end
-	file:write(buildModLFOSource())
-	file:close()
-	local idx = LinkEngine.r.TrackFX_AddByName(LinkEngine.core.state.track, MODLFO_NAME, false, -1)
-	if idx >= 0 then
-		LinkEngine.core.state.modlfo_index = idx
-		LinkEngine.r.TrackFX_Show(LinkEngine.core.state.track, idx, 2)
-	end
+	local idx = LinkEngine.modjsfx.ensureBank(LinkEngine.r, LinkEngine.core.state.track, "lfo")
+	LinkEngine.core.state.modlfo_index = idx
 	return idx
 end
 
--- ---------------------------------------------------------------------------
--- LFO slot access for the toolkit UI (raw JSFX slider units)
--- Slot i (1-based) params: base+0 on, +1 shape, +2 rate Hz, +3 sync, +4 phase.
--- ---------------------------------------------------------------------------
-local function slotBase(slot) return (slot - 1) * 5 end
-
 function LinkEngine.getLFOSlot(slot)
 	local s = LinkEngine.core.state
-	local idx = s.modlfo_index or -1
-	if idx < 0 or not LinkEngine.core.isTrackValid() then return nil end
-	local track = s.track
-	local b = slotBase(slot)
-	local function g(off) return LinkEngine.r.TrackFX_GetParam(track, idx, b + off) end
-	return {
-		on = g(0) > 0.5,
-		shape = math.floor(g(1) + 0.5),
-		rate = g(2),
-		sync = math.floor(g(3) + 0.5),
-		phase = g(4),
-		out = LinkEngine.r.TrackFX_GetParam(track, idx, MODLFO_OUT_BASE + slot - 1),
-	}
+	if not LinkEngine.core.isTrackValid() then return nil end
+	return LinkEngine.modjsfx.getSlot(LinkEngine.r, s.track, s.modlfo_index or -1, slot)
 end
 
 function LinkEngine.setLFOSlot(slot, patch)
 	local s = LinkEngine.core.state
-	local idx = s.modlfo_index or -1
-	if idx < 0 or not LinkEngine.core.isTrackValid() then return end
-	local track = s.track
-	local b = slotBase(slot)
-	local function set(off, v) LinkEngine.r.TrackFX_SetParam(track, idx, b + off, v) end
-	if patch.on ~= nil then set(0, patch.on and 1 or 0) end
-	if patch.shape then set(1, patch.shape) end
-	if patch.rate then set(2, patch.rate) end
-	if patch.sync then set(3, patch.sync) end
-	if patch.phase then set(4, patch.phase) end
+	if not LinkEngine.core.isTrackValid() then return end
+	LinkEngine.modjsfx.setSlot(LinkEngine.r, s.track, s.modlfo_index or -1, slot, patch)
+end
+
+-- ---------------------------------------------------------------------------
+-- Global (cross-track) MIDI bank on the hidden CP MOD track
+-- ---------------------------------------------------------------------------
+-- Returns mod_track, bank_fx_index — cached per frame-ish via state, the
+-- track pointer is validated before reuse.
+function LinkEngine.findGlobalMIDI()
+	local s = LinkEngine.core.state
+	local track = s._mod_track
+	if not (track and LinkEngine.r.ValidatePtr(track, "MediaTrack*")) then
+		track = LinkEngine.modjsfx.findModTrack(LinkEngine.r)
+		s._mod_track = track
+	end
+	if not track then return nil, -1 end
+	local idx = s._mod_bank_idx or -1
+	if idx >= 0 then
+		local _, name = LinkEngine.r.TrackFX_GetFXName(track, idx, "")
+		if name:find(LinkEngine.modjsfx.MIDI_NAME, 1, true) then return track, idx end
+	end
+	idx = LinkEngine.modjsfx.findBank(LinkEngine.r, track, "midi")
+	s._mod_bank_idx = idx
+	return track, idx
+end
+
+function LinkEngine.ensureGlobalMIDI()
+	local track, idx = LinkEngine.findGlobalMIDI()
+	if track and idx >= 0 then return track, idx end
+	track = LinkEngine.modjsfx.ensureModTrack(LinkEngine.r)
+	if not track then return nil, -1 end
+	idx = LinkEngine.modjsfx.ensureBank(LinkEngine.r, track, "midi")
+	LinkEngine.core.state._mod_track = track
+	LinkEngine.core.state._mod_bank_idx = idx
+	return track, idx
+end
+
+-- Slot access on the global bank (for the shared panel / live display).
+function LinkEngine.getGlobalSlot(slot)
+	local track, idx = LinkEngine.findGlobalMIDI()
+	if not track or idx < 0 then return nil end
+	return LinkEngine.modjsfx.getSlot(LinkEngine.r, track, idx, slot)
+end
+
+function LinkEngine.setGlobalSlot(slot, patch)
+	local track, idx = LinkEngine.findGlobalMIDI()
+	if not track or idx < 0 then return end
+	LinkEngine.modjsfx.setSlot(LinkEngine.r, track, idx, slot, patch)
 end
 
 -- ---------------------------------------------------------------------------
@@ -350,22 +315,40 @@ function LinkEngine.syncLinks()
 	local track = s.track
 	local count = 0
 	local lfo_count = 0
-	local lfo_idx = nil  -- resolved lazily, once, on first LFO-sourced param
+	local lfo_idx = nil        -- track LFO bank, resolved lazily once
+	local global_ok = nil      -- global MIDI bank readiness, resolved once
 	for fx_id, fx_data in pairs(s.fx_data) do
 		local target = fx_data.actual_fx_id or fx_id
 		for param_id, param_data in pairs(fx_data.params) do
 			local want = false
-			local src_fx, src_param
+			local src_fx, src_param, midi_cc
 			if param_data.selected then
 				local slot = param_data.key and s.param_mod_source[param_data.key] or 0
-				if slot > 0 then
-					-- CP_Mod LFO slot — a standing link, active in BOTH pad
+				if slot > GLOBAL_SLOT_BASE then
+					-- Global MIDI slot: the hidden CP MOD track emits the
+					-- slot as a 14-bit CC, routed here through a MIDI send;
+					-- the param follows it via a native MIDI link. Standing
+					-- link, active in both pad modes.
+					if global_ok == nil then
+						local mtrack, midx = LinkEngine.ensureGlobalMIDI()
+						global_ok = (mtrack ~= nil and midx >= 0)
+						if global_ok then
+							LinkEngine.modjsfx.ensureMIDISend(LinkEngine.r, mtrack, track)
+						end
+					end
+					if global_ok then
+						midi_cc = LinkEngine.modjsfx.CC_MSB_BASE + (slot - GLOBAL_SLOT_BASE) - 1
+						want = true
+						lfo_count = lfo_count + 1
+					end
+				elseif slot > 0 then
+					-- Track LFO slot — standing link, active in BOTH pad
 					-- modes: in script mode the gesture keeps writing the
 					-- param (= moves the baseline) and the LFO rides on top.
 					if lfo_idx == nil then lfo_idx = LinkEngine.ensureModLFO() end
 					if lfo_idx >= 0 then
 						src_fx = lfo_idx
-						src_param = MODLFO_OUT_BASE + slot - 1
+						src_param = LinkEngine.modjsfx.OUT_BASE + slot - 1
 						want = true
 						lfo_count = lfo_count + 1
 					end
@@ -389,8 +372,20 @@ function LinkEngine.syncLinks()
 				if invert then span = -span end
 				-- Effective value = baseline + (source + offset) × scale,
 				-- source ∈ [0,1] → source center (0.5) sits exactly on base.
-				setParm(track, target, param_id, "effect", src_fx)
-				setParm(track, target, param_id, "param", src_param)
+				if midi_cc then
+					-- MIDI link: effect = -100, msg = 0xB0 (CC class),
+					-- msg2 = 128 + cc selects the 14-bit CC pair (REAPER
+					-- PARMLINK convention; if runtime lands on plain 7-bit,
+					-- adjust the 128 offset here).
+					setParm(track, target, param_id, "effect", -100)
+					setParm(track, target, param_id, "midi_bus", 0)
+					setParm(track, target, param_id, "midi_chan", 1)
+					setParm(track, target, param_id, "midi_msg", 176)
+					setParm(track, target, param_id, "midi_msg2", 128 + midi_cc)
+				else
+					setParm(track, target, param_id, "effect", src_fx)
+					setParm(track, target, param_id, "param", src_param)
+				end
 				setParm(track, target, param_id, "offset", -0.5)
 				setParm(track, target, param_id, "scale", span)
 				setMod(track, target, param_id, "baseline", param_data.base_value or 0.5)
@@ -425,10 +420,17 @@ function LinkEngine.getLiveValue(fx_id, param_id, param_data)
 	local key = param_data.key
 	local slot = key and s.param_mod_source[key] or 0
 	local src_val
-	if slot > 0 then
+	if slot > GLOBAL_SLOT_BASE then
+		local mtrack, midx = LinkEngine.findGlobalMIDI()
+		if mtrack and midx >= 0 then
+			src_val = LinkEngine.r.TrackFX_GetParam(mtrack, midx,
+				LinkEngine.modjsfx.OUT_BASE + (slot - GLOBAL_SLOT_BASE) - 1)
+		end
+	elseif slot > 0 then
 		local lfo_idx = s.modlfo_index or -1
 		if lfo_idx >= 0 then
-			src_val = LinkEngine.r.TrackFX_GetParam(s.track, lfo_idx, MODLFO_OUT_BASE + slot - 1)
+			src_val = LinkEngine.r.TrackFX_GetParam(s.track, lfo_idx,
+				LinkEngine.modjsfx.OUT_BASE + slot - 1)
 		end
 	elseif s.links_active and s.jsfx_automation_index >= 0 then
 		local x_ass, y_ass = LinkEngine.fxmanager.getParamXYAssign(fx_id, param_id)

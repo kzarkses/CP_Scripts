@@ -37,6 +37,7 @@ local FXDatabase   = dofile(script_path .. "Modules/FXDatabase.lua")
 local FXManager    = dofile(script_path .. "Modules/FXManager.lua")
 local GestureSystem = dofile(script_path .. "Modules/GestureSystem.lua")
 local LinkEngine   = dofile(script_path .. "Modules/LinkEngine.lua")
+local LFOPanel     = dofile(script_path .. "Modules/LFOPanel.lua")
 local PresetSystem = dofile(script_path .. "Modules/PresetSystem.lua")
 local SoundGenerator = dofile(script_path .. "Modules/SoundGenerator.lua")
 
@@ -58,7 +59,9 @@ UI.init(r, Core, FXManager, GestureSystem, PresetSystem, Persistence, SoundGener
 
 -- Cross-refs (kept out of init signatures so the FX Browser, which dofiles
 -- the shared modules without LinkEngine, keeps working via nil checks).
+LFOPanel.init(UI_TK)
 UI.linkengine = LinkEngine
+UI.lfopanel = LFOPanel
 FXManager.link_engine = LinkEngine
 
 Persistence.loadSettings()
