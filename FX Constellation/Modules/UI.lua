@@ -253,46 +253,8 @@ end
 -- ---------------------------------------------------------------------------
 -- SOUND GENERATOR
 -- ---------------------------------------------------------------------------
-local SG_WAVEFORMS = { "Sine", "Triangle", "Square", "Saw", "Noise", "Click" }
-
--- One oscillator's controls (Vital-style: wave / freq / width / volume per
--- osc). Widget ids are suffixed with the osc index so per-widget state
--- (inline edits, drag anchors) never leaks between tabs.
-local function drawSoundGenOsc(sg, idx)
-    local osc = sg.osc[idx]
-    if not osc then return end
-    local sfx = tostring(idx)
-
-    local tc, tv = Tgl("sg_osc_on" .. sfx, osc.on and "● ON" or "○ OFF", osc.on)
-    if tc then osc.on = tv; UI.soundgen.updateJSFXParams() end
-
-    local cc, ci = Combo("sg_wf" .. sfx, "Wave", osc.wave + 1, SG_WAVEFORMS)
-    if cc then osc.wave = ci - 1; UI.soundgen.updateJSFXParams() end
-
-    if osc.wave < 4 then
-        local fmin, fmax = math.log(20), math.log(20000)
-        local norm = (math.log(osc.freq) - fmin) / (fmax - fmin)
-        local fc, fv = Slid("sg_freq" .. sfx, "Freq", norm, 0, 1,
-            { format = fmtVal("%.1f Hz", osc.freq) })
-        if fc then
-            osc.freq = math.exp(fmin + fv * (fmax - fmin))
-            UI.soundgen.updateJSFXParams()
-        end
-    elseif osc.wave == 4 then
-        local cc2, cv = Slid("sg_color" .. sfx, "Color", osc.color, 0, 1,
-            { format = fmtVal("%.2f", osc.color) })
-        if cc2 then osc.color = cv; UI.soundgen.updateJSFXParams() end
-    end
-
-    local wc, wv = Slid("sg_w" .. sfx, "Width", osc.width, 0, 100,
-        { format = fmtVal("%.1f c", osc.width) })
-    if wc then osc.width = wv; UI.soundgen.updateJSFXParams() end
-
-    local vc, vv = Slid("sg_vol" .. sfx, "Vol", osc.vol, 0, 1,
-        { format = fmtVal("%.2f", osc.vol) })
-    if vc then osc.vol = vv; UI.soundgen.updateJSFXParams() end
-end
-
+-- Controls live in the shared SGPanel module (also hosted standalone by
+-- CP_SoundGen.lua with the three oscillators side by side).
 local function drawSoundGen(theme)
     local UItk = UI.tk
     if not sectionHeader("soundgen", "SOUND GENERATOR", theme) then return end
@@ -310,7 +272,8 @@ local function drawSoundGen(theme)
     -- Resync from the JSFX at 4 Hz instead of every frame (it walks all 31
     -- params through the API), and never while a mouse button is down: the
     -- sliders are stepped on the JSFX side, so a same-frame read-back
-    -- quantizes the value under the user's drag.
+    -- quantizes the value under the user's drag. Also picks up edits made
+    -- in the standalone CP_SoundGen popup.
     local now = UI.r.time_precise()
     if not UItk.Core.MouseDown(1)
        and now - (UI._sg_sync_time or 0) >= 0.25 then
@@ -318,87 +281,18 @@ local function drawSoundGen(theme)
         UI.soundgen.syncFromJSFX()
     end
 
-    local toggled, _ = Tgl("sg_toggle",
-        sg.enabled and "● ON" or "○ OFF", sg.enabled)
-    if toggled then
-        if not sg.enabled then UI.soundgen.createGenerator()
-        else UI.soundgen.removeGenerator() end
-        UI.fxmanager.scanTrackFX()
-    end
-
-    if not sg.enabled then return end
-
-    if Btn("sg_mode", sg.mode == 0 and "Continuous" or "Triggered") then
-        sg.mode = sg.mode == 0 and 1 or 0
-        UI.soundgen.updateJSFXParams()
-    end
-
-    -- ---- Oscillator bank -------------------------------------------------
-    local tab_changed, tab_idx = UItk.TabBar("sg_osc_tabs",
-        { "OSC 1", "OSC 2", "OSC 3" }, sg.ui_osc_tab or 1)
-    if tab_changed then sg.ui_osc_tab = tab_idx end
-    drawSoundGenOsc(sg, sg.ui_osc_tab or 1)
-
-    UItk.Separator()
-
-    -- ---- Master ------------------------------------------------------------
-    local ac, av = Slid("sg_amp", "Amp", sg.amplitude, 0, 1,
-        { format = fmtVal("%.2f", sg.amplitude) })
-    if ac then sg.amplitude = av; UI.soundgen.updateJSFXParams() end
-
-    if sg.mode == 0 then
-        local rc, rv = Chk("sg_rh", "Rhythmic", sg.rhythmic)
-        if rc then sg.rhythmic = rv; UI.soundgen.updateJSFXParams() end
-        if sg.rhythmic then
-            local tc, tv = Slid("sg_tr", "Rate", sg.tick_rate, 0.1, 20,
-                { format = fmtVal("%.2f Hz", sg.tick_rate) })
-            if tc then sg.tick_rate = tv; UI.soundgen.updateJSFXParams() end
-            local dc, dv = Slid("sg_du", "Duty", sg.duty_cycle, 0.01, 0.99,
-                { format = fmtVal("%.2f", sg.duty_cycle) })
-            if dc then sg.duty_cycle = dv; UI.soundgen.updateJSFXParams() end
-            local cc, cv = Slid("sg_cur", "Curve", sg.rhythmic_curve, 0, 1,
-                { format = fmtVal("%.2f", sg.rhythmic_curve) })
-            if cc then sg.rhythmic_curve = cv; UI.soundgen.updateJSFXParams() end
-        end
-    else
-        local ec, ev = Chk("sg_adsr", "ADSR", sg.use_adsr)
-        if ec then sg.use_adsr = ev; UI.soundgen.updateJSFXParams() end
-        if sg.use_adsr then
-            local c, v = Slid("sg_a", "A", sg.attack, 0.001, 2,
-                { format = fmtVal("%.3f s", sg.attack) })
-            if c then sg.attack = v; UI.soundgen.updateJSFXParams() end
-            c, v = Slid("sg_d", "D", sg.decay, 0.001, 2,
-                { format = fmtVal("%.3f s", sg.decay) })
-            if c then sg.decay = v; UI.soundgen.updateJSFXParams() end
-            c, v = Slid("sg_s", "S", sg.sustain, 0, 1,
-                { format = fmtVal("%.2f", sg.sustain) })
-            if c then sg.sustain = v; UI.soundgen.updateJSFXParams() end
-            c, v = Slid("sg_r", "R", sg.release, 0.001, 5,
-                { format = fmtVal("%.3f s", sg.release) })
-            if c then sg.release = v; UI.soundgen.updateJSFXParams() end
-        end
-        local mc, mv = Chk("sg_midi", "MIDI", sg.midi_mode)
-        if mc then sg.midi_mode = mv; UI.soundgen.updateJSFXParams() end
-
-        -- Hold-to-play: press-and-hold gate on the trigger param. The old
-        -- button ignored its click entirely — setManualTrigger was never
-        -- called from the UI, so Triggered mode was unplayable without MIDI.
-        Btn("sg_play", UI._sg_play_held and "▶ PLAYING" or "HOLD TO PLAY")
-        local hovered = UItk.IsItemHovered()
-        local down = UItk.Core.MouseDown(1)
-        if hovered and down and not UI._sg_play_held then
-            UI._sg_play_held = true
-            UI.soundgen.setManualTrigger(true)
-        elseif UI._sg_play_held and not down then
-            UI._sg_play_held = false
-            UI.soundgen.setManualTrigger(false)
-        end
-        if UI._sg_play_held then
-            -- Keep the loop awake while held so the release edge is caught
-            -- even if nothing else animates.
-            UItk.RequestRedraw()
-        end
-    end
+    if not UI.sgpanel then return end
+    UI.sgpanel.draw(theme, {
+        sg = sg,
+        apply = UI.soundgen.updateJSFXParams,
+        trigger = UI.soundgen.setManualTrigger,
+        toggle = function()
+            if not sg.enabled then UI.soundgen.createGenerator()
+            else UI.soundgen.removeGenerator() end
+            UI.fxmanager.scanTrackFX()
+        end,
+        wide = false,
+    })
 end
 
 -- ---------------------------------------------------------------------------
