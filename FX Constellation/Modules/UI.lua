@@ -38,9 +38,22 @@ function UI.init(reaper_api, core, fxmanager, gesture, presetsystem, persistence
     UI.fxbrowser_cmd = 0
 
     UI.section_order = core.state.section_order or {
-        "soundgen", "navigation", "mode", "pad",
+        "soundgen", "navigation", "mode", "pad", "lfo",
         "presets", "randomizer", "fx_settings"
     }
+    -- Persisted orders from before the LFO section existed: graft it in
+    -- right after the pad.
+    local has_lfo = false
+    for _, k in ipairs(UI.section_order) do
+        if k == "lfo" then has_lfo = true break end
+    end
+    if not has_lfo then
+        local pos = #UI.section_order + 1
+        for i, k in ipairs(UI.section_order) do
+            if k == "pad" then pos = i + 1 break end
+        end
+        table.insert(UI.section_order, pos, "lfo")
+    end
     core.state.section_order = UI.section_order
 end
 
@@ -151,6 +164,7 @@ local SECTION_DEFAULT_W = {
     navigation   = 7.5,
     mode         = 6.0,
     pad          = 13.0,
+    lfo          = 8.0,
     presets      = 8.0,
     randomizer   = 9.0,
     fx_settings  = 0,    -- 0 = remaining (flex)
@@ -845,6 +859,128 @@ local function drawXYPad(theme)
 end
 
 -- ---------------------------------------------------------------------------
+-- LFO (CP_Mod LFO bank — toolkit UI, the JSFX window stays closed)
+-- ---------------------------------------------------------------------------
+local LFO_SLOT_SHAPES = { "Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Random" }
+local LFO_SLOT_SYNCS = { "Free", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars" }
+
+-- Mirror of the JSFX slot shapes, for the waveform preview.
+local function lfoShapeValue(shape, p)
+    if shape == 5 then
+        -- S&H preview: deterministic pseudo-random per cycle
+        local c = math.floor(p)
+        local x = math.sin(c * 78.233 + 12.9898) * 43758.5453
+        return x - math.floor(x)
+    end
+    p = p % 1
+    if shape == 0 then return 0.5 + 0.5 * math.sin(p * 2 * math.pi)
+    elseif shape == 1 then return p < 0.5 and 2 * p or 2 - 2 * p
+    elseif shape == 2 then return p
+    elseif shape == 3 then return 1 - p
+    else return p < 0.5 and 1 or 0 end
+end
+
+local function drawLFOSection(theme)
+    local UItk = UI.tk
+    local s = UI.core.state
+    if not sectionHeader("lfo", "LFO", theme) then return end
+    local le = UI.linkengine
+    if not le then return end
+
+    if (s.modlfo_index or -1) < 0 then
+        UItk.SetFontCaption()
+        UItk.TextWrapped("Shared LFO bank (CP_Mod). Right-click a param to follow a slot.")
+        UItk.SetFontBody()
+        if Btn("lfo_add", "Add LFO Bank") then
+            le.ensureModLFO()
+        end
+        return
+    end
+
+    -- Slot selector: 8 square cells — click to select; the number is bright
+    -- when the slot is enabled. Same manual hit-testing as the Figures grid.
+    local sel = s.lfo_sel_slot or 1
+    local cell = math.floor(theme.button_height * 1.1)
+    UItk.BeginGrid("lfo_slots", { cell_w = cell, cell_h = cell, gap = theme.item_spacing })
+    for i = 1, 8 do
+        local x, y, w, h = UItk.GridCell("lfo_slots")
+        local slot_i = le.getLFOSlot(i)
+        local active = sel == i
+        local hovered = UItk.Core.MouseInRect(x, y, w, h) and not UItk.Core.HasPopup()
+        local bg = active and theme.colors.accent
+            or (hovered and theme.colors.button_hovered or theme.colors.frame_bg)
+        UItk.Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4] or 1)
+        local bc = theme.colors.border
+        UItk.Core.DrawRect(x, y, w, h, bc[1], bc[2], bc[3], bc[4] or 0.4, false)
+        local tc = (slot_i and slot_i.on) and theme.colors.text or theme.colors.text_disabled
+        local label = tostring(i)
+        local tw, th = UItk.Core.MeasureText(label)
+        UItk.Core.DrawText(label, x + math.floor((w - tw) / 2), y + math.floor((h - th) / 2),
+            tc[1], tc[2], tc[3], 1)
+        if hovered and UItk.Core.MouseClicked(1) then
+            s.lfo_sel_slot = i
+        end
+    end
+    UItk.EndGrid("lfo_slots")
+
+    local slot = le.getLFOSlot(sel)
+    if not slot then return end
+
+    local tc2, on2 = Tgl("lfo_on", slot.on and "● ON" or "○ OFF", slot.on)
+    if tc2 then le.setLFOSlot(sel, { on = on2 }) end
+
+    local sc, si = Combo("lfo_shape", "Shape", slot.shape + 1, LFO_SLOT_SHAPES)
+    if sc then le.setLFOSlot(sel, { shape = si - 1 }) end
+
+    local yc, yi = Combo("lfo_sync", "Sync", slot.sync + 1, LFO_SLOT_SYNCS)
+    if yc then le.setLFOSlot(sel, { sync = yi - 1 }) end
+
+    if slot.sync == 0 then
+        local rmin, rmax = math.log(0.01), math.log(20)
+        local norm = (math.log(math.max(0.01, slot.rate)) - rmin) / (rmax - rmin)
+        local rc, rv = Slid("lfo_rate", "Rate", norm, 0, 1,
+            { format = fmtVal("%.2f Hz", slot.rate) })
+        if rc then
+            le.setLFOSlot(sel, { rate = math.exp(rmin + rv * (rmax - rmin)) })
+        end
+    end
+
+    local pc, pv = Slid("lfo_phase", "Phase", slot.phase, 0, 1,
+        { format = fmtVal("%.2f", slot.phase) })
+    if pc then le.setLFOSlot(sel, { phase = pv }) end
+
+    -- Waveform preview (2 cycles) + live output marker on the right edge.
+    local w = UItk.GetAvailableWidth()
+    local hgt = math.floor(theme.button_height * 2.5)
+    if w > 40 then
+        local canvas = UItk.Canvas("lfo_prev", { width = w, height = hgt })
+        local segs = 48
+        local col = theme.colors.accent
+        local alpha = slot.on and 1 or 0.35
+        local px, py
+        for i2 = 0, segs do
+            local p = i2 / segs * 2
+            local v = lfoShapeValue(slot.shape, p + slot.phase)
+            local x = canvas.x + (i2 / segs) * canvas.w
+            local y = canvas.y + (1 - v) * (canvas.h - 4) + 2
+            if px then
+                UItk.Core.DrawLine(px, py, x, y, col[1], col[2], col[3], alpha)
+            end
+            px, py = x, y
+        end
+        local oy = canvas.y + (1 - (slot.out or 0.5)) * (canvas.h - 4) + 2
+        UItk.DrawCircle(canvas.x + canvas.w - 6, oy, 4,
+            theme.colors.text[1], theme.colors.text[2], theme.colors.text[3], 1, true)
+    end
+
+    -- The output marker moves on its own — keep the loop alive while the
+    -- section shows an enabled slot.
+    if slot.on then
+        UItk.RequestRedrawAt(UI.r.time_precise() + 1 / 30)
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- PRESETS
 -- ---------------------------------------------------------------------------
 local function drawPresets(theme)
@@ -1181,7 +1317,13 @@ local function openParamModMenu(fx_id, param_id, param_data)
             { label = "Strength", children = strength_children },
         } },
         { separator = true },
-        { label = "Edit CP LFO bank...", action = function() le.openModLFO() end },
+        { label = "Edit CP LFO bank...", action = function()
+            -- Opens OUR LFO section (toolkit UI) — internal JSFX windows
+            -- stay closed.
+            le.ensureModLFO()
+            s.section_collapsed.lfo = false
+            UI.persistence.scheduleSave()
+        end },
     })
 end
 
@@ -1247,33 +1389,36 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
     UItk.NextColumn()
 
     -- Value-range slider — three handles in one widget:
-    --   • value dot (drag to set the live value, written to the plugin)
+    --   • value dot: shows the LIVE plugin value (LFO/link modulation makes
+    --     it move); dragging it writes the BASE value
     --   • min / max bars (drag to resize the randomization window)
     --   • middle-drag → translate range + value together
-    -- Mapping: the param's `range` scalar is shown as a window of width
-    -- `range` centered on the current value, clamped to [0, 1].
-    local cur_value = param_data.base_value or param_data.current_value or 0.5
+    -- Mapping: the `range` window stays centered on the BASE value so the
+    -- modulation breathes inside a stable frame.
+    local base_value = param_data.base_value or param_data.current_value or 0.5
+    local live_value = param_data.current_value or base_value
     local range = UI.fxmanager.getParamRange(fx_id, param_id) or 1.0
-    local v_min = clamp(cur_value - range * 0.5, 0, 1)
-    local v_max = clamp(cur_value + range * 0.5, 0, 1)
+    local v_min = clamp(base_value - range * 0.5, 0, 1)
+    local v_max = clamp(base_value + range * 0.5, 0, 1)
+    local shown_value = clamp(live_value, v_min, v_max)
 
-    -- Show the current value in the param's real units (Hz, dB, %, …).
+    -- Show the live value in the param's real units (Hz, dB, %, …).
     local real_min = param_data.min_val or 0
     local real_max = param_data.max_val or 1
-    local real_cur = UI.core.denormalizeParamValue(cur_value, real_min, real_max)
+    local real_cur = UI.core.denormalizeParamValue(live_value, real_min, real_max)
     local readout
     if param_data.step_count and param_data.step_count == 2 then
-        readout = cur_value > 0.5 and "ON" or "OFF"
+        readout = live_value > 0.5 and "ON" or "OFF"
     elseif param_data.step_count and param_data.step_count > 2
            and param_data.step_count <= 5 then
-        local idx = math.floor(cur_value * (param_data.step_count - 1) + 0.5)
+        local idx = math.floor(live_value * (param_data.step_count - 1) + 0.5)
         readout = tostring(idx + 1) .. "/" .. param_data.step_count
     else
         readout = string.format("%.2f", real_cur)
     end
 
     local vc, new_v, rc, new_min, new_max = ValRngSlid(param_data._uid_vr, "",
-        cur_value, v_min, v_max, 0, 1, { format = readout })
+        shown_value, v_min, v_max, 0, 1, { format = readout })
 
     if vc then
         local v = new_v
@@ -1700,6 +1845,7 @@ local SECTION_LABELS = {
     navigation  = "NAVIGATION",
     mode        = "MODE",
     pad         = "XY PAD",
+    lfo         = "LFO",
     presets     = "PRESETS",
     randomizer  = "RANDOMIZER",
     fx_settings = "FX SETTINGS",
@@ -1767,6 +1913,7 @@ local SECTION_RENDERERS = {
     navigation   = drawNavigation,
     mode         = drawMode,
     pad          = drawXYPad,
+    lfo          = drawLFOSection,
     presets      = drawPresets,
     randomizer   = drawRandomizer,
     fx_settings  = drawFXSettings,
@@ -1788,12 +1935,13 @@ function UI.frame(theme)
            and (s.gesture_x ~= s.target_gesture_x
                 or s.gesture_y ~= s.target_gesture_y)) then
         UItk.RequestRedraw()
-    elseif s.jsfx_automation_enabled and (UI.r.GetPlayState() & 1) == 1 then
-        -- Envelope → pad coupling needs the loop alive while the transport
-        -- runs, otherwise the idle throttle freezes automation following.
-        -- Gated on playback: keeping a heavy UI repainting at 30 Hz while
-        -- stopped was a constant CPU drain for nothing (bridge moves are
-        -- still picked up on any interaction when stopped).
+    elseif (s.jsfx_automation_enabled and (UI.r.GetPlayState() & 1) == 1)
+        or (s.lfo_links_count or 0) > 0 then
+        -- Keep the loop alive at 30 Hz when following can happen without
+        -- user input: envelopes while the transport runs, or LFO-assigned
+        -- params whose live value must move in the param rows (free-running
+        -- LFOs oscillate even when stopped). The virtualized FX cards keep
+        -- this repaint cheap.
         UItk.RequestRedrawAt(UI.r.time_precise() + 1 / 30)
     end
 

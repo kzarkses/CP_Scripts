@@ -55,8 +55,12 @@ function FXManager.scanTrackFX()
 	local visible_fx_id = 0
 	local max_fx = FXManager.license and not FXManager.license.isFull() and 5 or 999
 	local bridge_index = -1
+	local modlfo_index = -1
 	for fx = 0, fx_count - 1 do
 		local _, fx_name = FXManager.r.TrackFX_GetFXName(state.track, fx, "")
+		if fx_name:find("CP_Mod LFO", 1, true) and modlfo_index < 0 then
+			modlfo_index = fx
+		end
 		if fx_name:find("FX Constellation Bridge") then
 			-- The bridge moves whenever FX are inserted/removed before it
 			-- (preset load, sound generator toggle, manual edits). The scan
@@ -124,6 +128,7 @@ function FXManager.scanTrackFX()
 		end
 	end
 	state.param_poll_idx = 0
+	state.modlfo_index = modlfo_index
 	state.jsfx_automation_index = bridge_index
 	if state.jsfx_automation_enabled and bridge_index < 0 then
 		state.jsfx_automation_enabled = false
@@ -173,6 +178,24 @@ function FXManager.checkForFXChanges()
 		if fx_data.enabled ~= current_enabled then
 			fx_data.enabled = current_enabled
 			changes_detected = true
+		end
+	end
+
+	-- Selected params refresh EVERY tick: their live (possibly LFO/link
+	-- modulated) value is displayed in the param rows, so it must move
+	-- smoothly. Capped so "select all" on a huge synth falls back to the
+	-- round-robin below instead of re-creating the old full-sweep cost.
+	if state.selected_count > 0 and state.selected_count <= 128 then
+		for fx_id, fx_data in pairs(state.fx_data) do
+			for param_id, param_data in pairs(fx_data.params) do
+				if param_data.selected then
+					local raw_value = FXManager.r.TrackFX_GetParam(state.track, param_data.actual_fx_id, param_id)
+					local current_value = FXManager.core.normalizeParamValue(raw_value, param_data.min_val, param_data.max_val)
+					if math.abs(param_data.current_value - current_value) > 0.001 then
+						param_data.current_value = current_value
+					end
+				end
+			end
 		end
 	end
 

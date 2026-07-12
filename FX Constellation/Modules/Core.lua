@@ -78,6 +78,9 @@ function Core.init(reaper_api)
 		-- Per-param modulation source, keyed by the param base key:
 		-- nil/absent = pad XY (default), 1..8 = CP_Mod LFO slot.
 		param_mod_source = {},
+		modlfo_index = -1,
+		lfo_sel_slot = 1,
+		lfo_links_count = 0,
 		all_fx_collapsed = false,
 		range_min = 0.0,
 		range_max = 1.0,

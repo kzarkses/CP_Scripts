@@ -4,7 +4,7 @@ return {
   separator_pad = 4,
   frame_padding_x = 6,
   tooltip_max_w = 320,
-  button_height = 24,
+  button_height = 20,
   gap_large = 8,
   indent = 16,
   checkbox_size = 16,

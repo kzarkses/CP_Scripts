@@ -139,16 +139,25 @@ end
 function LinkEngine.findModLFO()
 	local s = LinkEngine.core.state
 	if not LinkEngine.core.isTrackValid() then return -1 end
+	-- scanTrackFX keeps this fresh; fall back to a name sweep otherwise.
+	if s.modlfo_index and s.modlfo_index >= 0 then
+		local _, name = LinkEngine.r.TrackFX_GetFXName(s.track, s.modlfo_index, "")
+		if name:find(MODLFO_NAME, 1, true) then return s.modlfo_index end
+	end
 	local fx_count = LinkEngine.r.TrackFX_GetCount(s.track)
 	for fx = 0, fx_count - 1 do
 		local _, name = LinkEngine.r.TrackFX_GetFXName(s.track, fx, "")
-		if name:find(MODLFO_NAME, 1, true) then return fx end
+		if name:find(MODLFO_NAME, 1, true) then
+			s.modlfo_index = fx
+			return fx
+		end
 	end
 	return -1
 end
 
 -- Find or create the shared LFO bank on the current track. The JSFX file
--- is (re)written on demand, like the bridge and the sound generator.
+-- is (re)written on demand, like the bridge and the sound generator. The
+-- instance is added silently — internal JSFX never pop a floating window.
 function LinkEngine.ensureModLFO()
 	local existing = LinkEngine.findModLFO()
 	if existing >= 0 then return existing end
@@ -158,14 +167,49 @@ function LinkEngine.ensureModLFO()
 	if not file then return -1 end
 	file:write(buildModLFOSource())
 	file:close()
-	return LinkEngine.r.TrackFX_AddByName(LinkEngine.core.state.track, MODLFO_NAME, false, -1)
+	local idx = LinkEngine.r.TrackFX_AddByName(LinkEngine.core.state.track, MODLFO_NAME, false, -1)
+	if idx >= 0 then
+		LinkEngine.core.state.modlfo_index = idx
+		LinkEngine.r.TrackFX_Show(LinkEngine.core.state.track, idx, 2)
+	end
+	return idx
 end
 
-function LinkEngine.openModLFO()
-	local idx = LinkEngine.ensureModLFO()
-	if idx >= 0 then
-		LinkEngine.r.TrackFX_Show(LinkEngine.core.state.track, idx, 3)
-	end
+-- ---------------------------------------------------------------------------
+-- LFO slot access for the toolkit UI (raw JSFX slider units)
+-- Slot i (1-based) params: base+0 on, +1 shape, +2 rate Hz, +3 sync, +4 phase.
+-- ---------------------------------------------------------------------------
+local function slotBase(slot) return (slot - 1) * 5 end
+
+function LinkEngine.getLFOSlot(slot)
+	local s = LinkEngine.core.state
+	local idx = s.modlfo_index or -1
+	if idx < 0 or not LinkEngine.core.isTrackValid() then return nil end
+	local track = s.track
+	local b = slotBase(slot)
+	local function g(off) return LinkEngine.r.TrackFX_GetParam(track, idx, b + off) end
+	return {
+		on = g(0) > 0.5,
+		shape = math.floor(g(1) + 0.5),
+		rate = g(2),
+		sync = math.floor(g(3) + 0.5),
+		phase = g(4),
+		out = LinkEngine.r.TrackFX_GetParam(track, idx, MODLFO_OUT_BASE + slot - 1),
+	}
+end
+
+function LinkEngine.setLFOSlot(slot, patch)
+	local s = LinkEngine.core.state
+	local idx = s.modlfo_index or -1
+	if idx < 0 or not LinkEngine.core.isTrackValid() then return end
+	local track = s.track
+	local b = slotBase(slot)
+	local function set(off, v) LinkEngine.r.TrackFX_SetParam(track, idx, b + off, v) end
+	if patch.on ~= nil then set(0, patch.on and 1 or 0) end
+	if patch.shape then set(1, patch.shape) end
+	if patch.rate then set(2, patch.rate) end
+	if patch.sync then set(3, patch.sync) end
+	if patch.phase then set(4, patch.phase) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -305,6 +349,7 @@ function LinkEngine.syncLinks()
 
 	local track = s.track
 	local count = 0
+	local lfo_count = 0
 	local lfo_idx = nil  -- resolved lazily, once, on first LFO-sourced param
 	for fx_id, fx_data in pairs(s.fx_data) do
 		local target = fx_data.actual_fx_id or fx_id
@@ -322,6 +367,7 @@ function LinkEngine.syncLinks()
 						src_fx = lfo_idx
 						src_param = MODLFO_OUT_BASE + slot - 1
 						want = true
+						lfo_count = lfo_count + 1
 					end
 				elseif want_links then
 					local x_ass, y_ass = LinkEngine.fxmanager.getParamXYAssign(fx_id, param_id)
@@ -359,6 +405,8 @@ function LinkEngine.syncLinks()
 
 	s.links_active = want_links
 	s.links_count = count
+	-- LFO-sourced links on THIS track (drives the live-value keepalive).
+	s.lfo_links_count = lfo_count
 	if want_links then LinkEngine.applySlew() end
 end
 

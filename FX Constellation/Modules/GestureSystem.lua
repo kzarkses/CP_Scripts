@@ -382,6 +382,8 @@ spl1 = spl1;]]
 		file:close()
 		local fx_index = GestureSystem.r.TrackFX_AddByName(GestureSystem.core.state.track, "FX Constellation Bridge", false, -1)
 		if fx_index >= 0 then
+			-- Internal JSFX stay closed — never pop a floating window.
+			GestureSystem.r.TrackFX_Show(GestureSystem.core.state.track, fx_index, 2)
 			GestureSystem.core.state.jsfx_automation_index = fx_index
 			GestureSystem.core.state.jsfx_automation_enabled = true
 			-- Keep the count coherent with the cached index so the staleness
