@@ -53,6 +53,9 @@ function LinkEngine.init(reaper_api, core, fxmanager, gesture)
 	-- existing instances on the next project (re)load.
 	LinkEngine.modjsfx.writeBankFile(reaper_api, "lfo")
 	LinkEngine.modjsfx.writeBankFile(reaper_api, "midi")
+	-- Seed the cross-process unlink hint as already-consumed: a stale hint
+	-- from earlier in the REAPER session must not clear a valid entry.
+	LinkEngine._unlink_seen = reaper_api.GetExtState("CP_Mod", "unlink")
 end
 
 local function setParm(track, fx, param_id, key, value)
@@ -242,9 +245,16 @@ function LinkEngine.setParamLFO(fx_id, param_id, patch)
 	end
 	if patch.active ~= nil then
 		if patch.active then
-			local param_data = fx_data.params[param_id]
-			setMod(s.track, target, param_id, "baseline",
-				(param_data and param_data.base_value) or 0.5)
+			-- Seed the baseline only when PM was inactive: if a CP link is
+			-- already riding this param, its baseline is the live base
+			-- (possibly edited raw in the panel) — don't clobber it.
+			local mod_active = select(2, LinkEngine.r.TrackFX_GetNamedConfigParm(
+				s.track, target, "param." .. param_id .. ".mod.active"))
+			if mod_active ~= "1" then
+				local param_data = fx_data.params[param_id]
+				setMod(s.track, target, param_id, "baseline",
+					(param_data and param_data.base_value) or 0.5)
+			end
 			setMod(s.track, target, param_id, "active", 1)
 			set("dir", 0)
 			set("active", 1)
@@ -271,6 +281,10 @@ end
 -- released only if the user has no LFO/ACS riding on it.
 local function releaseLink(track, fx, param_id)
 	LinkEngine.modjsfx.releaseParamLink(LinkEngine.r, track, fx, param_id)
+	-- Our own release — mark the cross-process hint it just emitted as
+	-- consumed, so checkExternalUnlink doesn't later clear an entry the
+	-- user re-assigned in the meantime.
+	LinkEngine._unlink_seen = LinkEngine.r.GetExtState("CP_Mod", "unlink")
 end
 
 -- Explicit release of a param's CP link (used by the assignment menu when
@@ -317,12 +331,141 @@ function LinkEngine.pushDepth(fx_id, param_id)
 end
 
 -- Does this param currently route through a CP link? (baseline is then the
--- write target for base edits, not the raw param)
+-- write target for base edits, not the raw param). Must mirror the sweep's
+-- `want` logic: a selected param with BOTH pad axes unassigned has no link
+-- in linked mode — writing its baseline would be inaudible (mod inactive)
+-- and the raw write path must be used instead.
 function LinkEngine.isParamLinked(fx_id, param_id, param_data)
 	local s = LinkEngine.core.state
 	if not param_data.selected then return false end
 	if param_data.key and s.param_mod_source[param_data.key] then return true end
-	return s.links_active
+	if not s.links_active then return false end
+	local x_ass, y_ass = LinkEngine.fxmanager.getParamXYAssign(fx_id, param_id)
+	return x_ass or y_ass
+end
+
+-- Adopt CP_Mod links that exist on the track but aren't in our bookkeeping
+-- (made via the Map flow or the standalone panel, or whose entry was lost):
+-- the source badge and X/Y toggles must reflect the REAL link state, not
+-- just what this script remembers. Adopt-only — entries whose link is
+-- missing are NOT cleared, the sweep recreates those links (that's the
+-- flow in the other direction). Event-driven: called after each scan.
+function LinkEngine.reconcileModSources()
+	local s = LinkEngine.core.state
+	if not LinkEngine.core.isTrackValid() then return end
+	local mj = LinkEngine.modjsfx
+	local changed = false
+	-- Preset/snapshot load pending: FXC state is the authority (the rebuild
+	-- sweep is about to rewrite every link from it) — adopting/resyncing
+	-- FROM the old links here would pollute the freshly loaded state.
+	local adopt = not s.links_rebuild
+	for fx_id, fx_data in pairs(s.fx_data) do
+		local target = fx_data.actual_fx_id or fx_id
+		for param_id, param_data in pairs(fx_data.params) do
+			-- linkKind short-circuits on inactive links — the common case
+			-- costs one named-parm read per param, scan-time only.
+			if adopt and linkKind(s.track, target, param_id) == "cpmod" then
+				local info = mj.getParamLink(LinkEngine.r, s.track, target, param_id)
+				local slot
+				if info and info.kind == "global" and info.slot then
+					slot = GLOBAL_SLOT_BASE + info.slot
+				elseif info and info.kind == "lfo" and info.slot then
+					slot = info.slot
+				end
+				if slot then
+					local key = LinkEngine.core.getParamKey(fx_id, param_id)
+					if key and s.param_mod_source[key] ~= slot then
+						s.param_mod_source[key] = slot
+						changed = true
+					end
+					if not param_data.selected then
+						-- Selection gates modulation; an existing link
+						-- implies it (otherwise the sweep would release
+						-- the link we just adopted).
+						param_data.selected = true
+						changed = true
+					end
+					-- The link is the authority at scan time: pull its
+					-- baseline AND depth back into FXC state. Raw edits
+					-- made in the standalone panel thus survive rescans,
+					-- and the live-dot span (recomputed from param_ranges)
+					-- matches the audible excursion again.
+					if info.baseline then
+						param_data.base_value = info.baseline
+						if key then
+							s.param_base_values[key] = info.baseline
+						end
+					end
+					if info.scale and info.scale ~= 0 then
+						local range_key = LinkEngine.core.getParamKey(fx_id, param_id, "range")
+						local invert_key = LinkEngine.core.getParamKey(fx_id, param_id, "invert")
+						if range_key then
+							s.param_ranges[range_key] = math.min(1,
+								math.abs(info.scale) / (s.gesture_range or 1))
+						end
+						if invert_key then
+							s.param_invert[invert_key] = info.scale < 0
+						end
+					end
+				end
+			end
+		end
+		-- Leak sweep: params filtered out of fx_data (filter keywords /
+		-- param filter) can still carry links from before they were hidden.
+		-- The sync sweep only iterates fx_data and would leave them
+		-- modulating forever, unreachable from the UI. Release bridge links
+		-- always; CP_Mod links only when OUR bookkeeping made them (entry
+		-- under the param's key) — hand/Map-made links are user property.
+		local guid = LinkEngine.core.getTrackGUID()
+		local nparams = LinkEngine.r.TrackFX_GetNumParams(s.track, target)
+		for param_id = 0, nparams - 1 do
+			if not fx_data.params[param_id] then
+				local kind = linkKind(s.track, target, param_id)
+				if kind == "bridge" then
+					releaseLink(s.track, target, param_id)
+				elseif kind == "cpmod" and guid then
+					local _, pname = LinkEngine.r.TrackFX_GetParamName(
+						s.track, target, param_id, "")
+					local key = guid .. "_" .. fx_data.full_name .. "||" .. pname
+					if s.param_mod_source[key] then
+						releaseLink(s.track, target, param_id)
+						s.param_mod_source[key] = nil
+						changed = true
+					end
+				end
+			end
+		end
+	end
+	if changed then
+		LinkEngine.fxmanager.updateSelectedCount()
+		LinkEngine.fxmanager.saveTrackSelection()
+	end
+end
+
+-- Cross-process unlink hint (set by ModJSFX.releaseParamLink): when the
+-- standalone CP_ModLFO panel unlinks a param WE manage, our mod_source
+-- entry must go too — otherwise the sync sweep recreates the link on the
+-- next frame and the unlink "doesn't stick". Per-frame cost: one ExtState
+-- read + string compare.
+function LinkEngine.checkExternalUnlink()
+	local raw = LinkEngine.r.GetExtState("CP_Mod", "unlink")
+	if raw == "" or raw == LinkEngine._unlink_seen then return end
+	LinkEngine._unlink_seen = raw
+	if not LinkEngine.core.isTrackValid() then return end
+	local guid, fx, parm = raw:match("^(.-)|(%d+)|(%d+)|")
+	if not guid or guid ~= LinkEngine.core.getTrackGUID() then return end
+	fx, parm = tonumber(fx), tonumber(parm)
+	local s = LinkEngine.core.state
+	for fx_id, fx_data in pairs(s.fx_data) do
+		if (fx_data.actual_fx_id or fx_id) == fx then
+			local pd = fx_data.params[parm]
+			if pd and pd.key and s.param_mod_source[pd.key] then
+				s.param_mod_source[pd.key] = nil
+				LinkEngine.fxmanager.saveTrackSelection()
+			end
+			break
+		end
+	end
 end
 
 -- Write the pad slew time (seconds) to the bridge.

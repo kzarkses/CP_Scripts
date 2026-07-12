@@ -224,6 +224,7 @@ local function buildSettingsData(state)
 		target_gesture_y = state.target_gesture_y,
 		granular_grid_size = state.granular_grid_size,
 		random_bypass_percentage = state.random_bypass_percentage,
+		random_lfo_probability = state.random_lfo_probability,
 		layout_mode = state.layout_mode,
 		fx_collapsed = state.fx_collapsed,
 		range_min = state.range_min,

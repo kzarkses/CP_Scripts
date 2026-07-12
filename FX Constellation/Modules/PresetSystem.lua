@@ -142,13 +142,17 @@ function PresetSystem.saveSnapshot(name)
 			if param_data.selected then
 				local key = fx_data.full_name .. "||" .. param_data.name
 				local x_assign, y_assign = PresetSystem.fxmanager.getParamXYAssign(fx_id, param_id)
+				local le = PresetSystem.fxmanager.link_engine
+				local src = le and le.getParamModSource(fx_id, param_id) or 0
 				snapshot.param_data[key] = {
 					base_value = param_data.base_value,
 					range = PresetSystem.fxmanager.getParamRange(fx_id, param_id),
 					x_assign = x_assign,
 					y_assign = y_assign,
 					invert = PresetSystem.fxmanager.getParamInvert(fx_id, param_id),
-					selected = true
+					selected = true,
+					-- Modulation routing (LFO/global slot) — part of the sound.
+					mod_source = src > 0 and src or nil
 				}
 			end
 		end
@@ -222,6 +226,7 @@ function PresetSystem.loadSnapshot(name)
 			local key = fx_data.full_name .. "||" .. param_data.name
 			local saved_param = snapshot.param_data[key]
 
+			local le = PresetSystem.fxmanager.link_engine
 			if saved_param then
 				param_data.selected = saved_param.selected or false
 				param_data.base_value = saved_param.base_value or param_data.current_value
@@ -235,12 +240,28 @@ function PresetSystem.loadSnapshot(name)
 				PresetSystem.fxmanager.setParamXYAssign(fx_id, param_id, "x", saved_param.x_assign)
 				PresetSystem.fxmanager.setParamXYAssign(fx_id, param_id, "y", saved_param.y_assign)
 				PresetSystem.fxmanager.setParamInvert(fx_id, param_id, saved_param.invert or false)
+				-- Restore the saved modulation routing — absent in the
+				-- snapshot means pad. The release must be explicit: once
+				-- the entry is cleared the sweep treats the old link as
+				-- user property and would keep it modulating.
+				if le then
+					local want = saved_param.mod_source or 0
+					local cur = le.getParamModSource(fx_id, param_id)
+					if cur > 0 and cur ~= want then
+						le.releaseParamLink(fx_id, param_id)
+					end
+					le.setParamModSource(fx_id, param_id, want)
+				end
 			else
 				-- A snapshot stores exactly the selected set — params that
 				-- joined the selection after the snapshot was taken must be
 				-- dropped from it, otherwise "load snapshot" restores a
 				-- superset of what was saved.
 				param_data.selected = false
+				if le and le.getParamModSource(fx_id, param_id) > 0 then
+					le.releaseParamLink(fx_id, param_id)
+					le.setParamModSource(fx_id, param_id, 0)
+				end
 			end
 		end
 	end
@@ -429,6 +450,8 @@ function PresetSystem.captureCompleteState()
 			if visible_id and PresetSystem.core.state.fx_data[visible_id] then
 				for param_id, param_data in pairs(PresetSystem.core.state.fx_data[visible_id].params) do
 					local x_assign, y_assign = PresetSystem.fxmanager.getParamXYAssign(visible_id, param_id)
+					local le = PresetSystem.fxmanager.link_engine
+					local src = le and le.getParamModSource(visible_id, param_id) or 0
 					entry.params[param_id] = {
 						name = param_data.name,
 						current_value = param_data.current_value,
@@ -437,7 +460,9 @@ function PresetSystem.captureCompleteState()
 						range = PresetSystem.fxmanager.getParamRange(visible_id, param_id),
 						x_assign = x_assign,
 						y_assign = y_assign,
-						invert = PresetSystem.fxmanager.getParamInvert(visible_id, param_id)
+						invert = PresetSystem.fxmanager.getParamInvert(visible_id, param_id),
+						-- Modulation routing (LFO/global slot) — part of the sound.
+						mod_source = src > 0 and src or nil
 					}
 				end
 			end
@@ -574,6 +599,24 @@ function PresetSystem.loadPreset(name)
 
 	-- Apply saved values positionally: added_list[i] ↔ visible fx_data[i-1].
 	PresetSystem.fxmanager.beginBatch()
+
+	-- A preset defines the FULL modulation routing. Strip every current
+	-- routing first (explicit release — once its entry is cleared the sweep
+	-- treats the leftover link as user property and would keep it alive);
+	-- the apply pass below restores the preset's own routings. Old presets
+	-- saved before mod_source existed thus load with all LFOs off.
+	local le = PresetSystem.fxmanager.link_engine
+	if le then
+		for fx_id, fx_data in pairs(PresetSystem.core.state.fx_data) do
+			for param_id in pairs(fx_data.params) do
+				if le.getParamModSource(fx_id, param_id) > 0 then
+					le.releaseParamLink(fx_id, param_id)
+					le.setParamModSource(fx_id, param_id, 0)
+				end
+			end
+		end
+	end
+
 	for i, fx_preset in ipairs(added_list) do
 		local visible_id = i - 1
 		local fx_data = PresetSystem.core.state.fx_data[visible_id]
@@ -607,6 +650,9 @@ function PresetSystem.loadPreset(name)
 						PresetSystem.fxmanager.setParamXYAssign(visible_id, current_param_id, "x", param_preset.x_assign)
 						PresetSystem.fxmanager.setParamXYAssign(visible_id, current_param_id, "y", param_preset.y_assign)
 						PresetSystem.fxmanager.setParamInvert(visible_id, current_param_id, param_preset.invert or false)
+						if le and param_preset.mod_source then
+							le.setParamModSource(visible_id, current_param_id, param_preset.mod_source)
+						end
 						break
 					end
 				end

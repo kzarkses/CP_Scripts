@@ -183,17 +183,26 @@ function GestureSystem.applyGranularGesture(gx, gy)
 		end
 	end
 
+	local le = GestureSystem.fxmanager.link_engine
 	for fx_id, fx_data in pairs(GestureSystem.core.state.fx_data) do
 		if total_weights[fx_id] and total_weights[fx_id] > 0 then
 			for param_id, param_data in pairs(fx_data.params) do
 				if param_data.selected and weighted_param_values[fx_id][param_id] then
 					local final_value = weighted_param_values[fx_id][param_id] / total_weights[fx_id]
-					local actual_fx_id = fx_data.actual_fx_id or fx_id
-					local denormalized_value = GestureSystem.core.denormalizeParamValue(final_value, param_data.min_val, param_data.max_val)
-					GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, actual_fx_id, param_id, denormalized_value)
+					local key = GestureSystem.core.getParamKey(fx_id, param_id)
+					if le and key
+					   and GestureSystem.core.state.param_mod_source[key] then
+						-- LFO/global-linked param: LFO links are standing
+						-- (active in every pad mode) and the modulation
+						-- engine ignores the raw value — move the baseline.
+						le.setBaseline(fx_id, param_id, final_value)
+					else
+						local actual_fx_id = fx_data.actual_fx_id or fx_id
+						local denormalized_value = GestureSystem.core.denormalizeParamValue(final_value, param_data.min_val, param_data.max_val)
+						GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, actual_fx_id, param_id, denormalized_value)
+					end
 					param_data.current_value = final_value
 					param_data.base_value = final_value
-					local key = GestureSystem.core.getParamKey(fx_id, param_id)
 					if key then
 						GestureSystem.core.state.param_base_values[key] = final_value
 					end
@@ -671,10 +680,22 @@ function GestureSystem.morphBetweenPresets(amount)
 				local value_b = params_b[param_data.name]
 				if value_a and value_b then
 					local morphed_value = value_a * (1 - amount) + value_b * amount
-					local actual_fx_id = fx_data.actual_fx_id or fx_id
-					local denormalized_value = GestureSystem.core.denormalizeParamValue(morphed_value, param_data.min_val, param_data.max_val)
-					GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, actual_fx_id, param_id, denormalized_value)
+					local le = GestureSystem.fxmanager.link_engine
+					if le and le.isParamLinked(fx_id, param_id, param_data) then
+						-- CP-linked param: the raw value is ignored by the
+						-- modulation engine — morph the baseline instead.
+						le.setBaseline(fx_id, param_id, morphed_value)
+					else
+						local actual_fx_id = fx_data.actual_fx_id or fx_id
+						local denormalized_value = GestureSystem.core.denormalizeParamValue(morphed_value, param_data.min_val, param_data.max_val)
+						GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, actual_fx_id, param_id, denormalized_value)
+					end
 					param_data.current_value = morphed_value
+					param_data.base_value = morphed_value
+					local key = GestureSystem.core.getParamKey(fx_id, param_id)
+					if key then
+						GestureSystem.core.state.param_base_values[key] = morphed_value
+					end
 				end
 			end
 		end

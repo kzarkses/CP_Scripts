@@ -137,6 +137,12 @@ function FXManager.scanTrackFX()
 	state.last_fx_signature = FXManager.core.createFXSignature()
 	FXManager.loadTrackSelection()
 	FXManager.updateSelectedCount()
+	-- Adopt links present on the track that our bookkeeping doesn't know
+	-- about (Map flow, standalone panel, lost entries) — badges and toggles
+	-- must reflect the real link state.
+	if FXManager.link_engine then
+		FXManager.link_engine.reconcileModSources()
+	end
 	-- Chain layout changed: link targets/bridge index may have moved.
 	state.links_dirty = true
 end
@@ -181,36 +187,14 @@ function FXManager.checkForFXChanges()
 		end
 	end
 
-	-- Touch takeover: grabbing a CP-linked param in the plugin UI writes its
-	-- OWN value storage — which the modulation engine ignores (it reads the
-	-- baseline), so without this the gesture would change nothing audible.
-	-- A drift of the own value on the LAST-TOUCHED param is a deliberate
-	-- user gesture → adopt it as the new base (Bitwig behavior: the plugin
-	-- knob stays the base handle, the modulation keeps riding around it).
-	if FXManager.link_engine and FXManager.link_engine.modjsfx then
-		local ttr, tfx, tparm = FXManager.link_engine.modjsfx.getTouchedParam(FXManager.r)
-		if ttr == state.track and tfx and tparm then
-			for fx_id, fx_data in pairs(state.fx_data) do
-				if (fx_data.actual_fx_id or fx_id) == tfx then
-					local pd = fx_data.params[tparm]
-					if pd and FXManager.link_engine.isParamLinked(fx_id, tparm, pd) then
-						local raw = FXManager.r.TrackFX_GetParam(state.track, tfx, tparm)
-						local own = FXManager.core.normalizeParamValue(raw, pd.min_val, pd.max_val)
-						local prev = pd._own_value
-						pd._own_value = own
-						if prev and math.abs(own - prev) > 0.002 then
-							pd.base_value = own
-							if pd.key then
-								state.param_base_values[pd.key] = own
-							end
-							FXManager.link_engine.setBaseline(fx_id, tparm, own)
-						end
-					end
-					break
-				end
-			end
-		end
-	end
+	-- NO touch takeover. Grabbing a CP-linked param in the plugin UI is
+	-- runtime-confirmed to not reach the own-value storage under parameter
+	-- modulation, so takeover can't work — the manager/inspector is the
+	-- official base-editing path. Worse, an adoption heuristic here actively
+	-- misfires on MIDI-linked params (G slots): the incoming CC both writes
+	-- the own storage and marks the param last-touched, so "adopt the drift
+	-- of the last-touched param" chases the LFO — base, anchor and baseline
+	-- rewritten every tick (the range frame dances). Do not reintroduce.
 
 	-- Selected params refresh EVERY tick: their live (possibly LFO/link
 	-- modulated) value is displayed in the param rows, so it must move
@@ -465,16 +449,20 @@ function FXManager.loadTrackSelection()
 	local guid = FXManager.core.getTrackGUID()
 	if not guid then return end
 	-- Re-read track_selections from ExtState so cross-process writes (e.g. by
-	-- the standalone FX Browser) become visible without a script restart. The
-	-- ExtState write itself is cheap (RAM-only, persist=false by the writers
-	-- that need it cross-process). We deserialize and merge to keep any local
-	-- in-memory state we don't want to clobber.
-	local saved = FXManager.r.GetExtState("CP_FXConstellation", "track_selections")
-	if saved and saved ~= "" and FXManager.persistence
-	   and FXManager.persistence.deserialize then
-		local fresh = FXManager.persistence.deserialize(saved)
-		if type(fresh) == "table" then
-			FXManager.core.state.track_selections = fresh
+	-- the standalone FX Browser) become visible without a script restart —
+	-- but ONLY when no local edits are waiting for the save debounce: the
+	-- ExtState lags memory by up to 0.75 s, and adopting it mid-debounce
+	-- rolled back everything edited since the last flush (a range drag, a
+	-- selection, a mod_source — leaving its native link orphaned).
+	local pers = FXManager.persistence
+	if pers and pers.deserialize
+	   and not (pers.save_flags and pers.save_flags.track_selections) then
+		local saved = FXManager.r.GetExtState("CP_FXConstellation", "track_selections")
+		if saved and saved ~= "" then
+			local fresh = pers.deserialize(saved)
+			if type(fresh) == "table" then
+				FXManager.core.state.track_selections = fresh
+			end
 		end
 	end
 	local track_data = FXManager.core.state.track_selections[guid]
@@ -606,25 +594,93 @@ function FXManager.randomizeAllBases()
 	FXManager.saveTrackSelection()
 end
 
+-- Global LFO slots eligible for random assignment, encoded for
+-- param_mod_source (GLOBAL_SLOT_BASE + 1..8). Only slots that are ON: a
+-- link to a muted slot freezes the param instead of modulating it — the
+-- user picks which LFOs participate by enabling them in the Global tab.
+local function enabledGlobalSlots()
+	local le = FXManager.link_engine
+	if not le then return nil end
+	local slots = nil
+	for i = 1, le.modjsfx.SLOTS do
+		local slot = le.getGlobalSlot(i)
+		if slot and slot.on then
+			slots = slots or {}
+			slots[#slots + 1] = le.GLOBAL_SLOT_BASE + i
+		end
+	end
+	return slots
+end
+
 function FXManager.randomizeXYAssign(params, fx_id)
+	local le = FXManager.link_engine
+	FXManager.beginBatch()
 	for param_id, param_data in pairs(params) do
 		if param_data.selected then
-			local rand = math.random()
-			if FXManager.core.state.exclusive_xy then
-				FXManager.setParamXYAssign(fx_id, param_id, "x", rand < 0.5)
-				FXManager.setParamXYAssign(fx_id, param_id, "y", rand >= 0.5)
-			else
-				if rand < 0.33 then
-					FXManager.setParamXYAssign(fx_id, param_id, "x", true)
-					FXManager.setParamXYAssign(fx_id, param_id, "y", false)
-				elseif rand < 0.66 then
-					FXManager.setParamXYAssign(fx_id, param_id, "x", false)
-					FXManager.setParamXYAssign(fx_id, param_id, "y", true)
-				else
-					FXManager.setParamXYAssign(fx_id, param_id, "x", true)
-					FXManager.setParamXYAssign(fx_id, param_id, "y", true)
+			-- LFO-routed params belong to the LFO randomizer (its own
+			-- button) — the XY roll only re-rolls pad-driven params and
+			-- never strips a modulation routing.
+			if not (le and le.getParamModSource(fx_id, param_id) > 0) then
+				FXManager.randomizeXYAssignOne(fx_id, param_id)
+			end
+		end
+	end
+	FXManager.endBatch()
+end
+
+-- Random modulation sources (the "LFO" randomizer button): each selected
+-- param rolls against random_lfo_probability — hit → a random ENABLED
+-- global slot (G1-8), miss → back to the pad (existing X/Y assignment).
+-- 0% therefore clears all LFO routings, 100% routes everything.
+function FXManager.globalRandomLFOAssign()
+	local s = FXManager.core.state
+	local le = FXManager.link_engine
+	if not le then return end
+	local p = s.random_lfo_probability or 0
+	local lfo_slots = nil
+	if p > 0 then
+		-- Fresh banks have slot 1 ON; the user picks the participating
+		-- LFOs by enabling slots in the Global tab.
+		le.ensureGlobalMIDI()
+		lfo_slots = enabledGlobalSlots()
+	end
+	FXManager.beginBatch()
+	for fx_id, fx_data in pairs(s.fx_data) do
+		if not fx_data.full_name:find("Sound Generator") then
+			for param_id, param_data in pairs(fx_data.params) do
+				if param_data.selected then
+					if lfo_slots and math.random() < p then
+						le.setParamModSource(fx_id, param_id,
+							lfo_slots[math.random(#lfo_slots)])
+					elseif le.getParamModSource(fx_id, param_id) > 0 then
+						-- Back to the pad: the sweep never releases a link
+						-- whose mod_source entry is gone (Map-made links
+						-- look the same), so release explicitly.
+						le.releaseParamLink(fx_id, param_id)
+						le.setParamModSource(fx_id, param_id, 0)
+					end
 				end
 			end
+		end
+	end
+	FXManager.endBatch()
+end
+
+function FXManager.randomizeXYAssignOne(fx_id, param_id)
+	local rand = math.random()
+	if FXManager.core.state.exclusive_xy then
+		FXManager.setParamXYAssign(fx_id, param_id, "x", rand < 0.5)
+		FXManager.setParamXYAssign(fx_id, param_id, "y", rand >= 0.5)
+	else
+		if rand < 0.33 then
+			FXManager.setParamXYAssign(fx_id, param_id, "x", true)
+			FXManager.setParamXYAssign(fx_id, param_id, "y", false)
+		elseif rand < 0.66 then
+			FXManager.setParamXYAssign(fx_id, param_id, "x", false)
+			FXManager.setParamXYAssign(fx_id, param_id, "y", true)
+		else
+			FXManager.setParamXYAssign(fx_id, param_id, "x", true)
+			FXManager.setParamXYAssign(fx_id, param_id, "y", true)
 		end
 	end
 end
@@ -694,6 +750,13 @@ function FXManager.ultraRandom()
 	local urs = FXManager.core.state.ultra_random_settings
 
 	if urs.xy_assignments then
+		-- Sources first (some params move pad↔LFO), then the XY roll for
+		-- whatever ends up pad-driven. The LFO roll is gated by its own
+		-- probability slider (0% = strip nothing, keep hand-made routings).
+		if FXManager.core.state.random_lfo_probability
+		   and FXManager.core.state.random_lfo_probability > 0 then
+			FXManager.globalRandomLFOAssign()
+		end
 		FXManager.globalRandomXYAssign()
 	end
 

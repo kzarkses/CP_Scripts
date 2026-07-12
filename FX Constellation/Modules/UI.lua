@@ -906,7 +906,17 @@ local function drawLFOSection(theme)
         return mj.getParamLink(UI.r, tr, fx, parm)
     end
 
+    -- Registry/matrix rows come from CACHED scans: after an FX reorder or
+    -- deletion the stored fx index can point at another plugin entirely.
+    -- Never write through a stale target — require a live CP link on the
+    -- exact (track, fx, param) before touching it.
+    local function validTarget(tr, fx, parm)
+        return tr and UI.r.ValidatePtr(tr, "MediaTrack*")
+           and mj.getParamLink(UI.r, tr, fx, parm) ~= nil
+    end
+
     local function setTargetBase(tr, fx, parm, v)
+        if not validTarget(tr, fx, parm) then return end
         local fid = findManagedParam(tr, fx, parm)
         if fid then
             UI.fxmanager.updateParamBaseValue(fid, parm, v)
@@ -916,6 +926,7 @@ local function drawLFOSection(theme)
     end
 
     local function setTargetDepth(tr, fx, parm, v)
+        if not validTarget(tr, fx, parm) then return end
         local fid = findManagedParam(tr, fx, parm)
         if fid then
             -- FXC-managed: depth = range × gesture_range, sign = invert.
@@ -930,12 +941,31 @@ local function drawLFOSection(theme)
     -- Unlink from the registry: FXC-managed params also clear their
     -- mod_source so the sweep doesn't recreate the link.
     local function unlinkTarget(tr, fx, parm)
+        if not validTarget(tr, fx, parm) then return end
         local fid = findManagedParam(tr, fx, parm)
         if fid then
             le.releaseParamLink(fid, parm)
             le.setParamModSource(fid, parm, 0)
         else
             mj.releaseParamLink(UI.r, tr, fx, parm)
+            -- The param may be FXC-managed on ANOTHER track: purge its
+            -- persisted mod_source too, or the next time that track is
+            -- selected loadTrackSelection restores the entry and the
+            -- sweep resurrects the link we just removed.
+            if tr and UI.r.ValidatePtr(tr, "MediaTrack*") then
+                local _, guid = UI.r.GetSetMediaTrackInfo_String(tr, "GUID", "", false)
+                local td = guid and s.track_selections[guid]
+                if td and td.mod_sources then
+                    local _, fxname = UI.r.TrackFX_GetFXName(tr, fx, "")
+                    local _, pname = UI.r.TrackFX_GetParamName(tr, fx, parm, "")
+                    local key = fxname .. "||" .. pname
+                    if td.mod_sources[key] then
+                        td.mod_sources[key] = nil
+                        s.param_mod_source[guid .. "_" .. key] = nil
+                        UI.persistence.scheduleTrackSave()
+                    end
+                end
+            end
         end
     end
 
@@ -968,6 +998,23 @@ local function drawLFOSection(theme)
             touched = touchedParam,
             link = function(tr, fx, parm, slot)
                 mj.linkParamToGlobalSlot(UI.r, tr, fx, parm, slot, 0.5)
+                -- Param on OUR track: register the routing, otherwise the
+                -- sweep sees a selected pad-assigned param and silently
+                -- retargets the fresh Map link back to the bridge.
+                if tr == s.track then
+                    for fid, fd in pairs(s.fx_data) do
+                        if (fd.actual_fx_id or fid) == fx and fd.params[parm] then
+                            local pd = fd.params[parm]
+                            if not pd.selected then
+                                pd.selected = true
+                                UI.fxmanager.updateSelectedCount()
+                            end
+                            le.setParamModSource(fid, parm,
+                                le.GLOBAL_SLOT_BASE + slot)
+                            break
+                        end
+                    end
+                end
             end,
             inspect = inspectParam,
             set_base = setTargetBase,
@@ -1178,6 +1225,20 @@ local function drawRandomizer(theme)
     UItk.EndColumns()
     UItk.NextColumn()
     if Btn("rnd_inv", "N") then UI.fxmanager.globalRandomInvert() end
+    UItk.EndColumns()
+
+    -- Random modulation sources: each selected param rolls against the
+    -- probability — hit → a random enabled global LFO (G1-8), miss → pad.
+    UItk.BeginColumns("rnd_lfo_row", { 0.5, 0.5 }, { gap = theme.item_spacing })
+    if Btn("rnd_lfo", "LFO") then UI.fxmanager.globalRandomLFOAssign() end
+    UItk.NextColumn()
+    local lc, lv = Slid("rnd_lfo_pct",
+        "", (s.random_lfo_probability or 0) * 100, 0, 100,
+        { format = fmtVal("%.0f%%", (s.random_lfo_probability or 0) * 100) })
+    if lc then
+        s.random_lfo_probability = lv / 100
+        UI.persistence.scheduleSave()
+    end
     UItk.EndColumns()
 
     if Btn("rnd_ranges", "Ranges") then UI.fxmanager.globalRandomRanges() end
@@ -1489,9 +1550,15 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
     --     it move); dragging it writes the BASE value
     --   • min / max bars (drag to resize the randomization window)
     --   • middle-drag → translate range + value together
-    -- Mapping: the `range` window stays centered on the BASE value so the
-    -- modulation breathes inside a stable frame.
-    local base_value = param_data.base_value or param_data.current_value or 0.5
+    -- The window is centered on the gesture ANCHOR (param_base_values), NOT
+    -- on param_data.base_value: in script mode the gesture overwrites
+    -- base_value every frame with the applied value, which made the whole
+    -- window ride along with the dot instead of framing it. The anchor only
+    -- moves on explicit base edits / gesture commit — a stable frame.
+    local anchor_key = UI.core.getParamKey(fx_id, param_id)
+    local base_value = (anchor_key
+            and UI.core.state.param_base_values[anchor_key])
+        or param_data.base_value or param_data.current_value or 0.5
     -- The API only reports the base value under parameter modulation; the
     -- link engine recomputes the modulated value from the link source.
     local live_value = (UI.linkengine
@@ -1931,8 +1998,13 @@ local function syncTrack()
     if UI.core.isTrackValid() then
         UI.fxmanager.checkForFXChanges()
         UI.presetsystem.checkPresetModification()
-        if s.links_dirty and UI.linkengine then
-            UI.linkengine.syncLinks()
+        if UI.linkengine then
+            -- External unlinks (standalone panel) must clear our entry
+            -- BEFORE the sweep runs, or the link is instantly recreated.
+            UI.linkengine.checkExternalUnlink()
+            if s.links_dirty then
+                UI.linkengine.syncLinks()
+            end
         end
     end
 end

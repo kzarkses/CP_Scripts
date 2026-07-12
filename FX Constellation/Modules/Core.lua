@@ -63,6 +63,9 @@ function Core.init(reaper_api)
 		granular_set_name = "GrainSet1",
 		snapshot_name = "Snapshot1",
 		random_bypass_percentage = 0.3,
+		-- Chance for the assign randomizer to route a param to a global
+		-- CP_Mod LFO (G1-8) instead of the pad (0 = pad XY only).
+		random_lfo_probability = 0.0,
 		layout_mode = 0,
 		fx_collapsed = {},
 		show_filters_window = false,

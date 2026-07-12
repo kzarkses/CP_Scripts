@@ -24,6 +24,14 @@ ModJSFX.writeBankFile(r, "midi")
 local mode = 1  -- 1 = Track, 2 = Global
 local sel = 1
 
+-- Registry/matrix rows come from cached scans: after an FX reorder or
+-- deletion the stored fx index can point at another plugin. Never write
+-- through a stale target — require a live CP link at that exact address.
+local function validTarget(tr, fx, parm)
+	return tr and r.ValidatePtr(tr, "MediaTrack*")
+	   and ModJSFX.getParamLink(r, tr, fx, parm) ~= nil
+end
+
 -- Pop up at the mouse cursor (no persisted position — the point of this
 -- panel is to appear next to what you're working on).
 local mx, my = r.GetMousePosition()
@@ -51,12 +59,15 @@ UI_TK.Run(function(theme)
 				return ModJSFX.getParamLink(r, tr, fx, parm)
 			end,
 			set_base = function(tr, fx, parm, v)
+				if not validTarget(tr, fx, parm) then return end
 				ModJSFX.setParamLinkBase(r, tr, fx, parm, v)
 			end,
 			set_depth = function(tr, fx, parm, v)
+				if not validTarget(tr, fx, parm) then return end
 				ModJSFX.setParamLinkDepth(r, tr, fx, parm, v)
 			end,
 			unlink = function(tr, fx, parm)
+				if not validTarget(tr, fx, parm) then return end
 				ModJSFX.releaseParamLink(r, tr, fx, parm)
 			end,
 		})
@@ -113,12 +124,15 @@ UI_TK.Run(function(theme)
 		return ModJSFX.getParamLink(r, tr, fx, parm)
 	end
 	ctx.set_base = function(tr, fx, parm, v)
+		if not validTarget(tr, fx, parm) then return end
 		ModJSFX.setParamLinkBase(r, tr, fx, parm, v)
 	end
 	ctx.set_depth = function(tr, fx, parm, v)
+		if not validTarget(tr, fx, parm) then return end
 		ModJSFX.setParamLinkDepth(r, tr, fx, parm, v)
 	end
 	ctx.unlink = function(tr, fx, parm)
+		if not validTarget(tr, fx, parm) then return end
 		ModJSFX.releaseParamLink(r, tr, fx, parm)
 	end
 	if mode == 2 then

@@ -466,6 +466,13 @@ function ModJSFX.releaseParamLink(r, track, fxidx, parmidx)
 	if base then
 		r.TrackFX_SetParamNormalized(track, fxidx, parmidx, base)
 	end
+	-- Cross-process hint: an FXC instance managing this param must clear
+	-- its mod_source entry, or its sync sweep recreates the link on the
+	-- next frame. Harmless for FXC's own releases (it clears entries
+	-- itself before/after calling this).
+	local _, guid = r.GetSetMediaTrackInfo_String(track, "GUID", "", false)
+	r.SetExtState("CP_Mod", "unlink",
+		guid .. "|" .. fxidx .. "|" .. parmidx .. "|" .. r.time_precise(), false)
 end
 
 -- Enumerate every param linked to a bank slot (the per-slot target
