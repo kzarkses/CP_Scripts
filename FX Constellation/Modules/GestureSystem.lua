@@ -8,6 +8,10 @@ end
 
 function GestureSystem.applyGestureToSelection(gx, gy)
 	if not GestureSystem.core.isTrackValid() then return end
+	-- Linked mode: params follow the bridge through native parameter links
+	-- (block rate, audio thread). Applying them from Lua as well would
+	-- double-modulate — the pad only writes the bridge sliders.
+	if GestureSystem.core.state.links_active then return end
 	local offset_x = (gx - GestureSystem.core.state.gesture_base_x) * 2
 	local offset_y = (gy - GestureSystem.core.state.gesture_base_y) * 2
 	for fx_id, fx_data in pairs(GestureSystem.core.state.fx_data) do
@@ -313,11 +317,39 @@ function GestureSystem.findAutomationJSFX()
 	return -1
 end
 
+-- Bridge v2. Inputs (written by the script, by envelopes, or by anything
+-- that modulates them): x_pos / y_pos / slew. Outputs (hidden sliders,
+-- recomputed every audio block): x_out / y_out / xy_mix — these are the
+-- sources native parameter links point at. The block-rate slew means a
+-- 30 Hz script write (or a stepped envelope) reaches the linked plugin
+-- params as a continuous glide, bypassing the defer-loop resolution.
+GestureSystem.BRIDGE_PARAM_COUNT = 6
+
 function GestureSystem.createAutomationJSFX()
 	if not GestureSystem.core.isTrackValid() then return false end
 	local jsfx_code = [[desc: FX Constellation Bridge
 slider1:x_pos=0.5<0,1,0.001>X Position
 slider2:y_pos=0.5<0,1,0.001>Y Position
+slider3:slew=0<0,2,0.01>Slew (s)
+slider4:x_out=0.5<0,1,0.0001>-X Out (link source)
+slider5:y_out=0.5<0,1,0.0001>-Y Out (link source)
+slider6:xy_mix=0.5<0,1,0.0001>-XY Mix (link source)
+
+@init
+x_out = x_pos;
+y_out = y_pos;
+xy_mix = (x_out + y_out) * 0.5;
+
+@block
+slew > 0.001 ? (
+  coef = 1 - exp(-samplesblock / (srate * slew));
+  x_out += (x_pos - x_out) * coef;
+  y_out += (y_pos - y_out) * coef;
+) : (
+  x_out = x_pos;
+  y_out = y_pos;
+);
+xy_mix = (x_out + y_out) * 0.5;
 
 @sample
 spl0 = spl0;
@@ -326,13 +358,21 @@ spl1 = spl1;]]
 	-- Reuse an existing bridge instance: TrackFX_AddByName with a negative
 	-- instantiate ALWAYS creates a new FX, so blindly adding would stack a
 	-- duplicate bridge every time the user re-enables Auto JSFX.
+	-- v1 instances (2 sliders, no link outputs) are upgraded in place: the
+	-- file is rewritten below, and the instance is dropped and re-added so
+	-- REAPER compiles the new slider set. X/Y envelopes on a v1 bridge are
+	-- lost in the upgrade — one-time cost, flagged in the UI status line.
 	local existing = GestureSystem.findAutomationJSFX()
-	if existing >= 0 then
+	if existing >= 0
+	   and GestureSystem.r.TrackFX_GetNumParams(GestureSystem.core.state.track, existing) >= GestureSystem.BRIDGE_PARAM_COUNT then
 		GestureSystem.core.state.jsfx_automation_index = existing
 		GestureSystem.core.state.jsfx_automation_enabled = true
 		GestureSystem.syncBridgeState()
 		GestureSystem.fxmanager.captureBaseValues()
 		return true
+	end
+	if existing >= 0 then
+		GestureSystem.r.TrackFX_Delete(GestureSystem.core.state.track, existing)
 	end
 
 	local jsfx_path = GestureSystem.r.GetResourcePath() .. "/Effects/FX Constellation Bridge.jsfx"
@@ -405,6 +445,9 @@ function GestureSystem.updateAutomationFromJSFX()
 	-- smooth-mode target is pinned so manual smoothing doesn't tug it back.
 	s.gesture_x, s.gesture_y = jsfx_x, jsfx_y
 	s.target_gesture_x, s.target_gesture_y = jsfx_x, jsfx_y
+
+	-- Linked mode: adoption is display-only, the links already applied it.
+	if s.links_active then return end
 
 	if s.pad_mode == 1 then
 		if not s.granular_grains or #s.granular_grains == 0 then

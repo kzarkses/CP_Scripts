@@ -582,6 +582,33 @@ local function drawNavigation(theme)
             if y_env then UI.r.SetCursorContext(2, y_env) end
         end
     end
+
+    -- Linked mode: the gesture is compiled into native parameter links
+    -- (target params follow the bridge at audio-block rate — modulable by
+    -- envelopes, LFO/ACS, MIDI or third-party plugins, script closed or
+    -- not). Single pad mode only; granular stays script-driven.
+    local ltoggled, lstate = Tgl("linked_mode",
+        s.links_active and ("Native Links (" .. (s.links_count or 0) .. ")")
+        or "Native Links", s.linked_mode)
+    if ltoggled and lstate ~= s.linked_mode then
+        s.linked_mode = lstate
+        s.links_dirty = true
+        UI.fxmanager.saveTrackSelection()
+    end
+    if s.linked_mode then
+        if s.pad_mode == 1 then
+            UItk.SetFontCaption()
+            UItk.Text("Granular mode: links suspended")
+            UItk.SetFontBody()
+        end
+        local slc, slv = Slid("link_slew", "Slew", s.link_slew or 0, 0, 2,
+            { format = fmtVal("%.2f s", s.link_slew or 0) })
+        if slc then
+            s.link_slew = slv
+            if UI.linkengine then UI.linkengine.applySlew() end
+            UI.persistence.scheduleSave()
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -595,6 +622,7 @@ local function drawMode(theme)
     local _, single = Tgl("mode_single", "Single", s.pad_mode == 0)
     if single and s.pad_mode ~= 0 then
         s.pad_mode = 0
+        s.links_dirty = true
         UI.persistence.scheduleSave()
     end
 
@@ -611,6 +639,7 @@ local function drawMode(theme)
         if not s.granular_grains or #s.granular_grains == 0 then
             UI.gesture.initializeGranularGrid()
         end
+        s.links_dirty = true
         UI.persistence.scheduleSave()
     end
 
@@ -1520,6 +1549,9 @@ local function syncTrack()
     if UI.core.isTrackValid() then
         UI.fxmanager.checkForFXChanges()
         UI.presetsystem.checkPresetModification()
+        if s.links_dirty and UI.linkengine then
+            UI.linkengine.syncLinks()
+        end
     end
 end
 

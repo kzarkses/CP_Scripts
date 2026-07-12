@@ -232,6 +232,7 @@ local function buildSettingsData(state)
 		figures_speed = state.figures_speed,
 		figures_size = state.figures_size,
 		jsfx_automation_enabled = state.jsfx_automation_enabled,
+		link_slew = state.link_slew,
 		current_loaded_preset = state.current_loaded_preset,
 		random_fx_count = state.random_fx_count,
 		random_fx_favorites_only = state.random_fx_favorites_only,

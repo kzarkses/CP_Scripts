@@ -131,6 +131,8 @@ function FXManager.scanTrackFX()
 	state.last_fx_signature = FXManager.core.createFXSignature()
 	FXManager.loadTrackSelection()
 	FXManager.updateSelectedCount()
+	-- Chain layout changed: link targets/bridge index may have moved.
+	state.links_dirty = true
 end
 
 -- Change polling. The old version re-read EVERY param of EVERY FX each tick
@@ -270,6 +272,10 @@ function FXManager.setParamXYAssign(fx_id, param_id, axis, value)
 end
 
 function FXManager.captureBaseValues()
+	-- Linked mode: bases live in the links' baselines and current_value is
+	-- the MODULATED value read back from the plugin — re-anchoring bases on
+	-- it would make them drift toward wherever the pad happens to sit.
+	if FXManager.core.state.links_active then return end
 	FXManager.core.state.param_base_values = {}
 	FXManager.core.state.gesture_base_x = FXManager.core.state.gesture_x
 	FXManager.core.state.gesture_base_y = FXManager.core.state.gesture_y
@@ -295,9 +301,16 @@ function FXManager.updateParamBaseValue(fx_id, param_id, new_value)
 		if key then
 			FXManager.core.state.param_base_values[key] = new_value
 		end
-		local actual_fx_id = FXManager.core.state.fx_data[fx_id].actual_fx_id or fx_id
-		local denormalized_value = FXManager.core.denormalizeParamValue(new_value, param_data.min_val, param_data.max_val)
-		FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
+		if FXManager.core.state.links_active and param_data.selected
+		   and FXManager.link_engine then
+			-- Linked param: the base IS the link baseline; writing the raw
+			-- param would fight the modulation engine.
+			FXManager.link_engine.setBaseline(fx_id, param_id, new_value)
+		else
+			local actual_fx_id = FXManager.core.state.fx_data[fx_id].actual_fx_id or fx_id
+			local denormalized_value = FXManager.core.denormalizeParamValue(new_value, param_data.min_val, param_data.max_val)
+			FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, denormalized_value)
+		end
 		param_data.current_value = new_value
 		FXManager.saveTrackSelection()
 	end
@@ -362,8 +375,12 @@ function FXManager.saveTrackSelection()
 		gesture_base_y = FXManager.core.state.gesture_base_y,
 		gesture_x = FXManager.core.state.gesture_x,
 		gesture_y = FXManager.core.state.gesture_y,
-		current_preset = FXManager.core.state.current_loaded_preset
+		current_preset = FXManager.core.state.current_loaded_preset,
+		linked = FXManager.core.state.linked_mode
 	}
+	-- Everything that changes selection/range/invert/assign/base funnels
+	-- through here — single chokepoint to re-sync native links.
+	FXManager.core.state.links_dirty = true
 	FXManager.persistence.scheduleTrackSave()
 end
 
@@ -386,6 +403,7 @@ function FXManager.loadTrackSelection()
 	local track_data = FXManager.core.state.track_selections[guid]
 	if not track_data then
 		FXManager.core.state.current_loaded_preset = ""
+		FXManager.core.state.linked_mode = false
 		FXManager.captureBaseValues()
 		return
 	end
@@ -400,6 +418,7 @@ function FXManager.loadTrackSelection()
 	FXManager.core.state.gesture_x = track_data.gesture_x or 0.5
 	FXManager.core.state.gesture_y = track_data.gesture_y or 0.5
 	FXManager.core.state.current_loaded_preset = track_data.current_preset or ""
+	FXManager.core.state.linked_mode = track_data.linked or false
 
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
 		local fx_key = guid .. "_" .. fx_data.full_name
