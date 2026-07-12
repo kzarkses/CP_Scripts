@@ -119,6 +119,67 @@ function LFOPanel.draw(theme, ctx)
 		opts(theme, { format = string.format("%.2f", slot.phase) }))
 	if pc then ctx.set(sel, { phase = pv }) end
 
+	-- Mapping flows (provided by the host for banks that can target any
+	-- param — the global MIDI bank). Bitwig/Ableton pattern:
+	--   • Map: arm, then touch the target parameter anywhere in REAPER
+	--   • Link last touched: one-shot on the parameter you just tweaked
+	if ctx.link and ctx.touched then
+		local armed = LFOPanel._armed
+		local now = reaper.time_precise()
+
+		local function sigOf(tr, fx, parm)
+			if not tr then return "" end
+			return tostring(tr) .. ":" .. tostring(fx) .. ":" .. tostring(parm)
+		end
+
+		local map_label = armed and "… touch a param (click to cancel)"
+			or "Map: touch target"
+		if armed then UItk.PushStyleColor("button", theme.colors.accent[1],
+			theme.colors.accent[2], theme.colors.accent[3]) end
+		local mc = UItk.Button("lfopanel_map", map_label, opts(theme))
+		if armed then UItk.PopStyleColor() end
+		if mc then
+			if armed then
+				LFOPanel._armed = nil
+			else
+				local tr, fx, parm = ctx.touched()
+				LFOPanel._armed = { sig = sigOf(tr, fx, parm) }
+			end
+		end
+
+		if LFOPanel._armed then
+			local tr, fx, parm, name = ctx.touched()
+			if tr and sigOf(tr, fx, parm) ~= LFOPanel._armed.sig then
+				ctx.link(tr, fx, parm, sel)
+				LFOPanel._armed = nil
+				LFOPanel._flash = { msg = "Linked: " .. (name or "?"), t = now }
+			else
+				-- Poll the touched param while armed.
+				UItk.RequestRedrawAt(now + 1 / 15)
+			end
+		end
+
+		if UItk.Button("lfopanel_lastlink", "Link last touched", opts(theme)) then
+			local tr, fx, parm, name = ctx.touched()
+			if tr then
+				ctx.link(tr, fx, parm, sel)
+				LFOPanel._flash = { msg = "Linked: " .. (name or "?"), t = now }
+			else
+				LFOPanel._flash = { msg = "No parameter touched yet", t = now }
+			end
+		end
+
+		if LFOPanel._flash and now - LFOPanel._flash.t < 2.5 then
+			UItk.SetFontCaption()
+			UItk.TextColored(LFOPanel._flash.msg,
+				theme.colors.accent[1], theme.colors.accent[2],
+				theme.colors.accent[3], 1)
+			UItk.SetFontBody()
+		elseif LFOPanel._flash then
+			LFOPanel._flash = nil
+		end
+	end
+
 	-- One-cycle preview. X axis = raw slot phase; the curve is drawn with
 	-- the phase offset applied (same math as the JSFX), so the dot placed
 	-- at (raw phase, live out) rides the drawn curve exactly.

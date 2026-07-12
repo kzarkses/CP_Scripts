@@ -233,6 +233,73 @@ function ModJSFX.ensureModTrack(r)
 	return track
 end
 
+-- FX belonging to the CP ecosystem — mapping flows must never target them.
+function ModJSFX.isInternalFX(name)
+	return name ~= nil
+	   and (name:find("FX Constellation", 1, true) ~= nil
+	     or name:find("CP_Mod", 1, true) ~= nil)
+end
+
+-- Last-touched FX parameter, normalized across API generations.
+-- Returns track, fx_idx, param_idx, fx_name — or nil (nothing touched,
+-- take FX, or unresolvable).
+function ModJSFX.getTouchedParam(r)
+	local track, fxidx, parmidx
+	if r.GetTouchedOrFocusedFX then
+		local ok, trackidx, itemidx, _, fx, parm = r.GetTouchedOrFocusedFX(0)
+		if not ok or itemidx >= 0 then return nil end
+		track = trackidx == -1 and r.GetMasterTrack(0) or r.GetTrack(0, trackidx)
+		fxidx, parmidx = fx, parm
+	else
+		local ok, tracknumber, fxnumber, paramnumber = r.GetLastTouchedFX()
+		if not ok then return nil end
+		if (tracknumber >> 16) ~= 0 then return nil end -- item FX
+		local low = tracknumber & 0xFFFF
+		track = low == 0 and r.GetMasterTrack(0) or r.GetTrack(0, low - 1)
+		fxidx, parmidx = fxnumber, paramnumber
+	end
+	if not track or not fxidx or fxidx < 0 then return nil end
+	local _, name = r.TrackFX_GetFXName(track, fxidx, "")
+	return track, fxidx, parmidx, name
+end
+
+-- Tiny plink plumbing (duplicated from LinkEngine on purpose: this module
+-- stays dependency-free so the standalone panel can link params).
+local function setPlink(r, track, fx, parm, key, value)
+	r.TrackFX_SetNamedConfigParm(track, fx,
+		"param." .. parm .. ".plink." .. key, tostring(value))
+end
+
+local function setModParm(r, track, fx, parm, key, value)
+	r.TrackFX_SetNamedConfigParm(track, fx,
+		"param." .. parm .. ".mod." .. key, tostring(value))
+end
+
+-- Link ANY track FX parameter to a global MIDI slot: ensures the MOD track,
+-- the MIDI bank, the MIDI send toward the target's track, then writes the
+-- 14-bit CC link. baseline = the param's current value, depth = plink scale
+-- (0.5 → the LFO sweeps ±25% of the param range around the baseline).
+function ModJSFX.linkParamToGlobalSlot(r, target_track, fxidx, parmidx, slot, depth)
+	if not target_track or fxidx < 0 or not parmidx then return false end
+	local mod_track = ModJSFX.ensureModTrack(r)
+	if not mod_track then return false end
+	if ModJSFX.ensureBank(r, mod_track, "midi") < 0 then return false end
+	ModJSFX.ensureMIDISend(r, mod_track, target_track)
+	local cc = ModJSFX.CC_MSB_BASE + slot - 1
+	local base = r.TrackFX_GetParamNormalized(target_track, fxidx, parmidx)
+	setPlink(r, target_track, fxidx, parmidx, "effect", -100)
+	setPlink(r, target_track, fxidx, parmidx, "midi_bus", 0)
+	setPlink(r, target_track, fxidx, parmidx, "midi_chan", 1)
+	setPlink(r, target_track, fxidx, parmidx, "midi_msg", 176)
+	setPlink(r, target_track, fxidx, parmidx, "midi_msg2", 128 + cc)
+	setPlink(r, target_track, fxidx, parmidx, "offset", -0.5)
+	setPlink(r, target_track, fxidx, parmidx, "scale", depth or 0.5)
+	setModParm(r, target_track, fxidx, parmidx, "baseline", base)
+	setModParm(r, target_track, fxidx, parmidx, "active", 1)
+	setPlink(r, target_track, fxidx, parmidx, "active", 1)
+	return true
+end
+
 -- MIDI-only send MOD → target (created once, reused afterwards).
 function ModJSFX.ensureMIDISend(r, mod_track, target_track)
 	if not mod_track or not target_track or mod_track == target_track then return end

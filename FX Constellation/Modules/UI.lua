@@ -886,6 +886,14 @@ local function drawLFOSection(theme)
             add = function() le.ensureGlobalMIDI() end,
             sel = s.lfo_sel_slot or 1,
             onSelect = function(i) s.lfo_sel_slot = i end,
+            touched = function()
+                local tr, fx, parm, name = le.modjsfx.getTouchedParam(UI.r)
+                if not tr or le.modjsfx.isInternalFX(name) then return nil end
+                return tr, fx, parm, name
+            end,
+            link = function(tr, fx, parm, slot)
+                le.modjsfx.linkParamToGlobalSlot(UI.r, tr, fx, parm, slot, 0.5)
+            end,
         }
     else
         ctx = {
@@ -1150,6 +1158,9 @@ local function openParamModMenu(fx_id, param_id, param_data)
     -- Direct map writes: the menu expresses an explicit choice, so the
     -- exclusive-XY auto-clear of setParamXYAssign must not interfere.
     local function followPad(x, y)
+        -- Release the LFO link explicitly: the sweep deliberately leaves
+        -- CP_Mod links without a mod_source entry alone (Map-made links).
+        le.releaseParamLink(fx_id, param_id)
         le.setParamModSource(fx_id, param_id, 0)
         local x_key = UI.core.getParamKey(fx_id, param_id, "x")
         local y_key = UI.core.getParamKey(fx_id, param_id, "y")

@@ -66,7 +66,7 @@ UI_TK.Run(function(theme)
 		end
 	end
 
-	LFOPanel.draw(theme, {
+	local ctx = {
 		present = track ~= nil and bank_idx >= 0,
 		hint = hint,
 		get = function(i) return ModJSFX.getSlot(r, track, bank_idx, i) end,
@@ -74,5 +74,18 @@ UI_TK.Run(function(theme)
 		add = add,
 		sel = sel,
 		onSelect = function(i) sel = i end,
-	})
+	}
+	if mode == 2 then
+		-- Global bank: Bitwig-style mapping — arm "Map" then touch any
+		-- parameter anywhere in REAPER, or link the last touched one.
+		ctx.touched = function()
+			local tr, fx, parm, name = ModJSFX.getTouchedParam(r)
+			if not tr or ModJSFX.isInternalFX(name) then return nil end
+			return tr, fx, parm, name
+		end
+		ctx.link = function(tr, fx, parm, slot)
+			ModJSFX.linkParamToGlobalSlot(r, tr, fx, parm, slot, 0.5)
+		end
+	end
+	LFOPanel.draw(theme, ctx)
 end)

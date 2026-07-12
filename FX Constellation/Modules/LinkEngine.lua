@@ -71,27 +71,38 @@ local function getParm(track, fx, param_id, key)
 	return ok and val or nil
 end
 
--- Is the existing link on (fx, param) one of ours? Ours = source effect is
--- the bridge or a CP_Mod modulator (matched by name, so it survives chain
--- reorders and a stale cached index), or a MIDI link (effect = -100) inside
--- the CP_Mod 14-bit CC window.
-local function ownsLink(track, fx, param_id)
+-- Classify the active link on (fx, param):
+--   "bridge" — pad link (always managed by FX Constellation)
+--   "cpmod"  — CP_Mod source: track LFO bank, or MIDI link in our CC window.
+--              Managed by FX Constellation ONLY for params that carry a
+--              mod_source entry; links made by hand or via the Map flow
+--              (standalone panel) have no entry and must be left alone.
+--   nil      — no active link, or a link we don't own.
+local function linkKind(track, fx, param_id)
 	local active = getParm(track, fx, param_id, "active")
-	if active ~= "1" then return false end
+	if active ~= "1" then return nil end
 	local eff = tonumber(getParm(track, fx, param_id, "effect") or "")
-	if not eff then return false end
+	if not eff then return nil end
 	if eff == -100 then
 		local mj = LinkEngine.modjsfx
 		local msg2 = tonumber(getParm(track, fx, param_id, "midi_msg2") or "")
-		if not msg2 then return false end
+		if not msg2 then return nil end
 		local lo, hi = mj.CC_MSB_BASE, mj.CC_MSB_BASE + mj.SLOTS - 1
-		return (msg2 >= lo and msg2 <= hi)
-		    or (msg2 >= 128 + lo and msg2 <= 128 + hi)
+		if (msg2 >= lo and msg2 <= hi)
+		   or (msg2 >= 128 + lo and msg2 <= 128 + hi) then
+			return "cpmod"
+		end
+		return nil
 	end
-	if eff < 0 then return false end
+	if eff < 0 then return nil end
 	local _, name = LinkEngine.r.TrackFX_GetFXName(track, eff, "")
-	return name:find("FX Constellation Bridge") ~= nil
-	    or name:find("CP_Mod", 1, true) ~= nil
+	if name:find("FX Constellation Bridge") then return "bridge" end
+	if name:find("CP_Mod", 1, true) then return "cpmod" end
+	return nil
+end
+
+local function ownsLink(track, fx, param_id)
+	return linkKind(track, fx, param_id) ~= nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -268,6 +279,20 @@ local function releaseLink(track, fx, param_id)
 	end
 end
 
+-- Explicit release of a param's CP link (used by the assignment menu when
+-- switching back to a pad source: the sweep intentionally never releases
+-- CP_Mod links without a mod_source entry, so the menu does it here).
+function LinkEngine.releaseParamLink(fx_id, param_id)
+	local s = LinkEngine.core.state
+	if not LinkEngine.core.isTrackValid() then return end
+	local fx_data = s.fx_data[fx_id]
+	if not fx_data then return end
+	local target = fx_data.actual_fx_id or fx_id
+	if linkKind(s.track, target, param_id) == "cpmod" then
+		releaseLink(s.track, target, param_id)
+	end
+end
+
 -- Push the current base value of one param into its link baseline (fast
 -- path for the param-row value drag; avoids a full sync sweep).
 function LinkEngine.setBaseline(fx_id, param_id, base_value)
@@ -392,8 +417,16 @@ function LinkEngine.syncLinks()
 				setMod(track, target, param_id, "active", 1)
 				setParm(track, target, param_id, "active", 1)
 				count = count + 1
-			elseif ownsLink(track, target, param_id) then
-				releaseLink(track, target, param_id)
+			else
+				-- Release only what this engine manages: pad links always,
+				-- CP_Mod links only when the param carries a mod_source
+				-- entry (Map-made/manual links have none — keep them).
+				local kind = linkKind(track, target, param_id)
+				if kind == "bridge"
+				   or (kind == "cpmod" and param_data.key
+				       and s.param_mod_source[param_data.key] ~= nil) then
+					releaseLink(track, target, param_id)
+				end
 			end
 		end
 	end
