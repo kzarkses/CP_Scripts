@@ -1703,6 +1703,148 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
 end
 
 -- ============================================================================
+-- MOD KNOB (knob + modulation overlay, Bitwig-style)
+-- ============================================================================
+-- A knob whose value is the BASE of a modulated parameter, with the
+-- modulation drawn on top:
+--   • base value arc (accent) on the outer track, like Knob
+--   • excursion arc on an inner ring: [base − |depth|/2, base + |depth|/2]
+--     (the modulation model is value = base + (source − 0.5) × depth) —
+--     accent-tinted, value_negative-tinted when depth < 0 (inverted)
+--   • a live dot riding the ring at the current modulated value
+-- Interactions: drag = base, Alt+drag = depth (−1..1), double-click resets
+-- the base to `default`, Alt+double-click resets the depth to 0.
+-- Returns: base_changed, new_base, depth_changed, new_depth
+function Widgets.ModKnob(id, label, base, depth, live, theme, opts)
+    opts = opts or {}
+    local size = opts.size or 40
+    if Layout.IsWrapping() then Layout.WrapPreCheck(size) end
+    local x, y = Layout.GetCursorPos()
+    local radius = size / 2
+    local sensitivity = opts.sensitivity or 0.004
+    local depth_sensitivity = opts.depth_sensitivity or 0.008
+
+    base = base or 0.5
+    depth = depth or 0
+
+    local base_changed, depth_changed = false, false
+    local new_base, new_depth = base, depth
+
+    local hovered = Core.MouseInClippedRect(x, y, size, size + 14) and not Core.HasPopup()
+    if hovered then Core.SetHot(id) end
+    if hovered and Core.MouseClicked(1) then Core.SetActive(id) end
+
+    if Core.IsActive(id) then
+        if Core.MouseDown(1) then
+            local _, dy = Core.MouseDelta()
+            if dy ~= 0 then
+                if Core.ModAlt() then
+                    new_depth = max(-1, min(1, new_depth - dy * depth_sensitivity))
+                    if new_depth ~= depth then depth_changed = true end
+                else
+                    new_base = max(0, min(1, new_base - dy * sensitivity))
+                    if new_base ~= base then base_changed = true end
+                end
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+
+    if hovered and Core.MouseDoubleClicked() then
+        if Core.ModAlt() then
+            new_depth = 0
+            depth_changed = true
+        else
+            new_base = opts.default or 0.5
+            base_changed = true
+        end
+    end
+
+    if hovered then Core.SetCursor("size_ns") end
+
+    -- Strict visibility guard: gfx.blit/gfx.arc bypass the software clip
+    -- (same constraint as Knob).
+    if Core.IsFullyVisible(x, y, size, size + 14) then
+        local cx, cy = x + radius, y + radius
+        local d_base = base_changed and new_base or base
+        local d_depth = depth_changed and new_depth or depth
+
+        -- Angle range: 135° to 405° (270° sweep, gap at bottom); gfx.arc
+        -- angles are 0 = up, clockwise.
+        local angle_min = pi * 0.75
+        local angle_max = pi * 2.25
+        local sweep = angle_max - angle_min
+        local function angleOf(v) return angle_min + sweep * max(0, min(1, v)) end
+        local ar = radius - 3                       -- outer arc radius
+        local tw = max(2, floor(radius * 0.1))      -- track thickness
+        local mr = ar - tw - 1                      -- modulation ring radius
+
+        local bg = theme.colors.frame_bg
+        local trk = theme.colors.border
+        local knob_buf = get_knob_bg_buffer(size,
+            bg[1], bg[2], bg[3], trk[1], trk[2], trk[3], tw)
+        if knob_buf then
+            gfx.blit(knob_buf, 1, 0, 0, 0, size, size, x, y, size, size)
+        else
+            gfx.set(bg[1], bg[2], bg[3], 0.5)
+            gfx.circle(cx, cy, radius - 1, 1, 1)
+            gfx.set(trk[1], trk[2], trk[3], 0.25)
+            for i = 0, tw - 1 do
+                gfx.arc(cx, cy, ar - i, angle_min, angle_max, 1)
+            end
+        end
+
+        -- Base value arc
+        if d_base > 0.005 then
+            local ac = theme.colors.accent
+            if Core.IsActive(id) then ac = theme.colors.accent_active
+            elseif hovered then ac = theme.colors.accent_hovered end
+            gfx.set(ac[1], ac[2], ac[3], ac[4])
+            for i = 0, tw - 1 do
+                gfx.arc(cx, cy, ar - i, angle_min, angleOf(d_base), 1)
+            end
+        end
+
+        -- Modulation excursion arc on the inner ring
+        local half = math.abs(d_depth) * 0.5
+        if half > 0.003 then
+            local lo = angleOf(d_base - half)
+            local hi = angleOf(d_base + half)
+            local mc = d_depth < 0 and (theme.colors.value_negative or theme.colors.accent)
+                or theme.colors.accent
+            gfx.set(mc[1], mc[2], mc[3], 0.45)
+            for i = 0, tw - 1 do
+                gfx.arc(cx, cy, mr - i, lo, hi, 1)
+            end
+        end
+
+        -- Live dot riding the modulation ring
+        if live then
+            local la = angleOf(live)
+            local dot_r = max(2, floor(radius * 0.09))
+            local dx = cx + math.sin(la) * (mr - tw * 0.5)
+            local dy2 = cy - math.cos(la) * (mr - tw * 0.5)
+            local tc = theme.colors.text
+            gfx.set(tc[1], tc[2], tc[3], 1)
+            gfx.circle(dx, dy2, dot_r, 1, 1)
+        end
+
+        if label then
+            Core.SetFontCaption()
+            local lw = Core.MeasureText(label)
+            local lc = theme.colors.text_disabled
+            Core.DrawText(label, x + floor((size - lw) / 2), y + size + 1,
+                lc[1], lc[2], lc[3], lc[4])
+            Core.SetFontBody()
+        end
+    end
+
+    Layout.AdvanceCursor(size, size + 14)
+    return base_changed, new_base, depth_changed, new_depth
+end
+
+-- ============================================================================
 -- VU METER (vertical)
 -- ============================================================================
 -- Level → color, module-level (audit P9: VMeter/HMeter declared this closure

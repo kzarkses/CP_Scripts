@@ -403,11 +403,35 @@ function ModJSFX.getParamLink(r, track, fxidx, parmidx)
 		"param." .. parmidx .. ".mod.baseline")
 	local _, pname = r.TrackFX_GetParamName(track, fxidx, parmidx, "")
 	local _, fxname = r.TrackFX_GetFXName(track, fxidx, "")
+	local scale = tonumber(plink("scale") or "") or 0
+	local baseline = ok_b and tonumber(bstr) or 0.5
+
+	-- Live modulated value, recomputed from the readable source slider
+	-- (the API only reports the base under parameter modulation).
+	local live
+	local src_val
+	if kind == "global" then
+		local mod = ModJSFX.findModTrack(r)
+		local bank = mod and ModJSFX.findBank(r, mod, "midi") or -1
+		if mod and bank >= 0 then
+			src_val = r.TrackFX_GetParam(mod, bank, ModJSFX.OUT_BASE + slot - 1)
+		end
+	elseif kind == "lfo" then
+		src_val = r.TrackFX_GetParam(track, eff, ModJSFX.OUT_BASE + slot - 1)
+	else -- pad: the link points at a bridge output slider directly
+		local sp = tonumber(plink("param") or "")
+		if sp then src_val = r.TrackFX_GetParam(track, eff, sp) end
+	end
+	if src_val then
+		live = math.max(0, math.min(1, baseline + (src_val - 0.5) * scale))
+	end
+
 	return {
 		kind = kind,
 		slot = slot,
-		scale = tonumber(plink("scale") or "") or 0,
-		baseline = ok_b and tonumber(bstr) or 0.5,
+		scale = scale,
+		baseline = baseline,
+		live = live,
 		pname = pname,
 		fxname = fxname,
 	}
@@ -421,16 +445,26 @@ function ModJSFX.setParamLinkDepth(r, track, fxidx, parmidx, scale)
 	setPlink(r, track, fxidx, parmidx, "scale", scale)
 end
 
--- Remove a CP link. The PM slot is released only when the user has no
--- LFO/ACS of their own riding on the parameter.
+-- Remove a CP link and FREEZE the param at its base: the baseline was the
+-- audible center, so after unlinking the param must keep that value (its
+-- own storage may hold something stale from before the link). plink.effect
+-- is reset too — leaving it dangling kept the link half-alive. The PM slot
+-- is released only when the user has no LFO/ACS of their own riding on it.
 function ModJSFX.releaseParamLink(r, track, fxidx, parmidx)
+	local ok_b, bstr = r.TrackFX_GetNamedConfigParm(track, fxidx,
+		"param." .. parmidx .. ".mod.baseline")
 	setPlink(r, track, fxidx, parmidx, "active", 0)
+	setPlink(r, track, fxidx, parmidx, "effect", -1)
 	local _, lfo = r.TrackFX_GetNamedConfigParm(track, fxidx,
 		"param." .. parmidx .. ".lfo.active")
 	local _, acs = r.TrackFX_GetNamedConfigParm(track, fxidx,
 		"param." .. parmidx .. ".acs.active")
 	if lfo ~= "1" and acs ~= "1" then
 		setModParm(r, track, fxidx, parmidx, "active", 0)
+	end
+	local base = ok_b and tonumber(bstr) or nil
+	if base then
+		r.TrackFX_SetParamNormalized(track, fxidx, parmidx, base)
 	end
 end
 
@@ -470,6 +504,50 @@ function ModJSFX.scanSlotTargets(r, kind, track, slot)
 			end
 		end
 	end
+	return targets
+end
+
+-- Full modulation matrix: EVERY param carrying a CP link (pad, track LFO,
+-- global), across the given track and every track receiving a CP MOD send.
+-- Sorted by source (kind + slot) then param name.
+function ModJSFX.scanAllTargets(r, track)
+	local targets = {}
+	local seen = {}
+	local function scanTrack(tr)
+		if not tr or seen[tostring(tr)] then return end
+		seen[tostring(tr)] = true
+		local _, tname = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+		for fx = 0, r.TrackFX_GetCount(tr) - 1 do
+			local _, fxname = r.TrackFX_GetFXName(tr, fx, "")
+			if not ModJSFX.isInternalFX(fxname) then
+				for parm = 0, r.TrackFX_GetNumParams(tr, fx) - 1 do
+					local info = ModJSFX.getParamLink(r, tr, fx, parm)
+					if info then
+						targets[#targets + 1] = {
+							tr = tr, fx = fx, parm = parm,
+							kind = info.kind, slot = info.slot,
+							pname = info.pname, fxname = fxname,
+							track_name = tname,
+							scale = info.scale, baseline = info.baseline,
+						}
+					end
+				end
+			end
+		end
+	end
+	scanTrack(track)
+	local mod = ModJSFX.findModTrack(r)
+	if mod then
+		for i = 0, r.GetTrackNumSends(mod, 0) - 1 do
+			scanTrack(r.GetTrackSendInfo_Value(mod, 0, i, "P_DESTTRACK"))
+		end
+	end
+	table.sort(targets, function(a, b)
+		local ka = (a.kind or "") .. tostring(a.slot or 0)
+		local kb = (b.kind or "") .. tostring(b.slot or 0)
+		if ka ~= kb then return ka < kb end
+		return (a.pname or "") < (b.pname or "")
+	end)
 	return targets
 end
 

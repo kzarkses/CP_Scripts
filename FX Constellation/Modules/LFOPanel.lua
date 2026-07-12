@@ -50,6 +50,93 @@ local function shapeValue(shape, p)
 	else return p < 0.5 and 1 or 0 end
 end
 
+-- ---------------------------------------------------------------------------
+-- MATRIX VIEW — every CP-linked param in the project, whatever the source
+-- (pad / track LFO / global). One ModKnob per row: base (drag), excursion
+-- arc, live dot; the label under the knob is the signed depth.
+-- ctx: { tag, targets_all(), inspect(tr,fx,parm), set_base, set_depth, unlink }
+-- ---------------------------------------------------------------------------
+function LFOPanel.drawMatrix(theme, ctx)
+	local UItk = LFOPanel.tk
+
+	local cache = LFOPanel._matrix
+	local key = ctx.tag or "matrix"
+	if not cache or cache.key ~= key then
+		cache = { key = key, list = ctx.targets_all() }
+		LFOPanel._matrix = cache
+	end
+	local list = cache.list
+
+	UItk.BeginColumns("lfopanel_mx_hd", { 0, theme.button_height * 2.2 },
+		{ gap = theme.item_spacing })
+	UItk.SetFontH2Bold()
+	UItk.Text("MODULATION (" .. #list .. ")")
+	UItk.SetFontBody()
+	UItk.NextColumn()
+	if UItk.Button("lfopanel_mx_scan", "Scan", opts(theme, { width = -1 })) then
+		cache.list = ctx.targets_all()
+		list = cache.list
+	end
+	UItk.EndColumns()
+
+	if #list == 0 then
+		UItk.SetFontCaption()
+		UItk.TextWrapped("No linked parameters. Map targets from the Global tab, or assign LFOs from FX Constellation.")
+		UItk.SetFontBody()
+		return
+	end
+
+	local size = math.floor(theme.button_height * 2)
+	local row_h = size + 14
+	local step = row_h + theme.item_spacing
+	local child_h = math.min(#list, 5) * step + theme.frame_padding_y
+	UItk.BeginChild("lfopanel_mx_list", 0, child_h,
+		{ scrollable = true, border = false, padding = 0 })
+	for i, t in ipairs(list) do
+		local info = ctx.inspect and ctx.inspect(t.tr, t.fx, t.parm)
+		if info then
+			UItk.BeginColumns("lfopanel_mx" .. i,
+				{ 0, size, theme.button_height }, { gap = theme.item_spacing })
+
+			UItk.Text(t.pname or "?")
+			if UItk.IsItemHovered() then UItk.Tooltip(t.fxname or "") end
+			UItk.SetFontCaption()
+			local src_tag = t.kind == "pad" and "Pad"
+				or ((t.kind == "global" and "G" or "L") .. tostring(t.slot or "?"))
+			local sub = src_tag
+			if t.track_name and t.track_name ~= "" then
+				sub = sub .. " — " .. t.track_name
+			end
+			local dcol = theme.colors.text_disabled
+			UItk.TextColored(sub, dcol[1], dcol[2], dcol[3], 1)
+			UItk.SetFontBody()
+			UItk.NextColumn()
+
+			local bc, bv, dc, dv = UItk.ModKnob("lfopanel_mxk" .. i,
+				string.format("%+.0f%%", info.scale * 100),
+				info.baseline, info.scale, info.live, { size = size })
+			if bc and ctx.set_base then ctx.set_base(t.tr, t.fx, t.parm, bv) end
+			if dc and ctx.set_depth then ctx.set_depth(t.tr, t.fx, t.parm, dv) end
+			UItk.NextColumn()
+
+			if UItk.Button("lfopanel_mxx" .. i, "X",
+					opts(theme, { width = -1 })) and ctx.unlink then
+				ctx.unlink(t.tr, t.fx, t.parm)
+				LFOPanel._matrix = nil
+				LFOPanel._targets = nil
+			end
+			UItk.EndColumns()
+		else
+			-- Link vanished (removed externally): rebuild next frame.
+			LFOPanel._matrix = nil
+		end
+	end
+	UItk.EndChild()
+
+	-- Live dots ride the knobs — keep the loop alive while visible.
+	UItk.RequestRedrawAt(reaper.time_precise() + 1 / 30)
+end
+
 function LFOPanel.draw(theme, ctx)
 	local UItk = LFOPanel.tk
 
@@ -153,6 +240,7 @@ function LFOPanel.draw(theme, ctx)
 				ctx.link(tr, fx, parm, sel)
 				LFOPanel._armed = nil
 				LFOPanel._targets = nil
+				LFOPanel._matrix = nil
 				LFOPanel._flash = { msg = "Linked: " .. (name or "?"), t = now }
 			else
 				-- Poll the touched param while armed.
@@ -165,6 +253,7 @@ function LFOPanel.draw(theme, ctx)
 			if tr then
 				ctx.link(tr, fx, parm, sel)
 				LFOPanel._targets = nil
+				LFOPanel._matrix = nil
 				LFOPanel._flash = { msg = "Linked: " .. (name or "?"), t = now }
 			else
 				LFOPanel._flash = { msg = "No parameter touched yet", t = now }
@@ -234,6 +323,7 @@ function LFOPanel.draw(theme, ctx)
 						opts(theme, { width = -1 })) and ctx.unlink then
 					ctx.unlink(t.tr, t.fx, t.parm)
 					LFOPanel._targets = nil
+					LFOPanel._matrix = nil
 				end
 				UItk.EndColumns()
 			end
@@ -271,19 +361,26 @@ function LFOPanel.draw(theme, ctx)
 				if UItk.IsItemHovered() then UItk.Tooltip(info.fxname or "") end
 				UItk.SetFontBody()
 
-				local bc, bv = UItk.SliderDouble("lfopanel_tbase", "Base",
-					info.baseline, 0, 1,
-					opts(theme, { format = string.format("%.2f", info.baseline) }))
+				-- One ModKnob fuses base + depth + live excursion.
+				local ksize = math.floor(theme.button_height * 2.5)
+				UItk.BeginColumns("lfopanel_ti_row", { ksize, 0 },
+					{ gap = theme.item_spacing })
+				local bc, bv, dc, dv = UItk.ModKnob("lfopanel_ti_knob", nil,
+					info.baseline, info.scale, info.live, { size = ksize })
 				if bc and ctx.set_base then
 					ctx.set_base(tgt.tr, tgt.fx, tgt.parm, bv)
 				end
-
-				local dc, dv = UItk.SliderDouble("lfopanel_tdepth", "Depth",
-					info.scale, -1, 1,
-					opts(theme, { format = string.format("%+.0f%%", info.scale * 100) }))
 				if dc and ctx.set_depth then
 					ctx.set_depth(tgt.tr, tgt.fx, tgt.parm, dv)
 				end
+				UItk.NextColumn()
+				UItk.SetFontCaption()
+				UItk.Text(string.format("Base  %.2f", info.baseline))
+				UItk.Text(string.format("Depth %+.0f%%", info.scale * 100))
+				local dcol = theme.colors.text_disabled
+				UItk.TextColored("Alt+drag: depth", dcol[1], dcol[2], dcol[3], 1)
+				UItk.SetFontBody()
+				UItk.EndColumns()
 			end
 		end
 	end

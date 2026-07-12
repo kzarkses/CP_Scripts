@@ -266,17 +266,11 @@ function LinkEngine.setParamLFO(fx_id, param_id, patch)
 	end
 end
 
--- Disable a link we own. mod.active is released only if the user has no
--- LFO/ACS riding on the same parameter — their modulation setup survives.
+-- Disable a link we own — delegated to ModJSFX.releaseParamLink: link
+-- fully cleared (active + effect), param frozen at its baseline, PM slot
+-- released only if the user has no LFO/ACS riding on it.
 local function releaseLink(track, fx, param_id)
-	setParm(track, fx, param_id, "active", 0)
-	local _, lfo = LinkEngine.r.TrackFX_GetNamedConfigParm(track, fx,
-		"param." .. param_id .. ".lfo.active")
-	local _, acs = LinkEngine.r.TrackFX_GetNamedConfigParm(track, fx,
-		"param." .. param_id .. ".acs.active")
-	if lfo ~= "1" and acs ~= "1" then
-		setMod(track, fx, param_id, "active", 0)
-	end
+	LinkEngine.modjsfx.releaseParamLink(LinkEngine.r, track, fx, param_id)
 end
 
 -- Explicit release of a param's CP link (used by the assignment menu when

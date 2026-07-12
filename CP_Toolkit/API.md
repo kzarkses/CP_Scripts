@@ -126,6 +126,18 @@ UI.NumberInput(id, label, value, min, max, opts)
 UI.Knob(id, label, value, default_value, opts)
     -- opts: {size=40, sensitivity=0.004}
     -- Double-click to reset to default
+
+-- ModKnob (knob + modulation overlay, Bitwig-style).
+-- Returns: base_changed, new_base, depth_changed, new_depth
+UI.ModKnob(id, label, base, depth, live, opts)
+    -- base: 0..1 (the knob value = modulation BASE)
+    -- depth: -1..1 (signed modulation amount; model: value = base + (src-0.5)×depth)
+    -- live: 0..1 or nil — current modulated value, drawn as a dot riding
+    --       the inner ring; the excursion window [base ± |depth|/2] is a
+    --       tinted arc (value_negative tint when depth < 0)
+    -- opts: {size=40, sensitivity=0.004, depth_sensitivity=0.008, default=0.5}
+    -- Drag = base, Alt+drag = depth, double-click = reset base,
+    -- Alt+double-click = reset depth to 0
 ```
 
 ---

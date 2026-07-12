@@ -37,8 +37,31 @@ UI_TK.Init("CP LFO", 340, 430, {
 UI_TK.Run(function(theme)
 	UI_TK.CheckThemeUpdates()
 
-	local tch, tidx = UI_TK.TabBar("mode_tabs", { "Track", "Global" }, mode)
+	local tch, tidx = UI_TK.TabBar("mode_tabs", { "Track", "Global", "Matrix" }, mode)
 	if tch then mode = tidx end
+
+	if mode == 3 then
+		local seltr = r.GetSelectedTrack(0, 0)
+		LFOPanel.drawMatrix(theme, {
+			tag = "matrix:" .. tostring(seltr),
+			targets_all = function()
+				return ModJSFX.scanAllTargets(r, seltr)
+			end,
+			inspect = function(tr, fx, parm)
+				return ModJSFX.getParamLink(r, tr, fx, parm)
+			end,
+			set_base = function(tr, fx, parm, v)
+				ModJSFX.setParamLinkBase(r, tr, fx, parm, v)
+			end,
+			set_depth = function(tr, fx, parm, v)
+				ModJSFX.setParamLinkDepth(r, tr, fx, parm, v)
+			end,
+			unlink = function(tr, fx, parm)
+				ModJSFX.releaseParamLink(r, tr, fx, parm)
+			end,
+		})
+		return
+	end
 
 	local track, bank_idx, hint, add
 	if mode == 1 then

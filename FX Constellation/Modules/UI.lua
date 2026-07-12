@@ -869,9 +869,9 @@ local function drawLFOSection(theme)
     if not le or not UI.lfopanel then return end
 
     -- Track bank (per-track LFO, link sources) / Global bank (hidden CP MOD
-    -- track, cross-track 14-bit CC).
+    -- track, cross-track 14-bit CC) / Matrix (every CP-linked param).
     s.lfo_panel_mode = s.lfo_panel_mode or 1
-    local tch, tidx = UItk.TabBar("lfo_mode_tabs", { "Track", "Global" },
+    local tch, tidx = UItk.TabBar("lfo_mode_tabs", { "Track", "Global", "Matrix" },
         s.lfo_panel_mode)
     if tch then s.lfo_panel_mode = tidx end
 
@@ -937,6 +937,20 @@ local function drawLFOSection(theme)
         else
             mj.releaseParamLink(UI.r, tr, fx, parm)
         end
+    end
+
+    if s.lfo_panel_mode == 3 then
+        UI.lfopanel.drawMatrix(theme, {
+            tag = "matrix:" .. tostring(s.track),
+            targets_all = function()
+                return mj.scanAllTargets(UI.r, s.track)
+            end,
+            inspect = inspectParam,
+            set_base = setTargetBase,
+            set_depth = setTargetDepth,
+            unlink = unlinkTarget,
+        })
+        return
     end
 
     local ctx
