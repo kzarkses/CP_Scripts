@@ -75,14 +75,25 @@ UI_TK.Run(function(theme)
 		sel = sel,
 		onSelect = function(i) sel = i end,
 	}
+	-- Target inspector (both tabs) + Bitwig-style mapping (global tab):
+	-- arm "Map" then touch any parameter anywhere in REAPER, or link the
+	-- last touched one. Base/Depth of the touched target edit the link
+	-- directly (raw writes — FX Constellation re-syncs its own params).
+	ctx.touched = function()
+		local tr, fx, parm, name = ModJSFX.getTouchedParam(r)
+		if not tr or ModJSFX.isInternalFX(name) then return nil end
+		return tr, fx, parm, name
+	end
+	ctx.inspect = function(tr, fx, parm)
+		return ModJSFX.getParamLink(r, tr, fx, parm)
+	end
+	ctx.set_base = function(tr, fx, parm, v)
+		ModJSFX.setParamLinkBase(r, tr, fx, parm, v)
+	end
+	ctx.set_depth = function(tr, fx, parm, v)
+		ModJSFX.setParamLinkDepth(r, tr, fx, parm, v)
+	end
 	if mode == 2 then
-		-- Global bank: Bitwig-style mapping — arm "Map" then touch any
-		-- parameter anywhere in REAPER, or link the last touched one.
-		ctx.touched = function()
-			local tr, fx, parm, name = ModJSFX.getTouchedParam(r)
-			if not tr or ModJSFX.isInternalFX(name) then return nil end
-			return tr, fx, parm, name
-		end
 		ctx.link = function(tr, fx, parm, slot)
 			ModJSFX.linkParamToGlobalSlot(r, tr, fx, parm, slot, 0.5)
 		end

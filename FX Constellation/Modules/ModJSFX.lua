@@ -300,6 +300,65 @@ function ModJSFX.linkParamToGlobalSlot(r, target_track, fxidx, parmidx, slot, de
 	return true
 end
 
+-- Inspect the CP link on an arbitrary param (target inspector). Returns
+-- nil when the param has no active CP link, else:
+--   { kind = "pad"|"lfo"|"global", slot = 1..8|nil,
+--     scale, baseline, pname, fxname }
+function ModJSFX.getParamLink(r, track, fxidx, parmidx)
+	local function plink(key)
+		local ok, v = r.TrackFX_GetNamedConfigParm(track, fxidx,
+			"param." .. parmidx .. ".plink." .. key)
+		return ok and v or nil
+	end
+	if plink("active") ~= "1" then return nil end
+	local eff = tonumber(plink("effect") or "")
+	if not eff then return nil end
+
+	local kind, slot
+	if eff == -100 then
+		local msg2 = tonumber(plink("midi_msg2") or "")
+		if not msg2 then return nil end
+		local cc = msg2 >= 128 and msg2 - 128 or msg2
+		slot = cc - ModJSFX.CC_MSB_BASE + 1
+		if slot < 1 or slot > ModJSFX.SLOTS then return nil end
+		kind = "global"
+	elseif eff >= 0 then
+		local _, src_name = r.TrackFX_GetFXName(track, eff, "")
+		if src_name:find("CP_Mod", 1, true) then
+			kind = "lfo"
+			local sp = tonumber(plink("param") or "")
+			if sp then slot = sp - ModJSFX.OUT_BASE + 1 end
+		elseif src_name:find("FX Constellation Bridge") then
+			kind = "pad"
+		else
+			return nil
+		end
+	else
+		return nil
+	end
+
+	local ok_b, bstr = r.TrackFX_GetNamedConfigParm(track, fxidx,
+		"param." .. parmidx .. ".mod.baseline")
+	local _, pname = r.TrackFX_GetParamName(track, fxidx, parmidx, "")
+	local _, fxname = r.TrackFX_GetFXName(track, fxidx, "")
+	return {
+		kind = kind,
+		slot = slot,
+		scale = tonumber(plink("scale") or "") or 0,
+		baseline = ok_b and tonumber(bstr) or 0.5,
+		pname = pname,
+		fxname = fxname,
+	}
+end
+
+function ModJSFX.setParamLinkBase(r, track, fxidx, parmidx, value)
+	setModParm(r, track, fxidx, parmidx, "baseline", value)
+end
+
+function ModJSFX.setParamLinkDepth(r, track, fxidx, parmidx, scale)
+	setPlink(r, track, fxidx, parmidx, "scale", scale)
+end
+
 -- MIDI-only send MOD → target (created once, reused afterwards).
 function ModJSFX.ensureMIDISend(r, mod_track, target_track)
 	if not mod_track or not target_track or mod_track == target_track then return end

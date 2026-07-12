@@ -56,9 +56,17 @@ function GestureSystem.applyGestureToSelection(gx, gy)
 				if param_data.step_count and param_data.step_count > 0 then
 					new_value = GestureSystem.core.snapToDiscreteValue(new_value, param_data.step_count)
 				end
-				local actual_fx_id = fx_data.actual_fx_id or fx_id
-				local denormalized_value = GestureSystem.core.denormalizeParamValue(new_value, param_data.min_val, param_data.max_val)
-				GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, actual_fx_id, param_id, denormalized_value)
+				local le = GestureSystem.fxmanager.link_engine
+				if le and base_key and GestureSystem.core.state.param_mod_source[base_key] then
+					-- LFO/global-linked param in script mode: the pad moves
+					-- the link BASELINE (the modulation rides on top) — the
+					-- raw param value is ignored by the modulation engine.
+					le.setBaseline(fx_id, param_id, new_value)
+				else
+					local actual_fx_id = fx_data.actual_fx_id or fx_id
+					local denormalized_value = GestureSystem.core.denormalizeParamValue(new_value, param_data.min_val, param_data.max_val)
+					GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, actual_fx_id, param_id, denormalized_value)
+				end
 				param_data.current_value = new_value
 				param_data.base_value = new_value
 			end

@@ -181,6 +181,37 @@ function FXManager.checkForFXChanges()
 		end
 	end
 
+	-- Touch takeover: grabbing a CP-linked param in the plugin UI writes its
+	-- OWN value storage — which the modulation engine ignores (it reads the
+	-- baseline), so without this the gesture would change nothing audible.
+	-- A drift of the own value on the LAST-TOUCHED param is a deliberate
+	-- user gesture → adopt it as the new base (Bitwig behavior: the plugin
+	-- knob stays the base handle, the modulation keeps riding around it).
+	if FXManager.link_engine and FXManager.link_engine.modjsfx then
+		local ttr, tfx, tparm = FXManager.link_engine.modjsfx.getTouchedParam(FXManager.r)
+		if ttr == state.track and tfx and tparm then
+			for fx_id, fx_data in pairs(state.fx_data) do
+				if (fx_data.actual_fx_id or fx_id) == tfx then
+					local pd = fx_data.params[tparm]
+					if pd and FXManager.link_engine.isParamLinked(fx_id, tparm, pd) then
+						local raw = FXManager.r.TrackFX_GetParam(state.track, tfx, tparm)
+						local own = FXManager.core.normalizeParamValue(raw, pd.min_val, pd.max_val)
+						local prev = pd._own_value
+						pd._own_value = own
+						if prev and math.abs(own - prev) > 0.002 then
+							pd.base_value = own
+							if pd.key then
+								state.param_base_values[pd.key] = own
+							end
+							FXManager.link_engine.setBaseline(fx_id, tparm, own)
+						end
+					end
+					break
+				end
+			end
+		end
+	end
+
 	-- Selected params refresh EVERY tick: their live (possibly LFO/link
 	-- modulated) value is displayed in the param rows, so it must move
 	-- smoothly. Capped so "select all" on a huge synth falls back to the
@@ -333,10 +364,11 @@ function FXManager.updateParamBaseValue(fx_id, param_id, new_value)
 		if key then
 			FXManager.core.state.param_base_values[key] = new_value
 		end
-		if FXManager.core.state.links_active and param_data.selected
-		   and FXManager.link_engine then
-			-- Linked param: the base IS the link baseline; writing the raw
-			-- param would fight the modulation engine.
+		if FXManager.link_engine
+		   and FXManager.link_engine.isParamLinked(fx_id, param_id, param_data) then
+			-- CP-linked param (pad linked mode OR LFO/global in any mode):
+			-- the base IS the link baseline; writing the raw param value
+			-- changes nothing audible (PM ignores the param's own storage).
 			FXManager.link_engine.setBaseline(fx_id, param_id, new_value)
 		else
 			local actual_fx_id = FXManager.core.state.fx_data[fx_id].actual_fx_id or fx_id

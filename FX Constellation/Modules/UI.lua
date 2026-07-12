@@ -875,6 +875,56 @@ local function drawLFOSection(theme)
         s.lfo_panel_mode)
     if tch then s.lfo_panel_mode = tidx end
 
+    local mj = le.modjsfx
+
+    local function touchedParam()
+        local tr, fx, parm, name = mj.getTouchedParam(UI.r)
+        if not tr or mj.isInternalFX(name) then return nil end
+        return tr, fx, parm, name
+    end
+
+    -- Locate an FXC-managed (CP-linked) param for inspector edits: those
+    -- must route through the managers so the next sync stays consistent;
+    -- anything else (other tracks, Map-made links) is written raw.
+    local function findManagedParam(tr, fx, parm)
+        if tr ~= s.track then return nil end
+        for fid, fd in pairs(s.fx_data) do
+            if (fd.actual_fx_id or fid) == fx then
+                local pd = fd.params[parm]
+                if pd and le.isParamLinked(fid, parm, pd) then
+                    return fid, pd
+                end
+                return nil
+            end
+        end
+        return nil
+    end
+
+    local function inspectParam(tr, fx, parm)
+        return mj.getParamLink(UI.r, tr, fx, parm)
+    end
+
+    local function setTargetBase(tr, fx, parm, v)
+        local fid = findManagedParam(tr, fx, parm)
+        if fid then
+            UI.fxmanager.updateParamBaseValue(fid, parm, v)
+        else
+            mj.setParamLinkBase(UI.r, tr, fx, parm, v)
+        end
+    end
+
+    local function setTargetDepth(tr, fx, parm, v)
+        local fid = findManagedParam(tr, fx, parm)
+        if fid then
+            -- FXC-managed: depth = range × gesture_range, sign = invert.
+            UI.fxmanager.setParamInvert(fid, parm, v < 0)
+            UI.fxmanager.setParamRange(fid, parm,
+                math.min(1, math.abs(v) / (s.gesture_range or 1)))
+        else
+            mj.setParamLinkDepth(UI.r, tr, fx, parm, v)
+        end
+    end
+
     local ctx
     if s.lfo_panel_mode == 2 then
         local mtrack, midx = le.findGlobalMIDI()
@@ -886,14 +936,13 @@ local function drawLFOSection(theme)
             add = function() le.ensureGlobalMIDI() end,
             sel = s.lfo_sel_slot or 1,
             onSelect = function(i) s.lfo_sel_slot = i end,
-            touched = function()
-                local tr, fx, parm, name = le.modjsfx.getTouchedParam(UI.r)
-                if not tr or le.modjsfx.isInternalFX(name) then return nil end
-                return tr, fx, parm, name
-            end,
+            touched = touchedParam,
             link = function(tr, fx, parm, slot)
-                le.modjsfx.linkParamToGlobalSlot(UI.r, tr, fx, parm, slot, 0.5)
+                mj.linkParamToGlobalSlot(UI.r, tr, fx, parm, slot, 0.5)
             end,
+            inspect = inspectParam,
+            set_base = setTargetBase,
+            set_depth = setTargetDepth,
         }
     else
         ctx = {
@@ -904,6 +953,10 @@ local function drawLFOSection(theme)
             add = function() le.ensureModLFO() end,
             sel = s.lfo_sel_slot or 1,
             onSelect = function(i) s.lfo_sel_slot = i end,
+            touched = touchedParam,
+            inspect = inspectParam,
+            set_base = setTargetBase,
+            set_depth = setTargetDepth,
         }
     end
     UI.lfopanel.draw(theme, ctx)

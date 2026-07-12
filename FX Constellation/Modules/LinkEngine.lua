@@ -294,13 +294,25 @@ function LinkEngine.releaseParamLink(fx_id, param_id)
 end
 
 -- Push the current base value of one param into its link baseline (fast
--- path for the param-row value drag; avoids a full sync sweep).
+-- path for value edits; avoids a full sync sweep). Valid whenever the
+-- param has ANY CP link — pad (linked mode) or LFO/global (both modes):
+-- with parameter modulation active, the baseline IS the audible base, the
+-- param's own storage is ignored.
 function LinkEngine.setBaseline(fx_id, param_id, base_value)
 	local s = LinkEngine.core.state
-	if not s.links_active or not LinkEngine.core.isTrackValid() then return end
+	if not LinkEngine.core.isTrackValid() then return end
 	local fx_data = s.fx_data[fx_id]
 	if not fx_data then return end
 	setMod(s.track, fx_data.actual_fx_id or fx_id, param_id, "baseline", base_value)
+end
+
+-- Does this param currently route through a CP link? (baseline is then the
+-- write target for base edits, not the raw param)
+function LinkEngine.isParamLinked(fx_id, param_id, param_data)
+	local s = LinkEngine.core.state
+	if not param_data.selected then return false end
+	if param_data.key and s.param_mod_source[param_data.key] then return true end
+	return s.links_active
 end
 
 -- Write the pad slew time (seconds) to the bridge.

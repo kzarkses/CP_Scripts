@@ -180,6 +180,53 @@ function LFOPanel.draw(theme, ctx)
 		end
 	end
 
+	-- Target inspector: locks onto the last touched CP-linked param and
+	-- exposes its Base (link baseline) and Depth (signed link scale) —
+	-- the Bitwig "per-target amount" pattern.
+	if ctx.touched and ctx.inspect then
+		local tr, fx, parm = ctx.touched()
+		if tr and ctx.inspect(tr, fx, parm) then
+			local t = LFOPanel._target
+			if not (t and t.tr == tr and t.fx == fx and t.parm == parm) then
+				LFOPanel._target = { tr = tr, fx = fx, parm = parm }
+			end
+		end
+		local tgt = LFOPanel._target
+		if tgt and not reaper.ValidatePtr(tgt.tr, "MediaTrack*") then
+			LFOPanel._target = nil
+			tgt = nil
+		end
+		if tgt then
+			local info = ctx.inspect(tgt.tr, tgt.fx, tgt.parm)
+			if not info then
+				LFOPanel._target = nil
+			else
+				UItk.Separator()
+				UItk.SetFontCaption()
+				local src_tag = info.kind == "pad" and "Pad"
+					or (info.kind == "global" and ("Global LFO " .. (info.slot or "?")))
+					or ("CP LFO " .. (info.slot or "?"))
+				UItk.Text((info.pname or "?") .. "  ←  " .. src_tag)
+				if UItk.IsItemHovered() then UItk.Tooltip(info.fxname or "") end
+				UItk.SetFontBody()
+
+				local bc, bv = UItk.SliderDouble("lfopanel_tbase", "Base",
+					info.baseline, 0, 1,
+					opts(theme, { format = string.format("%.2f", info.baseline) }))
+				if bc and ctx.set_base then
+					ctx.set_base(tgt.tr, tgt.fx, tgt.parm, bv)
+				end
+
+				local dc, dv = UItk.SliderDouble("lfopanel_tdepth", "Depth",
+					info.scale, -1, 1,
+					opts(theme, { format = string.format("%+.0f%%", info.scale * 100) }))
+				if dc and ctx.set_depth then
+					ctx.set_depth(tgt.tr, tgt.fx, tgt.parm, dv)
+				end
+			end
+		end
+	end
+
 	-- One-cycle preview. X axis = raw slot phase; the curve is drawn with
 	-- the phase offset applied (same math as the JSFX), so the dot placed
 	-- at (raw phase, live out) rides the drawn curve exactly.
