@@ -607,6 +607,12 @@ local function drawNavigation(theme)
     if ltoggled and lstate ~= s.linked_mode then
         s.linked_mode = lstate
         s.links_dirty = true
+        if lstate then
+            -- Re-activation must refresh baseline/offset even on links the
+            -- sweep considers intact: the pad anchor (gesture_base) may
+            -- have moved while the mode was off.
+            s.links_rebuild = true
+        end
         UI.fxmanager.saveTrackSelection()
     end
     if s.linked_mode then
@@ -2002,6 +2008,8 @@ local function syncTrack()
             -- External unlinks (standalone panel) must clear our entry
             -- BEFORE the sweep runs, or the link is instantly recreated.
             UI.linkengine.checkExternalUnlink()
+            -- External raw edits (panel knobs, Map) sync back live.
+            UI.linkengine.checkExternalEdits()
             if s.links_dirty then
                 UI.linkengine.syncLinks()
             end

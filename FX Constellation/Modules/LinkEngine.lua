@@ -53,9 +53,10 @@ function LinkEngine.init(reaper_api, core, fxmanager, gesture)
 	-- existing instances on the next project (re)load.
 	LinkEngine.modjsfx.writeBankFile(reaper_api, "lfo")
 	LinkEngine.modjsfx.writeBankFile(reaper_api, "midi")
-	-- Seed the cross-process unlink hint as already-consumed: a stale hint
-	-- from earlier in the REAPER session must not clear a valid entry.
+	-- Seed the cross-process hints as already-consumed: stale hints from
+	-- earlier in the REAPER session must not clear/overwrite valid state.
 	LinkEngine._unlink_seen = reaper_api.GetExtState("CP_Mod", "unlink")
+	LinkEngine._edit_seen = reaper_api.GetExtState("CP_Mod", "edit")
 end
 
 local function setParm(track, fx, param_id, key, value)
@@ -468,6 +469,74 @@ function LinkEngine.checkExternalUnlink()
 	end
 end
 
+-- Live sync of raw link edits made by the standalone panel (base/depth
+-- knobs, Map links): on each "CP_Mod"/"edit" hint targeting the current
+-- track, pull the edited link's state back into FXC — badge, selection,
+-- base, range, invert — then persist once the edit stream goes quiet
+-- (0.75 s), so a knob drag doesn't rebuild the selection table per frame.
+function LinkEngine.checkExternalEdits()
+	local r = LinkEngine.r
+	local raw = r.GetExtState("CP_Mod", "edit")
+	if raw ~= "" and raw ~= LinkEngine._edit_seen then
+		LinkEngine._edit_seen = raw
+		if LinkEngine.core.isTrackValid() then
+			local guid, fx, parm = raw:match("^(.-)|(%d+)|(%d+)|")
+			if guid and guid == LinkEngine.core.getTrackGUID() then
+				fx, parm = tonumber(fx), tonumber(parm)
+				local s = LinkEngine.core.state
+				for fx_id, fx_data in pairs(s.fx_data) do
+					if (fx_data.actual_fx_id or fx_id) == fx then
+						local pd = fx_data.params[parm]
+						local info = pd and LinkEngine.modjsfx.getParamLink(
+							r, s.track, fx, parm)
+						if info then
+							local key = LinkEngine.core.getParamKey(fx_id, parm)
+							local slot
+							if info.kind == "global" and info.slot then
+								slot = GLOBAL_SLOT_BASE + info.slot
+							elseif info.kind == "lfo" and info.slot then
+								slot = info.slot
+							end
+							if slot and key and s.param_mod_source[key] ~= slot then
+								s.param_mod_source[key] = slot
+								if not pd.selected then
+									pd.selected = true
+									LinkEngine.fxmanager.updateSelectedCount()
+								end
+							end
+							if info.baseline then
+								pd.base_value = info.baseline
+								if key then
+									s.param_base_values[key] = info.baseline
+								end
+							end
+							if info.scale and info.scale ~= 0 then
+								local rk = LinkEngine.core.getParamKey(fx_id, parm, "range")
+								local ik = LinkEngine.core.getParamKey(fx_id, parm, "invert")
+								if rk then
+									s.param_ranges[rk] = math.min(1,
+										math.abs(info.scale) / (s.gesture_range or 1))
+								end
+								if ik then
+									s.param_invert[ik] = info.scale < 0
+								end
+							end
+							LinkEngine._edit_flush_at = r.time_precise() + 0.75
+						end
+						break
+					end
+				end
+			end
+		end
+	end
+	if LinkEngine._edit_flush_at
+	   and r.time_precise() > LinkEngine._edit_flush_at then
+		LinkEngine._edit_flush_at = nil
+		-- Persist + one topology-only sweep (intact links untouched).
+		LinkEngine.fxmanager.saveTrackSelection()
+	end
+end
+
 -- Write the pad slew time (seconds) to the bridge.
 function LinkEngine.applySlew()
 	local s = LinkEngine.core.state
@@ -584,8 +653,20 @@ function LinkEngine.syncLinks()
 					local invert = LinkEngine.fxmanager.getParamInvert(fx_id, param_id)
 					local span = range * (s.gesture_range or 1.0)
 					if invert then span = -span end
-					-- Effective value = baseline + (source + offset) × scale,
-					-- source ∈ [0,1] → source center (0.5) sits on base.
+					-- Effective value = baseline + (source + offset) × scale.
+					-- LFO/MIDI sources center on 0.5 by design. PAD links
+					-- must anchor exactly like script mode instead: the
+					-- gesture is relative to gesture_base (where the pad
+					-- was anchored), NOT to the pad center — offset −0.5
+					-- with the pad off-center counted the gesture offset
+					-- twice (once baked into the applied value used as
+					-- baseline, once by the link), shifting the sound on
+					-- every linked-mode toggle. Anchoring the link the
+					-- same way (offset = −gesture_base, baseline = the
+					-- gesture anchor) reproduces the script-mode math:
+					-- value = anchor + (pad − gesture_base) × span.
+					local off = -0.5
+					local base = param_data.base_value or 0.5
 					if midi_cc then
 						-- MIDI link: effect = -100, msg = 0xB0 (CC class),
 						-- msg2 = 128 + cc selects the 14-bit CC pair.
@@ -597,10 +678,19 @@ function LinkEngine.syncLinks()
 					else
 						setParm(track, target, param_id, "effect", src_fx)
 						setParm(track, target, param_id, "param", src_param)
+						if src_fx == bridge then
+							local gbx = s.gesture_base_x or 0.5
+							local gby = s.gesture_base_y or 0.5
+							if src_param == SRC_X then off = -gbx
+							elseif src_param == SRC_Y then off = -gby
+							else off = -(gbx + gby) / 2 end
+							base = (param_data.key
+								and s.param_base_values[param_data.key]) or base
+						end
 					end
-					setParm(track, target, param_id, "offset", -0.5)
+					setParm(track, target, param_id, "offset", off)
 					setParm(track, target, param_id, "scale", span)
-					setMod(track, target, param_id, "baseline", param_data.base_value or 0.5)
+					setMod(track, target, param_id, "baseline", base)
 					setMod(track, target, param_id, "active", 1)
 					setParm(track, target, param_id, "active", 1)
 				end
@@ -613,7 +703,21 @@ function LinkEngine.syncLinks()
 				if kind == "bridge"
 				   or (kind == "cpmod" and param_data.key
 				       and s.param_mod_source[param_data.key] ~= nil) then
+					-- Pad links freeze at the LIVE value, not the baseline:
+					-- the baseline is the pad-center anchor, but the pad may
+					-- sit off-center — script mode's resting value is the
+					-- last APPLIED one, so snapping to the anchor would
+					-- shift the sound on deactivation.
+					local live
+					if kind == "bridge" and s.links_active then
+						live = LinkEngine.getLiveValue(fx_id, param_id, param_data)
+					end
 					releaseLink(track, target, param_id)
+					if live then
+						LinkEngine.r.TrackFX_SetParamNormalized(
+							track, target, param_id, live)
+						param_data.current_value = live
+					end
 				end
 			end
 		end
@@ -641,6 +745,11 @@ function LinkEngine.getLiveValue(fx_id, param_id, param_data)
 	local key = param_data.key
 	local slot = key and s.param_mod_source[key] or 0
 	local src_val
+	-- Source center: 0.5 for LFO/MIDI sources; pad links anchor on
+	-- gesture_base (same convention as the link offset written by the
+	-- sweep — see syncLinks).
+	local center = 0.5
+	local base = param_data.base_value or 0.5
 	if slot > GLOBAL_SLOT_BASE then
 		local mtrack, midx = LinkEngine.findGlobalMIDI()
 		if mtrack and midx >= 0 then
@@ -656,19 +765,21 @@ function LinkEngine.getLiveValue(fx_id, param_id, param_data)
 	elseif s.links_active and s.jsfx_automation_index >= 0 then
 		local x_ass, y_ass = LinkEngine.fxmanager.getParamXYAssign(fx_id, param_id)
 		local src
-		if x_ass and y_ass then src = SRC_MIX
-		elseif x_ass then src = SRC_X
-		elseif y_ass then src = SRC_Y end
+		local gbx = s.gesture_base_x or 0.5
+		local gby = s.gesture_base_y or 0.5
+		if x_ass and y_ass then src = SRC_MIX; center = (gbx + gby) / 2
+		elseif x_ass then src = SRC_X; center = gbx
+		elseif y_ass then src = SRC_Y; center = gby end
 		if src then
 			src_val = LinkEngine.r.TrackFX_GetParam(s.track, s.jsfx_automation_index, src)
+			base = (key and s.param_base_values[key]) or base
 		end
 	end
 	if not src_val then return param_data.current_value end
 	local range = LinkEngine.fxmanager.getParamRange(fx_id, param_id)
 	local span = range * (s.gesture_range or 1.0)
 	if LinkEngine.fxmanager.getParamInvert(fx_id, param_id) then span = -span end
-	local base = param_data.base_value or 0.5
-	return math.max(0, math.min(1, base + (src_val - 0.5) * span))
+	return math.max(0, math.min(1, base + (src_val - center) * span))
 end
 
 -- Full teardown (linked mode toggled off, script closing with mode off…).

@@ -337,6 +337,16 @@ local function setModParm(r, track, fx, parm, key, value)
 		"param." .. parm .. ".mod." .. key, tostring(value))
 end
 
+-- Cross-process edit hint: a raw write on a link (standalone panel knobs,
+-- Map) tells any FX Constellation instance managing that param to pull the
+-- link's state back into its own display (base/range/invert) live, instead
+-- of waiting for the next chain rescan.
+local function emitEditHint(r, track, fxidx, parmidx)
+	local _, guid = r.GetSetMediaTrackInfo_String(track, "GUID", "", false)
+	r.SetExtState("CP_Mod", "edit",
+		guid .. "|" .. fxidx .. "|" .. parmidx .. "|" .. r.time_precise(), false)
+end
+
 -- Link ANY track FX parameter to a global MIDI slot: ensures the MOD track,
 -- the MIDI bank, the MIDI send toward the target's track, then writes the
 -- 14-bit CC link. baseline = the param's current value, depth = plink scale
@@ -359,6 +369,9 @@ function ModJSFX.linkParamToGlobalSlot(r, target_track, fxidx, parmidx, slot, de
 	setModParm(r, target_track, fxidx, parmidx, "baseline", base)
 	setModParm(r, target_track, fxidx, parmidx, "active", 1)
 	setPlink(r, target_track, fxidx, parmidx, "active", 1)
+	-- Let a running FX Constellation adopt the new link immediately
+	-- (badge, selection, base/range) instead of at the next rescan.
+	emitEditHint(r, target_track, fxidx, parmidx)
 	return true
 end
 
@@ -439,10 +452,12 @@ end
 
 function ModJSFX.setParamLinkBase(r, track, fxidx, parmidx, value)
 	setModParm(r, track, fxidx, parmidx, "baseline", value)
+	emitEditHint(r, track, fxidx, parmidx)
 end
 
 function ModJSFX.setParamLinkDepth(r, track, fxidx, parmidx, scale)
 	setPlink(r, track, fxidx, parmidx, "scale", scale)
+	emitEditHint(r, track, fxidx, parmidx)
 end
 
 -- Remove a CP link and FREEZE the param at its base: the baseline was the
