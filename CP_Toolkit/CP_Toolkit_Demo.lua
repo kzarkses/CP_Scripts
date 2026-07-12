@@ -460,7 +460,8 @@ UI.Run(function(theme)
             { "Vocals", "Audio", "-2.1 dB", "C" },
         }
         local cr, cc = UI.Table("tbl", columns, rows, { selected = s.table_sel, max_rows = 5 })
-        if cr then s.table_sel = cr end
+        -- cr == 0 means a header was clicked (sort hook), > 0 selects a row
+        if cr and cr > 0 then s.table_sel = cr end
 
         UI.Spacing(6)
 

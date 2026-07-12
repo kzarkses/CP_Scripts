@@ -136,6 +136,10 @@ function Theme.Default()
         gap             = 4,     -- inter-element horizontal gap
         gap_large       = 8,     -- inter-section gap
         splitter_w      = 3,     -- splitter handle width
+
+        -- Tooltips (2026-07 audit pass: multi-line word-wrapped tooltips)
+        tooltip_max_w   = 320,   -- wrap width in px (scaled)
+        tooltip_delay   = 0.4,   -- hover delay in seconds (not scaled)
     }
 end
 
@@ -191,6 +195,7 @@ function Theme.ApplyScale(t, scale)
     if t.gap         then t.gap         = s(t.gap)         end
     if t.gap_large   then t.gap_large   = s(t.gap_large)   end
     if t.splitter_w  then t.splitter_w  = s(t.splitter_w)  end
+    if t.tooltip_max_w then t.tooltip_max_w = s(t.tooltip_max_w) end
 
     return t
 end
@@ -403,6 +408,8 @@ function Theme.Save(t, name)
         gap = t.gap,
         gap_large = t.gap_large,
         splitter_w = t.splitter_w,
+        tooltip_max_w = t.tooltip_max_w,
+        tooltip_delay = t.tooltip_delay,
     }
 
     for key, c in pairs(t.colors) do
@@ -481,6 +488,8 @@ function Theme.LoadSaved(name)
     t.gap         = data.gap         or t.gap
     t.gap_large   = data.gap_large   or t.gap_large
     t.splitter_w  = data.splitter_w  or t.splitter_w
+    t.tooltip_max_w = data.tooltip_max_w or t.tooltip_max_w
+    t.tooltip_delay = data.tooltip_delay or t.tooltip_delay
 
     return t
 end
@@ -488,14 +497,18 @@ end
 -- ============================================================================
 -- THEME PRESETS
 -- ============================================================================
+-- Module constant (audit P18: rebuilt per call, called per frame by the
+-- theme editor). Shared — do not mutate.
+local PRESET_LIST = {
+    { name = "Default Dark",  key = "default_dark" },
+    { name = "REAPER Classic", key = "reaper_classic" },
+    { name = "REAPER Light",  key = "reaper_light" },
+    { name = "Light",         key = "light" },
+    { name = "Midnight",      key = "midnight" },
+}
+
 function Theme.Presets()
-    return {
-        { name = "Default Dark",  key = "default_dark" },
-        { name = "REAPER Classic", key = "reaper_classic" },
-        { name = "REAPER Light",  key = "reaper_light" },
-        { name = "Light",         key = "light" },
-        { name = "Midnight",      key = "midnight" },
-    }
+    return PRESET_LIST
 end
 
 function Theme.GetPreset(key)
@@ -642,7 +655,11 @@ function Theme.GetPreset(key)
     return Theme.Default()
 end
 
--- List saved theme files in config dir
+-- List saved theme files in config dir.
+-- CP_Config is shared with UI.SaveConfig script-state files (audit B23: the
+-- ThemeTweaker used to list those too — loading one as a "theme" reset the
+-- active theme, and its delete button could destroy a script's config).
+-- Theme files are identified by the header line Theme.Save writes.
 function Theme.ListSaved()
     local dir = get_config_dir()
     local themes = {}
@@ -651,8 +668,14 @@ function Theme.ListSaved()
         local filename = reaper.EnumerateFiles(dir, idx)
         if not filename then break end
         if filename:match("%.lua$") then
-            local name = filename:match("^(.-)%.lua$")
-            themes[#themes + 1] = name
+            local f = io.open(dir .. "/" .. filename, "r")
+            if f then
+                local first = f:read("*l")
+                f:close()
+                if first and first:find("CP_Toolkit Theme", 1, true) then
+                    themes[#themes + 1] = filename:match("^(.-)%.lua$")
+                end
+            end
         end
         idx = idx + 1
     end
@@ -662,37 +685,44 @@ end
 -- ============================================================================
 -- COLOR GROUP HELPERS (for theme editor)
 -- ============================================================================
--- Returns organized color groups for the theme editor UI
+-- Module constants (audit P18: these tables were rebuilt on EVERY call, and
+-- the ThemeTweaker calls them 30+ times per frame — dozens of KB of garbage
+-- per frame on the very page meant for tuning the rendering).
+local COLOR_GROUPS = {
+    { name = "Base",     keys = { "window_bg", "text", "text_disabled", "border", "separator" } },
+    { name = "Accent",   keys = { "accent", "accent_hovered", "accent_active" } },
+    { name = "Buttons",  keys = { "button", "button_hovered", "button_active" } },
+    { name = "Frames",   keys = { "frame_bg", "frame_hovered", "frame_active" } },
+    { name = "Headers",  keys = { "header", "header_hovered", "header_active" } },
+    { name = "Lists",    keys = { "list_bg", "list_alt_bg", "list_text", "list_grid",
+                                  "list_selected", "list_selected_text", "list_hover" } },
+    { name = "Tabs",     keys = { "tab", "tab_hovered", "tab_active" } },
+    { name = "Popups",   keys = { "popup_bg", "scrollbar_bg", "scrollbar_grab" } },
+}
+
+local COLOR_LABELS = {
+    window_bg = "Window BG", text = "Text", text_disabled = "Text Dim",
+    border = "Border", separator = "Separator",
+    accent = "Accent", accent_hovered = "Accent Hover", accent_active = "Accent Active",
+    button = "Button", button_hovered = "Button Hover", button_active = "Button Active",
+    frame_bg = "Frame BG", frame_hovered = "Frame Hover", frame_active = "Frame Active",
+    header = "Header", header_hovered = "Header Hover", header_active = "Header Active",
+    list_bg = "List BG", list_alt_bg = "List Alt Row", list_text = "List Text",
+    list_grid = "List Grid", list_selected = "List Selected", list_selected_text = "List Sel Text",
+    list_hover = "List Hover",
+    tab = "Tab", tab_hovered = "Tab Hover", tab_active = "Tab Active",
+    popup_bg = "Popup BG", scrollbar_bg = "Scroll BG", scrollbar_grab = "Scroll Grab",
+}
+
+-- Returns organized color groups for the theme editor UI (shared constant —
+-- do not mutate)
 function Theme.GetColorGroups()
-    return {
-        { name = "Base",     keys = { "window_bg", "text", "text_disabled", "border", "separator" } },
-        { name = "Accent",   keys = { "accent", "accent_hovered", "accent_active" } },
-        { name = "Buttons",  keys = { "button", "button_hovered", "button_active" } },
-        { name = "Frames",   keys = { "frame_bg", "frame_hovered", "frame_active" } },
-        { name = "Headers",  keys = { "header", "header_hovered", "header_active" } },
-        { name = "Lists",    keys = { "list_bg", "list_alt_bg", "list_text", "list_grid",
-                                      "list_selected", "list_selected_text", "list_hover" } },
-        { name = "Tabs",     keys = { "tab", "tab_hovered", "tab_active" } },
-        { name = "Popups",   keys = { "popup_bg", "scrollbar_bg", "scrollbar_grab" } },
-    }
+    return COLOR_GROUPS
 end
 
 -- Human-readable label for a color key
 function Theme.GetColorLabel(key)
-    local labels = {
-        window_bg = "Window BG", text = "Text", text_disabled = "Text Dim",
-        border = "Border", separator = "Separator",
-        accent = "Accent", accent_hovered = "Accent Hover", accent_active = "Accent Active",
-        button = "Button", button_hovered = "Button Hover", button_active = "Button Active",
-        frame_bg = "Frame BG", frame_hovered = "Frame Hover", frame_active = "Frame Active",
-        header = "Header", header_hovered = "Header Hover", header_active = "Header Active",
-        list_bg = "List BG", list_alt_bg = "List Alt Row", list_text = "List Text",
-        list_grid = "List Grid", list_selected = "List Selected", list_selected_text = "List Sel Text",
-        list_hover = "List Hover",
-        tab = "Tab", tab_hovered = "Tab Hover", tab_active = "Tab Active",
-        popup_bg = "Popup BG", scrollbar_bg = "Scroll BG", scrollbar_grab = "Scroll Grab",
-    }
-    return labels[key] or key
+    return COLOR_LABELS[key] or key
 end
 
 return Theme

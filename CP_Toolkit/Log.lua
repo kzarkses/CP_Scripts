@@ -220,6 +220,27 @@ end
 -- ============================================================================
 -- OVERLAY RENDERING
 -- ============================================================================
+-- Dedicated font slot for the overlay (audit B5c: the overlay used to
+-- redefine slot 1 — the theme's Title font — corrupting titles and the
+-- measure cache while it was open: the instrumentation was skewing the very
+-- state it measures). Restored via the hook at the end of DrawOverlay.
+local LOG_FONT_SLOT = 16
+local _log_font_size = -1
+local _restore_font = nil
+
+function Log.SetFontRestorer(fn)
+    _restore_font = fn
+end
+
+local function log_font(px)
+    if px ~= _log_font_size then
+        gfx.setfont(LOG_FONT_SLOT, "Consolas", px, 0)
+        _log_font_size = px
+    else
+        gfx.setfont(LOG_FONT_SLOT)
+    end
+end
+
 function Log.DrawOverlay()
     if not config.overlay_visible then return end
 
@@ -237,7 +258,7 @@ function Log.DrawOverlay()
     -- Title bar
     gfx.set(0.15, 0.15, 0.2, 1)
     gfx.rect(0, panel_y, w, 18, 1)
-    gfx.setfont(1, "Consolas", 12, 0)
+    log_font(12)
     gfx.set(0.8, 0.9, 1.0, 1)
     gfx.x, gfx.y = pad, panel_y + 2
     local title = string.format("LOG [F12:toggle F11:console F1,F2,F4-F8:filters] Frame:%d Entries:%d",
@@ -250,7 +271,7 @@ function Log.DrawOverlay()
         local stats_y = panel_y + 18
         gfx.set(0.08, 0.08, 0.12, 1)
         gfx.rect(0, stats_y, w, stats_h, 1)
-        gfx.setfont(1, "Consolas", 11, 0)
+        log_font(11)
 
         -- Mode indicator (active = green, idle = dim blue)
         if s.mode == "idle" then
@@ -305,7 +326,7 @@ function Log.DrawOverlay()
     end
 
     -- Entries
-    gfx.setfont(1, "Consolas", 11, 0)
+    log_font(11)
     local total = math.min(entry_count, config.max_entries)
     local start_idx = math.max(1, total - config.overlay_lines - scroll_offset + 1)
     local end_idx = math.min(total, start_idx + config.overlay_lines - 1)
@@ -360,6 +381,9 @@ function Log.DrawOverlay()
         gfx.set(0.6, 0.6, 0.8, 0.7)
         gfx.rect(w - 6, thumb_y, 4, thumb_h, 1)
     end
+
+    -- Restore the font Core believes is current (see LOG_FONT_SLOT note)
+    if _restore_font then _restore_font() end
 end
 
 -- ============================================================================

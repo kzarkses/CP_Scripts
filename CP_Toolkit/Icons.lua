@@ -7,8 +7,37 @@ local Icons = {}
 -- ============================================================================
 -- HELPERS
 -- ============================================================================
+local floor = math.floor
+
 local function set_color(r, g, b, a)
     gfx.set(r, g, b, a or 1)
+end
+
+-- Dedicated font slot for the two glyph-based icons (Solo "S", FX "fx").
+-- Audit B5a: these used to redefine slot 1 — the theme's Title font — on
+-- every call and never restore it, corrupting titles AND poisoning Core's
+-- measure cache (whose slot tracking no longer matched the real gfx font).
+local ICON_FONT_SLOT = 15
+local _icon_font_size = -1
+local _restore_font = nil
+
+-- Wired by CP_Toolkit at init: called after a glyph icon draws, so the gfx
+-- font matches what Core believes is current again.
+function Icons.SetFontRestorer(fn)
+    _restore_font = fn
+end
+
+local function icon_font(px)
+    if px ~= _icon_font_size then
+        gfx.setfont(ICON_FONT_SLOT, "Arial", px, 66)  -- bold
+        _icon_font_size = px
+    else
+        gfx.setfont(ICON_FONT_SLOT)
+    end
+end
+
+local function icon_font_done()
+    if _restore_font then _restore_font() end
 end
 
 local function center(x, y, size)
@@ -356,11 +385,12 @@ end
 function Icons.Solo(x, y, size, r, g, b, a)
     set_color(r, g, b, a)
     local cx, cy = center(x, y, size)
-    gfx.setfont(1, "Arial", math.floor(size * 0.5), 66) -- bold
+    icon_font(floor(size * 0.5))
     local tw, th = gfx.measurestr("S")
     gfx.x = cx - tw / 2
     gfx.y = cy - th / 2
     gfx.drawstr("S")
+    icon_font_done()
 end
 
 -- ============================================================================
@@ -421,11 +451,12 @@ end
 function Icons.FX(x, y, size, r, g, b, a)
     set_color(r, g, b, a)
     local cx, cy = center(x, y, size)
-    gfx.setfont(1, "Arial", math.floor(size * 0.4), 66)
+    icon_font(floor(size * 0.4))
     local tw, th = gfx.measurestr("fx")
     gfx.x = cx - tw / 2
     gfx.y = cy - th / 2
     gfx.drawstr("fx")
+    icon_font_done()
 end
 
 function Icons.Crosshair(x, y, size, r, g, b, a)
@@ -612,6 +643,96 @@ function Icons.Layers(x, y, size, r, g, b, a)
         gfx.line(cx, oy - hh, cx + hw, oy, 1)
         gfx.line(cx + hw, oy, cx, oy + hh, 1)
         gfx.line(cx, oy + hh, cx - hw, oy, 1)
+    end
+end
+
+-- ============================================================================
+-- BAKE POOL (audit P10)
+-- ============================================================================
+-- Every icon above is rasterized from antialiased primitives — arcs, circles,
+-- triangles — which LICE renders on the CPU. A toolbar of 10 icons plus one
+-- glyph per list row re-traced hundreds of AA primitives per frame; on the
+-- 2005 target that alone ate the frame budget. Same cure as the Knob's
+-- background (ROADMAP 1.9): bake each (icon, size, color) into an offscreen
+-- buffer on first use, then blit — a blit is a plain memory copy.
+--
+-- Buffer range 926-989 (64 slots; knob uses 910-925, inputs 900-901,
+-- ColorPicker 902-903, images 200-899). On pool exhaustion everything is
+-- wiped and re-baked on demand — rare (theme change), amortized. Colors are
+-- quantized to 4 bits/channel for the cache key so animated fades don't
+-- mint unlimited entries; the quantization is invisible at icon sizes.
+local ICON_BUF_FIRST, ICON_BUF_LAST = 926, 989
+local ICON_MAX_BAKE_SIZE = 128
+local icon_cache = {}      -- [name] = { [key] = buf_id }
+local icon_next_buf = ICON_BUF_FIRST
+
+local function icon_pool_wipe()
+    for buf = ICON_BUF_FIRST, icon_next_buf - 1 do
+        gfx.setimgdim(buf, 0, 0)
+    end
+    for k in pairs(icon_cache) do icon_cache[k] = nil end
+    icon_next_buf = ICON_BUF_FIRST
+end
+
+local function bake_wrap(name, draw_fn)
+    return function(x, y, size, r, g, b, a)
+        a = a or 1
+        local isize = floor(size + 0.5)
+        -- Degenerate or oversized: draw direct, don't hog buffers
+        if isize < 2 or isize > ICON_MAX_BAKE_SIZE then
+            return draw_fn(x, y, size, r, g, b, a)
+        end
+
+        -- Cache key: size + color quantized to 4 bits per channel
+        local key = isize * 65536
+            + floor(r * 15 + 0.5) * 4096
+            + floor(g * 15 + 0.5) * 256
+            + floor(b * 15 + 0.5) * 16
+            + floor(a * 15 + 0.5)
+
+        local per_name = icon_cache[name]
+        if not per_name then
+            per_name = {}
+            icon_cache[name] = per_name
+        end
+        local buf = per_name[key]
+
+        if not buf then
+            if icon_next_buf > ICON_BUF_LAST then
+                icon_pool_wipe()
+                per_name = {}
+                icon_cache[name] = per_name
+            end
+            buf = icon_next_buf
+            icon_next_buf = icon_next_buf + 1
+            -- Resize-to-zero first: guarantees cleared pixels (see knob bake)
+            local prev_dest = gfx.dest
+            gfx.dest = buf
+            gfx.setimgdim(buf, 0, 0)
+            gfx.setimgdim(buf, isize, isize)
+            draw_fn(0, 0, isize, r, g, b, a)
+            gfx.dest = prev_dest
+            per_name[key] = buf
+        end
+
+        gfx.set(1, 1, 1, 1)
+        gfx.blit(buf, 1, 0, 0, 0, isize, isize, x, y, isize, isize)
+    end
+end
+
+-- Wrap every icon present at this point. Helpers (SetFontRestorer) are
+-- excluded by name. Icons added after this block would be unbaked — add
+-- them above.
+do
+    local NO_BAKE = { SetFontRestorer = true }
+    local names = {}
+    for name, fn in pairs(Icons) do
+        if type(fn) == "function" and not NO_BAKE[name] then
+            names[#names + 1] = name
+        end
+    end
+    for _, name in ipairs(names) do
+        Icons[name] = bake_wrap(name, Icons[name])
     end
 end
 

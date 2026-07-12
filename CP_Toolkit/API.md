@@ -1,5 +1,10 @@
 # CP_Toolkit API Reference
 
+> 2026-07 audit pass: ESC is now layered (cancels edit → closes popup →
+> releases focus → only a *bare* ESC closes the window). Widgets that handle
+> a key call `UI.ConsumeChar()`; widgets that scroll call `UI.ConsumeWheel()`
+> so parents don't double-scroll. See `AUDIT_2026-07.md` for the full list.
+
 ## Setup
 
 ```lua
@@ -33,6 +38,10 @@ applies it). Useful for live-reloadable layout settings.
 ```lua
 UI.Text(text, opts)                -- opts: {disabled, color={r,g,b,a}, font_size}
 UI.TextColored(text, r, g, b, a)
+UI.TextWrapped(text, opts)         -- word-wrapped multi-line text
+    -- opts: {color, max_width}  (default max_width = available width)
+    -- The wrap layout is cached per (font, text, width) — steady-state cost
+    -- is one DrawText per line, zero measurement.
 UI.Header(text)                    -- legacy, use SetFontH1 + Text instead
 ```
 
@@ -78,6 +87,9 @@ UI.SliderInt(id, label, value, min, max, opts)
 
 -- Float slider. Returns: changed, new_value
 UI.SliderDouble(id, label, value, min, max, opts)
+
+-- Both sliders: Ctrl+click (or double-click) on the track opens an inline
+-- numeric edit — type the exact value, Enter commits (clamped), Esc cancels.
 
 -- Dual-thumb range. Returns: changed, new_min, new_max
 UI.RangeSlider(id, label, val_min, val_max, range_min, range_max, opts)
@@ -126,6 +138,9 @@ UI.Knob(id, label, value, default_value, opts)
 UI.InputText(id, label, text, opts)
     -- opts: {hint="placeholder", width, select_all_on_focus=true, disabled=false}
     -- Ctrl+C/V/X, selection, auto-scroll, clipped via gfx buffer
+    -- Ctrl+Z / Ctrl+Y: undo/redo (coalesced typing bursts, bounded stack)
+    -- UTF-8 aware: accented input works; cursor moves per codepoint
+    -- Esc releases focus (does NOT close the window)
     -- Use UI.SetFocus(id) to programmatically focus this widget
 
 -- Multi-line editor. Returns: changed, new_text
@@ -141,9 +156,14 @@ UI.TextEdit(id, text, opts)
 ```lua
 -- Dropdown. Returns: changed, new_index
 UI.Combo(id, label, index, items, opts)  -- opts: {width}
+    -- Popup scrolls (wheel + thin scrollbar) when the list doesn't fit the
+    -- window, and supports Up/Down/Enter/Esc keyboard navigation.
 
 -- Color picker (HSV popup). Returns: changed, new_color {r,g,b}
 UI.ColorPicker(id, label, color, opts)   -- color = {r, g, b}
+    -- changed is true only on frames where the value was actually edited
+    -- (safe to do `if changed then save end`). The HSV state resyncs when
+    -- the caller's color changes externally (preset/theme load).
 ```
 
 ---
@@ -200,6 +220,21 @@ UI.EndWeightedRow(id)
 ```lua
 local size_a = UI.Splitter(id, "horizontal", total_w, 0.5, opts)
     -- opts: {thickness=6, min_a=50, min_b=50}
+```
+
+### List Clipper (virtualization for long lists)
+```lua
+-- ImGuiListClipper equivalent: only the visible rows are laid out, measured
+-- and drawn — cost is O(visible), independent of count. For custom
+-- fixed-height rows inside a scrollable BeginChild.
+-- Contract: each row must be exactly row_h tall.
+UI.BeginChild("list", 0, 0)
+local first, last = UI.ListClipper(#rows, row_h)
+for i = first, last do
+    -- draw row i (height row_h)
+end
+UI.EndListClipper(#rows, row_h)
+UI.EndChild()
 ```
 
 ### Scrollable Child Region
@@ -264,8 +299,54 @@ UI.CollapsingHeader(id, label, is_open)
 UI.TreeNode(id, label, is_open, opts)
 UI.TreePop()  -- close indent after open TreeNode
 
--- Tooltip (call after the widget it belongs to)
+-- Tooltip (call after the widget it belongs to). Multi-line: text wraps at
+-- theme.tooltip_max_w; "\n" forces a break. Delay = theme.tooltip_delay.
 UI.Tooltip(text)
+```
+
+---
+
+## Disabled Scope & Item Queries
+
+```lua
+-- Gray out + block interaction for every widget in the scope (nests;
+-- BeginDisabled(false) is a transparent level).
+UI.BeginDisabled(cond)
+    UI.Button("apply", "Apply")
+    UI.SliderDouble("wet", "Wet", wet, 0, 1)
+UI.EndDisabled()
+UI.IsDisabled()  -- true inside an active disabled scope
+
+-- Last-item queries (call right AFTER a widget — ImGui idiom)
+UI.IsItemHovered()
+UI.IsItemClicked(button)      -- button: 1=left (default), 2=right, 64=middle
+UI.IsItemRightClicked()
+UI.IsItemDoubleClicked()
+UI.GetLastItemRect()          -- x, y, w, h of the last submitted widget
+```
+
+---
+
+## Style Overrides
+
+```lua
+-- Temporarily replace a theme color (restore with Pop — same frame):
+UI.PushStyleColor("accent", 0.9, 0.2, 0.2)   -- danger red
+UI.Button("del", "Delete")
+UI.PopStyleColor()          -- PopStyleColor(n) pops n levels
+```
+
+---
+
+## Input Consumption
+
+```lua
+UI.ConsumeChar()    -- a custom widget handled this frame's key: stops the
+                    -- layered ESC fallback (Core would otherwise close
+                    -- popup → clear focus → close window on a bare ESC)
+UI.ConsumeWheel()   -- a custom widget scrolled: parents won't also scroll
+UI.RequestRedrawAt(t)  -- wake the idle loop at reaper.time_precise() = t
+                       -- (egui request_repaint_after — timed reveals/fades)
 ```
 
 ---
@@ -274,10 +355,14 @@ UI.Tooltip(text)
 
 ```lua
 -- Simple table. Returns: clicked_row, clicked_col
+--   clicked_row == 0 → a HEADER was clicked (clicked_col = which one);
+--   use it to toggle your sort order, re-sort your rows (event-driven,
+--   never per frame) and pass opts.sort so the arrow is drawn.
 UI.Table(id, columns, rows, opts)
     -- columns = {{header="Name", width=100}, {header="Value"}}
     -- rows = {{"A", "1"}, {"B", "2"}}
-    -- opts: {selected=row_idx, max_rows=10, row_height}
+    -- opts: {selected=row_idx, max_rows=10, row_height,
+    --        sort={col=1, dir="asc"|"desc"}}  -- draws the sort indicator
 
 -- Interactive table (custom cell render). Returns: clicked_row, clicked_col_key, hovered_row
 UI.InteractiveTable(id, columns, row_count, cell_render_fn, opts)
@@ -291,7 +376,15 @@ UI.InteractiveTable(id, columns, row_count, cell_render_fn, opts)
 UI.ActionList(id, items, actions, opts)
     -- items = {{label="Item 1"}, ...}
     -- actions = {{icon="X", tooltip="Delete"}, ...}
-    -- opts: {max_visible=8, selected, item_height}
+    -- opts: {max_visible=8, selected, item_height,
+    --        selection = set,   -- multi-select: {[idx]=true}, MUTATED in
+    --                           -- place (click=single, Ctrl=toggle,
+    --                           -- Shift=range from last plain click)
+    --        nav = bool}        -- route Up/Down/Enter to this list this
+    --                           -- frame (e.g. while your search box has
+    --                           -- focus). Up/Down report through
+    --                           -- clicked_item, Enter through activated_item,
+    --                           -- and the view auto-scrolls to the selection.
 
 -- Drag-to-reorder list. Returns: changed, new_order, dragging_index
 UI.ReorderableList(id, items, opts)
@@ -303,11 +396,33 @@ UI.ReorderableList(id, items, opts)
 ## Popups & Modals
 
 ```lua
--- Context menu (right-click). Call in the area where it should trigger.
+-- Context menu (right-click). By default triggers anywhere in the window;
+-- scope it with opts. `shortcut` is DISPLAY-ONLY (dispatch the key combo
+-- yourself). Esc or click-outside closes.
 UI.ContextMenu(id, {
     {label="Cut", shortcut="Ctrl+X", action=function() end},
     {separator=true},
     {label="Disabled", disabled=true},
+}, opts)
+    -- opts: {rect={x,y,w,h}}    → only when right-click lands inside rect
+    --       {scope="item"}      → only on the last submitted widget
+
+-- Native OS menu via gfx.showmenu: nested submenus, checkmarks, disabled
+-- items for free; blocking while open, zero per-frame cost. The pragmatic
+-- choice for deep menus (ContextMenu = the theme-styled flat alternative).
+-- Returns the selected item table (runs item.action() when present).
+UI.NativeMenu({
+    {label="Cut", action=fn},
+    {separator=true},
+    {label="Send to", children={ {label="Bus 1", action=fn}, ... }},
+    {label="Enabled", checked=true},
+}, x, y)  -- x/y optional (default: mouse position)
+
+-- Horizontal menu bar built on NativeMenu.
+-- Returns: selected item table (or nil), menu index
+UI.MenuBar(id, {
+    {label="File", items={...NativeMenu items...}},
+    {label="Edit", items={...}},
 })
 
 -- Modal dialog (centered, dimmed overlay)
@@ -330,6 +445,8 @@ UI.VMeter(id, peak_l, peak_r, opts)  -- opts: {width=12, height=80}
 UI.HMeter(id, peak_l, peak_r, opts)  -- opts: {width=120, height=12}
 
 -- Canvas (free drawing area). Returns: {x,y,w,h, hovered,clicked,dragging, norm_x,norm_y}
+-- NOTE: the returned table is owned by the widget and REUSED next frame —
+-- copy fields out if you need to keep them.
 UI.Canvas(id, opts)  -- opts: {width, height=200, crosshair, grid=4, bg, border_color}
 ```
 
@@ -356,6 +473,7 @@ UI.IsDragging(drag_type)  -- check if drag is active
 
 ```lua
 local img = UI.LoadImage("path/to/image.png")  -- relative to REAPER resource path
+UI.UnloadImage(img)                    -- frees the gfx buffer (id is recycled)
 UI.Image(img, opts)                    -- opts: {width, height}
 UI.ImageButton(id, img, opts)          -- opts: {size, padding}. Returns: clicked
 ```
@@ -442,6 +560,10 @@ theme.combo_height / header_height / scrollbar_width / scale
 -- Compact list / chip rows (FX Browser-style dense UIs)
 theme.chip_h / row_h / row_h_large / pad_small / pad_large
 theme.gap / gap_large / splitter_w
+
+-- Tooltips
+theme.tooltip_max_w   -- wrap width in px (scaled), default 320
+theme.tooltip_delay   -- hover delay in seconds, default 0.4
 
 theme.widget_style  -- "flat" (default) | "windows"
                     -- "windows" enables Win32-style bevels on buttons (3D),

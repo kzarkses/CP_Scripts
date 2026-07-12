@@ -24,6 +24,120 @@ local colorpicker_gradient = {
     hue_w = 0,
 }
 
+-- Shared text-input buffers (900 = InputText, 901 = TextEdit). Their REAL
+-- dimensions are tracked here, per buffer — audit B1: the old code guarded
+-- gfx.setimgdim with per-widget fields, so two fields of different sizes
+-- each believed "their" buffer was current and both skipped the resize,
+-- rendering into a buffer sized for the other one (permanent corruption).
+local input_buf_w, input_buf_h = -1, -1        -- buffer 900
+local textedit_buf_w, textedit_buf_h = -1, -1  -- buffer 901
+
+-- UTF-8 boundary helpers (audit B13). Cursor positions are byte offsets;
+-- these snap moves/deletes to codepoint boundaries so multi-byte characters
+-- (é, à, …) are never split.
+local function utf8_prev(text, pos)
+    pos = pos - 1
+    while pos > 0 do
+        local b = text:byte(pos + 1)
+        if not b or b < 0x80 or b >= 0xC0 then break end
+        pos = pos - 1
+    end
+    if pos < 0 then pos = 0 end
+    return pos
+end
+
+local function utf8_next(text, pos)
+    local len = #text
+    pos = pos + 1
+    while pos < len do
+        local b = text:byte(pos + 1)
+        if not b or b < 0x80 or b >= 0xC0 then break end
+        pos = pos + 1
+    end
+    if pos > len then pos = len end
+    return pos
+end
+
+-- Encode a gfx.getchar() printable code as a UTF-8 string. Codes < 128 are
+-- plain ASCII; above that gfx reports the Unicode codepoint — string.char
+-- would emit an invalid Latin-1 byte (audit B13: typing "é" broke the text).
+local function char_to_utf8(char)
+    if char < 128 then return string.char(char) end
+    return utf8.char(char)
+end
+
+-- ----------------------------------------------------------------------------
+-- Word-wrap cache — shared by Tooltip and TextWrapped. Keyed by
+-- (font slot, text, floor(max_w)); rebuilt only on a miss, bounded with a
+-- full wipe, self-invalidates when Core reloads the font slots. Measures use
+-- raw gfx.measurestr so probe strings never pollute the measure cache.
+-- ----------------------------------------------------------------------------
+local _wrap_cache = {}
+local _wrap_cache_size = 0
+local WRAP_CACHE_MAX = 500
+local _wrap_font_version = -1
+
+local function wrap_text(text, max_w)
+    local fv = Core.GetFontVersion()
+    if fv ~= _wrap_font_version then
+        for k in pairs(_wrap_cache) do _wrap_cache[k] = nil end
+        _wrap_cache_size = 0
+        _wrap_font_version = fv
+    end
+    local slot = Core.GetCurrentFontSlot()
+    local wkey = floor(max_w)
+    local sc = _wrap_cache[slot]
+    local pt = sc and sc[text]
+    local hit = pt and pt[wkey]
+    if hit then return hit end
+
+    -- Build: explicit newlines are hard breaks, then greedy word wrap.
+    local lines = {}
+    for para in (text .. "\n"):gmatch("(.-)\n") do
+        local line = nil
+        for word in para:gmatch("%S+") do
+            local candidate = line and (line .. " " .. word) or word
+            if line and gfx.measurestr(candidate) > max_w then
+                lines[#lines + 1] = line
+                line = word
+            else
+                line = candidate
+            end
+        end
+        lines[#lines + 1] = line or ""
+    end
+    -- Drop a single trailing empty line produced by the sentinel "\n"
+    if #lines > 1 and lines[#lines] == "" then lines[#lines] = nil end
+
+    local block_w = 0
+    local line_h = select(2, gfx.measurestr("Mg"))
+    for i = 1, #lines do
+        local lw = gfx.measurestr(lines[i])
+        if lw > block_w then block_w = lw end
+    end
+    local entry = {
+        lines = lines,
+        w = block_w,
+        line_h = line_h,
+        h = #lines * (line_h + 2) - 2,
+    }
+
+    if _wrap_cache_size >= WRAP_CACHE_MAX then
+        for k in pairs(_wrap_cache) do _wrap_cache[k] = nil end
+        _wrap_cache_size = 0
+        sc = nil
+    end
+    if not sc then
+        sc = _wrap_cache[slot]
+        if not sc then sc = {}; _wrap_cache[slot] = sc end
+    end
+    pt = sc[text]
+    if not pt then pt = {}; sc[text] = pt end
+    pt[wkey] = entry
+    _wrap_cache_size = _wrap_cache_size + 1
+    return entry
+end
+
 -- Knob background (bg circle + track arc) cache. Keyed by size; re-rendered
 -- if theme colors change. For a Mixer with N same-size knobs, turns
 -- N × (1 circle + tw arcs) into N blits + 1 bake.
@@ -52,9 +166,12 @@ local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, t
     local radius = size / 2
     local ar = radius - 3
     gfx.dest = buf_id
+    -- Force a real clear (audit B9): setimgdim with unchanged dims does NOT
+    -- clear the buffer and drawing a rect at alpha 0 is a no-op — re-bakes
+    -- after a theme change used to blend the new colors over the old pixels
+    -- (permanent ghosting). Resizing to 0×0 and back wipes the pixels.
+    gfx.setimgdim(buf_id, 0, 0)
     gfx.setimgdim(buf_id, size, size)
-    gfx.set(0, 0, 0, 0)
-    gfx.rect(0, 0, size, size, 1)
     gfx.set(bg_r, bg_g, bg_b, 0.5)
     gfx.circle(cx, cy, radius - 1, 1, 1)
     local angle_min = pi * 0.75
@@ -70,6 +187,11 @@ local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, t
     entry.tw = tw
     return buf_id
 end
+
+-- Shared color constants — hot paths must not allocate {r,g,b,a} literals
+-- per frame (PERFORMANCE.md rule 1).
+local COLOR_WHITE = { 1, 1, 1, 1 }
+local COLOR_ICON_HOVER = { 1, 1, 1, 0.9 }
 
 function Widgets.Init(core, layout, theme_mod)
     Core = core
@@ -179,7 +301,7 @@ function Widgets.BeginWindow(title, theme, opts)
         end
 
         if Icons then
-            local ic = sbtn_hovered and { 1, 1, 1, 0.9 } or theme.colors.title_text
+            local ic = sbtn_hovered and COLOR_ICON_HOVER or theme.colors.title_text
             Icons.Settings(sbtn_x, 0, sbtn_size, ic[1], ic[2], ic[3], ic[4])
         end
 
@@ -201,10 +323,10 @@ function Widgets.BeginWindow(title, theme, opts)
 
         -- X icon
         if Icons then
-            local ic = btn_hovered and { 1, 1, 1, 1 } or theme.colors.title_text
+            local ic = btn_hovered and COLOR_WHITE or theme.colors.title_text
             Icons.Close(btn_x, 0, btn_size, ic[1], ic[2], ic[3], ic[4])
         else
-            local xc = btn_hovered and { 1, 1, 1, 1 } or theme.colors.title_text
+            local xc = btn_hovered and COLOR_WHITE or theme.colors.title_text
             local xw = Core.MeasureText("X")
             Core.DrawText("X", btn_x + floor((btn_size - xw) / 2), ty, xc[1], xc[2], xc[3], xc[4])
         end
@@ -325,14 +447,26 @@ function Widgets.BeginPanel(id, theme, opts)
         title_w, title_h = Core.MeasureText(title)
     end
 
-    -- ---- Draw the bg ----
-    if style == "filled" then
-        -- Solid fill with the panel bg
-        Core.DrawRect(abs_x, abs_y, w, max_h, bg[1], bg[2], bg[3], bg[4] or 1)
-    elseif style == "inset" then
-        -- Slightly sunken — fill with frame_bg, top/left edge will be drawn
-        -- darker in EndPanel after we know the actual height
-        Core.DrawRect(abs_x, abs_y, w, max_h, bg[1], bg[2], bg[3], bg[4] or 1)
+    -- Persistent panel data: pooled container table + cached id string +
+    -- last frame's measured height (audit P7/P8 — this widget used to
+    -- allocate a ~30-field table + one string concat per panel per frame,
+    -- AND fill the whole remaining parent height only to erase the excess
+    -- in EndPanel: up to 2-3× full-window fillrate on stacked panels).
+    local pd = Core.GetWidgetSubData("panel", id)
+    if not pd.cid then
+        pd.cid = "panel_" .. id
+        pd.c = {}
+    end
+
+    -- ---- Draw the bg at last frame's real height ----
+    -- First frame (or after growth) falls back to max_h; EndPanel stores the
+    -- measured height and requests a redraw when the content grew, so the
+    -- bg is correct again on the next frame.
+    local drawn_h = pd.last_h or max_h
+    if drawn_h > max_h then drawn_h = max_h end
+    if drawn_h < 1 then drawn_h = 1 end
+    if style == "filled" or style == "inset" then
+        Core.DrawRect(abs_x, abs_y, w, drawn_h, bg[1], bg[2], bg[3], bg[4] or 1)
     end
     -- "groupbox" has no fill — content sits on parent bg with a labeled border
 
@@ -348,39 +482,43 @@ function Widgets.BeginPanel(id, theme, opts)
         end
     end
 
-    -- Push a child container scoped to the panel area
-    local c = {
-        id            = "panel_" .. id,
-        x             = abs_x,
-        y             = abs_y,
-        w             = w,
-        h             = max_h,
-        pad_x         = pad_x,
-        pad_y         = pad_y,
-        cursor_x      = pad_x,
-        cursor_y      = pad_y + title_offset,
-        content_h     = 0,
-        spacing       = theme.item_spacing,  -- use theme's own spacing, not parent's
-        max_row_h     = 0,
-        same_line     = false,
-        same_line_x   = 0,
-        sameline_pending = false,
-        indent_x      = 0,
-        last_widget_end_x = pad_x,
-        last_widget_y     = pad_y + title_offset,
-        last_widget_h     = 0,
-        scrollable    = false,
-        scroll_y      = 0,
-        -- Stash for EndPanel
-        _is_panel     = true,
-        _panel_style  = style,
-        _panel_bg     = bg,
-        _panel_title  = title,
-        _panel_title_w = title_w,
-        _panel_title_h = title_h,
-        _panel_max_h  = max_h,
-        _panel_parent_bg = parent._panel_bg or theme.colors.window_bg,
-    }
+    -- Push a pooled child container scoped to the panel area. Wipe-then-fill
+    -- keeps the table identity stable (zero allocation) while guaranteeing no
+    -- stale field survives from the previous frame.
+    local c = pd.c
+    for k in pairs(c) do c[k] = nil end
+    c.id            = pd.cid
+    c.x             = abs_x
+    c.y             = abs_y
+    c.w             = w
+    c.h             = max_h
+    c.pad_x         = pad_x
+    c.pad_y         = pad_y
+    c.cursor_x      = pad_x
+    c.cursor_y      = pad_y + title_offset
+    c.content_h     = 0
+    c.spacing       = theme.item_spacing  -- use theme's own spacing, not parent's
+    c.max_row_h     = 0
+    c.same_line     = false
+    c.same_line_x   = 0
+    c.sameline_pending = false
+    c.indent_x      = 0
+    c.last_widget_end_x = pad_x
+    c.last_widget_y     = pad_y + title_offset
+    c.last_widget_h     = 0
+    c.scrollable    = false
+    c.scroll_y      = 0
+    -- Stash for EndPanel
+    c._is_panel     = true
+    c._panel_style  = style
+    c._panel_bg     = bg
+    c._panel_title  = title
+    c._panel_title_w = title_w
+    c._panel_title_h = title_h
+    c._panel_max_h  = max_h
+    c._panel_drawn_h = drawn_h
+    c._panel_parent_bg = parent._panel_bg or theme.colors.window_bg
+    c._panel_pd     = pd
 
     Core.PushContainer(c)
     Core.PushClipRect(abs_x, abs_y, w, max_h)
@@ -418,14 +556,23 @@ function Widgets.EndPanel(theme)
     local style = c._panel_style
     local title = c._panel_title
 
-    -- ---- Erase the excess bg with parent's bg color ----
+    -- ---- Reconcile drawn bg height with the real content height ----
+    -- Shrunk: erase only the strip between the new and the previously drawn
+    -- height (opaque — blending with a translucent bg does not erase).
+    -- Grew: the bg under the new strip is missing for this one frame; store
+    -- the height and request a redraw so the next frame paints it correctly.
+    local pd = c._panel_pd
     if style == "filled" or style == "inset" then
-        local pbg = c._panel_parent_bg
-        if actual_h < c._panel_max_h then
-            Core.DrawRect(x, y + actual_h, w, c._panel_max_h - actual_h,
-                pbg[1], pbg[2], pbg[3], pbg[4] or 1)
+        local drawn_h = c._panel_drawn_h or c._panel_max_h
+        if actual_h < drawn_h then
+            local pbg = c._panel_parent_bg
+            Core.DrawRect(x, y + actual_h, w, drawn_h - actual_h,
+                pbg[1], pbg[2], pbg[3], 1)
+        elseif actual_h > drawn_h then
+            Core.RequestRedraw()
         end
     end
+    if pd then pd.last_h = actual_h end
 
     -- ---- Draw title (must come AFTER bg, BEFORE border for filled style) ----
     if title and title ~= "" then
@@ -492,7 +639,7 @@ end
 function Widgets.Text(text, theme, opts)
     opts = opts or {}
     local color = opts.color or theme.colors.text
-    local disabled = opts.disabled
+    local disabled = opts.disabled or Core.IsDisabled()
 
     if disabled then color = theme.colors.text_disabled end
 
@@ -519,12 +666,40 @@ function Widgets.Text(text, theme, opts)
         Core.DrawText(text, x, y, color[1], color[2], color[3], color[4] or 1)
     end
 
-    -- Restore default font
+    -- Restore default font via the preloaded body slot (audit B5b: restoring
+    -- through Core.SetFont redefined the legacy slot with alternating params
+    -- every frame, thrashing its measure cache).
     if opts.font_size then
-        Core.SetFont(theme.fonts.default_size, theme.fonts.default_face)
+        Core.SetFontBody()
     end
 
     Layout.AdvanceCursor(tw, th)
+end
+
+-- Word-wrapped multi-line text (F9). The wrap layout is cached per
+-- (font, text, width) — see wrap_text — so steady-state cost is N DrawText
+-- calls, zero measurement.
+-- opts: {color = {r,g,b,a}, max_width = px (default: available width)}
+function Widgets.TextWrapped(text, theme, opts)
+    opts = opts or {}
+    local color = opts.color or theme.colors.text
+    if opts.disabled or Core.IsDisabled() then color = theme.colors.text_disabled end
+    local max_w = opts.max_width or Layout.GetAvailableWidth()
+    if max_w <= 0 then max_w = 1 end
+
+    local wrapped = wrap_text(text, max_w)
+    local x, y = Layout.GetCursorPos()
+
+    if Core.IsVisible(x, y, wrapped.w, wrapped.h) then
+        local lines = wrapped.lines
+        local ly = y
+        for i = 1, #lines do
+            Core.DrawText(lines[i], x, ly, color[1], color[2], color[3], color[4] or 1)
+            ly = ly + wrapped.line_h + 2
+        end
+    end
+
+    Layout.AdvanceCursor(wrapped.w, wrapped.h)
 end
 
 function Widgets.TextColored(text, r, g, b, a, _theme)
@@ -542,7 +717,7 @@ end
 function Widgets.Header(text, theme)
     Core.SetFont(theme.fonts.header_size, theme.fonts.default_face, 66) -- 'B' = bold
     Widgets.Text(text, theme)
-    Core.SetFont(theme.fonts.default_size, theme.fonts.default_face)
+    Core.SetFontBody()  -- restore via preloaded slot (see Text)
 end
 
 -- ============================================================================
@@ -566,7 +741,7 @@ function Widgets.Button(id, label, theme, opts)
     local x, y = Layout.GetCursorPos()
 
     local clicked = false
-    local disabled = opts.disabled
+    local disabled = opts.disabled or Core.IsDisabled()
     local hovered = (not disabled)
         and Core.MouseInClippedRect(x, y, w, h)
         and not Core.HasPopup()
@@ -653,7 +828,10 @@ function Widgets.Checkbox(id, label, checked, theme, opts)
     local h = max(size, th)
 
     local toggled = false
-    local hovered = Core.MouseInClippedRect(x, y, total_w, h) and not Core.HasPopup()
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, total_w, h)
+        and not Core.HasPopup()
 
     if hovered then
         Core.SetHot(id)
@@ -676,17 +854,18 @@ function Widgets.Checkbox(id, label, checked, theme, opts)
         -- Filled square (accent color)
         if new_checked then
             local ac = theme.colors.accent
+            local dim = disabled and 0.5 or 1
             if theme.widget_style == "windows" then
                 -- Asymmetric: 2px bevel top/left vs 1px bottom/right → shift fill 1px toward bottom-right
-                Core.DrawRect(x + 3, box_y + 3, size - 5, size - 5, ac[1], ac[2], ac[3], ac[4])
+                Core.DrawRect(x + 3, box_y + 3, size - 5, size - 5, ac[1], ac[2], ac[3], (ac[4] or 1) * dim)
             else
                 local m = 3
-                Core.DrawRect(x + m, box_y + m, size - m * 2, size - m * 2, ac[1], ac[2], ac[3], ac[4])
+                Core.DrawRect(x + m, box_y + m, size - m * 2, size - m * 2, ac[1], ac[2], ac[3], (ac[4] or 1) * dim)
             end
         end
 
         -- Label
-        local tc = theme.colors.text
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
         local lx = x + size + 6
         local ly = y + floor((h - th) / 2)
         Core.DrawText(label, lx, ly, tc[1], tc[2], tc[3], tc[4])
@@ -735,22 +914,78 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
 
     local changed = false
     local new_value = value
+    local disabled = opts.disabled or Core.IsDisabled()
+    local sd = Core.GetWidgetSubData("slider", id)
 
     -- Slider track area (no leading gap when there's no label).
     local sx = x + (has_label and (tw + label_gap) or 0)
     local sy = y + floor((max(h, th) - h) / 2)
 
-    local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h) and not Core.HasPopup()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(sx, sy, slider_w, h)
+        and not Core.HasPopup()
 
-    if hovered then
+    -- Inline value entry (F5, ImGui idiom): Ctrl+click or double-click on the
+    -- track types an exact value. Enter commits (clamped), Esc cancels,
+    -- losing focus cancels. Reuses the NumberInput interaction model.
+    if hovered and not sd.editing
+       and ((Core.ModCtrl() and Core.MouseClicked(1)) or Core.MouseDoubleClicked()) then
+        sd.editing = true
+        sd.edit_buf = is_int and tostring(floor(value + 0.5))
+                              or string.format("%.3f", value)
+        sd.blink_time = reaper.time_precise()
+        Core.SetFocus(id)
+        Core.ClearActive()  -- a double-click's first click may have started a drag
+    end
+
+    if sd.editing then
+        if not Core.IsFocused(id) then
+            -- Focus stolen (click elsewhere, Tab) → cancel silently
+            sd.editing = false
+        elseif Keys then
+            local char = Core.GetChar()
+            if char == Keys.ENTER or char == Keys.TAB then
+                local num = tonumber(sd.edit_buf)
+                if num then
+                    if is_int then num = floor(num + 0.5) end
+                    new_value = max(min_val, min(max_val, num))
+                    if new_value ~= value then changed = true end
+                end
+                sd.editing = false
+                Core.SetFocus(nil)
+                Core.ConsumeChar()
+            elseif char == Keys.ESCAPE then
+                sd.editing = false
+                Core.SetFocus(nil)
+                Core.ConsumeChar()
+            elseif char == Keys.BACKSPACE then
+                if #sd.edit_buf > 0 then
+                    sd.edit_buf = sd.edit_buf:sub(1, -2)
+                    sd.blink_time = reaper.time_precise()
+                end
+                Core.ConsumeChar()
+            elseif char > 31 and char < 256 then
+                local c = string.char(char)
+                if c:match("[0-9%.%-]") then
+                    sd.edit_buf = sd.edit_buf .. c
+                    sd.blink_time = reaper.time_precise()
+                end
+                Core.ConsumeChar()
+            end
+            -- Keep the idle loop waking exactly at the next caret-blink edge
+            if sd.editing then Core.ScheduleBlinkRedraw(sd.blink_time) end
+        end
+    end
+
+    if hovered and not sd.editing then
         Core.SetHot(id)
-        if Core.MouseClicked(1) then
+        if Core.MouseClicked(1) and not Core.ModCtrl() then
             Core.SetActive(id)
             if Log then Log.WidgetClicked(id, "Slider", string.format("val=%s range=[%s,%s]", tostring(value), tostring(min_val), tostring(max_val))) end
         end
     end
 
-    if Core.IsActive(id) then
+    if Core.IsActive(id) and not sd.editing then
         if Core.MouseDown(1) then
             local mx = Core.GetState().mouse_x
             local ratio = max(0, min(1, (mx - sx) / slider_w))
@@ -766,66 +1001,85 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
     -- Draw
     if Core.IsVisible(x, y, total_w, max(h, th)) then
         -- Label
-        local tc = theme.colors.text
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
         local ly = y + floor((max(h, th) - th) / 2)
         Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
 
-        -- Track
-        local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
-        Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
-        draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
-
-        -- Filled portion (inset in windows mode so it doesn't overpaint bevel)
-        -- Asymmetric: 2px bevel top/left, 1px bottom/right → top inset 2, bottom inset 1
-        local s_top = (theme.widget_style == "windows") and 2 or 0
-        local s_bot = (theme.widget_style == "windows") and 1 or 0
-        local display_val = changed and new_value or value
-        local ratio = (display_val - min_val) / (max_val - min_val)
-        ratio = max(0, min(1, ratio))
-        local fill_w = floor((slider_w - s_top - s_bot) * ratio)
-        local ac = theme.colors.accent
-        if fill_w > 0 then
-            Core.DrawRect(sx + s_top, sy + s_top, fill_w, h - s_top - s_bot, ac[1], ac[2], ac[3], ac[4])
-        end
-
-        -- Grab handle
-        local grab_w = 8
-        local grab_x = sx + fill_w - floor(grab_w / 2)
-        grab_x = max(sx, min(sx + slider_w - grab_w, grab_x))
-        local grab_c = Core.IsActive(id) and theme.colors.accent_active or
-                        (hovered and theme.colors.accent_hovered or theme.colors.accent)
-        Core.DrawRect(grab_x, sy, grab_w, h, grab_c[1], grab_c[2], grab_c[3], grab_c[4])
-        draw_win32_bevel(grab_x, sy, grab_w, h, theme, Core.IsActive(id) and "sunken" or "raised")
-
-        -- Value text (on top of slider) — formatted string is cached in
-        -- widget_data so we only re-format when display_val actually changes.
-        -- opts.format is a printf-style template ("%d Hz", "%.1f dB", ...).
-        -- A plain string with no % directive is used verbatim (lookup labels).
-        local sd = Core.GetWidgetSubData("slider", id)
-        local val_str
-        local fmt = opts.format
-        if sd.fv_val == display_val and sd.fv_fmt == fmt and sd.fv_str then
-            val_str = sd.fv_str
-        else
-            if fmt then
-                if fmt:find("%%[%-+ 0#]*%d*%.?%d*[dixXoufgGeEcs]") then
-                    val_str = string.format(fmt, is_int and floor(display_val) or display_val)
-                else
-                    val_str = fmt
-                end
-            elseif is_int then
-                val_str = tostring(floor(display_val))
-            else
-                val_str = string.format("%.2f", display_val)
+        if sd.editing then
+            -- Inline edit box over the track area
+            local fb = theme.colors.frame_active or theme.colors.frame_bg
+            Core.DrawRect(sx, sy, slider_w, h, fb[1], fb[2], fb[3], fb[4])
+            draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
+            local ac = theme.colors.accent
+            Core.DrawRect(sx, sy, slider_w, h, ac[1], ac[2], ac[3], ac[4] or 1, false)
+            local bw, bh = Core.MeasureText(sd.edit_buf)
+            local bx = sx + floor((slider_w - bw) / 2)
+            local by = sy + floor((h - bh) / 2)
+            Core.DrawText(sd.edit_buf, bx, by, tc[1], tc[2], tc[3], tc[4])
+            -- Caret
+            local elapsed = reaper.time_precise() - sd.blink_time
+            if (elapsed % Core.BLINK_PERIOD) < Core.BLINK_ON then
+                Core.DrawRect(bx + bw + 1, by, 1, bh, tc[1], tc[2], tc[3], tc[4])
             end
-            sd.fv_val = display_val
-            sd.fv_fmt = fmt
-            sd.fv_str = val_str
+        else
+            -- Track
+            local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
+            Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
+            draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
+
+            -- Filled portion (inset in windows mode so it doesn't overpaint bevel)
+            -- Asymmetric: 2px bevel top/left, 1px bottom/right → top inset 2, bottom inset 1
+            local s_top = (theme.widget_style == "windows") and 2 or 0
+            local s_bot = (theme.widget_style == "windows") and 1 or 0
+            local display_val = changed and new_value or value
+            local ratio = (display_val - min_val) / (max_val - min_val)
+            ratio = max(0, min(1, ratio))
+            local fill_w = floor((slider_w - s_top - s_bot) * ratio)
+            local ac = theme.colors.accent
+            local dim = disabled and 0.5 or 1
+            if fill_w > 0 then
+                Core.DrawRect(sx + s_top, sy + s_top, fill_w, h - s_top - s_bot,
+                    ac[1], ac[2], ac[3], (ac[4] or 1) * dim)
+            end
+
+            -- Grab handle
+            local grab_w = 8
+            local grab_x = sx + fill_w - floor(grab_w / 2)
+            grab_x = max(sx, min(sx + slider_w - grab_w, grab_x))
+            local grab_c = Core.IsActive(id) and theme.colors.accent_active or
+                            (hovered and theme.colors.accent_hovered or theme.colors.accent)
+            Core.DrawRect(grab_x, sy, grab_w, h, grab_c[1], grab_c[2], grab_c[3], (grab_c[4] or 1) * dim)
+            draw_win32_bevel(grab_x, sy, grab_w, h, theme, Core.IsActive(id) and "sunken" or "raised")
+
+            -- Value text (on top of slider) — formatted string is cached in
+            -- widget_data so we only re-format when display_val actually changes.
+            -- opts.format is a printf-style template ("%d Hz", "%.1f dB", ...).
+            -- A plain string with no % directive is used verbatim (lookup labels).
+            local val_str
+            local fmt = opts.format
+            if sd.fv_val == display_val and sd.fv_fmt == fmt and sd.fv_str then
+                val_str = sd.fv_str
+            else
+                if fmt then
+                    if fmt:find("%%[%-+ 0#]*%d*%.?%d*[dixXoufgGeEcs]") then
+                        val_str = string.format(fmt, is_int and floor(display_val) or display_val)
+                    else
+                        val_str = fmt
+                    end
+                elseif is_int then
+                    val_str = tostring(floor(display_val))
+                else
+                    val_str = string.format("%.2f", display_val)
+                end
+                sd.fv_val = display_val
+                sd.fv_fmt = fmt
+                sd.fv_str = val_str
+            end
+            local vw, vh = Core.MeasureText(val_str)
+            local vx = sx + floor((slider_w - vw) / 2)
+            local vy = sy + floor((h - vh) / 2)
+            Core.DrawText(val_str, vx, vy, tc[1], tc[2], tc[3], tc[4])
         end
-        local vw, vh = Core.MeasureText(val_str)
-        local vx = sx + floor((slider_w - vw) / 2)
-        local vy = sy + floor((h - vh) / 2)
-        Core.DrawText(val_str, vx, vy, tc[1], tc[2], tc[3], tc[4])
     end
 
     Layout.AdvanceCursor(total_w, max(h, th))
@@ -887,7 +1141,10 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
     local cy = y
 
     -- Block when ANY popup is open (prevents click-through)
-    local hovered = Core.MouseInClippedRect(cx, cy, combo_w, h) and not Core.HasPopup()
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(cx, cy, combo_w, h)
+        and not Core.HasPopup()
 
     if hovered then
         Core.SetHot(id)
@@ -911,9 +1168,56 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
             popup_h = min(popup_h, win_h - popup_y - 4)
         end
 
+        -- Scroll + keyboard nav state (audit B11/F2: items past the window
+        -- clamp used to be plain unreachable, and the popup was mouse-only).
+        local visible_count = max(1, floor(popup_h / item_h))
+        data.nav = current_index
+        -- Start scrolled so the current selection is visible (centered-ish)
+        data.scroll = max(0, min(#items - visible_count,
+                                 current_index - 1 - floor(visible_count / 2)))
+
         Core.SetPopup(id, function()
             -- Skip close logic on the same frame popup was opened
             local is_new = Core.IsPopupNewThisFrame()
+            local count = #popup_items
+            local max_scroll = max(0, count - visible_count)
+
+            -- Keyboard navigation: Up/Down move, Enter selects, Esc closes.
+            if Keys then
+                local char = Core.GetChar()
+                if char == Keys.UP or char == Keys.DOWN then
+                    local nav = data.nav or popup_current
+                    nav = nav + (char == Keys.DOWN and 1 or -1)
+                    data.nav = max(1, min(count, nav))
+                    -- Keep the highlighted item in view
+                    if data.nav - 1 < data.scroll then
+                        data.scroll = data.nav - 1
+                    elseif data.nav > data.scroll + visible_count then
+                        data.scroll = data.nav - visible_count
+                    end
+                    Core.ConsumeChar()
+                elseif char == Keys.ENTER then
+                    data.pending = data.nav or popup_current
+                    Core.ClearPopup(id)
+                    Core.ConsumeChar()
+                    return
+                elseif char == Keys.ESCAPE then
+                    Core.ClearPopup(id)
+                    Core.ConsumeChar()
+                    return
+                end
+            end
+
+            -- Wheel scroll inside the popup
+            local wheel = Core.GetState().mouse_wheel
+            if wheel ~= 0 and not Core.IsWheelConsumed()
+               and Core.MouseInRect(popup_x, popup_y, popup_w, popup_h) then
+                local dir = wheel > 0 and -1 or 1
+                data.scroll = max(0, min(max_scroll, data.scroll + dir))
+                Core.ConsumeWheel()
+            end
+            local scroll = max(0, min(max_scroll, data.scroll or 0))
+            data.scroll = scroll
 
             -- Background
             local pbg = theme.colors.popup_bg
@@ -923,13 +1227,13 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
             local pbc = theme.colors.border
             Core.DrawRect(popup_x, popup_y, popup_w, popup_h, pbc[1], pbc[2], pbc[3], pbc[4], false)
 
-            -- Items
-            local visible_count = floor(popup_h / item_h)
-            for i = 1, min(#popup_items, visible_count) do
-                local iy = popup_y + (i - 1) * item_h
+            -- Items (windowed: only the visible rows are laid out and drawn)
+            for vis = 1, min(count, visible_count) do
+                local i = vis + scroll
+                local iy = popup_y + (vis - 1) * item_h
                 local item_hovered = Core.MouseInRect(popup_x, iy, popup_w, item_h)
 
-                if item_hovered then
+                if item_hovered or i == data.nav then
                     local hc = theme.colors.header_hovered
                     Core.DrawRect(popup_x + 1, iy, popup_w - 2, item_h, hc[1], hc[2], hc[3], hc[4])
                 end
@@ -953,11 +1257,22 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
                 if not is_new and item_hovered and Core.MouseClicked(1) then
                     if Log then Log.WidgetChanged(id, "Combo", tostring(popup_current), tostring(i) .. "=" .. popup_items[i]) end
                     -- Store selection in widget_data (read next frame by Combo)
-                    local d = Core.GetWidgetSubData("combo", id)
-                    d.pending = i
+                    data.pending = i
                     Core.ClearPopup(id)
                     return  -- stop processing popup this frame
                 end
+            end
+
+            -- Thin scrollbar when the list overflows
+            if max_scroll > 0 then
+                local sb_w = max(3, floor(theme.scrollbar_width / 2))
+                local sb_x = popup_x + popup_w - sb_w - 1
+                local track_h = popup_h - 2
+                local thumb_h = max(8, floor(track_h * visible_count / count))
+                local thumb_y = popup_y + 1
+                    + floor((track_h - thumb_h) * (scroll / max_scroll))
+                local sg = theme.colors.scrollbar_grab
+                Core.DrawRect(sb_x, thumb_y, sb_w, thumb_h, sg[1], sg[2], sg[3], sg[4] or 1)
             end
 
             -- Close popup on click outside (not on the open frame)
@@ -1008,9 +1323,12 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
                 Icons.ChevronDown(icon_x, cy, icon_size, tc[1], tc[2], tc[3], 0.6)
             end
         else
+            -- Audit B15: this fallback used to read `ly`, a local scoped to
+            -- the has_label branch above (nil without a label → Lua error).
             local arrow = Core.HasPopup(id) and "^" or "v"
-            local aw = Core.MeasureText(arrow)
-            Core.DrawText(arrow, cx + combo_w - aw - 6, ly, tc[1], tc[2], tc[3], 0.6)
+            local aw, ah = Core.MeasureText(arrow)
+            local arrow_y = cy + floor((h - ah) / 2)
+            Core.DrawText(arrow, cx + combo_w - aw - 6, arrow_y, tc[1], tc[2], tc[3], 0.6)
         end
     end
 
@@ -1029,11 +1347,14 @@ function Widgets.TabBar(id, tabs, active_tab, theme, opts)
     local changed = false
 
     local tab_x = x
+    local disabled = opts.disabled or Core.IsDisabled()
     for i, tab_label in ipairs(tabs) do
         local tw, th = Core.MeasureText(tab_label)
         local tab_w = tw + theme.frame_padding_x * 2
         local is_active = (i == active_tab)
-        local hovered = Core.MouseInClippedRect(tab_x, y, tab_w, h) and not Core.HasPopup()
+        local hovered = (not disabled)
+            and Core.MouseInClippedRect(tab_x, y, tab_w, h)
+            and not Core.HasPopup()
 
         if hovered and Core.MouseClicked(1) then
             new_active = i
@@ -1144,48 +1465,74 @@ end
 -- ============================================================================
 -- Call AFTER the widget you want to attach the tooltip to.
 -- Shows on hover with a small delay.
+-- Tooltip draw state + module-level layer function (audit P9: the old
+-- implementation allocated a default table on EVERY call — even on cache
+-- hits — plus a fresh closure for each visible frame).
+local _tip_text, _tip_x, _tip_y, _tip_theme = nil, 0, 0, nil
+
+local function _draw_tooltip_layer()
+    local theme = _tip_theme
+    local text = _tip_text
+    if not text or not theme then return end
+    local pad = 4
+    local max_w = theme.tooltip_max_w or 320
+    local wrapped = wrap_text(text, max_w)
+    local tip_w = wrapped.w + pad * 2
+    local tip_h = wrapped.h + pad * 2
+    local tip_x = _tip_x + 12
+    local tip_y = _tip_y - tip_h - 4
+
+    -- Clamp to window
+    local win_w, _ = Core.GetWindowSize()
+    if tip_x + tip_w > win_w then tip_x = _tip_x - tip_w - 4 end
+    if tip_y < 0 then tip_y = _tip_y + 18 end
+
+    -- Background with slight shadow effect
+    Core.DrawRect(tip_x + 1, tip_y + 1, tip_w, tip_h, 0, 0, 0, 0.3)
+    local bg = theme.colors.popup_bg
+    Core.DrawRect(tip_x, tip_y, tip_w, tip_h, bg[1], bg[2], bg[3], 1)
+    local bc = theme.colors.border
+    Core.DrawRect(tip_x, tip_y, tip_w, tip_h, bc[1], bc[2], bc[3], 0.6, false)
+    local tc = theme.colors.text
+    local ty = tip_y + pad
+    local lines = wrapped.lines
+    for i = 1, #lines do
+        Core.DrawText(lines[i], tip_x + pad, ty, tc[1], tc[2], tc[3], tc[4])
+        ty = ty + wrapped.line_h + 2
+    end
+end
+
 function Widgets.Tooltip(text, theme)
     local state = Core.GetState()
     if not state.hot then return end
 
     -- Track hover time
-    local data = Core.GetWidgetData("_tooltip", { hot_id = nil, hover_start = 0, visible = false })
+    local data = Core.GetWidgetData("_tooltip")
     local now = reaper.time_precise()
+    local delay = theme.tooltip_delay or 0.4
 
     if state.hot ~= data.hot_id then
         data.hot_id = state.hot
         data.hover_start = now
         data.visible = false
-    elseif not data.visible and (now - data.hover_start) > 0.4 then
+    elseif not data.visible and (now - data.hover_start) > delay then
         data.visible = true
     end
 
-    if not data.visible then return end
+    if not data.visible then
+        -- Wake the idle loop exactly when the delay elapses, so the tooltip
+        -- appears on time even with the mouse perfectly still.
+        Core.RequestRedrawAt(data.hover_start + delay)
+        return
+    end
 
-    -- Defer drawing to tooltip layer (rendered last, on top of everything)
-    local mx, my = Core.GetMousePos()
-    Core.SetTooltip(function()
-        local pad = 4
-        local tw, th = Core.MeasureText(text)
-        local tip_w = tw + pad * 2
-        local tip_h = th + pad * 2
-        local tip_x = mx + 12
-        local tip_y = my - tip_h - 4
-
-        -- Clamp to window
-        local win_w, win_h = Core.GetWindowSize()
-        if tip_x + tip_w > win_w then tip_x = mx - tip_w - 4 end
-        if tip_y < 0 then tip_y = my + 18 end
-
-        -- Background with slight shadow effect
-        Core.DrawRect(tip_x + 1, tip_y + 1, tip_w, tip_h, 0, 0, 0, 0.3)
-        local bg = theme.colors.popup_bg
-        Core.DrawRect(tip_x, tip_y, tip_w, tip_h, bg[1], bg[2], bg[3], 1)
-        local bc = theme.colors.border
-        Core.DrawRect(tip_x, tip_y, tip_w, tip_h, bc[1], bc[2], bc[3], 0.6, false)
-        local tc = theme.colors.text
-        Core.DrawText(text, tip_x + pad, tip_y + pad, tc[1], tc[2], tc[3], tc[4])
-    end)
+    -- Defer drawing to the tooltip layer (rendered last, on top of
+    -- everything). Module-level function + stashed params: no per-frame
+    -- closure allocation.
+    _tip_text = text
+    _tip_theme = theme
+    _tip_x, _tip_y = Core.GetMousePos()
+    Core.SetTooltip(_draw_tooltip_layer)
 end
 
 -- ============================================================================
@@ -1296,8 +1643,10 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
     -- Cursor
     if hovered then Core.SetCursor("size_ns") end
 
-    -- Draw
-    if Core.IsVisible(x, y, size, size + 14) then
+    -- Draw. Strict visibility: the knob renders through gfx.blit/gfx.arc
+    -- which bypass the software clip — a partially scrolled knob would
+    -- bleed over its container's neighbours (audit B3 companion fix).
+    if Core.IsFullyVisible(x, y, size, size + 14) then
         local cx, cy = x + radius, y + radius
         local display_val = changed and new_value or value
 
@@ -1356,6 +1705,15 @@ end
 -- ============================================================================
 -- VU METER (vertical)
 -- ============================================================================
+-- Level → color, module-level (audit P9: VMeter/HMeter declared this closure
+-- inside their per-frame draw block — one allocation per meter per frame,
+-- and meters run continuously in a mixer).
+local function meter_color(peak)
+    if peak > 0.9 then return 0.9, 0.2, 0.2, 1      -- red
+    elseif peak > 0.7 then return 0.9, 0.8, 0.2, 1  -- yellow
+    else return 0.3, 0.75, 0.4, 1 end               -- green
+end
+
 function Widgets.VMeter(id, peak_l, peak_r, theme, opts)
     opts = opts or {}
     local x, y = Layout.GetCursorPos()
@@ -1368,13 +1726,6 @@ function Widgets.VMeter(id, peak_l, peak_r, theme, opts)
         local bg = theme.colors.frame_bg
         Core.DrawRect(x, y, half_w, height, bg[1], bg[2], bg[3], bg[4])
         Core.DrawRect(x + half_w + 1, y, width - half_w - 1, height, bg[1], bg[2], bg[3], bg[4])
-
-        -- Meter colors based on level
-        local function meter_color(peak)
-            if peak > 0.9 then return 0.9, 0.2, 0.2, 1  -- red
-            elseif peak > 0.7 then return 0.9, 0.8, 0.2, 1  -- yellow
-            else return 0.3, 0.75, 0.4, 1 end  -- green
-        end
 
         -- Left channel
         local h_l = floor(max(0, min(1, peak_l)) * height)
@@ -1409,12 +1760,6 @@ function Widgets.HMeter(id, peak_l, peak_r, theme, opts)
         Core.DrawRect(x, y, width, half_h, bg[1], bg[2], bg[3], bg[4])
         Core.DrawRect(x, y + half_h + 1, width, height - half_h - 1, bg[1], bg[2], bg[3], bg[4])
 
-        local function meter_color(peak)
-            if peak > 0.9 then return 0.9, 0.2, 0.2, 1
-            elseif peak > 0.7 then return 0.9, 0.8, 0.2, 1
-            else return 0.3, 0.75, 0.4, 1 end
-        end
-
         local w_l = floor(max(0, min(1, peak_l)) * width)
         if w_l > 0 then
             local r, g, b, a = meter_color(peak_l)
@@ -1435,9 +1780,13 @@ end
 -- IMAGE SYSTEM
 -- ============================================================================
 -- Buffer management: gfx has buffers 0-1023
--- Reserve 200-899 for user images
+-- Reserve 200-899 for user images. Freed buffer ids go to a free-list and
+-- are reused (audit B16: load/unload cycles used to consume an id forever —
+-- ~700 cycles exhausted the whole range for the rest of the session).
 local img_next_buffer = 200
-local img_cache = {}  -- path → { buffer=N, w=W, h=H }
+local img_cache = {}       -- cache key (path as passed) → { buffer=N, w=W, h=H }
+local img_free_bufs = {}   -- stack of released buffer ids
+local img_free_n = 0
 
 function Widgets.LoadImage(path)
     -- Check cache first
@@ -1449,25 +1798,37 @@ function Widgets.LoadImage(path)
         full_path = reaper.GetResourcePath() .. "/" .. path
     end
 
-    -- Allocate buffer
-    local buf = img_next_buffer
-    if buf > 899 then
-        if Log then Log.Warn("WIDGET", "Image buffer limit reached") end
-        return nil
+    -- Allocate buffer: reuse a freed id first
+    local buf
+    if img_free_n > 0 then
+        buf = img_free_bufs[img_free_n]
+        img_free_n = img_free_n - 1
+    else
+        buf = img_next_buffer
+        if buf > 899 then
+            if Log then Log.Warn("WIDGET", "Image buffer limit reached") end
+            return nil
+        end
+        img_next_buffer = img_next_buffer + 1
     end
-    img_next_buffer = img_next_buffer + 1
 
     -- Load image
     local ok = gfx.loadimg(buf, full_path)
     if ok < 0 then
         if Log then Log.Warn("WIDGET", "Failed to load image: " .. full_path) end
+        -- Return the id to the pool — nothing was loaded into it
+        img_free_n = img_free_n + 1
+        img_free_bufs[img_free_n] = buf
         return nil
     end
 
     -- Get dimensions
     local w, h = gfx.getimgdim(buf)
 
-    local img = { buffer = buf, w = w, h = h, path = full_path }
+    -- cache_key = the path as passed by the caller (audit B16: eviction used
+    -- to look up img.path — the RESOLVED path — so relative-path entries were
+    -- never removed and a later LoadImage returned a freed buffer).
+    local img = { buffer = buf, w = w, h = h, path = full_path, cache_key = path }
     img_cache[path] = img
     return img
 end
@@ -1475,7 +1836,10 @@ end
 function Widgets.UnloadImage(img)
     if img and img.buffer then
         gfx.setimgdim(img.buffer, 0, 0)
-        if img_cache[img.path] then img_cache[img.path] = nil end
+        img_cache[img.cache_key or img.path] = nil
+        img_free_n = img_free_n + 1
+        img_free_bufs[img_free_n] = img.buffer
+        img.buffer = nil  -- guard against double-unload re-freeing the id
     end
 end
 
@@ -1487,7 +1851,8 @@ function Widgets.Image(img, theme, opts)
     local w = opts.width or img.w
     local h = opts.height or img.h
 
-    if Core.IsVisible(x, y, w, h) then
+    -- Strict visibility: gfx.blit bypasses the software clip (see Knob)
+    if Core.IsFullyVisible(x, y, w, h) then
         gfx.blit(img.buffer, 1, 0, 0, 0, img.w, img.h, x, y, w, h)
     end
 
@@ -1517,7 +1882,8 @@ function Widgets.ImageButton(id, img, theme, opts)
         Core.ClearActive()
     end
 
-    if Core.IsVisible(x, y, w, h) then
+    -- Strict visibility: gfx.blit bypasses the software clip (see Knob)
+    if Core.IsFullyVisible(x, y, w, h) then
         -- Background on hover/active
         if Core.IsActive(id) and hovered then
             local bg = theme.colors.button_active
@@ -1625,48 +1991,102 @@ local function _get_desktop_dc()
     return nil, nil
 end
 
--- Sample one pixel from the desktop at SCREEN coordinates (sx, sy).
--- Returns {r, g, b} in 0-1 range, or nil on failure.
-local function sample_screen_pixel(sx, sy)
-    if not _has_js_api() then return nil end
-
+-- GDI/LICE resources are acquired ONCE per eyedropper session and released
+-- when it ends (audit P16: a 1×1 LICE bitmap + the desktop DC used to be
+-- created and destroyed EVERY frame while the eyedropper was active — GDI
+-- object churn measured in ms on old hardware).
+local function eyedropper_acquire()
+    if eyedropper.bm then return true end
+    if not _has_js_api() then return false end
     local hwnd, dc = _get_desktop_dc()
-    if not dc then return nil end
-
+    if not dc then return false end
     local bm = reaper.JS_LICE_CreateBitmap(true, 1, 1)
     if not bm then
         reaper.JS_GDI_ReleaseDC(hwnd, dc)
-        return nil
+        return false
     end
-
     local bm_dc = reaper.JS_LICE_GetDC(bm)
     if not bm_dc then
         reaper.JS_LICE_DestroyBitmap(bm)
         reaper.JS_GDI_ReleaseDC(hwnd, dc)
-        return nil
+        return false
     end
+    eyedropper.bm, eyedropper.bm_dc = bm, bm_dc
+    eyedropper.dc_hwnd, eyedropper.dc = hwnd, dc
+    return true
+end
 
-    reaper.JS_GDI_Blit(bm_dc, 0, 0, dc, sx, sy, 1, 1)
-    reaper.JS_GDI_ReleaseDC(hwnd, dc)
+local function eyedropper_release()
+    if eyedropper.bm then reaper.JS_LICE_DestroyBitmap(eyedropper.bm) end
+    if eyedropper.dc then reaper.JS_GDI_ReleaseDC(eyedropper.dc_hwnd, eyedropper.dc) end
+    eyedropper.bm, eyedropper.bm_dc = nil, nil
+    eyedropper.dc, eyedropper.dc_hwnd = nil, nil
+end
 
-    local pixel = reaper.JS_LICE_GetPixel(bm, 0, 0)
-    reaper.JS_LICE_DestroyBitmap(bm)
-
+-- Sample one pixel from the desktop at SCREEN coordinates (sx, sy) using the
+-- session resources. Returns {r, g, b} in 0-1 range (a reused table — copy
+-- if you need to keep it), or nil on failure.
+local function sample_screen_pixel(sx, sy)
+    if not eyedropper.bm then return nil end
+    reaper.JS_GDI_Blit(eyedropper.bm_dc, 0, 0, eyedropper.dc, sx, sy, 1, 1)
+    local pixel = reaper.JS_LICE_GetPixel(eyedropper.bm, 0, 0)
     if not pixel then return nil end
-    local r = (pixel >> 16) & 0xFF
-    local g = (pixel >> 8) & 0xFF
-    local b = pixel & 0xFF
-    return { r / 255, g / 255, b / 255 }
+    local c = eyedropper.sample
+    if not c then c = {}; eyedropper.sample = c end
+    c[1] = ((pixel >> 16) & 0xFF) / 255
+    c[2] = ((pixel >> 8) & 0xFF) / 255
+    c[3] = (pixel & 0xFF) / 255
+    return c
 end
 
 function Widgets.StartEyedropper(callback)
-    if not _has_js_api() then return false end
+    if not eyedropper_acquire() then return false end
     eyedropper.active = true
     eyedropper.callback = callback
     eyedropper.lmb_was_up = false
     eyedropper.prev_lmb = true   -- assume the arming click is still down
     eyedropper.last_color = nil
+    eyedropper.rgb_str = nil
     return true
+end
+
+-- Overlay drawn via the tooltip layer. Module-level function reading the
+-- eyedropper table — the old per-frame closure captured color/theme and
+-- string.format'd the RGB readout on every frame.
+local function _draw_eyedropper_overlay()
+    local theme = eyedropper.theme
+    local color = eyedropper.last_color
+    local hw, hh = 220, 38
+    local hx, hy = 6, 6
+    local pbg = (theme and theme.colors.popup_bg) or { 0.1, 0.1, 0.1, 0.95 }
+    Core.DrawRect(hx, hy, hw, hh, pbg[1], pbg[2], pbg[3], pbg[4] or 0.95)
+    local bc = (theme and theme.colors.border) or { 0.6, 0.6, 0.6, 1 }
+    Core.DrawRect(hx, hy, hw, hh, bc[1], bc[2], bc[3], bc[4] or 1, false)
+
+    local sw_x = hx + 4
+    local sw_y = hy + 4
+    local sw_size = hh - 8
+    if color then
+        Core.DrawRect(sw_x, sw_y, sw_size, sw_size, color[1], color[2], color[3], 1)
+        Core.DrawRect(sw_x, sw_y, sw_size, sw_size, 0.5, 0.5, 0.5, 0.6, false)
+        local tc = (theme and theme.colors.text) or COLOR_WHITE
+        -- Re-format the readout only when the sampled color changed
+        if eyedropper.rgb_r ~= color[1] or eyedropper.rgb_g ~= color[2]
+           or eyedropper.rgb_b ~= color[3] or not eyedropper.rgb_str then
+            eyedropper.rgb_str = string.format("R %d  G %d  B %d",
+                floor(color[1] * 255 + 0.5),
+                floor(color[2] * 255 + 0.5),
+                floor(color[3] * 255 + 0.5))
+            eyedropper.rgb_r, eyedropper.rgb_g, eyedropper.rgb_b =
+                color[1], color[2], color[3]
+        end
+        Core.DrawText(eyedropper.rgb_str, sw_x + sw_size + 8, hy + 4, tc[1], tc[2], tc[3], 1)
+        Core.DrawText("Click to pick — Esc / R-click to cancel",
+                              sw_x + sw_size + 8, hy + 18, tc[1], tc[2], tc[3], 0.7)
+    else
+        Core.DrawText("Eyedropper failed (JS_ReaScriptAPI missing?)",
+                      sw_x, hy + 12, 1, 0.5, 0.5, 1)
+    end
 end
 
 -- Called each frame from UI.Run.
@@ -1682,35 +2102,9 @@ function Widgets.UpdateEyedropper(theme)
     if color then eyedropper.last_color = color end
 
     -- Live preview overlay drawn in the top-left of the script window.
-    -- Uses Core.SetTooltip so it renders on top of everything else this frame.
-    Core.SetTooltip(function()
-        local hw, hh = 220, 38
-        local hx, hy = 6, 6
-        local pbg = (theme and theme.colors.popup_bg) or { 0.1, 0.1, 0.1, 0.95 }
-        Core.DrawRect(hx, hy, hw, hh, pbg[1], pbg[2], pbg[3], pbg[4] or 0.95)
-        local bc = (theme and theme.colors.border) or { 0.6, 0.6, 0.6, 1 }
-        Core.DrawRect(hx, hy, hw, hh, bc[1], bc[2], bc[3], bc[4] or 1, false)
-
-        local sw_x = hx + 4
-        local sw_y = hy + 4
-        local sw_size = hh - 8
-        if color then
-            Core.DrawRect(sw_x, sw_y, sw_size, sw_size, color[1], color[2], color[3], 1)
-            Core.DrawRect(sw_x, sw_y, sw_size, sw_size, 0.5, 0.5, 0.5, 0.6, false)
-            local tc = (theme and theme.colors.text) or { 1, 1, 1, 1 }
-            local rgb = string.format("R %d  G %d  B %d",
-                floor(color[1] * 255 + 0.5),
-                floor(color[2] * 255 + 0.5),
-                floor(color[3] * 255 + 0.5))
-            Core.DrawText(rgb,    sw_x + sw_size + 8, hy + 4,  tc[1], tc[2], tc[3], 1)
-            Core.DrawText("Click to pick — Esc / R-click to cancel",
-                                  sw_x + sw_size + 8, hy + 18, tc[1], tc[2], tc[3], 0.7)
-        else
-            local tc = { 1, 0.5, 0.5, 1 }
-            Core.DrawText("Eyedropper failed (JS_ReaScriptAPI missing?)",
-                          sw_x, hy + 12, tc[1], tc[2], tc[3], 1)
-        end
-    end)
+    -- Uses the tooltip layer so it renders on top of everything this frame.
+    eyedropper.theme = theme
+    Core.SetTooltip(_draw_eyedropper_overlay)
 
     -- Global mouse button state (independent of script window focus)
     local mstate = reaper.JS_Mouse_GetState(0xFF)
@@ -1727,6 +2121,7 @@ function Widgets.UpdateEyedropper(theme)
         end
         eyedropper.active = false
         eyedropper.callback = nil
+        eyedropper_release()
         return
     end
 
@@ -1734,10 +2129,13 @@ function Widgets.UpdateEyedropper(theme)
     if not lmb_now then eyedropper.lmb_was_up = true end
     eyedropper.prev_lmb = lmb_now
 
-    -- Right-click or Escape cancels
+    -- Right-click or Escape cancels (the consumed ESC must not bubble up to
+    -- Core.Run's close handling — audit B2)
     if rmb_now or Core.GetChar() == 27 then
+        if Core.GetChar() == 27 then Core.ConsumeChar() end
         eyedropper.active = false
         eyedropper.callback = nil
+        eyedropper_release()
     end
 end
 
@@ -1774,16 +2172,34 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
         data._init = true
     end
 
-    -- Check for pending color from popup (set on previous frames)
+    -- Check for pending color from popup. `changed` is only reported on the
+    -- frame(s) where the popup actually wrote a new value (audit B6: it used
+    -- to stay true for the whole popup lifetime — callers doing
+    -- `if changed then save end` wrote to disk/REAPER ~30×/s).
     local changed = false
-    local new_color = { color[1], color[2], color[3] }
+    local new_color = color
     if data.pending then
         new_color = data.pending
-        changed = true
-        -- Keep pending alive while popup is open (live update)
+        if data.pending_frame and Core.GetFrame() <= data.pending_frame + 1 then
+            changed = true
+            -- Track the value we just handed to the caller so the external-
+            -- change resync below doesn't mistake it for an outside edit.
+            data.sync_r, data.sync_g, data.sync_b =
+                new_color[1], new_color[2], new_color[3]
+        end
+        -- Keep pending alive while popup is open (live swatch display)
         if not Core.HasPopup(id) then
             data.pending = nil
         end
+    end
+
+    -- Resync HSV when the caller's color changed externally — preset load,
+    -- theme switch (audit B7: hue/sat/val kept the values captured at the
+    -- first init forever; the popup then reopened on a stale color).
+    if data.initialized and not data.pending
+       and (color[1] ~= data.sync_r or color[2] ~= data.sync_g
+            or color[3] ~= data.sync_b) then
+        data.initialized = false
     end
 
     -- Initialize HSV from current color
@@ -1806,6 +2222,7 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
         data.hue = data.hue / 6
         if data.hue < 0 then data.hue = data.hue + 1 end
         data.initialized = true
+        data.sync_r, data.sync_g, data.sync_b = cr, cg, cb
     end
 
     -- Click preview to open picker (only when no popup)
@@ -1897,6 +2314,7 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
                     d.val = max(0, min(1, 1 - (my - sq_y) / sq_size))
                     local nr, ng, nb = hsv_to_rgb(d.hue, d.sat, d.val)
                     d.pending = { nr, ng, nb }
+                    d.pending_frame = Core.GetFrame()
                 end
 
                 -- Drag hue bar
@@ -1905,6 +2323,7 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
                     d.hue = max(0, min(1, (my - sq_y) / sq_size))
                     local nr, ng, nb = hsv_to_rgb(d.hue, d.sat, d.val)
                     d.pending = { nr, ng, nb }
+                    d.pending_frame = Core.GetFrame()
                 end
             end
 
@@ -1923,8 +2342,11 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
                 if Core.MouseClicked(1) and not in_picker then
                     Core.ClearPopup(id)
                 end
-                if Core.MouseClicked(2) or Core.GetChar() == 27 then
+                if Core.MouseClicked(2) then
                     Core.ClearPopup(id)
+                elseif Core.GetChar() == 27 then
+                    Core.ClearPopup(id)
+                    Core.ConsumeChar()
                 end
             end
         end)
@@ -1938,8 +2360,8 @@ function Widgets.ColorPicker(id, label, color, theme, opts)
             Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
         end
 
-        -- Show current color (including pending changes)
-        local display = changed and new_color or color
+        -- Show current color (new_color already tracks a live pending value)
+        local display = new_color
         Core.DrawRect(px, py, preview_size, preview_size, display[1], display[2], display[3], 1)
         local bc = theme.colors.border
         Core.DrawRect(px, py, preview_size, preview_size, bc[1], bc[2], bc[3], 0.5, false)
@@ -1988,8 +2410,11 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
     end
     local changed = false
     local new_value = value
+    local disabled = opts.disabled or Core.IsDisabled()
 
-    local hovered = Core.MouseInClippedRect(ix, iy, input_w, h) and not Core.HasPopup()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(ix, iy, input_w, h)
+        and not Core.HasPopup()
     local is_focused = Core.IsFocused(id)
 
     -- If we were editing but lost focus, submit and exit edit mode
@@ -2041,8 +2466,9 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
             end
         end
 
-        -- Mouse wheel to increment/decrement
-        if hovered and not Core.HasPopup() then
+        -- Mouse wheel to increment/decrement. Consumed (audit B4): otherwise
+        -- the same tick also scrolls the parent child-container.
+        if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
             local wheel = Core.GetState().mouse_wheel
             if wheel ~= 0 then
                 local dir = wheel > 0 and 1 or -1
@@ -2051,6 +2477,7 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
                 if max_val then new_value = min(max_val, new_value) end
                 if step >= 1 then new_value = floor(new_value + 0.5) end
                 if new_value ~= value then changed = true end
+                Core.ConsumeWheel()
             end
         end
     end
@@ -2069,21 +2496,31 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
             end
             data.editing = false
             Core.SetFocus(nil)
+            Core.ConsumeChar()
         elseif char == Keys.ESCAPE then
+            -- Cancel edit. Consuming is essential (audit B2): otherwise
+            -- Core.Run sees an unhandled ESC with no focus left and closes
+            -- the whole window.
             data.editing = false
             Core.SetFocus(nil)
+            Core.ConsumeChar()
         elseif char == Keys.BACKSPACE then
             if #data.edit_buf > 0 then
                 data.edit_buf = data.edit_buf:sub(1, -2)
                 data.blink_time = reaper.time_precise()
             end
-        elseif char > 0 and char < 256 then
+            Core.ConsumeChar()
+        elseif char > 31 and char < 256 then
             local c = string.char(char)
             if c:match("[0-9%.%-]") then
                 data.edit_buf = data.edit_buf .. c
                 data.blink_time = reaper.time_precise()
             end
+            Core.ConsumeChar()
         end
+        -- Wake the idle loop exactly at the next caret-blink edge instead of
+        -- keeping full-rate redraws while a field merely has focus (audit P2)
+        if data.editing then Core.ScheduleBlinkRedraw(data.blink_time) end
     end
 
     -- Draw
@@ -2124,7 +2561,7 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
         -- Blinking cursor when editing
         if data.editing and is_focused then
             local elapsed = reaper.time_precise() - data.blink_time
-            if elapsed % 1.0 < 0.55 then
+            if elapsed % Core.BLINK_PERIOD < Core.BLINK_ON then
                 local cursor_x = tx + dtw
                 Core.DrawRect(cursor_x + 1, iy + 3, 1, h - 6, tc[1], tc[2], tc[3], 0.9)
             end
@@ -2192,11 +2629,12 @@ function Widgets.TextEdit(id, text, theme, opts)
         -- Find clicked line
         local clicked_line = max(1, min(#lines, floor(click_y / row_h) + 1))
 
-        -- Find clicked character in that line
+        -- Find clicked character in that line (raw gfx.measurestr: these
+        -- one-shot prefix probes must not fill the measure cache)
         local line_text = lines[clicked_line] or ""
         local char_in_line = 0
         for i = 1, #line_text do
-            if Core.MeasureText(line_text:sub(1, i)) > click_x then break end
+            if gfx.measurestr(line_text:sub(1, i)) > click_x then break end
             char_in_line = i
         end
 
@@ -2208,27 +2646,29 @@ function Widgets.TextEdit(id, text, theme, opts)
         data.cursor = abs_pos + char_in_line
     end
 
-    -- Keyboard input
+    -- Keyboard input (byte offsets snapped to UTF-8 boundaries — audit B13)
     if is_focused and Keys then
         local char = Core.GetChar()
 
         if char == Keys.BACKSPACE and data.cursor > 0 then
-            new_text = text:sub(1, data.cursor - 1) .. text:sub(data.cursor + 1)
-            data.cursor = data.cursor - 1
+            local p = utf8_prev(text, data.cursor)
+            new_text = text:sub(1, p) .. text:sub(data.cursor + 1)
+            data.cursor = p
             changed = true
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.DELETE and data.cursor < #text then
-            new_text = text:sub(1, data.cursor) .. text:sub(data.cursor + 2)
+            local n = utf8_next(text, data.cursor)
+            new_text = text:sub(1, data.cursor) .. text:sub(n + 1)
             changed = true
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.LEFT and data.cursor > 0 then
-            data.cursor = data.cursor - 1
+            data.cursor = utf8_prev(text, data.cursor)
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.RIGHT and data.cursor < #text then
-            data.cursor = data.cursor + 1
+            data.cursor = utf8_next(text, data.cursor)
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.HOME then
@@ -2265,14 +2705,25 @@ function Widgets.TextEdit(id, text, theme, opts)
             end
             data.blink_time = reaper.time_precise()
 
-        elseif char > 0 and char >= 32 and char < 256 then
+        elseif char >= 32 and char < 0x2000 then
+            -- Printable range; REAPER's named keys (arrows, F-keys, 'pgup'…)
+            -- are multi-char int codes far above 0x2000.
+            local s = char_to_utf8(char)
             local before = text:sub(1, data.cursor)
             local after = text:sub(data.cursor + 1)
-            new_text = before .. string.char(char) .. after
-            data.cursor = data.cursor + 1
+            new_text = before .. s .. after
+            data.cursor = data.cursor + #s
             changed = true
             data.blink_time = reaper.time_precise()
         end
+
+        -- Keys handled here must not reach Core.Run's close logic; an
+        -- unconsumed ESC intentionally falls through (Core unfocuses on it).
+        if char > 0 and char ~= 27 then Core.ConsumeChar() end
+
+        -- Schedule the caret-blink wakeups (audit P2: focus no longer keeps
+        -- the loop at full rate — blink redraws are deadline-scheduled).
+        Core.ScheduleBlinkRedraw(data.blink_time)
     end
 
     -- Scroll (cache line split when text unchanged)
@@ -2289,13 +2740,15 @@ function Widgets.TextEdit(id, text, theme, opts)
     local _, line_h = Core.MeasureText("M")
     local content_h = #lines * (line_h + 2)
 
-    if hovered and not Core.HasPopup() then
+    if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
         local wheel = Core.GetState().mouse_wheel
         if wheel ~= 0 then
             -- 3 lines per notch, independent of platform wheel-delta magnitude.
             local dir = wheel > 0 and -1 or 1
             data.scroll_y = max(0, min(data.scroll_y + dir * (line_h + 2) * 3,
                 max(0, content_h - h + pad * 2)))
+            -- Consumed (audit B4): otherwise the parent container scrolls too
+            Core.ConsumeWheel()
         end
     end
 
@@ -2305,15 +2758,16 @@ function Widgets.TextEdit(id, text, theme, opts)
         Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
         draw_win32_bevel(x, y, w, h, theme, "sunken")
 
-        -- Render into buffer — only resize when dimensions actually change.
+        -- Render into buffer — only resize when the SHARED buffer's real
+        -- dimensions change (audit B1: tracked per-buffer, not per-widget).
         local buf_id = 901
         local vis_w = w - pad * 2
         local vis_h = h - 4
         gfx.dest = buf_id
-        if data._buf_w ~= vis_w or data._buf_h ~= vis_h then
+        if textedit_buf_w ~= vis_w or textedit_buf_h ~= vis_h then
             gfx.setimgdim(buf_id, vis_w, vis_h)
-            data._buf_w = vis_w
-            data._buf_h = vis_h
+            textedit_buf_w = vis_w
+            textedit_buf_h = vis_h
         end
         gfx.set(bg[1], bg[2], bg[3], 1)
         gfx.rect(0, 0, vis_w, vis_h, 1)
@@ -2321,19 +2775,30 @@ function Widgets.TextEdit(id, text, theme, opts)
         local tc = theme.colors.text
         gfx.set(tc[1], tc[2], tc[3], tc[4])
 
-        local draw_y = 2 - data.scroll_y
+        -- Windowed iteration (audit P12): only the visible rows are walked —
+        -- the old loop iterated ALL document lines each frame, O(#lines) for
+        -- a handful of visible ones.
+        local row_h = line_h + 2
+        local first = max(1, floor(data.scroll_y / row_h) + 1)
+        local last = min(#lines, first + ceil(vis_h / row_h) + 1)
+        -- Byte offset of the first visible line (O(first) integer adds; only
+        -- while the editor is visible and being redrawn)
         local char_pos = 0
-        for _, line in ipairs(lines) do
-            if draw_y + line_h > 0 and draw_y < vis_h then
-                gfx.x, gfx.y = 0, draw_y
-                gfx.drawstr(line)
-            end
+        for i = 1, first - 1 do
+            char_pos = char_pos + #lines[i] + 1  -- +1 for \n
+        end
+
+        for li = first, last do
+            local line = lines[li]
+            local draw_y = 2 - data.scroll_y + (li - 1) * row_h
+            gfx.x, gfx.y = 0, draw_y
+            gfx.drawstr(line)
 
             -- Cursor in this line?
             if is_focused and data.cursor >= char_pos and data.cursor <= char_pos + #line then
                 local elapsed = reaper.time_precise() - data.blink_time
-                if elapsed % 1.0 < 0.55 then
-                    local cx = Core.MeasureText(line:sub(1, data.cursor - char_pos))
+                if elapsed % Core.BLINK_PERIOD < Core.BLINK_ON then
+                    local cx = gfx.measurestr(line:sub(1, data.cursor - char_pos))
                     gfx.set(tc[1], tc[2], tc[3], 0.9)
                     gfx.rect(cx, draw_y, 1, line_h, 1)
                     gfx.set(tc[1], tc[2], tc[3], tc[4])
@@ -2341,7 +2806,6 @@ function Widgets.TextEdit(id, text, theme, opts)
             end
 
             char_pos = char_pos + #line + 1  -- +1 for \n
-            draw_y = draw_y + line_h + 2
         end
 
         -- Blit to screen
@@ -2356,8 +2820,10 @@ function Widgets.TextEdit(id, text, theme, opts)
             local scroll_range = content_h - h + pad * 2
             local ratio = scroll_range > 0 and (data.scroll_y / scroll_range) or 0
             local thumb_y = y + 2 + (bar_h - thumb_h) * ratio
-            Core.DrawRect(bar_x, y + 2, 4, bar_h, 0.2, 0.2, 0.2, 0.3)
-            Core.DrawRect(bar_x, thumb_y, 4, thumb_h, 0.4, 0.4, 0.4, 0.5)
+            local sbg = theme.colors.scrollbar_bg
+            local sgr = theme.colors.scrollbar_grab
+            Core.DrawRect(bar_x, y + 2, 4, bar_h, sbg[1], sbg[2], sbg[3], (sbg[4] or 1) * 0.5)
+            Core.DrawRect(bar_x, thumb_y, 4, thumb_h, sgr[1], sgr[2], sgr[3], sgr[4] or 1)
         end
     end
 
@@ -2376,6 +2842,7 @@ function Widgets.RadioGroup(id, label, current_index, items, theme, opts)
     local horizontal = opts.horizontal or false
     local changed = false
     local new_index = current_index
+    local disabled = opts.disabled or Core.IsDisabled()
 
     if label and label ~= "" then
         Widgets.Text(label, theme)
@@ -2383,8 +2850,19 @@ function Widgets.RadioGroup(id, label, current_index, items, theme, opts)
 
     if horizontal then Layout.SameLine() end
 
+    -- Per-item ids cached once (audit P9: `id .. "_" .. i` allocated one
+    -- string per item per FRAME — the exact pattern PERFORMANCE.md forbids).
+    local rd = Core.GetWidgetSubData("radio", id)
+    local item_ids = rd.item_ids
+    if not item_ids or rd.item_count ~= #items then
+        item_ids = {}
+        for i = 1, #items do item_ids[i] = id .. "_" .. i end
+        rd.item_ids = item_ids
+        rd.item_count = #items
+    end
+
     for i, item_label in ipairs(items) do
-        local item_id = id .. "_" .. i
+        local item_id = item_ids[i]
         local size = theme.checkbox_size
         local item_tw, item_th = Core.MeasureText(item_label)
         local total_w = size + 6 + item_tw
@@ -2401,7 +2879,9 @@ function Widgets.RadioGroup(id, label, current_index, items, theme, opts)
         local h = max(size, item_th)
         local is_selected = (i == current_index)
 
-        local item_hovered = Core.MouseInClippedRect(x, y, total_w, h) and not Core.HasPopup()
+        local item_hovered = (not disabled)
+            and Core.MouseInClippedRect(x, y, total_w, h)
+            and not Core.HasPopup()
 
         if item_hovered then
             Core.SetHot(item_id)
@@ -2436,7 +2916,7 @@ function Widgets.RadioGroup(id, label, current_index, items, theme, opts)
             end
 
             -- Label
-            local tc = theme.colors.text
+            local tc = disabled and theme.colors.text_disabled or theme.colors.text
             local lx = x + size + 6
             local ly = y + floor((h - item_th) / 2)
             Core.DrawText(item_label, lx, ly, tc[1], tc[2], tc[3], tc[4])
@@ -2527,7 +3007,18 @@ function Widgets.Table(id, columns, rows, theme, opts)
     local show_header = opts.header ~= false
     local selected_row = opts.selected  -- highlight this row index
 
-    -- Calculate column widths
+    -- Scroll state
+    local data = Core.GetWidgetSubData("table", id)
+    if data._init == nil then
+        data.scroll_y = 0
+        data._cells = {}   -- row_idx -> { col_idx -> {raw, str, th} }
+        data._hdr = {}     -- col_idx -> {raw, th}
+        data._col_widths = {}
+        data._init = true
+    end
+
+    -- Calculate column widths into a REUSED table (audit 1.3 leftover:
+    -- col_widths = {} allocated per frame on stable data)
     local total_fixed = 0
     local auto_count = 0
     for _, col in ipairs(columns) do
@@ -2539,23 +3030,30 @@ function Widgets.Table(id, columns, rows, theme, opts)
     end
     local auto_width = auto_count > 0 and floor((avail_w - total_fixed) / auto_count) or 0
 
-    local col_widths = {}
+    local col_widths = data._col_widths
     for i, col in ipairs(columns) do
         col_widths[i] = col.width or auto_width
     end
+    for i = #columns + 1, #col_widths do col_widths[i] = nil end
+
+    -- Purge cell caches of rows that no longer exist (audit P11: after a
+    -- dataset shrink — search filter, refresh — the stale row caches kept
+    -- their strings alive for the whole session)
+    local nrows = #rows
+    if data._last_nrows and nrows < data._last_nrows then
+        local cells = data._cells
+        for i = nrows + 1, data._last_nrows do cells[i] = nil end
+    end
+    data._last_nrows = nrows
 
     -- Total height
-    local visible_rows = min(#rows, max_visible)
+    local visible_rows = min(nrows, max_visible)
     local total_h = (show_header and header_h or 0) + visible_rows * row_h
 
-    -- Scroll state
-    local data = Core.GetWidgetSubData("table", id)
-    if data._init == nil then
-        data.scroll_y = 0
-        data._cells = {}   -- row_idx -> { col_idx -> {raw, str, th} }
-        data._hdr = {}     -- col_idx -> {raw, th}
-        data._init = true
-    end
+    -- Re-clamp scroll every frame (audit B14: when the row count shrinks —
+    -- filtered list — the view stayed past the end, showing a blank list
+    -- until the next wheel tick)
+    data.scroll_y = max(0, min(data.scroll_y, max(0, nrows - visible_rows)))
     local scroll_offset = floor(data.scroll_y)
 
     local clicked_row, clicked_col = nil, nil
@@ -2587,6 +3085,34 @@ function Widgets.Table(id, columns, rows, theme, opts)
                 local tc = theme.colors.text
                 Core.DrawText(h_text, tx, ty, tc[1], tc[2], tc[3], tc[4])
 
+                -- Sort indicator (F8): opts.sort = { col = idx, dir = "asc"|"desc" }.
+                -- The toolkit only DRAWS the indicator and reports header
+                -- clicks (clicked_row == 0) — sorting the data is the
+                -- caller's job (event-driven, never per frame).
+                if opts.sort and opts.sort.col == i then
+                    local asc = opts.sort.dir ~= "desc"
+                    local isz = min(header_h - 4, 12)
+                    local ix2 = col_x + col_widths[i] - isz - 2
+                    local iy2 = draw_y + floor((header_h - isz) / 2)
+                    local ac = theme.colors.accent
+                    if Icons then
+                        if asc then
+                            Icons.TriangleUp(ix2, iy2, isz, ac[1], ac[2], ac[3], ac[4] or 1)
+                        else
+                            Icons.TriangleDown(ix2, iy2, isz, ac[1], ac[2], ac[3], ac[4] or 1)
+                        end
+                    else
+                        Core.DrawText(asc and "^" or "v", ix2, ty, ac[1], ac[2], ac[3], ac[4] or 1)
+                    end
+                end
+
+                -- Header click → reported as clicked_row = 0 + clicked_col
+                if show_header and Core.MouseInClippedRect(col_x, draw_y, col_widths[i], header_h)
+                   and not Core.HasPopup() and Core.MouseClicked(1) then
+                    clicked_row = 0
+                    clicked_col = i
+                end
+
                 -- Column separator
                 if i < #columns then
                     local sep_x = col_x + col_widths[i]
@@ -2605,7 +3131,7 @@ function Widgets.Table(id, columns, rows, theme, opts)
         local list_text = theme.colors.list_text or theme.colors.text
         local list_alt  = theme.colors.list_alt_bg
         local list_sel  = theme.colors.list_selected or theme.colors.accent
-        local list_sel_t = theme.colors.list_selected_text or { 1, 1, 1, 1 }
+        local list_sel_t = theme.colors.list_selected_text or COLOR_WHITE
         local list_hov  = theme.colors.list_hover or theme.colors.header_hovered
         local list_grid = theme.colors.list_grid
 
@@ -2711,12 +3237,14 @@ function Widgets.Table(id, columns, rows, theme, opts)
         -- Scroll with wheel — notch-based step (opts.scroll_step rows per notch)
         if #rows > max_visible then
             local wheel_area = Core.MouseInRect(x, y, avail_w, total_h)
-            if wheel_area and not Core.HasPopup() then
+            if wheel_area and not Core.HasPopup() and not Core.IsWheelConsumed() then
                 local state = Core.GetState()
                 if state.mouse_wheel ~= 0 then
                     local step = opts.scroll_step or 3
                     local dir = state.mouse_wheel > 0 and -1 or 1
                     data.scroll_y = max(0, min(data.scroll_y + dir * step, #rows - visible_rows))
+                    -- Consumed (audit B4): otherwise the parent scrolls too
+                    Core.ConsumeWheel()
                 end
             end
         else
@@ -2749,6 +3277,11 @@ function Widgets.BeginModal(id, title, theme, opts)
     local my = floor((win_h - h) / 2)
     local pad = theme.window_padding
 
+    -- Block input to everything outside the modal (audit B12: widgets behind
+    -- the dimmed overlay used to stay clickable). Core fails hit-tests
+    -- outside the Enter/Leave scope for this frame and the next one.
+    Core.EnterModalScope()
+
     -- Dim background overlay
     Core.DrawRect(0, 0, win_w, win_h, 0, 0, 0, 0.5)
 
@@ -2770,19 +3303,25 @@ function Widgets.BeginModal(id, title, theme, opts)
         h = h - theme.tab_height
     end
 
-    -- Push a container for modal content
-    local c = {
-        id = "modal_" .. id,
-        x = mx, y = my, w = w, h = h,
-        pad_x = pad, pad_y = pad,
-        cursor_x = pad, cursor_y = pad,
-        content_h = 0, scroll_y = 0,
-        scrollable = false,
-        same_line = false, same_line_x = 0,
-        max_row_h = 0, spacing = theme.item_spacing,
-        indent_x = 0, sameline_pending = false,
-        last_widget_end_x = pad, last_widget_y = pad, last_widget_h = 0,
-    }
+    -- Push a pooled container for modal content (audit P8: a ~20-field table
+    -- plus an id concat used to be allocated every frame the modal was open)
+    local md = Core.GetWidgetSubData("modal", id)
+    if not md.cid then
+        md.cid = "modal_" .. id
+        md.c = {}
+    end
+    local c = md.c
+    for k in pairs(c) do c[k] = nil end
+    c.id = md.cid
+    c.x = mx; c.y = my; c.w = w; c.h = h
+    c.pad_x = pad; c.pad_y = pad
+    c.cursor_x = pad; c.cursor_y = pad
+    c.content_h = 0; c.scroll_y = 0
+    c.scrollable = false
+    c.same_line = false; c.same_line_x = 0
+    c.max_row_h = 0; c.spacing = theme.item_spacing
+    c.indent_x = 0; c.sameline_pending = false
+    c.last_widget_end_x = pad; c.last_widget_y = pad; c.last_widget_h = 0
     Core.PushContainer(c)
     Core.PushClipRect(mx, my, w, h)
 end
@@ -2790,6 +3329,7 @@ end
 function Widgets.EndModal()
     Core.PopClipRect()
     Core.PopContainer()
+    Core.LeaveModalScope()
 end
 
 -- ============================================================================
@@ -2853,6 +3393,27 @@ function Widgets.BeginDropTarget(x, y, w, h, accept_type, theme)
     return nil
 end
 
+-- Drag ghost drawn via the tooltip layer. Module-level function + stashed
+-- theme: no closure allocation per drag frame.
+local function _draw_drag_preview()
+    local theme = drag_state.theme
+    if not theme then return end
+    local text = drag_state.text
+    local mx, my = Core.GetMousePos()
+    local pad = 4
+    local tw, th = Core.MeasureText(text)
+    local bw = tw + pad * 2
+    local bh = th + pad * 2
+
+    Core.DrawRect(mx + 10, my + 10, bw, bh, 0, 0, 0, 0.3)
+    local bg = theme.colors.popup_bg
+    Core.DrawRect(mx + 8, my + 8, bw, bh, bg[1], bg[2], bg[3], 0.9)
+    local bc = theme.colors.accent
+    Core.DrawRect(mx + 8, my + 8, bw, bh, bc[1], bc[2], bc[3], 0.6, false)
+    local tc = theme.colors.text
+    Core.DrawText(text, mx + 8 + pad, my + 8 + pad, tc[1], tc[2], tc[3], 0.9)
+end
+
 -- Draw drag preview — deferred to tooltip layer (on top of everything)
 function Widgets.DrawDragPreview(theme)
     if not drag_state.active then return end
@@ -2866,22 +3427,8 @@ function Widgets.DrawDragPreview(theme)
     end
 
     -- Defer to tooltip layer so it draws on top
-    local text = drag_state.text
-    Core.SetTooltip(function()
-        local mx, my = Core.GetMousePos()
-        local pad = 4
-        local tw, th = Core.MeasureText(text)
-        local bw = tw + pad * 2
-        local bh = th + pad * 2
-
-        Core.DrawRect(mx + 10, my + 10, bw, bh, 0, 0, 0, 0.3)
-        local bg = theme.colors.popup_bg
-        Core.DrawRect(mx + 8, my + 8, bw, bh, bg[1], bg[2], bg[3], 0.9)
-        local bc = theme.colors.accent
-        Core.DrawRect(mx + 8, my + 8, bw, bh, bc[1], bc[2], bc[3], 0.6, false)
-        local tc = theme.colors.text
-        Core.DrawText(text, mx + 8 + pad, my + 8 + pad, tc[1], tc[2], tc[3], 0.9)
-    end)
+    drag_state.theme = theme
+    Core.SetTooltip(_draw_drag_preview)
 end
 
 function Widgets.IsDragging(drag_type)
@@ -2895,15 +3442,41 @@ function Widgets.GetDragPayload()
     return drag_state.payload
 end
 
+-- Reused rect for ContextMenu's "item" scope (no per-call table)
+local _cm_rect = { 0, 0, 0, 0 }
+
 -- ============================================================================
 -- CONTEXT MENU (right-click popup)
 -- ============================================================================
 -- Call after a widget or area. Shows on right-click.
 -- items = { {label="Cut", action=fn}, {label="Copy"}, {separator=true}, ... }
 -- Returns: true if an item was clicked (action already called)
-function Widgets.ContextMenu(id, items, theme)
-    -- Open on right-click
-    if Core.MouseClicked(2) then
+-- opts (audit B10):
+--   rect = {x, y, w, h} → only open when the right-click lands inside
+--   scope = "item"      → only open on the last submitted widget's rect
+--   (default: whole window, previous behavior)
+-- item.shortcut is DISPLAY-ONLY — dispatching the key combo is the caller's
+-- job (the toolkit has no global accelerator table).
+function Widgets.ContextMenu(id, items, theme, opts)
+    -- Open on right-click. Never over an already-open popup (the old code
+    -- hijacked/overwrote any live popup, and the click that closed the menu
+    -- immediately reopened it).
+    if Core.MouseClicked(2) and not Core.HasPopup() then
+        if opts then
+            local r
+            if opts.rect then
+                r = opts.rect
+            elseif opts.scope == "item" then
+                local ix, iy, iw, ih = Core.GetLastItemRect()
+                if iw > 0 then
+                    _cm_rect[1], _cm_rect[2], _cm_rect[3], _cm_rect[4] = ix, iy, iw, ih
+                    r = _cm_rect
+                end
+            end
+            if r and not Core.MouseInRect(r[1], r[2], r[3], r[4]) then
+                return
+            end
+        end
         local mx, my = Core.GetMousePos()
         local item_h = theme.combo_height
         local menu_w = 0
@@ -2994,8 +3567,110 @@ function Widgets.ContextMenu(id, items, theme)
                and not Core.MouseInRect(popup_x, popup_y, menu_w, menu_h) then
                 Core.ClearPopup(id)
             end
+
+            -- Close on Escape (consumed so the window doesn't close too)
+            if Core.GetChar() == 27 then
+                Core.ClearPopup(id)
+                Core.ConsumeChar()
+            end
         end)
     end
+end
+
+-- ============================================================================
+-- NATIVE MENU (gfx.showmenu wrapper — F11)
+-- ============================================================================
+-- Nested submenus, checkmarks and disabled items for free via the OS menu
+-- (zero per-frame render cost, blocking while open). The pragmatic choice
+-- for deep menus; ContextMenu stays the theme-styled flat alternative.
+--
+-- items = {
+--   { label = "Cut", action = fn },
+--   { label = "Paste", disabled = true },
+--   { separator = true },
+--   { label = "Send to", children = { { label = "Bus 1" }, ... } },
+--   { label = "Enabled", checked = true },
+-- }
+-- Returns: selected item table (or nil). Runs item.action() when present.
+function Widgets.NativeMenu(items, x, y)
+    local parts = {}
+    local flat = {}  -- selectable-slot index → item (leaves + disabled leaves)
+
+    local function emit(list)
+        for _, it in ipairs(list) do
+            if it.separator then
+                parts[#parts + 1] = ""
+            elseif it.children then
+                local prefix = it.disabled and "#>" or ">"
+                parts[#parts + 1] = prefix .. (it.label or "")
+                emit(it.children)
+                -- "<" closes the submenu: it prefixes the submenu's LAST entry
+                parts[#parts] = "<" .. parts[#parts]
+            else
+                local prefix = ""
+                if it.disabled then prefix = prefix .. "#" end
+                if it.checked then prefix = prefix .. "!" end
+                parts[#parts + 1] = prefix .. (it.label or "")
+                flat[#flat + 1] = it
+            end
+        end
+    end
+    emit(items)
+
+    gfx.x = x or gfx.mouse_x
+    gfx.y = y or gfx.mouse_y
+    local sel = gfx.showmenu(table.concat(parts, "|"))
+    if sel and sel > 0 then
+        local it = flat[sel]
+        if it then
+            if it.action then it.action() end
+            return it
+        end
+    end
+    return nil
+end
+
+-- Simple horizontal menu bar built on NativeMenu.
+-- menus = { { label = "File", items = {NativeMenu items} }, ... }
+-- Returns: selected item table (or nil), menu index
+function Widgets.MenuBar(id, menus, theme)
+    local x, y = Layout.GetCursorPos()
+    local h = theme.tab_height
+    local avail_w = Layout.GetAvailableWidth()
+    local result, result_menu = nil, nil
+
+    -- Bar background
+    local hbg = theme.colors.header
+    Core.DrawRect(x, y, avail_w, h, hbg[1], hbg[2], hbg[3], hbg[4])
+
+    local mx = x
+    local disabled = Core.IsDisabled()
+    for i, menu in ipairs(menus) do
+        local tw, th = Core.MeasureText(menu.label)
+        local bw = tw + theme.frame_padding_x * 2
+        local hovered = (not disabled)
+            and Core.MouseInClippedRect(mx, y, bw, h)
+            and not Core.HasPopup()
+
+        if hovered then
+            local hc = theme.colors.header_hovered
+            Core.DrawRect(mx, y, bw, h, hc[1], hc[2], hc[3], hc[4])
+        end
+
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
+        Core.DrawText(menu.label, mx + theme.frame_padding_x,
+            y + floor((h - th) / 2), tc[1], tc[2], tc[3], tc[4])
+
+        if hovered and Core.MouseClicked(1) then
+            result = Widgets.NativeMenu(menu.items, mx, y + h)
+            result_menu = i
+        end
+
+        mx = mx + bw
+    end
+
+    Layout.AdvanceCursor(avail_w, h)
+    return result, result_menu
 end
 
 -- ============================================================================
@@ -3016,6 +3691,50 @@ end
 
 -- Buffer ID for text clipping (gfx offscreen buffer)
 local INPUT_BUFFER_ID = 900
+
+-- Selection helpers, module-level (audit P13: these were declared as four
+-- closures INSIDE InputText on every focused frame).
+local function input_get_sel(data)
+    if data.sel_start == nil then return nil end
+    return min(data.sel_start, data.cursor), max(data.sel_start, data.cursor)
+end
+
+-- Delete the selection from `text`. Returns the new text, or nil if there
+-- was no selection.
+local function input_del_sel(data, text)
+    local s, e = input_get_sel(data)
+    if not s then return nil end
+    local out = text:sub(1, s) .. text:sub(e + 1)
+    data.cursor = s
+    data.sel_start = nil
+    return out
+end
+
+-- Insert `str` at the cursor (replacing any selection). Returns the new text.
+local function input_insert(data, text, str)
+    local deleted = input_del_sel(data, text)
+    if deleted then text = deleted end
+    local out = text:sub(1, data.cursor) .. str .. text:sub(data.cursor + 1)
+    data.cursor = data.cursor + #str
+    return out
+end
+
+-- Undo snapshot (F12: Ctrl+Z / Ctrl+Y): push the CURRENT state before a
+-- mutation. Coalesced by time so a burst of typing forms one undo step;
+-- bounded stack. Event-driven — runs only on keystrokes.
+local function input_push_undo(data, text)
+    local now = reaper.time_precise()
+    local stack = data._undo
+    if not stack then stack = {}; data._undo = stack end
+    if data._undo_time and (now - data._undo_time) < 0.4 and #stack > 0 then
+        data._undo_time = now
+        return  -- coalesce with the previous snapshot
+    end
+    data._undo_time = now
+    if #stack >= 64 then table.remove(stack, 1) end
+    stack[#stack + 1] = { text, data.cursor }
+    data._redo = nil  -- a new edit invalidates the redo chain
+end
 
 function Widgets.InputText(id, label, text, theme, opts)
     opts = opts or {}
@@ -3056,7 +3775,7 @@ function Widgets.InputText(id, label, text, theme, opts)
         data._init = true
     end
 
-    local disabled = opts.disabled or false
+    local disabled = opts.disabled or Core.IsDisabled()
     local changed = false
     local submitted = false  -- true on the frame Enter is pressed
     local new_text = text
@@ -3085,11 +3804,13 @@ function Widgets.InputText(id, label, text, theme, opts)
                 data.cursor = #text
                 data._focus_click = true  -- block drag until mouse released
             else
-                -- Already focused → position cursor normally
+                -- Already focused → position cursor normally. Raw
+                -- gfx.measurestr: one-shot prefix probes must not fill the
+                -- measure cache (audit P13).
                 local click_x = Core.GetState().mouse_x - ix + data.scroll_x - pad
                 local pos = 0
                 for i = 1, #text do
-                    if Core.MeasureText(text:sub(1, i)) > click_x then break end
+                    if gfx.measurestr(text:sub(1, i)) > click_x then break end
                     pos = i
                 end
                 data.cursor = pos
@@ -3106,16 +3827,23 @@ function Widgets.InputText(id, label, text, theme, opts)
         data.cursor = #text
     end
 
-    -- Drag to select (blocked on the focus-gaining click to preserve select-all)
+    -- Drag to select (blocked on the focus-gaining click to preserve
+    -- select-all). Only recompute the character hit when the mouse actually
+    -- moved (audit P13: this O(#text) prefix loop used to run every frame of
+    -- a held button, even with the mouse perfectly still).
     if Core.IsActive(id) and Core.MouseDown(1) and is_focused and not data._focus_click then
-        local click_x = Core.GetState().mouse_x - ix + data.scroll_x - pad
-        local pos = 0
-        for i = 1, #text do
-            if Core.MeasureText(text:sub(1, i)) > click_x then break end
-            pos = i
+        local mx = Core.GetState().mouse_x
+        if mx ~= data._drag_mx then
+            data._drag_mx = mx
+            local click_x = mx - ix + data.scroll_x - pad
+            local pos = 0
+            for i = 1, #text do
+                if gfx.measurestr(text:sub(1, i)) > click_x then break end
+                pos = i
+            end
+            if data.sel_start == nil then data.sel_start = data.cursor end
+            data.cursor = pos
         end
-        if data.sel_start == nil then data.sel_start = data.cursor end
-        data.cursor = pos
     end
 
     if Core.IsActive(id) and Core.MouseReleased(1) then
@@ -3124,56 +3852,33 @@ function Widgets.InputText(id, label, text, theme, opts)
         if data.sel_start == data.cursor then data.sel_start = nil end
     end
 
-    -- Keyboard input
+    -- Keyboard input. Selection/undo helpers are module-level (audit P13);
+    -- text mutations go through a small undo stack (F12: Ctrl+Z / Ctrl+Y).
     if is_focused and Keys then
         local char = Core.GetChar()
 
-        local function get_sel()
-            if data.sel_start == nil then return nil, nil end
-            return min(data.sel_start, data.cursor), max(data.sel_start, data.cursor)
-        end
-
-        local function get_sel_text()
-            local s, e = get_sel()
-            if s then return current_text:sub(s + 1, e) end
-            return ""
-        end
-
-        local function del_sel()
-            local s, e = get_sel()
-            if s then
-                new_text = current_text:sub(1, s) .. current_text:sub(e + 1)
-                current_text = new_text
-                data.cursor = s
-                data.sel_start = nil
-                changed = true
-                return true
-            end
-            return false
-        end
-
-        local function insert_text(str)
-            del_sel()
-            local before = current_text:sub(1, data.cursor)
-            local after = current_text:sub(data.cursor + 1)
-            new_text = before .. str .. after
-            current_text = new_text
-            data.cursor = data.cursor + #str
-            changed = true
-        end
-
         if char == Keys.BACKSPACE then
-            if not del_sel() and data.cursor > 0 then
-                new_text = current_text:sub(1, data.cursor - 1) .. current_text:sub(data.cursor + 1)
+            input_push_undo(data, current_text)
+            local d = input_del_sel(data, current_text)
+            if d then
+                new_text = d; current_text = d; changed = true
+            elseif data.cursor > 0 then
+                local p = utf8_prev(current_text, data.cursor)
+                new_text = current_text:sub(1, p) .. current_text:sub(data.cursor + 1)
                 current_text = new_text
-                data.cursor = data.cursor - 1
+                data.cursor = p
                 changed = true
             end
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.DELETE then
-            if not del_sel() and data.cursor < #current_text then
-                new_text = current_text:sub(1, data.cursor) .. current_text:sub(data.cursor + 2)
+            input_push_undo(data, current_text)
+            local d = input_del_sel(data, current_text)
+            if d then
+                new_text = d; current_text = d; changed = true
+            elseif data.cursor < #current_text then
+                local n = utf8_next(current_text, data.cursor)
+                new_text = current_text:sub(1, data.cursor) .. current_text:sub(n + 1)
                 current_text = new_text
                 changed = true
             end
@@ -3181,12 +3886,12 @@ function Widgets.InputText(id, label, text, theme, opts)
 
         elseif char == Keys.LEFT then
             data.sel_start = nil
-            if data.cursor > 0 then data.cursor = data.cursor - 1 end
+            if data.cursor > 0 then data.cursor = utf8_prev(current_text, data.cursor) end
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.RIGHT then
             data.sel_start = nil
-            if data.cursor < #current_text then data.cursor = data.cursor + 1 end
+            if data.cursor < #current_text then data.cursor = utf8_next(current_text, data.cursor) end
             data.blink_time = reaper.time_precise()
 
         elseif char == Keys.HOME then
@@ -3211,14 +3916,16 @@ function Widgets.InputText(id, label, text, theme, opts)
             data.cursor = #current_text
 
         elseif char == 3 then  -- Ctrl+C
-            local sel_text = get_sel_text()
-            if sel_text ~= "" then clipboard_set(sel_text) end
+            local s, e = input_get_sel(data)
+            if s then clipboard_set(current_text:sub(s + 1, e)) end
 
         elseif char == 24 then  -- Ctrl+X
-            local sel_text = get_sel_text()
-            if sel_text ~= "" then
-                clipboard_set(sel_text)
-                del_sel()
+            local s, e = input_get_sel(data)
+            if s then
+                clipboard_set(current_text:sub(s + 1, e))
+                input_push_undo(data, current_text)
+                local d = input_del_sel(data, current_text)
+                if d then new_text = d; current_text = d; changed = true end
             end
             data.blink_time = reaper.time_precise()
 
@@ -3227,20 +3934,79 @@ function Widgets.InputText(id, label, text, theme, opts)
             if clip ~= "" then
                 -- Remove newlines from pasted text
                 clip = clip:gsub("[\r\n]", " ")
-                insert_text(clip)
+                input_push_undo(data, current_text)
+                data._undo_time = nil  -- don't coalesce typing into a paste
+                new_text = input_insert(data, current_text, clip)
+                current_text = new_text
+                changed = true
             end
             data.blink_time = reaper.time_precise()
 
-        elseif char > 0 and char >= 32 and char < 256 then
-            insert_text(string.char(char))
+        elseif char == 26 then  -- Ctrl+Z (undo)
+            local stack = data._undo
+            if stack and #stack > 0 then
+                local snap = table.remove(stack)
+                local redo = data._redo
+                if not redo then redo = {}; data._redo = redo end
+                redo[#redo + 1] = { current_text, data.cursor }
+                new_text = snap[1]
+                current_text = new_text
+                data.cursor = min(snap[2], #new_text)
+                data.sel_start = nil
+                changed = true
+                data._undo_time = nil
+            end
+            data.blink_time = reaper.time_precise()
+
+        elseif char == 25 then  -- Ctrl+Y (redo)
+            local redo = data._redo
+            if redo and #redo > 0 then
+                local snap = table.remove(redo)
+                local stack = data._undo
+                if not stack then stack = {}; data._undo = stack end
+                stack[#stack + 1] = { current_text, data.cursor }
+                new_text = snap[1]
+                current_text = new_text
+                data.cursor = min(snap[2], #new_text)
+                data.sel_start = nil
+                changed = true
+                data._undo_time = nil
+            end
+            data.blink_time = reaper.time_precise()
+
+        elseif char >= 32 and char < 0x2000 then
+            -- Printable range; REAPER's named keys are int codes ≥ 0x2000.
+            -- UTF-8 encode (audit B13: string.char broke accented input).
+            input_push_undo(data, current_text)
+            new_text = input_insert(data, current_text, char_to_utf8(char))
+            current_text = new_text
+            changed = true
             data.blink_time = reaper.time_precise()
         end
+
+        -- Keys handled here must not reach Core.Run's close logic; an
+        -- unconsumed ESC intentionally falls through (Core unfocuses on it).
+        if char > 0 and char ~= 27 then Core.ConsumeChar() end
+
+        -- Schedule caret-blink wakeups (audit P2: focus no longer blocks the
+        -- idle throttle — redraws are deadline-scheduled instead)
+        Core.ScheduleBlinkRedraw(data.blink_time)
     end
 
-    -- Auto-scroll to keep cursor visible
+    -- Auto-scroll to keep cursor visible. The cursor's pixel offset is
+    -- cached per (text, cursor) — audit P13: this prefix measurement used to
+    -- run every focused frame and leak prefixes into the measure cache.
     local display_text = changed and new_text or text
+    local cursor_px = 0
     if is_focused then
-        local cursor_px = Core.MeasureText(display_text:sub(1, data.cursor))
+        if data._cpx_text == display_text and data._cpx_cur == data.cursor then
+            cursor_px = data._cpx
+        else
+            cursor_px = gfx.measurestr(display_text:sub(1, data.cursor))
+            data._cpx_text = display_text
+            data._cpx_cur = data.cursor
+            data._cpx = cursor_px
+        end
         local visible_w = input_w - pad * 2
         if cursor_px - data.scroll_x > visible_w then
             data.scroll_x = cursor_px - visible_w + 10
@@ -3282,26 +4048,28 @@ function Widgets.InputText(id, label, text, theme, opts)
         local _, char_h = Core.MeasureText("M")
         local text_y_off = floor((vis_h - char_h) / 2)
 
-        -- Setup offscreen buffer — only resize when dimensions actually change.
+        -- Setup offscreen buffer — resize only when the SHARED buffer's real
+        -- dimensions change (audit B1: the guard used to live in per-widget
+        -- data, corrupting rendering with two inputs of different sizes).
         gfx.dest = INPUT_BUFFER_ID
-        if data._buf_w ~= vis_w or data._buf_h ~= vis_h then
+        if input_buf_w ~= vis_w or input_buf_h ~= vis_h then
             gfx.setimgdim(INPUT_BUFFER_ID, vis_w, vis_h)
-            data._buf_w = vis_w
-            data._buf_h = vis_h
+            input_buf_w = vis_w
+            input_buf_h = vis_h
         end
-        gfx.set(0, 0, 0, 1)
+        -- Single opaque background fill (audit P14: an opaque black fill was
+        -- painted first and immediately covered by this one — pure fillrate
+        -- waste). Alpha forced to 1: the buffer must start fully opaque.
+        gfx.set(bg[1], bg[2], bg[3], 1)
         gfx.rect(0, 0, vis_w, vis_h, 1)
 
-        -- Redraw background in buffer
-        gfx.set(bg[1], bg[2], bg[3], bg[4])
-        gfx.rect(0, 0, vis_w, vis_h, 1)
-
-        -- Draw selection highlight in buffer
+        -- Draw selection highlight in buffer (raw gfx.measurestr: selection
+        -- prefixes are transient, they must not fill the measure cache)
         if is_focused and data.sel_start ~= nil then
             local s = min(data.sel_start, data.cursor)
             local e = max(data.sel_start, data.cursor)
-            local sel_x1 = Core.MeasureText(display_text:sub(1, s)) - data.scroll_x
-            local sel_x2 = Core.MeasureText(display_text:sub(1, e)) - data.scroll_x
+            local sel_x1 = gfx.measurestr(display_text:sub(1, s)) - data.scroll_x
+            local sel_x2 = gfx.measurestr(display_text:sub(1, e)) - data.scroll_x
             local ac = theme.colors.accent
             gfx.set(ac[1], ac[2], ac[3], 0.35)
             gfx.rect(sel_x1, 2, sel_x2 - sel_x1, vis_h - 4, 1)
@@ -3316,13 +4084,12 @@ function Widgets.InputText(id, label, text, theme, opts)
         gfx.y = text_y_off
         gfx.drawstr(show_text)
 
-        -- Draw cursor in buffer
+        -- Draw cursor in buffer (cursor_px cached above)
         if is_focused then
             local elapsed = reaper.time_precise() - data.blink_time
-            if elapsed % 1.0 < 0.55 then
-                local cursor_px = Core.MeasureText(display_text:sub(1, data.cursor)) - data.scroll_x
+            if elapsed % Core.BLINK_PERIOD < Core.BLINK_ON then
                 gfx.set(tc[1], tc[2], tc[3], 0.9)
-                gfx.rect(cursor_px, 3, 1, vis_h - 6, 1)
+                gfx.rect(cursor_px - data.scroll_x, 3, 1, vis_h - 6, 1)
             end
         end
 
@@ -3410,17 +4177,22 @@ function Widgets.Canvas(id, theme, opts)
 
     Layout.AdvanceCursor(w, h)
 
-    return {
-        x = x, y = y, w = w, h = h,
-        hovered = hovered,
-        clicked = clicked,
-        right_clicked = right_clicked,
-        dragging = dragging,
-        norm_x = norm_x,
-        norm_y = norm_y,
-        mouse_x = mouse_x,
-        mouse_y = mouse_y,
-    }
+    -- Reused result table (audit P9: a fresh 12-field table per frame for a
+    -- widget that is typically always on screen). The table is owned by the
+    -- widget and overwritten on the next call — copy fields if you keep it.
+    local cd = Core.GetWidgetSubData("canvas", id)
+    local res = cd.result
+    if not res then res = {}; cd.result = res end
+    res.x = x; res.y = y; res.w = w; res.h = h
+    res.hovered = hovered
+    res.clicked = clicked
+    res.right_clicked = right_clicked
+    res.dragging = dragging
+    res.norm_x = norm_x
+    res.norm_y = norm_y
+    res.mouse_x = mouse_x
+    res.mouse_y = mouse_y
+    return res
 end
 
 -- ============================================================================
@@ -3438,7 +4210,10 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
     local x, y = Layout.GetCursorPos()
 
     local toggled = false
-    local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h)
+        and not Core.HasPopup()
 
     if hovered then
         Core.SetHot(id)
@@ -3457,13 +4232,19 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
         else
             bg = hovered and theme.colors.button_hovered or theme.colors.button
         end
-        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+        local dim = disabled and 0.5 or 1
+        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
 
         -- Bevel: ON = sunken (pressed), OFF = raised (like a button)
-        draw_win32_bevel(x, y, w, h, theme, new_on and "sunken" or "raised")
+        if not disabled then
+            draw_win32_bevel(x, y, w, h, theme, new_on and "sunken" or "raised")
+        end
 
         -- Text
-        local tc = new_on and { 1, 1, 1, 1 } or theme.colors.text
+        local tc
+        if disabled then tc = theme.colors.text_disabled
+        elseif new_on then tc = COLOR_WHITE
+        else tc = theme.colors.text end
         local tx = x + floor((w - tw) / 2)
         local ty = y + floor((h - th) / 2)
         Core.DrawText(label, tx, ty, tc[1], tc[2], tc[3], tc[4])
@@ -3524,15 +4305,21 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     local hovered = Core.MouseInClippedRect(sx, sy, slider_w, h) and not Core.HasPopup()
     if hovered then Core.SetHot(id) end
 
-    -- Three drag modes: min handle, max handle, middle (translate both).
-    local drag_id_min = id .. "_min"
-    local drag_id_max = id .. "_max"
-    local drag_id_mid = id .. "_mid"
-
     -- Cache the click anchor for middle-drag so the range translates by the
     -- absolute mouse delta from press, not relative to the current position
     -- (avoids drift when clamped against 0 or 1).
     local rd = Core.GetWidgetSubData("rslider", id)
+
+    -- Three drag modes: min handle, max handle, middle (translate both).
+    -- Ids cached once (audit P9: three string concats per frame).
+    if not rd.id_min then
+        rd.id_min = id .. "_min"
+        rd.id_max = id .. "_max"
+        rd.id_mid = id .. "_mid"
+    end
+    local drag_id_min = rd.id_min
+    local drag_id_max = rd.id_max
+    local drag_id_mid = rd.id_mid
 
     if hovered and Core.MouseClicked(1) then
         local mx = Core.GetState().mouse_x
@@ -3672,12 +4459,16 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
         local disp_min = changed and new_min or val_min
         local disp_max = changed and new_max or val_max
         local val_str
-        if rd.fv_min == disp_min and rd.fv_max == disp_max and rd.fv_str then
+        -- Format is part of the cache key (audit: switching opts.format at
+        -- runtime — dB/Hz toggle — used to show the stale string forever)
+        if rd.fv_min == disp_min and rd.fv_max == disp_max
+           and rd.fv_fmt == format and rd.fv_str then
             val_str = rd.fv_str
         else
             val_str = string.format(rd._fmt, disp_min, disp_max)
             rd.fv_min = disp_min
             rd.fv_max = disp_max
+            rd.fv_fmt = format
             rd.fv_str = val_str
         end
         local vw, vh = Core.MeasureText(val_str)
@@ -3689,6 +4480,16 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
 
     Layout.AdvanceCursor(total_w, max(h, th))
     return changed, changed and new_min or val_min, changed and new_max or val_max
+end
+
+-- Normalized-position helpers for ValueRangeSlider, module-level (audit P9:
+-- two closures used to be created per widget per frame).
+local function vrs_ratio(v, range_min, span)
+    return (v - range_min) / span
+end
+local function vrs_unratio(r, range_min, span)
+    if r < 0 then r = 0 elseif r > 1 then r = 1 end
+    return range_min + r * span
 end
 
 -- ============================================================================
@@ -3746,21 +4547,15 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
     -- Sanitize and clamp the model
     local span = range_max - range_min
     if span <= 0 then span = 1 end
-    local function ratio(v) return (v - range_min) / span end
-    local function unratio(r)
-        local rr = r
-        if rr < 0 then rr = 0 elseif rr > 1 then rr = 1 end
-        return range_min + rr * span
-    end
 
     -- Force the invariants val_min ≤ value ≤ val_max
     if val_min > val_max then val_min, val_max = val_max, val_min end
     if value < val_min then value = val_min end
     if value > val_max then value = val_max end
 
-    local r_min  = ratio(val_min)
-    local r_max  = ratio(val_max)
-    local r_val  = ratio(value)
+    local r_min  = (val_min - range_min) / span
+    local r_max  = (val_max - range_min) / span
+    local r_val  = (value - range_min) / span
 
     local new_min   = val_min
     local new_max   = val_max
@@ -3784,13 +4579,20 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
                     and not Core.HasPopup()
     if hovered then Core.SetHot(id) end
 
-    -- Drag IDs (one per interaction zone)
-    local id_min = id .. "_min"
-    local id_max = id .. "_max"
-    local id_mid = id .. "_mid"
-    local id_val = id .. "_val"
-
     local rd = Core.GetWidgetSubData("vrslider", id)
+
+    -- Drag IDs (one per interaction zone), cached once (audit P9: four
+    -- string concats per widget per frame)
+    if not rd.id_min then
+        rd.id_min = id .. "_min"
+        rd.id_max = id .. "_max"
+        rd.id_mid = id .. "_mid"
+        rd.id_val = id .. "_val"
+    end
+    local id_min = rd.id_min
+    local id_max = rd.id_max
+    local id_mid = rd.id_mid
+    local id_val = rd.id_val
 
     -- ---- Click → pick the right interaction --------------------------------
     if hovered and Core.MouseClicked(1) then
@@ -3837,7 +4639,7 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
     if Core.IsActive(id_val) then
         if Core.MouseDown(1) then
             local mx = Core.GetState().mouse_x
-            local target = unratio((mx - sx) / slider_w)
+            local target = vrs_unratio((mx - sx) / slider_w, range_min, span)
             -- Clamp inside [val_min, val_max] (the range stays still)
             if target < val_min then target = val_min end
             if target > val_max then target = val_max end
@@ -3854,7 +4656,7 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
     if Core.IsActive(id_min) then
         if Core.MouseDown(1) then
             local mx = Core.GetState().mouse_x
-            local target = unratio((mx - sx) / slider_w)
+            local target = vrs_unratio((mx - sx) / slider_w, range_min, span)
             -- Min cannot cross the value (so the value never falls outside
             -- the range mid-drag).
             if target > value then target = value end
@@ -3872,7 +4674,7 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
     if Core.IsActive(id_max) then
         if Core.MouseDown(1) then
             local mx = Core.GetState().mouse_x
-            local target = unratio((mx - sx) / slider_w)
+            local target = vrs_unratio((mx - sx) / slider_w, range_min, span)
             if target < value then target = value end
             if target > range_max then target = range_max end
             if target ~= val_max then
@@ -3920,9 +4722,9 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
 
     -- Recompute pixel positions if anything changed
     if value_changed or range_changed then
-        r_min = ratio(new_min)
-        r_max = ratio(new_max)
-        r_val = ratio(new_value)
+        r_min = vrs_ratio(new_min, range_min, span)
+        r_max = vrs_ratio(new_max, range_min, span)
+        r_val = vrs_ratio(new_value, range_min, span)
         min_px = sx + floor(r_min * slider_w)
         max_px = sx + floor(r_max * slider_w)
         val_px = sx + floor(r_val * slider_w)
@@ -4034,14 +4836,57 @@ function Widgets.ActionList(id, items, actions, theme, opts)
         data._init = true
     end
 
+    -- Re-clamp scroll every frame (audit B14: a shrinking source — search
+    -- filter — used to leave the view past the end: blank list until the
+    -- next wheel tick, thumb off the track)
+    data.scroll = max(0, min(data.scroll, max(0, #items - visible_count)))
+
     local clicked_item, clicked_action, activated_item = nil, nil, nil
 
-    -- Calculate action buttons total width
+    -- Multi-selection (F6): opts.selection = { [index] = true } set, mutated
+    -- in place. Plain click = single select, Ctrl+click = toggle,
+    -- Shift+click = range from the last plain click. opts.selected (single)
+    -- keeps working as before when no set is passed.
+    local sel_set = opts.selection
+
+    -- Keyboard navigation (F2): opts.nav = true routes Up/Down/Enter to this
+    -- list (the caller decides when — e.g. while its search box has focus).
+    -- Up/Down report the new index through clicked_item (the caller updates
+    -- its selection exactly like for a click); Enter reports activated_item.
+    if opts.nav and Keys then
+        local char = Core.GetChar()
+        if char == Keys.UP or char == Keys.DOWN then
+            local cur = selected or 0
+            local nxt = max(1, min(#items, cur + (char == Keys.DOWN and 1 or -1)))
+            if nxt ~= cur then
+                clicked_item = nxt
+                -- Scroll-to-selection
+                if nxt - 1 < data.scroll then
+                    data.scroll = nxt - 1
+                elseif nxt > data.scroll + visible_count then
+                    data.scroll = nxt - visible_count
+                end
+            end
+            Core.ConsumeChar()
+        elseif char == Keys.ENTER and selected then
+            activated_item = selected
+            Core.ConsumeChar()
+        end
+    end
+
+    -- Action buttons total width — cached per actions table (audit: this
+    -- O(actions) measure loop ran per frame, before the visibility test)
     local action_total_w = 0
     if actions then
-        for _, act in ipairs(actions) do
-            local aw = Core.MeasureText(act.icon or "?") + theme.frame_padding_x * 2
-            action_total_w = action_total_w + aw + 2
+        if data._actions_ref == actions and data._actions_w then
+            action_total_w = data._actions_w
+        else
+            for _, act in ipairs(actions) do
+                local aw = Core.MeasureText(act.icon or "?") + theme.frame_padding_x * 2
+                action_total_w = action_total_w + aw + 2
+            end
+            data._actions_ref = actions
+            data._actions_w = action_total_w
         end
     end
 
@@ -4059,7 +4904,7 @@ function Widgets.ActionList(id, items, actions, theme, opts)
         local list_text = theme.colors.list_text or theme.colors.text
         local list_alt  = theme.colors.list_alt_bg
         local list_sel  = theme.colors.list_selected or theme.colors.accent
-        local list_sel_t = theme.colors.list_selected_text or { 1, 1, 1, 1 }
+        local list_sel_t = theme.colors.list_selected_text or COLOR_WHITE
         local list_hov  = theme.colors.list_hover or theme.colors.header_hovered
         local list_grid = theme.colors.list_grid
 
@@ -4067,10 +4912,12 @@ function Widgets.ActionList(id, items, actions, theme, opts)
         for i = 1 + scroll_offset, min(#items, visible_count + scroll_offset) do
             local item = items[i]
             local iy = y + (i - 1 - scroll_offset) * item_h
-            local is_selected = (i == selected)
+            local is_selected = sel_set and sel_set[i] or (i == selected)
             local row_idx = i - scroll_offset  -- 1-based visible row index
 
-            local row_hovered = Core.MouseInRect(x, iy, content_w, item_h) and not Core.HasPopup()
+            -- Clipped hit-test: rows partially outside the container must
+            -- not respond (audit: phantom clicks in horizontal scrollers)
+            local row_hovered = Core.MouseInClippedRect(x, iy, content_w, item_h) and not Core.HasPopup()
 
             -- Inset for bevel (2px in windows mode so highlights don't overpaint border)
             local inset = (theme.widget_style == "windows") and 2 or 1
@@ -4120,6 +4967,22 @@ function Widgets.ActionList(id, items, actions, theme, opts)
                 local on_label = mx < x + content_w - action_total_w - 4
                 if on_label and Core.MouseClicked(1) then
                     clicked_item = i
+                    -- Multi-selection set updates (F6)
+                    if sel_set then
+                        if Core.ModCtrl() then
+                            sel_set[i] = not sel_set[i] or nil
+                            data._sel_anchor = i
+                        elseif Core.ModShift() and data._sel_anchor then
+                            for k in pairs(sel_set) do sel_set[k] = nil end
+                            local a, b = data._sel_anchor, i
+                            if a > b then a, b = b, a end
+                            for k = a, b do sel_set[k] = true end
+                        else
+                            for k in pairs(sel_set) do sel_set[k] = nil end
+                            sel_set[i] = true
+                            data._sel_anchor = i
+                        end
+                    end
                 end
                 if on_label and Core.MouseDoubleClicked() then
                     activated_item = i
@@ -4131,7 +4994,7 @@ function Widgets.ActionList(id, items, actions, theme, opts)
                 local btn_x = x + content_w - action_total_w - 4
                 for ai, act in ipairs(actions) do
                     local aw = Core.MeasureText(act.icon or "?") + theme.frame_padding_x * 2
-                    local btn_hovered = Core.MouseInRect(btn_x, iy + 2, aw, item_h - 4)
+                    local btn_hovered = Core.MouseInClippedRect(btn_x, iy + 2, aw, item_h - 4)
 
                     -- Button background
                     if btn_hovered then
@@ -4167,13 +5030,15 @@ function Widgets.ActionList(id, items, actions, theme, opts)
         -- notch-based step avoids dependence on platform-specific wheel delta
         -- magnitudes (Windows = ±120, Mac/trackpad can differ).
         if has_scroll then
-            local in_list = Core.MouseInRect(x, y, w, h)
-            if in_list and not Core.HasPopup() then
+            local in_list = Core.MouseInClippedRect(x, y, w, h)
+            if in_list and not Core.HasPopup() and not Core.IsWheelConsumed() then
                 local wheel = Core.GetState().mouse_wheel
                 if wheel ~= 0 then
                     local step = opts.scroll_step or 3
                     local dir = wheel > 0 and -1 or 1
                     data.scroll = max(0, min(data.scroll + dir * step, #items - visible_count))
+                    -- Consumed (audit B4): otherwise the parent scrolls too
+                    Core.ConsumeWheel()
                 end
             end
             -- Draw scrollbar track + thumb on the right side
@@ -4185,12 +5050,16 @@ function Widgets.ActionList(id, items, actions, theme, opts)
             local max_scroll = #items - visible_count
             local thumb_y = y + 1 + floor((data.scroll / max_scroll) * (h - 2 - thumb_h))
             local thumb_c = theme.colors.scrollbar_grab or theme.colors.border
-            local thumb_hovered = Core.MouseInRect(sb_x, thumb_y, SCROLLBAR_W, thumb_h)
+            local thumb_hovered = Core.MouseInClippedRect(sb_x, thumb_y, SCROLLBAR_W, thumb_h)
             local thumb_a = thumb_hovered and 0.9 or 0.6
             Core.DrawRect(sb_x + 2, thumb_y, SCROLLBAR_W - 4, thumb_h,
                 thumb_c[1], thumb_c[2], thumb_c[3], thumb_a)
-            -- Drag thumb
-            local drag_id = id .. "_sb"
+            -- Drag thumb (id cached — audit P9)
+            local drag_id = data._sb_id
+            if not drag_id then
+                drag_id = id .. "_sb"
+                data._sb_id = drag_id
+            end
             if thumb_hovered and Core.MouseClicked(1) then
                 Core.SetActive(drag_id)
             end
@@ -4292,7 +5161,9 @@ function Widgets.CollapsiblePanel(id, label, is_open, theme, opts)
         end
     end
 
-    -- If expanded, push a child container for panel content
+    -- If expanded, push a pooled child container for panel content (audit
+    -- P8: an ~18-field table + id concat used to be allocated every frame
+    -- the panel was open — its steady state)
     if new_open then
         local header_h = theme.tab_height
         local content_x = x
@@ -4300,18 +5171,23 @@ function Widgets.CollapsiblePanel(id, label, is_open, theme, opts)
         local content_w = expanded_w
         local content_h = panel_h - header_h
 
-        local c = {
-            id = "cpanel_" .. id,
-            x = content_x, y = content_y, w = content_w, h = content_h,
-            pad_x = 4, pad_y = 4,
-            cursor_x = 4, cursor_y = 4,
-            content_h = 0, scroll_y = 0,
-            scrollable = false,
-            same_line = false, same_line_x = 0,
-            max_row_h = 0, spacing = theme.item_spacing,
-            indent_x = 0, sameline_pending = false,
-            last_widget_end_x = 4, last_widget_y = 4, last_widget_h = 0,
-        }
+        local cd = Core.GetWidgetSubData("cpanel", id)
+        if not cd.cid then
+            cd.cid = "cpanel_" .. id
+            cd.c = {}
+        end
+        local c = cd.c
+        for k in pairs(c) do c[k] = nil end
+        c.id = cd.cid
+        c.x = content_x; c.y = content_y; c.w = content_w; c.h = content_h
+        c.pad_x = 4; c.pad_y = 4
+        c.cursor_x = 4; c.cursor_y = 4
+        c.content_h = 0; c.scroll_y = 0
+        c.scrollable = false
+        c.same_line = false; c.same_line_x = 0
+        c.max_row_h = 0; c.spacing = theme.item_spacing
+        c.indent_x = 0; c.sameline_pending = false
+        c.last_widget_end_x = 4; c.last_widget_y = 4; c.last_widget_h = 0
         Core.PushContainer(c)
         Core.PushClipRect(content_x, content_y, content_w, content_h)
     end
@@ -4357,6 +5233,29 @@ function Widgets.ReorderableList(id, items, theme, opts)
     local changed = false
     local selected = opts.selected
 
+    -- Cached drag capture id (audit P9)
+    local drag_id = data._drag_id
+    if not drag_id then
+        drag_id = id .. "_drag"
+        data._drag_id = drag_id
+    end
+
+    -- Drop / release handling runs REGARDLESS of visibility (audit B17: the
+    -- drop used to live inside the visibility gate — scrolling the list away
+    -- mid-drag left a stale drag_index that fired a phantom reorder later).
+    if data.drag_index and not Core.MouseDown(1) then
+        local my = Core.GetState().mouse_y
+        local target_i = max(1, min(#items, floor((my - y) / item_h) + 1))
+        if Core.IsVisible(x, y, w, h) and target_i ~= data.drag_index then
+            local moving = table.remove(data.order, data.drag_index)
+            local insert_at = max(1, min(#data.order + 1, target_i))
+            table.insert(data.order, insert_at, moving)
+            changed = true
+        end
+        data.drag_index = nil
+        if Core.IsActive(drag_id) then Core.ClearActive() end
+    end
+
     if Core.IsVisible(x, y, w, h) then
         local bg = theme.colors.frame_bg
         Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
@@ -4369,7 +5268,7 @@ function Widgets.ReorderableList(id, items, theme, opts)
 
             -- Skip drawing the dragged item in its original position
             if not is_dragging then
-                local row_hovered = Core.MouseInRect(x, iy, w, item_h) and not Core.HasPopup()
+                local row_hovered = Core.MouseInClippedRect(x, iy, w, item_h) and not Core.HasPopup()
 
                 if row_hovered then
                     local hc = theme.colors.header_hovered
@@ -4393,10 +5292,12 @@ function Widgets.ReorderableList(id, items, theme, opts)
                 Core.DrawText(label, x + handle_w + 4, iy + floor((item_h - lh) / 2),
                     tc[1], tc[2], tc[3], tc[4])
 
-                -- Start drag
-                if row_hovered and Core.MouseClicked(1) and Core.MouseInRect(x, iy, 20, item_h) then
+                -- Start drag — with mouse capture (audit B17: without
+                -- SetActive, other widgets could become active mid-drag)
+                if row_hovered and Core.MouseClicked(1) and Core.MouseInClippedRect(x, iy, 20, item_h) then
                     data.drag_index = display_i
                     data.drag_y = Core.GetState().mouse_y
+                    Core.SetActive(drag_id)
                 end
 
                 -- Row separator
@@ -4405,48 +5306,31 @@ function Widgets.ReorderableList(id, items, theme, opts)
             end
         end
 
-        -- Draw dragged item on top
-        if data.drag_index then
-            if Core.MouseDown(1) then
-                local my = Core.GetState().mouse_y
-                local drag_display_y = my - item_h / 2
-                local real_i = data.order[data.drag_index]
-                local item = items[real_i]
-                local label = type(item) == "table" and item.label or tostring(item)
+        -- Draw dragged item on top (drop itself is handled above, before the
+        -- visibility gate)
+        if data.drag_index and Core.MouseDown(1) then
+            local my = Core.GetState().mouse_y
+            local drag_display_y = my - item_h / 2
+            local real_i = data.order[data.drag_index]
+            local item = items[real_i]
+            local label = type(item) == "table" and item.label or tostring(item)
 
-                -- Draw dragged item
-                local ac = theme.colors.accent
-                Core.DrawRect(x, drag_display_y, w, item_h, ac[1], ac[2], ac[3], 0.3)
-                local tc = theme.colors.text
-                local _, lh = Core.MeasureText(label)
-                Core.DrawText(label, x + 20, drag_display_y + floor((item_h - lh) / 2),
-                    tc[1], tc[2], tc[3], tc[4])
+            -- Draw dragged item
+            local ac = theme.colors.accent
+            Core.DrawRect(x, drag_display_y, w, item_h, ac[1], ac[2], ac[3], 0.3)
+            local tc = theme.colors.text
+            local _, lh = Core.MeasureText(label)
+            Core.DrawText(label, x + 20, drag_display_y + floor((item_h - lh) / 2),
+                tc[1], tc[2], tc[3], tc[4])
 
-                -- Calculate drop position
-                local target_i = max(1, min(#items,
-                    floor((my - y) / item_h) + 1))
+            -- Calculate drop position
+            local target_i = max(1, min(#items,
+                floor((my - y) / item_h) + 1))
 
-                -- Draw insertion indicator
-                local ind_y = y + (target_i - 1) * item_h
-                if target_i > data.drag_index then ind_y = ind_y + item_h end
-                Core.DrawRect(x + 2, ind_y - 1, w - 4, 2, ac[1], ac[2], ac[3], ac[4])
-            else
-                -- Drop: reorder
-                local my = Core.GetState().mouse_y
-                local target_i = max(1, min(#items,
-                    floor((my - y) / item_h) + 1))
-
-                if target_i ~= data.drag_index then
-                    local moving = table.remove(data.order, data.drag_index)
-                    local insert_at = target_i
-                    if target_i > data.drag_index then insert_at = insert_at end
-                    insert_at = max(1, min(#data.order + 1, insert_at))
-                    table.insert(data.order, insert_at, moving)
-                    changed = true
-                end
-
-                data.drag_index = nil
-            end
+            -- Draw insertion indicator
+            local ind_y = y + (target_i - 1) * item_h
+            if target_i > data.drag_index then ind_y = ind_y + item_h end
+            Core.DrawRect(x + 2, ind_y - 1, w - 4, 2, ac[1], ac[2], ac[3], ac[4])
         end
 
         -- Border
@@ -4479,6 +5363,23 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
     local selected_row = opts.selected
     local header_render = opts.header_render
 
+    -- Column layout tables are pooled per widget (audit P8: two fresh tables
+    -- + O(cols) fills per frame, before the visibility test). The fill loops
+    -- below are cheap arithmetic; the allocations were the problem.
+    local ldata = Core.GetWidgetSubData("itable", id)
+    local col_widths = ldata._col_widths
+    local col_positions = ldata._col_positions
+    if not col_widths then
+        col_widths = {}
+        col_positions = {}
+        ldata._col_widths = col_widths
+        ldata._col_positions = col_positions
+    end
+    for i = #columns + 1, #col_widths do
+        col_widths[i] = nil
+        col_positions[i] = nil
+    end
+
     -- Calculate column widths (weight-based)
     local total_weight = 0
     local total_fixed = 0
@@ -4492,8 +5393,6 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
 
     local gaps_total = max(0, #columns - 1) * gap
     local distributable = avail_w - total_fixed - gaps_total
-    local col_widths = {}
-    local col_positions = {}
     local cx = x
     for i, col in ipairs(columns) do
         col_positions[i] = cx
@@ -4506,11 +5405,14 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
     end
 
     -- Scroll
-    local data = Core.GetWidgetSubData("itable", id)
+    local data = ldata
     if data._init == nil then
         data.scroll = 0
         data._init = true
     end
+    -- Re-clamp every frame (audit B14: shrinking datasets left the view
+    -- past the end until the next wheel tick)
+    data.scroll = max(0, min(data.scroll, max(0, row_count - visible_rows)))
     local scroll_offset = floor(data.scroll)
 
     local clicked_row, clicked_col_key, hovered_row = nil, nil, nil
@@ -4573,7 +5475,7 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
 
                 -- Click detection per cell
                 if row_hovered and Core.MouseClicked(1) then
-                    if Core.MouseInRect(col_positions[i], ry, col_widths[i], row_h) then
+                    if Core.MouseInClippedRect(col_positions[i], ry, col_widths[i], row_h) then
                         clicked_row = row_idx
                         clicked_col_key = col_key
                     end
@@ -4600,13 +5502,15 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
 
         -- Scroll with wheel — notch-based step (opts.scroll_step rows per notch)
         if row_count > max_visible then
-            local in_table = Core.MouseInRect(x, y, avail_w, total_h)
-            if in_table and not Core.HasPopup() then
+            local in_table = Core.MouseInClippedRect(x, y, avail_w, total_h)
+            if in_table and not Core.HasPopup() and not Core.IsWheelConsumed() then
                 local wheel = Core.GetState().mouse_wheel
                 if wheel ~= 0 then
                     local step = opts.scroll_step or 3
                     local dir = wheel > 0 and -1 or 1
                     data.scroll = max(0, min(data.scroll + dir * step, row_count - visible_rows))
+                    -- Consumed (audit B4): otherwise the parent scrolls too
+                    Core.ConsumeWheel()
                 end
             end
         else

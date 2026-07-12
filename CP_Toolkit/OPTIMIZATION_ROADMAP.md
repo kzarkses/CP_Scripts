@@ -226,19 +226,28 @@ Things that should stay in Lua:
 
 If you want a single ordered to-do list, here it is:
 
+> **2026-07 audit correction** (see `AUDIT_2026-07.md`): several items below were
+> over-claimed. Real status per audit: 1.1 bypassed by Core.DrawText (raw measurestr
+> under clip — always active); 1.5 incomplete (a dozen per-frame concats + container
+> table allocs survive in Layout/panels); 1.8 **introduced a bug** (per-widget guard
+> on a shared buffer); 2.1 incomplete (keyboard can't wake idle; focus/popup block
+> idle forever; heartbeat runs full frames); 1.3 partial (col_widths still allocated
+> per frame, row caches never purged); 0.3 undercounts (direct gfx.* calls invisible).
+> Markers updated below; the audit fix pass re-closes them.
+
 1. [x] 0.1 Frame timer
 2. [x] 0.2 Alloc counter
 3. [x] 0.4 Dirty flag (instrumentation)
-4. [x] 2.1 Idle throttle ← **biggest single win, do this early**
-5. [x] 1.1 MeasureText cache
-6. [x] 1.2 Format value cache (slider, NumberInput, ProgressBar, RangeSlider)
+4. [~] 2.1 Idle throttle ← *audit: keyboard can't wake; focus/popup block idle; heartbeat = full frame @6.6 Hz*
+5. [~] 1.1 MeasureText cache ← *audit: bypassed by Core.DrawText:404 (raw gfx.measurestr under root clip)*
+6. [x] 1.2 Format value cache (slider, NumberInput, ProgressBar, RangeSlider — *audit: RangeSlider omits format from cache key*)
 7. [x] 1.4 Drop redundant SetWidgetData
-8. [x] 1.5 Widget data id namespacing (GetWidgetSubData + init sentinels)
+8. [~] 1.5 Widget data id namespacing ← *audit: RadioGroup/RangeSlider/panels/Layout scrollbars still concat per frame; container tables allocated per frame*
 9. [x] 1.6 ColorPicker buffer (SV gradient + hue bar baked)
 10. [x] 1.7 TextEdit lines cache (extended to click handler)
-11. [x] 1.3 Table pre-cast (cell tostring + MeasureText cached per-cell)
-12. [x] 1.8 TextEdit setimgdim (only on size change)
-13. [x] 0.3 Draw counter (if not done)
+11. [~] 1.3 Table pre-cast ← *audit: col_widths = {} per frame; _cells never purged when rows shrink*
+12. [~] 1.8 TextEdit setimgdim ← *audit: BUG — guard is per-widget but buffer 900/901 is shared → corruption with 2 fields of different sizes*
+13. [x] 0.3 Draw counter (*audit: only counts Core.Draw\* — direct gfx.\* in knob/blits/buffers invisible; documented limitation*)
 14. [~] 2.2 Visibility-first reorder (partial — MouseInClippedRect inlined now short-circuits; list widgets use scroll_offset)
 15. [x] 1.9 Knob arc cache (shared per-size buffer pool, slots 910-925)
 16. [x] 2.4 Clip stack flatten (parallel clip_x/y/w/h arrays, no per-push alloc)

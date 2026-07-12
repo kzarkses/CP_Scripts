@@ -33,37 +33,57 @@ end
 --   spacing       = vertical spacing between widgets
 --   id            = container ID string
 
-local function new_container(id, x, y, w, h, pad_x, pad_y, spacing, scrollable, scrollable_x)
-    return {
-        id = id,
-        x = x,
-        y = y,
-        w = w,
-        h = h,
-        pad_x = pad_x or 8,
-        pad_y = pad_y or 8,
-        cursor_x = pad_x or 8,
-        cursor_y = pad_y or 8,
-        content_h = 0,
-        content_w = 0,
-        scroll_y = 0,
-        scroll_x = 0,
-        scrollable   = scrollable   or false,  -- vertical scroll
-        scrollable_x = scrollable_x or false,  -- horizontal scroll
-        same_line = false,
-        same_line_x = 0,
-        max_row_h = 0,
-        spacing = spacing or 4,
-        -- Indent tracking (separate from cursor_x so it persists across rows)
-        indent_x = 0,
-        -- SameLine row pending: true when the last widget was on a SameLine row
-        -- and cursor_y hasn't advanced past it yet
-        sameline_pending = false,
-        -- Track last widget position for SameLine
-        last_widget_end_x = pad_x or 8,
-        last_widget_y = pad_y or 8,
-        last_widget_h = 0,
-    }
+-- Containers are POOLED per id (audit P8: a fresh ~20-field table per
+-- Begin/BeginChild per frame ≈ 150 KB/s of GC churn at 30 fps on a typical
+-- UI). fill_container wipes then re-fills a persistent table: the wipe
+-- guarantees no stale field survives, and steady state allocates nothing.
+local function fill_container(c, id, x, y, w, h, pad_x, pad_y, spacing, scrollable, scrollable_x)
+    for k in pairs(c) do c[k] = nil end
+    c.id = id
+    c.x = x
+    c.y = y
+    c.w = w
+    c.h = h
+    c.pad_x = pad_x or 8
+    c.pad_y = pad_y or 8
+    c.cursor_x = pad_x or 8
+    c.cursor_y = pad_y or 8
+    c.content_h = 0
+    c.content_w = 0
+    c.scroll_y = 0
+    c.scroll_x = 0
+    c.scrollable   = scrollable   or false  -- vertical scroll
+    c.scrollable_x = scrollable_x or false  -- horizontal scroll
+    c.same_line = false
+    c.same_line_x = 0
+    c.max_row_h = 0
+    c.spacing = spacing or 4
+    -- Indent tracking (separate from cursor_x so it persists across rows)
+    c.indent_x = 0
+    -- SameLine row pending: true when the last widget was on a SameLine row
+    -- and cursor_y hasn't advanced past it yet
+    c.sameline_pending = false
+    -- Track last widget position for SameLine
+    c.last_widget_end_x = pad_x or 8
+    c.last_widget_y = pad_y or 8
+    c.last_widget_h = 0
+    return c
+end
+
+-- Minimal variant for column sub-containers (zero padding, fixed geometry)
+local function fill_col_container(c, id, x, y, w, h, spacing)
+    for k in pairs(c) do c[k] = nil end
+    c.id = id
+    c.x = x; c.y = y; c.w = w; c.h = h
+    c.pad_x = 0; c.pad_y = 0
+    c.cursor_x = 0; c.cursor_y = 0
+    c.content_h = 0; c.scroll_y = 0
+    c.scrollable = false
+    c.same_line = false; c.same_line_x = 0
+    c.max_row_h = 0; c.spacing = spacing
+    c.indent_x = 0; c.sameline_pending = false
+    c.last_widget_end_x = 0; c.last_widget_y = 0; c.last_widget_h = 0
+    return c
 end
 
 -- ============================================================================
@@ -71,7 +91,6 @@ end
 -- ============================================================================
 function Layout.Begin(id, theme, opts)
     opts = opts or {}
-    local state = Core.GetState()
     local w, h = Core.GetWindowSize()
     local pad = theme and theme.window_padding or 8
     local spacing = theme and theme.item_spacing or 4
@@ -95,7 +114,9 @@ function Layout.Begin(id, theme, opts)
         data._init = true
     end
 
-    local c = new_container(id, 0, 0, w, h, pad, pad, spacing, scrollable)
+    local c = data.c
+    if not c then c = {}; data.c = c end
+    fill_container(c, id, 0, 0, w, h, pad, pad, spacing, scrollable)
     c.scroll_y = scrollable and data.scroll_y or 0
     c._no_scroll = not scrollable
 
@@ -129,15 +150,18 @@ function Layout.End()
         -- independent of platform wheel-delta magnitude.
         if not c._no_scroll and content_h > c.h then
             local state = Core.GetState()
+            local scroll_range = content_h - c.h
             if not Core.HasPopup() and not Core.IsWheelConsumed() then
                 local wheel = state.mouse_wheel
                 if wheel ~= 0 then
-                    local scroll_range = content_h - c.h
                     local SCROLL_STEP = 40  -- pixels per wheel notch
                     local dir = wheel > 0 and -1 or 1
-                    data.scroll_y = max(0, min(data.scroll_y + dir * SCROLL_STEP, scroll_range))
+                    data.scroll_y = data.scroll_y + dir * SCROLL_STEP
                 end
             end
+            -- Re-clamp every frame (audit B22: a section collapse that
+            -- shrinks content used to leave the view stuck past the end)
+            data.scroll_y = max(0, min(data.scroll_y, scroll_range))
 
             -- Draw scrollbar
             Layout._DrawScrollbar(c, data)
@@ -191,7 +215,9 @@ function Layout.BeginChild(id, w, h, opts)
     end
     data.scroll_x = data.scroll_x or 0
 
-    local c = new_container(id, abs_x, abs_y, w, h, pad, pad, spacing, scrollable, scrollable_x)
+    local c = data.c
+    if not c then c = {}; data.c = c end
+    fill_container(c, id, abs_x, abs_y, w, h, pad, pad, spacing, scrollable, scrollable_x)
     c.scroll_y = data.scroll_y
     c.scroll_x = data.scroll_x
 
@@ -241,25 +267,35 @@ function Layout.EndChild()
     local has_h_scroll = c.scrollable_x and content_w > c.w
     if (has_v_scroll or has_h_scroll) then
         local state = Core.GetState()
-        if Core.MouseInRect(c.x, c.y, c.w, c.h) and not Core.HasPopup() and not Core.IsWheelConsumed() then
+        -- Clipped hit-test (audit B21: a child partially scrolled out of an
+        -- ancestor used to keep an invisible wheel/click zone alive)
+        if Core.MouseInClippedRect(c.x, c.y, c.w, c.h) and not Core.HasPopup() and not Core.IsWheelConsumed() then
             local wheel = state.mouse_wheel
             if wheel ~= 0 then
                 local SCROLL_STEP = 40
                 local dir = wheel > 0 and -1 or 1
                 local horizontal = Core.ModShift() and has_h_scroll
                 if has_v_scroll and not horizontal then
-                    data.scroll_y = max(0, min(data.scroll_y + dir * SCROLL_STEP,
-                        content_h - c.h + c.pad_y * 2))
+                    data.scroll_y = data.scroll_y + dir * SCROLL_STEP
                     Core.ConsumeWheel()
                 elseif has_h_scroll then
-                    data.scroll_x = max(0, min(data.scroll_x + dir * SCROLL_STEP,
-                        content_w - c.w + c.pad_x * 2))
+                    data.scroll_x = data.scroll_x + dir * SCROLL_STEP
                     Core.ConsumeWheel()
                 end
             end
         end
-        if has_v_scroll then Layout._DrawScrollbar(c, data) end
-        if has_h_scroll then Layout._DrawScrollbarH(c, data) end
+        -- Unified range + per-frame re-clamp (audit B22: the wheel, the thumb
+        -- drag and the root wheel each used a different max — the thumb could
+        -- scroll pad*2 further, then the next wheel tick snapped back; and a
+        -- shrinking content left the view past the end)
+        if has_v_scroll then
+            data.scroll_y = max(0, min(data.scroll_y, content_h - c.h))
+            Layout._DrawScrollbar(c, data)
+        end
+        if has_h_scroll then
+            data.scroll_x = max(0, min(data.scroll_x, content_w - c.w))
+            Layout._DrawScrollbarH(c, data)
+        end
     end
     if not has_v_scroll then data.scroll_y = 0 end
     if not has_h_scroll then data.scroll_x = 0 end
@@ -285,16 +321,21 @@ function Layout._DrawScrollbar(c, data)
 
     local visible_ratio = c.h / data.content_h
     local thumb_h = max(20, bar_h * visible_ratio)
-    local scroll_range = data.content_h - c.h + c.pad_y * 2
+    -- Same range as the wheel handlers (audit B22)
+    local scroll_range = data.content_h - c.h
     local scroll_ratio = scroll_range > 0 and (data.scroll_y / scroll_range) or 0
     local thumb_y = bar_y + (bar_h - thumb_h) * scroll_ratio
 
     -- Track background
     Core.DrawRect(bar_x, bar_y, bar_w, bar_h, 0.2, 0.2, 0.2, 0.3)
 
-    -- Thumb
-    local hover = Core.MouseInRect(bar_x - 2, thumb_y, bar_w + 4, thumb_h)
-    local drag_id = "scrollbar_" .. c.id
+    -- Thumb (clipped hit-test — audit B21; drag id cached — audit P9)
+    local hover = Core.MouseInClippedRect(bar_x - 2, thumb_y, bar_w + 4, thumb_h)
+    local drag_id = data._sb_id
+    if not drag_id then
+        drag_id = "scrollbar_" .. c.id
+        data._sb_id = drag_id
+    end
 
     if hover or Core.IsActive(drag_id) then
         Core.DrawRect(bar_x, thumb_y, bar_w, thumb_h, 0.5, 0.5, 0.5, 0.7)
@@ -331,16 +372,21 @@ function Layout._DrawScrollbarH(c, data)
 
     local visible_ratio = c.w / data.content_w
     local thumb_w = max(20, bar_w * visible_ratio)
-    local scroll_range = data.content_w - c.w + c.pad_x * 2
+    -- Same range as the wheel handlers (audit B22)
+    local scroll_range = data.content_w - c.w
     local scroll_ratio = scroll_range > 0 and (data.scroll_x / scroll_range) or 0
     local thumb_x = bar_x + (bar_w - thumb_w) * scroll_ratio
 
     -- Track background
     Core.DrawRect(bar_x, bar_y, bar_w, bar_h, 0.2, 0.2, 0.2, 0.3)
 
-    -- Thumb
-    local hover = Core.MouseInRect(thumb_x, bar_y - 2, thumb_w, bar_h + 4)
-    local drag_id = "scrollbar_h_" .. c.id
+    -- Thumb (clipped hit-test — audit B21; drag id cached — audit P9)
+    local hover = Core.MouseInClippedRect(thumb_x, bar_y - 2, thumb_w, bar_h + 4)
+    local drag_id = data._sbh_id
+    if not drag_id then
+        drag_id = "scrollbar_h_" .. c.id
+        data._sbh_id = drag_id
+    end
 
     if hover or Core.IsActive(drag_id) then
         Core.DrawRect(thumb_x, bar_y, thumb_w, bar_h, 0.5, 0.5, 0.5, 0.7)
@@ -375,6 +421,13 @@ function Layout._AdvanceCursor(c, widget_w, widget_h)
     c.last_widget_y = c.cursor_y
     c.last_widget_h = widget_h
 
+    -- Record the item rect for Core.IsItemHovered/IsItemClicked (F7).
+    -- Single choke point: every widget passes through here.
+    Core.SetLastItemRect(
+        c.x + c.cursor_x - (c.scrollable_x and c.scroll_x or 0),
+        c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0),
+        widget_w, widget_h)
+
     -- Track the rightmost X reached so horizontal-scrolling containers can
     -- compute content_w. We sample the widget's right edge regardless of
     -- the SameLine flag.
@@ -394,13 +447,14 @@ function Layout._AdvanceCursor(c, widget_w, widget_h)
             c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
             c.cursor_x = c.pad_x + c.indent_x
             c.sameline_pending = false
-            c.max_row_h = 0
         end
-        -- Vertical: advance Y, reset X
-        local row_h = max(c.max_row_h, widget_h)
-        c.cursor_y = c.cursor_y + row_h + c.spacing
+        -- Vertical: advance by THIS widget's height (audit B20: the old
+        -- max(c.max_row_h, widget_h) reused the PREVIOUS widget's height —
+        -- a tall Canvas followed by a one-line Text left a phantom gap, and
+        -- GetCursorPosAligned centered text against a stale row height).
+        c.cursor_y = c.cursor_y + widget_h + c.spacing
         c.cursor_x = c.pad_x + c.indent_x
-        c.max_row_h = widget_h
+        c.max_row_h = 0
     end
 end
 
@@ -555,7 +609,10 @@ end
 -- Widgets placed inside BeginWrap/EndWrap flow horizontally and wrap
 -- to the next line when they exceed the available width.
 -- Each widget calls Layout.WrapItem(w, h) instead of AdvanceCursor.
+-- Descriptors are pooled per stack depth (audit P8: one table per
+-- BeginWrap per frame).
 local wrap_stack = {}
+local wrap_pool = {}
 
 function Layout.BeginWrap(id, opts)
     opts = opts or {}
@@ -572,14 +629,16 @@ function Layout.BeginWrap(id, opts)
 
     local gap = opts.gap or c.spacing
 
-    wrap_stack[#wrap_stack + 1] = {
-        id = id,
-        start_x = c.cursor_x,
-        start_y = c.cursor_y,
-        gap = gap,
-        row_h = 0,
-        max_x = c.w - c.pad_x,  -- right edge (absolute within container)
-    }
+    local depth = #wrap_stack + 1
+    local wrap = wrap_pool[depth]
+    if not wrap then wrap = {}; wrap_pool[depth] = wrap end
+    wrap.id = id
+    wrap.start_x = c.cursor_x
+    wrap.start_y = c.cursor_y
+    wrap.gap = gap
+    wrap.row_h = 0
+    wrap.max_x = c.w - c.pad_x  -- right edge (absolute within container)
+    wrap_stack[depth] = wrap
 end
 
 -- Called automatically by AdvanceCursor when inside a wrap context.
@@ -594,6 +653,12 @@ function Layout.WrapItem(w, h)
     c.last_widget_end_x = c.cursor_x + w
     c.last_widget_y = c.cursor_y
     c.last_widget_h = h
+
+    -- Item rect for Core.IsItemHovered/IsItemClicked (F7)
+    Core.SetLastItemRect(
+        c.x + c.cursor_x - (c.scrollable_x and c.scroll_x or 0),
+        c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0),
+        w, h)
 
     wrap.row_h = max(wrap.row_h, h)
 
@@ -661,8 +726,29 @@ function Layout.BeginColumns(id, ratios, opts)
     local avail_w = c.w - c.cursor_x - c.pad_x
     local gap = opts.gap or c.spacing
 
+    -- Pooled descriptor + column containers + pre-built ids (audit P8: this
+    -- was the biggest remaining per-frame allocator in Layout — ~6 tables
+    -- and one string concat per column per frame).
+    local cd = Core.GetWidgetSubData("columns", id)
+    if cd.ncols ~= #ratios then
+        cd.ncols = #ratios
+        local ids = cd.ids
+        if not ids then ids = {}; cd.ids = ids end
+        for i = 1, #ratios do ids[i] = id .. "_col" .. i end
+        for i = #ratios + 1, #ids do ids[i] = nil end
+    end
+    if not cd.desc then
+        cd.desc = { widths = {}, positions = {}, pool = {} }
+    end
+    local cols = cd.desc
+    local col_widths = cols.widths
+    local col_positions = cols.positions
+    for i = #ratios + 1, #col_widths do
+        col_widths[i] = nil
+        col_positions[i] = nil
+    end
+
     -- Calculate column widths
-    local col_widths = {}
     local total_fixed = 0
     local total_ratio = 0
     local gaps_total = (#ratios - 1) * gap
@@ -690,47 +776,33 @@ function Layout.BeginColumns(id, ratios, opts)
 
     -- Calculate absolute X positions (account for any horizontal scroll on
     -- the parent container; scroll_y is applied separately on col_y).
-    local col_positions = {}
     local abs_x = c.x + c.cursor_x - (c.scrollable_x and c.scroll_x or 0)
-    local abs_y = c.y + c.cursor_y - (c.scrollable   and c.scroll_y   or 0)
-    for i = 1, #col_widths do
+    for i = 1, #ratios do
         col_positions[i] = abs_x
         abs_x = abs_x + col_widths[i] + gap
     end
 
-    local cols = {
-        id = id,
-        count = #ratios,
-        widths = col_widths,
-        positions = col_positions,
-        gap = gap,
-        current = 1,
-        start_y = c.cursor_y,
-        max_h = 0,  -- tallest column content
-        parent_cursor_x = c.cursor_x,
-        parent_cursor_y = c.cursor_y,
-    }
+    cols.id = id
+    cols.count = #ratios
+    cols.gap = gap
+    cols.current = 1
+    cols.start_y = c.cursor_y
+    cols.max_h = 0  -- tallest column content
+    cols.parent_cursor_x = c.cursor_x
+    cols.parent_cursor_y = c.cursor_y
+    cols.ids = cd.ids
 
     column_stack[#column_stack + 1] = cols
 
-    -- Push first column as a child container (no border, no scroll)
+    -- Push first column as a pooled child container (no border, no scroll)
     local col_x = col_positions[1]
     local col_w = col_widths[1]
     local col_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
     local col_h = c.h - c.cursor_y - c.pad_y  -- max height from current pos
 
-    local col_c = {
-        id = id .. "_col1",
-        x = col_x, y = col_y, w = col_w, h = col_h,
-        pad_x = 0, pad_y = 0,
-        cursor_x = 0, cursor_y = 0,
-        content_h = 0, scroll_y = 0,
-        scrollable = false,
-        same_line = false, same_line_x = 0,
-        max_row_h = 0, spacing = c.spacing,
-        indent_x = 0, sameline_pending = false,
-        last_widget_end_x = 0, last_widget_y = 0, last_widget_h = 0,
-    }
+    local col_c = cols.pool[1]
+    if not col_c then col_c = {}; cols.pool[1] = col_c end
+    fill_col_container(col_c, cols.ids[1], col_x, col_y, col_w, col_h, c.spacing)
 
     Core.PushContainer(col_c)
     Core.PushClipRect(col_x, col_y, col_w, col_h)
@@ -769,18 +841,9 @@ function Layout.NextColumn()
     local col_y = parent.y + cols.start_y - (parent.scrollable and parent.scroll_y or 0)
     local col_h = parent.h - cols.start_y - parent.pad_y
 
-    local col_c = {
-        id = cols.id .. "_col" .. cols.current,
-        x = col_x, y = col_y, w = col_w, h = col_h,
-        pad_x = 0, pad_y = 0,
-        cursor_x = 0, cursor_y = 0,
-        content_h = 0, scroll_y = 0,
-        scrollable = false,
-        same_line = false, same_line_x = 0,
-        max_row_h = 0, spacing = parent.spacing,
-        indent_x = 0, sameline_pending = false,
-        last_widget_end_x = 0, last_widget_y = 0, last_widget_h = 0,
-    }
+    local col_c = cols.pool[cols.current]
+    if not col_c then col_c = {}; cols.pool[cols.current] = col_c end
+    fill_col_container(col_c, cols.ids[cols.current], col_x, col_y, col_w, col_h, parent.spacing)
 
     Core.PushContainer(col_c)
     Core.PushClipRect(col_x, col_y, col_w, col_h)
@@ -844,36 +907,42 @@ function Layout.BeginWeightedRow(id, weights, opts)
     local gap = opts.gap or c.spacing
     local row_h = opts.height or 0  -- 0 = auto
 
-    -- First pass: determine which columns are visible
-    local total_weight = 0
-    local visible = {}
-    local visible_list = {}
+    -- All working tables live on the persistent row_data and are re-filled
+    -- in place (audit P8: this function allocated 3 tables + 1 closure per
+    -- row per frame despite its "Reuse persistent table" comment — a mixer
+    -- with 30 rows churned ~120 allocations per frame).
+    local row_data = Core.GetWidgetSubData("wrow", id)
+    local visible = row_data.visible
+    if not visible then visible = {}; row_data.visible = visible end
+    for k in pairs(visible) do visible[k] = nil end
+    local widths = row_data.widths
+    if not widths then widths = {}; row_data.widths = widths end
+    for k in pairs(widths) do widths[k] = nil end
+    local pos = row_data.pos
+    if not pos then pos = {}; row_data.pos = pos end
+    for k in pairs(pos) do pos[k] = nil end
+
+    -- First pass: all columns visible
     for _, w in ipairs(weights) do
         visible[w.key] = true
-        visible_list[#visible_list + 1] = w
-        total_weight = total_weight + w.weight
     end
 
-    -- Remove columns that don't fit (starting from rightmost low-weight)
-    local gaps_needed = max(0, #visible_list - 1)
-    local function calc_total_min()
+    -- Auto-hide from right if too narrow. Inline min-width total (audit P8:
+    -- calc_total_min was a per-frame closure).
+    local gaps_needed = max(0, #weights - 1)
+    for i = #weights, 1, -1 do
         local total = gaps_needed * gap
-        for _, w in ipairs(visible_list) do
+        for _, w in ipairs(weights) do
             if visible[w.key] then total = total + (w.min_w or 40) end
         end
-        return total
-    end
-
-    -- Auto-hide from right if too narrow
-    for i = #weights, 1, -1 do
-        if calc_total_min() <= avail_w then break end
-        if #visible_list > 1 then
+        if total <= avail_w then break end
+        if i > 1 then
             visible[weights[i].key] = false
         end
     end
 
     -- Second pass: calculate widths for visible columns
-    total_weight = 0
+    local total_weight = 0
     local visible_count = 0
     for _, w in ipairs(weights) do
         if visible[w.key] then
@@ -884,7 +953,6 @@ function Layout.BeginWeightedRow(id, weights, opts)
 
     local gaps_total = max(0, visible_count - 1) * gap
     local distributable = avail_w - gaps_total
-    local widths = {}
     for _, w in ipairs(weights) do
         if visible[w.key] then
             widths[w.key] = max(w.min_w or 40,
@@ -898,11 +966,17 @@ function Layout.BeginWeightedRow(id, weights, opts)
     local abs_x = c.x + c.cursor_x
     local abs_y = c.y + c.cursor_y - (c.scrollable and c.scroll_y or 0)
 
-    -- Reuse persistent table to avoid per-frame allocation.
-    local row_data = Core.GetWidgetSubData("wrow", id)
+    -- Precompute each cell's X once (audit P21: WeightedCell used to rescan
+    -- the weights list per cell — O(n²) per row per frame).
+    local cx = abs_x
+    for _, w in ipairs(weights) do
+        if visible[w.key] then
+            pos[w.key] = cx
+            cx = cx + widths[w.key] + gap
+        end
+    end
+
     row_data.id = id
-    row_data.widths = widths
-    row_data.visible = visible
     row_data.weights = weights
     row_data.gap = gap
     row_data.start_x = abs_x
@@ -917,17 +991,8 @@ end
 -- Returns: x, y, w, h (screen coords), or nil if not visible
 function Layout.WeightedCell(id, key)
     local row = Core.GetWidgetSubData("wrow", id)
-    if not row.visible or not row.visible[key] then return nil end
-
-    -- Find X position by summing previous visible columns
-    local cell_x = row.start_x
-    for _, w in ipairs(row.weights) do
-        if w.key == key then break end
-        if row.visible[w.key] then
-            cell_x = cell_x + row.widths[w.key] + row.gap
-        end
-    end
-
+    local cell_x = row.pos and row.pos[key]
+    if not cell_x then return nil end
     return cell_x, row.start_y, row.widths[key], row.height
 end
 
@@ -1015,6 +1080,64 @@ function Layout.EndGrid(id)
 end
 
 -- ============================================================================
+-- LIST CLIPPER (virtualization — F1, ImGuiListClipper equivalent)
+-- ============================================================================
+-- For custom fixed-height rows inside the current container (typically a
+-- scrollable BeginChild). Returns the 1-based range of rows that intersect
+-- the viewport and positions the cursor at the first one; EndListClipper
+-- places the cursor after the whole virtual list. Layout/logic cost becomes
+-- O(visible), independent of count — the difference between "usable" and
+-- "unplayable" for a 2000-plugin browser on the 2005 target.
+--
+-- Contract: each row must advance the cursor by exactly row_h (plus the
+-- container's item spacing), e.g. widgets of height row_h.
+--
+-- Usage:
+--   UI.BeginChild("list", 0, 0)
+--   local first, last = UI.ListClipper(#rows, row_h)
+--   for i = first, last do
+--       -- draw row i (height row_h)
+--   end
+--   UI.EndListClipper(#rows, row_h)
+--   UI.EndChild()
+function Layout.ListClipper(count, row_h)
+    local c = Core.CurrentContainer()
+    if not c then return 1, count end
+    _flush_pending_row(c)
+
+    local step = row_h + c.spacing
+    local start_y = c.cursor_y
+    local scroll = c.scrollable and c.scroll_y or 0
+
+    -- Visible content band: [scroll, scroll + c.h]
+    local first = floor((scroll - start_y) / step) + 1
+    if first < 1 then first = 1 end
+    local last = ceil((scroll + c.h - start_y) / step)
+    if last > count then last = count end
+    if last < first then last = first - 1 end  -- nothing visible
+
+    -- Jump the cursor to the first visible row; the skipped rows above cost
+    -- nothing (no layout, no measure, no draw).
+    c.cursor_y = start_y + (first - 1) * step
+    c._clipper_start_y = start_y
+    return first, last
+end
+
+function Layout.EndListClipper(count, row_h)
+    local c = Core.CurrentContainer()
+    if not c then return end
+    local step = row_h + c.spacing
+    local start_y = c._clipper_start_y or c.cursor_y
+    -- Place the cursor after the full virtual list so content_h (and the
+    -- scrollbar) reflect all rows, drawn or not.
+    c.cursor_y = start_y + count * step
+    c.cursor_x = c.pad_x + c.indent_x
+    c.max_row_h = 0
+    c.sameline_pending = false
+    c._clipper_start_y = nil
+end
+
+-- ============================================================================
 -- SPLITTER (horizontal or vertical resizable divider)
 -- ============================================================================
 -- Returns: size_a (pixels for the first panel)
@@ -1030,6 +1153,12 @@ function Layout.Splitter(id, direction, total_size, default_ratio, opts)
     local data = Core.GetWidgetSubData("splitter", id)
     if data.ratio == nil then
         data.ratio = default_ratio or 0.5
+    end
+    -- Drag id cached once (audit P9/P22)
+    local drag_id = data._drag_id
+    if not drag_id then
+        drag_id = "splitter_drag_" .. id
+        data._drag_id = drag_id
     end
 
     local size_a = floor(total_size * data.ratio)
@@ -1051,9 +1180,15 @@ function Layout.Splitter(id, direction, total_size, default_ratio, opts)
         bar_h = thickness
     end
 
-    -- Interaction
-    local hovered = Core.MouseInRect(bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4)
-    local drag_id = "splitter_drag_" .. id
+    -- Visibility first (audit P22 / PERFORMANCE.md rule 6): a splitter
+    -- scrolled out of view pays no hit-test and leaves no invisible click
+    -- zone — unless its drag is already in progress.
+    if not Core.IsVisible(bar_x, bar_y, bar_w, bar_h) and not Core.IsActive(drag_id) then
+        return size_a
+    end
+
+    -- Interaction (clipped hit-test — audit B21)
+    local hovered = Core.MouseInClippedRect(bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4)
 
     if hovered and Core.MouseClicked(1) then
         Core.SetActive(drag_id)

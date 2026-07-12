@@ -22,6 +22,11 @@ Widgets.Init(Core, Layout, ThemeMod)
 Widgets.SetLog(LogMod)
 Widgets.SetIcons(IconsMod)
 Widgets.SetKeys(KeysMod)
+-- Icons (glyph icons) and the Log overlay draw with their own font slots;
+-- after drawing they must re-select the slot Core believes is current, or
+-- Core's slot guards and measure cache would go stale (audit B5a/B5c).
+IconsMod.SetFontRestorer(Core.RestoreFont)
+LogMod.SetFontRestorer(Core.RestoreFont)
 
 -- ============================================================================
 -- PUBLIC API
@@ -50,8 +55,12 @@ function UI.Init(title, width, height, opts)
     -- Sync local version stamp so CheckThemeUpdates only fires on real changes
     UI._theme_version = ThemeMod.GetVersion()
 
-    -- Apply scale (from opts, or auto-detect, or default 1.0)
+    -- Apply scale (from opts, or default 1.0). Remembered so every theme
+    -- reload path can re-apply it (audit B8: a hot-reload from ThemeTweaker
+    -- silently dropped the DPI scale and the padding override).
     local scale = opts.scale or 1.0
+    UI._scale = scale
+    UI._padding_override = opts.padding
     ThemeMod.ApplyScale(UI._theme, scale)
 
     -- Scale window size too
@@ -148,12 +157,24 @@ function UI.SaveTheme(name)
     UI._theme_version = ThemeMod.GetVersion()
 end
 
+-- Every path that REPLACES UI._theme goes through this: re-applies the Init
+-- scale and padding override before reloading the font slots (audit B8).
+local function _adopt_theme(t)
+    UI._theme = t
+    if UI._scale and UI._scale ~= 1.0 then
+        ThemeMod.ApplyScale(UI._theme, UI._scale)
+    end
+    if UI._padding_override ~= nil then
+        UI._theme.window_padding = UI._padding_override
+    end
+    Core.LoadFontSlots(UI._theme)
+    Core.SetFontBody()
+end
+
 function UI.LoadTheme(name)
     local t = ThemeMod.LoadSaved(name)
     if t then
-        UI._theme = t
-        Core.LoadFontSlots(UI._theme)
-        Core.SetFontSecondary()
+        _adopt_theme(t)
         -- Sync our local version stamp with the on-disk one
         UI._theme_version = ThemeMod.GetVersion()
     end
@@ -163,15 +184,24 @@ end
 -- if the theme tweaker (or another script) has saved a new theme since
 -- last frame, we re-load the file and the next frame paints with the new
 -- theme. Returns true if a reload happened.
+-- Throttled (audit P17): GetVersion does a reaper.GetExtState round-trip and
+-- allocates a string — pointless 30×/s per open window for an event that
+-- happens once per manual theme save.
+local THEME_CHECK_INTERVAL = 0.5
+local _theme_last_check = 0
+
 function UI.CheckThemeUpdates()
+    local now = reaper.time_precise()
+    if now - _theme_last_check < THEME_CHECK_INTERVAL then return false end
+    _theme_last_check = now
+
     local v = ThemeMod.GetVersion()
     if v == 0 then return false end
     if v == UI._theme_version then return false end
 
     local t = ThemeMod.LoadSaved("theme")
     if t then
-        UI._theme = t
-        Core.LoadFontSlots(UI._theme)
+        _adopt_theme(t)
         UI._theme_version = v
         return true
     end
@@ -179,15 +209,11 @@ function UI.CheckThemeUpdates()
 end
 
 function UI.ResetTheme()
-    UI._theme = ThemeMod.Default()
-    Core.LoadFontSlots(UI._theme)
-    Core.SetFontSecondary()
+    _adopt_theme(ThemeMod.Default())
 end
 
 function UI.ApplyPreset(preset_key)
-    UI._theme = ThemeMod.GetPreset(preset_key)
-    Core.LoadFontSlots(UI._theme)
-    Core.SetFontSecondary()
+    _adopt_theme(ThemeMod.GetPreset(preset_key))
 end
 
 function UI.GetTheme()
@@ -223,24 +249,32 @@ function UI.EndPanel()
     Widgets.EndPanel(UI._theme)
 end
 
--- Font switching (new hierarchy)
-function UI.SetFontTitle()      Core.SetFontTitle() end      -- Window title, biggest bold
-function UI.SetFontH1()         Core.SetFontH1() end         -- Section headers
-function UI.SetFontH2()         Core.SetFontH2() end         -- Sub-section headers
-function UI.SetFontH2Bold()     Core.SetFontH2Bold() end     -- Sub-section bold
-function UI.SetFontBody()       Core.SetFontBody() end       -- Default body text
-function UI.SetFontCaption()    Core.SetFontCaption() end    -- Small/hints
-function UI.SetFontMono()       Core.SetFontMono() end       -- Values, numbers
+-- Font switching (new hierarchy). Direct references — a pure pass-through
+-- wrapper costs one extra Lua call per invocation for nothing (audit P19,
+-- PERFORMANCE.md rule 7). Only wrappers that inject UI._theme remain
+-- functions.
+UI.SetFontTitle   = Core.SetFontTitle     -- Window title, biggest bold
+UI.SetFontH1      = Core.SetFontH1        -- Section headers
+UI.SetFontH2      = Core.SetFontH2        -- Sub-section headers
+UI.SetFontH2Bold  = Core.SetFontH2Bold    -- Sub-section bold
+UI.SetFontBody    = Core.SetFontBody      -- Default body text
+UI.SetFontCaption = Core.SetFontCaption   -- Small/hints
+UI.SetFontMono    = Core.SetFontMono      -- Values, numbers
 
 -- Legacy aliases
-function UI.SetFontPrimary()    Core.SetFontH1() end
-function UI.SetFontSecondary()  Core.SetFontBody() end
-function UI.SetFontTertiary()   Core.SetFontCaption() end
-function UI.SetFontPrimaryBold() Core.SetFontTitle() end
+UI.SetFontPrimary     = Core.SetFontH1
+UI.SetFontSecondary   = Core.SetFontBody
+UI.SetFontTertiary    = Core.SetFontCaption
+UI.SetFontPrimaryBold = Core.SetFontTitle
 
 -- Text
 function UI.Text(text, opts)
     Widgets.Text(text, UI._theme, opts)
+end
+
+-- Word-wrapped multi-line text (cached layout; see Widgets.TextWrapped)
+function UI.TextWrapped(text, opts)
+    Widgets.TextWrapped(text, UI._theme, opts)
 end
 
 function UI.TextColored(text, r, g, b, a)
@@ -295,9 +329,18 @@ function UI.ProgressBar(id, fraction, opts)
     Widgets.ProgressBar(id, fraction, UI._theme, opts)
 end
 
--- Context Menu (call in the area where right-click should trigger it)
-function UI.ContextMenu(id, items)
-    Widgets.ContextMenu(id, items, UI._theme)
+-- Context Menu. opts (optional): {rect={x,y,w,h}} or {scope="item"} to bind
+-- the trigger zone (default: whole window — see Widgets.ContextMenu).
+function UI.ContextMenu(id, items, opts)
+    Widgets.ContextMenu(id, items, UI._theme, opts)
+end
+
+-- Native OS menu (gfx.showmenu): nested submenus/checks for free, blocking.
+UI.NativeMenu = Widgets.NativeMenu
+
+-- Horizontal menu bar built on NativeMenu
+function UI.MenuBar(id, menus)
+    return Widgets.MenuBar(id, menus, UI._theme)
 end
 
 -- Table
@@ -332,9 +375,8 @@ function UI.IsDragging(drag_type)
 end
 
 -- Images
-function UI.LoadImage(path)
-    return Widgets.LoadImage(path)
-end
+UI.LoadImage = Widgets.LoadImage
+UI.UnloadImage = Widgets.UnloadImage
 
 -- Color Picker
 function UI.ColorPicker(id, label, color, opts)
@@ -382,44 +424,103 @@ function UI.IsDocked()
 end
 
 -- Cursor
-function UI.SetCursor(cursor_type) Core.SetCursor(cursor_type) end
+UI.SetCursor = Core.SetCursor
 
 -- Animation
-function UI.Animate(id, target, speed) return Core.Animate(id, target, speed) end
-function UI.AnimateColor(id, color, speed) return Core.AnimateColor(id, color, speed) end
+UI.Animate = Core.Animate
+UI.AnimateColor = Core.AnimateColor
 
 -- Idle throttle escape hatch — call each frame to keep the UI redrawing.
 -- Use this when displaying live data (peak meters, playback time, etc.) so
 -- the toolkit doesn't enter idle mode and freeze the visual.
-function UI.RequestRedraw() Core.RequestRedraw() end
-function UI.SetIdleThrottle(enabled) Core.SetIdleThrottle(enabled) end
+UI.RequestRedraw = Core.RequestRedraw
+-- Deadline variant (egui request_repaint_after): wake the idle loop at an
+-- absolute reaper.time_precise() timestamp — for timed reveals/fades.
+UI.RequestRedrawAt = Core.RequestRedrawAt
+UI.SetIdleThrottle = Core.SetIdleThrottle
+
+-- Disabled scope (ImGui BeginDisabled/EndDisabled): widgets inside the scope
+-- skip interaction and draw grayed. BeginDisabled(false) is a transparent
+-- level so call sites can stay unconditional.
+UI.BeginDisabled = Core.BeginDisabled
+UI.EndDisabled = Core.EndDisabled
+UI.IsDisabled = Core.IsDisabled
+
+-- Last-item queries (ImGui IsItemHovered family) — call right AFTER a widget
+UI.IsItemHovered = Core.IsItemHovered
+UI.IsItemClicked = Core.IsItemClicked
+UI.IsItemRightClicked = Core.IsItemRightClicked
+UI.IsItemDoubleClicked = Core.IsItemDoubleClicked
+UI.GetLastItemRect = Core.GetLastItemRect
+
+-- Input consumption (custom widgets that handle a key/wheel tick call these
+-- so the toolkit's fallbacks — ESC-close, container scroll — stay quiet)
+UI.ConsumeChar = Core.ConsumeChar
+UI.ConsumeWheel = Core.ConsumeWheel
 
 -- Focus chain (Tab navigation)
-function UI.FocusNext() Core.FocusNext() end
-function UI.FocusPrev() Core.FocusPrev() end
+UI.FocusNext = Core.FocusNext
+UI.FocusPrev = Core.FocusPrev
+UI.RegisterFocusable = Core.RegisterFocusable
 
 -- Programmatic focus: pass an InputText / TextEdit widget id to give it
 -- keyboard focus on the next frame. Pass nil to clear focus.
-function UI.SetFocus(id) Core.SetFocus(id) end
-function UI.IsFocused(id) return Core.IsFocused(id) end
+UI.SetFocus = Core.SetFocus
+UI.IsFocused = Core.IsFocused
 
 -- Persistent layout
-function UI.SaveWindowState(script_id) Core.SaveWindowState(script_id) end
-function UI.LoadWindowState(script_id) return Core.LoadWindowState(script_id) end
-function UI.SavePersistent(script_id, key, value) Core.SavePersistent(script_id, key, value) end
+UI.SaveWindowState = Core.SaveWindowState
+UI.LoadWindowState = Core.LoadWindowState
+UI.SavePersistent = Core.SavePersistent
 
 -- Config files (CP_Config/<script_id>.lua) — preferred over ExtState for
 -- non-trivial app state. One file per script, one disk write per save.
-function UI.SaveConfig(script_id, data) return Core.SaveConfig(script_id, data) end
-function UI.LoadConfig(script_id) return Core.LoadConfig(script_id) end
-function UI.LoadPersistent(script_id, key, default) return Core.LoadPersistent(script_id, key, default) end
+UI.SaveConfig = Core.SaveConfig
+UI.LoadConfig = Core.LoadConfig
+UI.LoadPersistent = Core.LoadPersistent
 
 -- Native GFX drawing
-function UI.DrawRoundRect(x, y, w, h, radius, r, g, b, a) Core.DrawRoundRect(x, y, w, h, radius, r, g, b, a) end
-function UI.DrawCircle(x, y, radius, r, g, b, a, filled) Core.DrawCircle(x, y, radius, r, g, b, a, filled) end
-function UI.DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a) Core.DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a) end
-function UI.DrawArc(x, y, radius, a1, a2, r, g, b, a) Core.DrawArc(x, y, radius, a1, a2, r, g, b, a) end
-function UI.DrawGradientRect(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2, vertical) Core.DrawGradientRect(x, y, w, h, r1, g1, b1, a1, r2, g2, b2, a2, vertical) end
+UI.DrawRoundRect = Core.DrawRoundRect
+UI.DrawCircle = Core.DrawCircle
+UI.DrawTriangle = Core.DrawTriangle
+UI.DrawArc = Core.DrawArc
+UI.DrawGradientRect = Core.DrawGradientRect
+
+-- ============================================================================
+-- STYLE OVERRIDES (ImGui PushStyleColor idiom)
+-- ============================================================================
+-- Temporarily replace a theme color for the next widget(s), then restore:
+--   UI.PushStyleColor("accent", 0.9, 0.2, 0.2)   -- danger red
+--   UI.Button("del", "Delete")
+--   UI.PopStyleColor()
+-- Stack entries and replacement tables are pooled — zero allocation in
+-- steady state. Overrides must be popped within the same frame.
+local _style_stack = {}
+local _style_top = 0
+
+function UI.PushStyleColor(key, r, g, b, a)
+    _style_top = _style_top + 1
+    local e = _style_stack[_style_top]
+    if not e then
+        e = { repl = {} }
+        _style_stack[_style_top] = e
+    end
+    e.key = key
+    e.prev = UI._theme.colors[key]
+    local repl = e.repl
+    repl[1], repl[2], repl[3], repl[4] = r, g, b, a or 1
+    UI._theme.colors[key] = repl
+end
+
+function UI.PopStyleColor(count)
+    count = count or 1
+    for _ = 1, count do
+        if _style_top == 0 then break end
+        local e = _style_stack[_style_top]
+        UI._theme.colors[e.key] = e.prev
+        _style_top = _style_top - 1
+    end
+end
 
 -- Frameless / Overlay
 function UI.SetPosition(x, y)
@@ -536,45 +637,22 @@ function UI.InteractiveTable(id, columns, row_count, cell_render, opts)
 end
 
 -- ============================================================================
--- LAYOUT SHORTCUTS
+-- LAYOUT SHORTCUTS (direct references — audit P19: pure pass-through
+-- wrappers cost one Lua call per widget per frame for nothing)
 -- ============================================================================
-function UI.SameLine(spacing)
-    Layout.SameLine(spacing)
-end
-
-function UI.NewLine()
-    Layout.NewLine()
-end
-
-function UI.Spacing(amount)
-    Layout.Spacing(amount)
-end
-
-function UI.Indent(amount)
-    Layout.Indent(amount)
-end
+UI.SameLine = Layout.SameLine
+UI.NewLine = Layout.NewLine
+UI.Spacing = Layout.Spacing
+UI.Indent = Layout.Indent
+UI.Unindent = Layout.Unindent
 
 -- Width / height available in the current container (after the cursor).
--- Useful when sizing widgets that should match the column width, like a
--- square Canvas that needs to take the full section width.
-function UI.GetAvailableWidth()
-    return Layout.GetAvailableWidth()
-end
-
-function UI.GetAvailableHeight()
-    return Layout.GetAvailableHeight()
-end
+UI.GetAvailableWidth = Layout.GetAvailableWidth
+UI.GetAvailableHeight = Layout.GetAvailableHeight
 
 -- Absolute screen position of the layout cursor (where the next widget
--- would be drawn). Useful for custom widgets that need to draw against
--- screen coordinates rather than container-relative ones.
-function UI.GetCursorPos()
-    return Layout.GetCursorPos()
-end
-
-function UI.Unindent(amount)
-    Layout.Unindent(amount)
-end
+-- would be drawn).
+UI.GetCursorPos = Layout.GetCursorPos
 
 function UI.BeginChild(id, w, h, opts)
     opts = opts or {}
@@ -582,65 +660,34 @@ function UI.BeginChild(id, w, h, opts)
     Layout.BeginChild(id, w, h, opts)
 end
 
-function UI.EndChild()
-    Layout.EndChild()
-end
+UI.EndChild = Layout.EndChild
 
 -- Wrap (auto-flow like CSS flex-wrap)
-function UI.BeginWrap(id, opts)
-    Layout.BeginWrap(id, opts)
-end
-
-function UI.WrapItem(w, h)
-    Layout.WrapItem(w, h)
-end
-
-function UI.EndWrap()
-    Layout.EndWrap()
-end
+UI.BeginWrap = Layout.BeginWrap
+UI.WrapItem = Layout.WrapItem
+UI.EndWrap = Layout.EndWrap
 
 -- Columns
-function UI.BeginColumns(id, ratios, opts)
-    Layout.BeginColumns(id, ratios, opts)
-end
-
-function UI.NextColumn()
-    Layout.NextColumn()
-end
-
-function UI.EndColumns()
-    Layout.EndColumns()
-end
+UI.BeginColumns = Layout.BeginColumns
+UI.NextColumn = Layout.NextColumn
+UI.EndColumns = Layout.EndColumns
 
 -- Weighted Row
-function UI.BeginWeightedRow(id, weights, opts)
-    return Layout.BeginWeightedRow(id, weights, opts)
-end
-
-function UI.WeightedCell(id, key)
-    return Layout.WeightedCell(id, key)
-end
-
-function UI.EndWeightedRow(id)
-    Layout.EndWeightedRow(id)
-end
+UI.BeginWeightedRow = Layout.BeginWeightedRow
+UI.WeightedCell = Layout.WeightedCell
+UI.EndWeightedRow = Layout.EndWeightedRow
 
 -- Grid
-function UI.BeginGrid(id, opts)
-    Layout.BeginGrid(id, opts)
-end
-
-function UI.GridCell(id)
-    return Layout.GridCell(id)
-end
-
-function UI.EndGrid(id)
-    Layout.EndGrid(id)
-end
+UI.BeginGrid = Layout.BeginGrid
+UI.GridCell = Layout.GridCell
+UI.EndGrid = Layout.EndGrid
 
 -- Splitter
-function UI.Splitter(id, direction, total_size, default_ratio, opts)
-    return Layout.Splitter(id, direction, total_size, default_ratio, opts)
-end
+UI.Splitter = Layout.Splitter
+
+-- List virtualization (F1 — ImGuiListClipper equivalent, O(visible) cost;
+-- see Layout.ListClipper for the row-height contract)
+UI.ListClipper = Layout.ListClipper
+UI.EndListClipper = Layout.EndListClipper
 
 return UI
