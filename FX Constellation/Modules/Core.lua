@@ -75,6 +75,9 @@ function Core.init(reaper_api)
 		jsfx_automation_index = -1,
 		linked_mode = false,
 		links_active = false,
+		-- Trace link writes/releases to the ReaScript console (toggle
+		-- under Native Links) — for diagnosing toggle-transparency bugs.
+		debug_links = false,
 		links_dirty = false,
 		links_rebuild = false,
 		links_count = 0,

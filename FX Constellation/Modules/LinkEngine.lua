@@ -75,6 +75,34 @@ local function getParm(track, fx, param_id, key)
 	return ok and val or nil
 end
 
+-- Debug log (state.debug_links, toggle under Native Links): traces every
+-- link write/release with the exact numbers, to the ReaScript console.
+local function dbg(fmt, ...)
+	if not LinkEngine.core.state.debug_links then return end
+	LinkEngine.r.ShowConsoleMsg(("[FXC links] " .. fmt .. "\n"):format(...))
+end
+
+-- Exact audible value of an FX-sourced link, read from the LINK's own
+-- fields — the same numbers the modulation engine uses. Immune to any
+-- divergence between FXC state (range/invert/anchor) and the actual link.
+-- Returns nil for MIDI-sourced links (source not readable on this track)
+-- or when the link is not active.
+local function linkAudibleValue(track, fx, param_id)
+	if getParm(track, fx, param_id, "active") ~= "1" then return nil end
+	local eff = tonumber(getParm(track, fx, param_id, "effect") or "")
+	if not eff or eff < 0 then return nil end
+	local sp = tonumber(getParm(track, fx, param_id, "param") or "")
+	if not sp then return nil end
+	local ok_b, bstr = LinkEngine.r.TrackFX_GetNamedConfigParm(track, fx,
+		"param." .. param_id .. ".mod.baseline")
+	local baseline = ok_b and tonumber(bstr) or nil
+	if not baseline then return nil end
+	local scale = tonumber(getParm(track, fx, param_id, "scale") or "") or 1
+	local offset = tonumber(getParm(track, fx, param_id, "offset") or "") or -0.5
+	local src_val = LinkEngine.r.TrackFX_GetParam(track, eff, sp)
+	return math.max(0, math.min(1, baseline + (src_val + offset) * scale))
+end
+
 -- Classify the active link on (fx, param):
 --   "bridge" — pad link (always managed by FX Constellation)
 --   "cpmod"  — CP_Mod source: track LFO bank, or MIDI link in our CC window.
@@ -572,6 +600,13 @@ function LinkEngine.syncLinks()
 		s.gesture_base_x = s.gesture_x or 0.5
 		s.gesture_base_y = s.gesture_y or 0.5
 	end
+	if rebuild or reanchor then
+		dbg("sweep want=%s rebuild=%s reanchor=%s pad=(%.3f,%.3f) gb=(%.3f,%.3f) grange=%.2f",
+			tostring(want_links), tostring(rebuild), tostring(reanchor),
+			s.gesture_x or -1, s.gesture_y or -1,
+			s.gesture_base_x or -1, s.gesture_base_y or -1,
+			s.gesture_range or 1)
+	end
 
 	-- The bridge is required (and auto-created) as soon as linked mode is
 	-- on: it is both the link source and the automation surface.
@@ -717,8 +752,19 @@ function LinkEngine.syncLinks()
 							if reanchor then
 								-- The audible value right now becomes the
 								-- base — exact continuity, whatever the
-								-- script-mode math did before.
-								base = param_data.current_value or base
+								-- script-mode math did before. If the param
+								-- was ALREADY linked (rapid toggles), its
+								-- own storage is stale: read the link.
+								if s.links_active then
+									base = linkAudibleValue(track, target, param_id)
+										or param_data.current_value or base
+								else
+									base = param_data.current_value or base
+								end
+								if param_data.step_count and param_data.step_count > 0 then
+									base = LinkEngine.core.snapToDiscreteValue(
+										base, param_data.step_count)
+								end
 								param_data.base_value = base
 								if param_data.key then
 									s.param_base_values[param_data.key] = base
@@ -734,6 +780,10 @@ function LinkEngine.syncLinks()
 					setMod(track, target, param_id, "baseline", base)
 					setMod(track, target, param_id, "active", 1)
 					setParm(track, target, param_id, "active", 1)
+					dbg("write %-24s base=%.4f off=%.4f span=%.4f own=%.4f src=%s",
+						param_data.name or "?", base, off, span,
+						param_data.current_value or -1,
+						midi_cc and ("cc" .. midi_cc) or tostring(src_param))
 				end
 				count = count + 1
 			else
@@ -748,15 +798,30 @@ function LinkEngine.syncLinks()
 					-- the baseline is the pad-center anchor, but the pad may
 					-- sit off-center — script mode's resting value is the
 					-- last APPLIED one, so snapping to the anchor would
-					-- shift the sound on deactivation.
+					-- shift the sound on deactivation. The value is read
+					-- from the LINK's own fields (what the engine actually
+					-- output), NOT recomputed from FXC state — any state
+					-- divergence would land the freeze off-target.
 					local live
 					if kind == "bridge" and s.links_active then
-						live = LinkEngine.getLiveValue(fx_id, param_id, param_data)
+						live = linkAudibleValue(track, target, param_id)
+							or LinkEngine.getLiveValue(fx_id, param_id, param_data)
+						-- Stepped params: the link is continuous but script
+						-- mode works on the step grid — freezing between two
+						-- steps lands on whichever the plugin rounds to (a
+						-- full step off, e.g. 0.33 on a 4-step param).
+						if live and param_data.step_count and param_data.step_count > 0 then
+							live = LinkEngine.core.snapToDiscreteValue(
+								live, param_data.step_count)
+						end
 					end
 					releaseLink(track, target, param_id)
 					if live then
 						LinkEngine.r.TrackFX_SetParamNormalized(
 							track, target, param_id, live)
+						dbg("release %-22s freeze=%.4f own_before=%.4f",
+							param_data.name or "?", live,
+							param_data.current_value or -1)
 						param_data.current_value = live
 						-- Deactivation re-anchor: script mode resumes with
 						-- the frozen value as its base — no jump-back to the

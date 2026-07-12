@@ -631,6 +631,14 @@ local function drawNavigation(theme)
             if UI.linkengine then UI.linkengine.applySlew() end
             UI.persistence.scheduleSave()
         end
+        local dc, dv = Chk("link_dbg", "Log", s.debug_links)
+        if dc then
+            s.debug_links = dv
+            if dv then
+                UI.r.ShowConsoleMsg("[FXC links] debug log ON — toggle " ..
+                    "Native Links to trace writes/releases\n")
+            end
+        end
     end
 end
 
