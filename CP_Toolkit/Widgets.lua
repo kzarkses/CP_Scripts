@@ -146,11 +146,13 @@ local knob_next_buf_id = 910
 local KNOB_MAX_BUF = 925
 
 -- Knob sweep: gfx.arc angles are 0 = up, clockwise. The classic 270° knob
--- starts at 225° (bottom-LEFT) and ends at 495° (bottom-RIGHT, through the
--- top). The previous 135°..405° range mirrored the travel (0 sat at the
--- bottom-right).
-local KNOB_ANGLE_MIN = pi * 1.25
-local KNOB_ANGLE_MAX = pi * 2.75
+-- runs from -135° (bottom-LEFT) to +135° (bottom-RIGHT) through the top.
+-- NEGATIVE angles are the required idiom here: expressing the same sweep
+-- as 225°..495° puts the top of the dial on the 2π wrap boundary, and
+-- gfx.arc renders arcs crossing that boundary as their complement (a 15%
+-- excursion arc near mid-travel exploded to almost the full dial).
+local KNOB_ANGLE_MIN = -pi * 0.75
+local KNOB_ANGLE_MAX = pi * 0.75
 
 local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, tw)
     local entry = knob_bg_cache[size]
