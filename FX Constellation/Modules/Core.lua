@@ -56,6 +56,8 @@ function Core.init(reaper_api)
 		random_walk_last_time = 0,
 		random_walk_control_points = {},
 		random_walk_bezier_progress = 0,
+		random_walk_jump = false,
+		random_walk_sync = 0,
 		granular_grid_size = 3,
 		granular_grains = {},
 		granular_set_name = "GrainSet1",
@@ -96,11 +98,7 @@ function Core.init(reaper_api)
 			enabled = false,
 			jsfx_index = -1,
 			mode = 0,
-			waveform = 0,
-			frequency = 440.0,
-			width = 10.0,
 			amplitude = 0.5,
-			noise_color = 0.5,
 			rhythmic = false,
 			tick_rate = 4.0,
 			duty_cycle = 0.5,
@@ -110,7 +108,16 @@ function Core.init(reaper_api)
 			decay = 0.1,
 			sustain = 0.7,
 			release = 0.2,
-			midi_mode = false
+			midi_mode = false,
+			ui_osc_tab = 1,
+			-- Multi-oscillator bank (Vital-style): each osc has its own
+			-- waveform, frequency, stereo width (detune cents), volume and
+			-- noise color. Osc 1 maps onto the legacy single-osc sliders.
+			osc = {
+				{ on = true,  wave = 0, freq = 440.0, width = 10.0, vol = 1.0, color = 0.5 },
+				{ on = false, wave = 3, freq = 220.0, width = 10.0, vol = 0.5, color = 0.5 },
+				{ on = false, wave = 1, freq = 880.0, width = 10.0, vol = 0.5, color = 0.5 }
+			}
 		},
 		ultra_random_settings = {
 			xy_assignments = true,
@@ -139,22 +146,44 @@ function Core.init(reaper_api)
 	return Core.state
 end
 
+-- Param keys are built from track GUID + FX name + param name. They are hit
+-- on every frame of a gesture for every selected param, so the base key and
+-- the common suffixed variants are cached on the param table (invalidated
+-- naturally: fx_data is rebuilt from scratch on every scanTrackFX).
+local SUFFIX_FIELD = {
+	range = "key_range", invert = "key_invert", x = "key_x", y = "key_y"
+}
+
 function Core.getParamKey(fx_id, param_id, suffix)
-	local guid = Core.getTrackGUID()
-	if not guid or not Core.state.fx_data[fx_id] or not Core.state.fx_data[fx_id].params[param_id] then
-		return nil
+	local fx = Core.state.fx_data[fx_id]
+	local param = fx and fx.params[param_id]
+	if not param then return nil end
+	local key = param.key
+	if not key then
+		local guid = Core.getTrackGUID()
+		if not guid then return nil end
+		key = guid .. "_" .. fx.full_name .. "||" .. param.name
+		param.key = key
+		param.key_range = key .. "_range"
+		param.key_invert = key .. "_invert"
+		param.key_x = key .. "_x"
+		param.key_y = key .. "_y"
 	end
-	local fx_name = Core.state.fx_data[fx_id].full_name
-	local param_name = Core.state.fx_data[fx_id].params[param_id].name
-	local key = guid .. "_" .. fx_name .. "||" .. param_name
-	return suffix and (key .. "_" .. suffix) or key
+	if not suffix then return key end
+	local field = SUFFIX_FIELD[suffix]
+	return field and param[field] or (key .. "_" .. suffix)
 end
 
 function Core.getFXKey(fx_id, suffix)
-	local guid = Core.getTrackGUID()
-	if not guid or not Core.state.fx_data[fx_id] then return nil end
-	local fx_name = Core.state.fx_data[fx_id].full_name
-	local key = guid .. "_" .. fx_name
+	local fx = Core.state.fx_data[fx_id]
+	if not fx then return nil end
+	local key = fx.key
+	if not key then
+		local guid = Core.getTrackGUID()
+		if not guid then return nil end
+		key = guid .. "_" .. fx.full_name
+		fx.key = key
+	end
 	return suffix and (key .. "_" .. suffix) or key
 end
 
@@ -179,21 +208,31 @@ function Core.isTrackValid()
 	return Core.state.track and Core.r.ValidatePtr(Core.state.track, "MediaTrack*")
 end
 
+-- GUID lookups allocate a string through the API; memoize per track pointer
+-- (MediaTrack userdata compares stably across API calls).
 function Core.getTrackGUID()
 	if not Core.isTrackValid() then return nil end
+	if Core._guid_track == Core.state.track and Core._guid then
+		return Core._guid
+	end
 	local _, guid = Core.r.GetSetMediaTrackInfo_String(Core.state.track, "GUID", "", false)
+	Core._guid_track = Core.state.track
+	Core._guid = guid
 	return guid
 end
 
 function Core.createFXSignature()
 	if not Core.isTrackValid() then return "" end
-	local sig = ""
+	local parts = {}
 	local fx_count = Core.r.TrackFX_GetCount(Core.state.track)
 	for fx = 0, fx_count - 1 do
 		local _, fx_name = Core.r.TrackFX_GetFXName(Core.state.track, fx, "")
-		sig = sig .. fx_name .. ":" .. Core.r.TrackFX_GetNumParams(Core.state.track, fx) .. ";"
+		parts[#parts + 1] = fx_name
+		parts[#parts + 1] = ":"
+		parts[#parts + 1] = tostring(Core.r.TrackFX_GetNumParams(Core.state.track, fx))
+		parts[#parts + 1] = ";"
 	end
-	return sig
+	return table.concat(parts)
 end
 
 function Core.getCurrentFXChainSignature()

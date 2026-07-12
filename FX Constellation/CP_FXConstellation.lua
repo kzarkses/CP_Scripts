@@ -70,7 +70,9 @@ UI_TK.Init("FX Constellation", 1400, 800, {
 
 UI_TK.OnClose(function()
     if Core.state.track then FXManager.saveTrackSelection() end
-    Persistence.saveSettings()
+    -- flushAll: saveSettings alone only writes sections whose dirty flag is
+    -- set — edits from the last debounce window would be lost on close.
+    Persistence.flushAll()
 end)
 
 UI_TK.Run(function(theme)

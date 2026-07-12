@@ -22,98 +22,99 @@ function FXManager.shouldFilterParam(param_name)
 	return false
 end
 
-function FXManager.detectParamSteps(fx_id, param_id)
+-- Discrete-step detection. The old implementation probed each param by
+-- WRITING 21 test values and reading them back — on a big synth (Vital:
+-- ~780 params) that meant ~16k param writes per scan, seconds of freeze and
+-- audible zipper noise every time the chain changed. REAPER exposes the
+-- same information natively without touching the value.
+function FXManager.detectParamSteps(actual_fx_id, param_id)
 	if not FXManager.core.isTrackValid() then return 0 end
-	local actual_fx_id = FXManager.core.state.fx_data[fx_id].actual_fx_id or fx_id
-	local original_value = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, actual_fx_id, param_id)
-	local _, min_val, max_val = FXManager.r.TrackFX_GetParamEx(FXManager.core.state.track, actual_fx_id, param_id)
-
-	if min_val and max_val and min_val ~= max_val then
-		local range = math.abs(max_val - min_val)
-		if range > 10 then return 0 end
-
-		local samples = {}
-		for i = 0, 20 do
-			local test_val = min_val + (i / 20) * range
-			FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, test_val)
-			local result = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, actual_fx_id, param_id)
-			local found = false
-			for _, s in ipairs(samples) do
-				if math.abs(s - result) < 0.001 then
-					found = true
-					break
-				end
-			end
-			if not found then
-				table.insert(samples, result)
-			end
-		end
-		FXManager.r.TrackFX_SetParam(FXManager.core.state.track, actual_fx_id, param_id, original_value)
-		table.sort(samples)
-
-		if #samples == 2 then
-			return 2
-		elseif #samples >= 3 and #samples <= 10 then
-			return #samples
+	local ok, step, _, _, istoggle = FXManager.r.TrackFX_GetParameterStepSizes(
+		FXManager.core.state.track, actual_fx_id, param_id)
+	if not ok then return 0 end
+	if istoggle then return 2 end
+	if step and step > 0 then
+		local _, min_val, max_val = FXManager.r.TrackFX_GetParamEx(
+			FXManager.core.state.track, actual_fx_id, param_id)
+		if min_val and max_val and max_val > min_val then
+			local count = math.floor((max_val - min_val) / step + 0.5) + 1
+			-- Same envelope as the old probe: 2..10 discrete positions snap,
+			-- anything finer is treated as continuous.
+			if count >= 2 and count <= 10 then return count end
 		end
 	end
-
 	return 0
 end
 
 function FXManager.scanTrackFX()
 	if not FXManager.core.isTrackValid() then return end
-	FXManager.core.state.fx_data = {}
-	local fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
+	local state = FXManager.core.state
+	state.fx_data = {}
+	state.param_poll_list = {}
+	local fx_count = FXManager.r.TrackFX_GetCount(state.track)
 	local visible_fx_id = 0
 	local max_fx = FXManager.license and not FXManager.license.isFull() and 5 or 999
+	local bridge_index = -1
 	for fx = 0, fx_count - 1 do
-		local _, fx_name = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, fx, "")
-		if not fx_name:find("FX Constellation Bridge") and not fx_name:find("Sound Generator") then
+		local _, fx_name = FXManager.r.TrackFX_GetFXName(state.track, fx, "")
+		if fx_name:find("FX Constellation Bridge") then
+			-- The bridge moves whenever FX are inserted/removed before it
+			-- (preset load, sound generator toggle, manual edits). The scan
+			-- is the single chokepoint for chain changes, so the automation
+			-- index is refreshed here — a stale index would read/WRITE the
+			-- first two params of an unrelated plugin.
+			if bridge_index < 0 then bridge_index = fx end
+		elseif not fx_name:find("Sound Generator") then
 			if visible_fx_id >= max_fx then
 				break
 			end
-			local param_count = FXManager.r.TrackFX_GetNumParams(FXManager.core.state.track, fx)
-			FXManager.core.state.fx_data[visible_fx_id] = {
+			local param_count = FXManager.r.TrackFX_GetNumParams(state.track, fx)
+			local fx_entry = {
 				name = FXManager.core.extractFXName(fx_name),
 				full_name = fx_name,
-				enabled = FXManager.r.TrackFX_GetEnabled(FXManager.core.state.track, fx),
+				enabled = FXManager.r.TrackFX_GetEnabled(state.track, fx),
 				actual_fx_id = fx,
 				params = {}
 			}
+			state.fx_data[visible_fx_id] = fx_entry
 			local fx_key = FXManager.core.getFXKey(visible_fx_id)
-			if fx_key and FXManager.core.state.fx_random_max[fx_key] == nil then
-				FXManager.core.state.fx_random_max[fx_key] = 3
+			if fx_key and state.fx_random_max[fx_key] == nil then
+				state.fx_random_max[fx_key] = 3
 			end
 			for param = 0, param_count - 1 do
-				local _, param_name = FXManager.r.TrackFX_GetParamName(FXManager.core.state.track, fx, param, "")
+				local _, param_name = FXManager.r.TrackFX_GetParamName(state.track, fx, param, "")
 				if not FXManager.shouldFilterParam(param_name) then
-					local value, min_val, max_val = FXManager.r.TrackFX_GetParamEx(FXManager.core.state.track, fx, param)
+					local value, min_val, max_val = FXManager.r.TrackFX_GetParamEx(state.track, fx, param)
 					if not min_val or not max_val then
 						min_val, max_val = 0, 1
-						value = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, fx, param)
+						value = FXManager.r.TrackFX_GetParam(state.track, fx, param)
 					end
 					local normalized_value = FXManager.core.normalizeParamValue(value, min_val, max_val)
-					local step_count = FXManager.detectParamSteps(visible_fx_id, param)
-					FXManager.core.state.fx_data[visible_fx_id].params[param] = {
+					local step_count = FXManager.detectParamSteps(fx, param)
+					local param_entry = {
 						name = param_name,
 						current_value = normalized_value,
 						base_value = normalized_value,
 						min_val = min_val,
 						max_val = max_val,
-						selected = FXManager.core.state.exclusive_xy and true or false,
+						selected = state.exclusive_xy and true or false,
 						fx_id = visible_fx_id,
 						param_id = param,
 						actual_fx_id = fx,
 						step_count = step_count
 					}
-					if FXManager.core.state.exclusive_xy then
-						local x_key = FXManager.core.getParamKey(visible_fx_id, param, "x")
-						local y_key = FXManager.core.getParamKey(visible_fx_id, param, "y")
+					fx_entry.params[param] = param_entry
+					-- Warm the key cache once (also used by the poll loop) and
+					-- register the param for round-robin change polling.
+					FXManager.core.getParamKey(visible_fx_id, param)
+					state.param_poll_list[#state.param_poll_list + 1] = param_entry
+					if state.exclusive_xy then
+						local x_key = param_entry.key_x
+						local y_key = param_entry.key_y
 						if x_key and y_key then
 							local is_x_param = ((visible_fx_id + param) % 2) == 0
-							FXManager.core.state.param_xy_assign[x_key] = is_x_param
-							FXManager.core.state.param_xy_assign[y_key] = not is_x_param
+							state.param_xy_assign[x_key] = is_x_param
+							state.param_xy_assign[y_key] = not is_x_param
 						end
 					end
 				end
@@ -121,45 +122,75 @@ function FXManager.scanTrackFX()
 			visible_fx_id = visible_fx_id + 1
 		end
 	end
-	FXManager.core.state.last_fx_count = fx_count
-	FXManager.core.state.last_fx_signature = FXManager.core.createFXSignature()
+	state.param_poll_idx = 0
+	state.jsfx_automation_index = bridge_index
+	if state.jsfx_automation_enabled and bridge_index < 0 then
+		state.jsfx_automation_enabled = false
+	end
+	state.last_fx_count = fx_count
+	state.last_fx_signature = FXManager.core.createFXSignature()
 	FXManager.loadTrackSelection()
 	FXManager.updateSelectedCount()
 end
 
+-- Change polling. The old version re-read EVERY param of EVERY FX each tick
+-- (50 ms): with a large synth in the chain that is >15k API calls per second
+-- and it made the whole REAPER UI sluggish while the script was open. Now:
+--   • FX count checked every tick (1 call — catches add/remove instantly)
+--   • full name signature only every SIG_INTERVAL (catches replace/reorder)
+--   • param values polled round-robin, PARAM_POLL_BUDGET per tick, so the
+--     cost per tick is constant no matter how many params the chain has.
+local SIG_INTERVAL = 0.25
+local PARAM_POLL_BUDGET = 64
+
 function FXManager.checkForFXChanges()
 	if not FXManager.core.isTrackValid() then return false end
+	local state = FXManager.core.state
 	local current_time = FXManager.r.time_precise()
-	if current_time - FXManager.core.state.last_update_time < FXManager.core.state.update_interval then
+	if current_time - state.last_update_time < state.update_interval then
 		return false
 	end
-	FXManager.core.state.last_update_time = current_time
-	local current_fx_count = FXManager.r.TrackFX_GetCount(FXManager.core.state.track)
-	local current_signature = FXManager.core.createFXSignature()
-	local changes_detected = false
-	if current_fx_count ~= FXManager.core.state.last_fx_count or current_signature ~= FXManager.core.state.last_fx_signature then
+	state.last_update_time = current_time
+
+	local current_fx_count = FXManager.r.TrackFX_GetCount(state.track)
+	local need_rescan = current_fx_count ~= state.last_fx_count
+	if not need_rescan and current_time - (state._last_sig_time or 0) >= SIG_INTERVAL then
+		state._last_sig_time = current_time
+		need_rescan = FXManager.core.createFXSignature() ~= state.last_fx_signature
+	end
+	if need_rescan then
 		FXManager.scanTrackFX()
-		changes_detected = true
-	else
-		for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
-			local actual_fx_id = fx_data.actual_fx_id or fx_id
-			local current_enabled = FXManager.r.TrackFX_GetEnabled(FXManager.core.state.track, actual_fx_id)
-			if fx_data.enabled ~= current_enabled then
-				fx_data.enabled = current_enabled
-				changes_detected = true
-			end
-			for param_id, param_data in pairs(fx_data.params) do
-				local actual_fx_param_id = param_data.actual_fx_id or actual_fx_id
-				local raw_value = FXManager.r.TrackFX_GetParam(FXManager.core.state.track, actual_fx_param_id, param_id)
-				local current_value = FXManager.core.normalizeParamValue(raw_value, param_data.min_val, param_data.max_val)
-				if math.abs(param_data.current_value - current_value) > 0.001 then
-					param_data.current_value = current_value
-					if not param_data.selected then
-						param_data.base_value = current_value
-					end
+		return true
+	end
+
+	local changes_detected = false
+	for fx_id, fx_data in pairs(state.fx_data) do
+		local actual_fx_id = fx_data.actual_fx_id or fx_id
+		local current_enabled = FXManager.r.TrackFX_GetEnabled(state.track, actual_fx_id)
+		if fx_data.enabled ~= current_enabled then
+			fx_data.enabled = current_enabled
+			changes_detected = true
+		end
+	end
+
+	local poll_list = state.param_poll_list
+	if poll_list and #poll_list > 0 then
+		local count = #poll_list
+		local budget = math.min(PARAM_POLL_BUDGET, count)
+		local idx = state.param_poll_idx or 0
+		for _ = 1, budget do
+			idx = (idx % count) + 1
+			local param_data = poll_list[idx]
+			local raw_value = FXManager.r.TrackFX_GetParam(state.track, param_data.actual_fx_id, param_data.param_id)
+			local current_value = FXManager.core.normalizeParamValue(raw_value, param_data.min_val, param_data.max_val)
+			if math.abs(param_data.current_value - current_value) > 0.001 then
+				param_data.current_value = current_value
+				if not param_data.selected then
+					param_data.base_value = current_value
 				end
 			end
 		end
+		state.param_poll_idx = idx
 	end
 	return changes_detected
 end
@@ -272,7 +303,30 @@ function FXManager.updateParamBaseValue(fx_id, param_id, new_value)
 	end
 end
 
+-- Batch scope: bulk operations (snapshot/preset load, randomize-all) call
+-- setParamRange/XYAssign/Invert once per param, and each of those ends in
+-- saveTrackSelection which rebuilds the whole selection table — O(params²)
+-- overall. Inside a batch the rebuild is deferred to endBatch.
+FXManager._batch_depth = 0
+FXManager._batch_dirty = false
+
+function FXManager.beginBatch()
+	FXManager._batch_depth = FXManager._batch_depth + 1
+end
+
+function FXManager.endBatch()
+	FXManager._batch_depth = math.max(0, FXManager._batch_depth - 1)
+	if FXManager._batch_depth == 0 and FXManager._batch_dirty then
+		FXManager._batch_dirty = false
+		FXManager.saveTrackSelection()
+	end
+end
+
 function FXManager.saveTrackSelection()
+	if FXManager._batch_depth > 0 then
+		FXManager._batch_dirty = true
+		return
+	end
 	local guid = FXManager.core.getTrackGUID()
 	if not guid then return end
 	local selection, ranges, xy_assign, invert_assign, fx_rand_max, base_values = {}, {}, {}, {}, {}, {}
@@ -558,8 +612,12 @@ function FXManager.ultraRandom()
 		local sg = FXManager.core.state.sound_generator
 		local freq_min_log = math.log(20)
 		local freq_max_log = math.log(20000)
-		local random_freq_log = freq_min_log + math.random() * (freq_max_log - freq_min_log)
-		sg.frequency = math.exp(random_freq_log)
+		for _, osc in ipairs(sg.osc) do
+			if osc.on then
+				local random_freq_log = freq_min_log + math.random() * (freq_max_log - freq_min_log)
+				osc.freq = math.exp(random_freq_log)
+			end
+		end
 		if FXManager.soundgen then
 			FXManager.soundgen.updateJSFXParams()
 		end

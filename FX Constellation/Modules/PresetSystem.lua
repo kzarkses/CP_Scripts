@@ -209,6 +209,7 @@ function PresetSystem.loadSnapshot(name)
 	PresetSystem.core.state.gesture_base_y = snapshot.gesture_base_y or 0.5
 	PresetSystem.gesture.updateJSFXFromGesture()
 
+	PresetSystem.fxmanager.beginBatch()
 	for fx_id, fx_data in pairs(PresetSystem.core.state.fx_data) do
 		if snapshot.fx_bypass_states and snapshot.fx_bypass_states[fx_data.full_name] ~= nil then
 			local actual_fx_id = fx_data.actual_fx_id or fx_id
@@ -234,9 +235,16 @@ function PresetSystem.loadSnapshot(name)
 				PresetSystem.fxmanager.setParamXYAssign(fx_id, param_id, "x", saved_param.x_assign)
 				PresetSystem.fxmanager.setParamXYAssign(fx_id, param_id, "y", saved_param.y_assign)
 				PresetSystem.fxmanager.setParamInvert(fx_id, param_id, saved_param.invert or false)
+			else
+				-- A snapshot stores exactly the selected set — params that
+				-- joined the selection after the snapshot was taken must be
+				-- dropped from it, otherwise "load snapshot" restores a
+				-- superset of what was saved.
+				param_data.selected = false
 			end
 		end
 	end
+	PresetSystem.fxmanager.endBatch()
 
 	PresetSystem.r.Undo_EndBlock("Load FX Constellation snapshot: " .. name, -1)
 	PresetSystem.fxmanager.updateSelectedCount()
@@ -283,6 +291,11 @@ function PresetSystem.checkPresetModification()
 	if PresetSystem.core.state.preset_base_name == "" or not PresetSystem.core.state.initial_fx_chain_state then
 		return
 	end
+	-- captureFXChainState allocates one string per FX (GetFXName); at frame
+	-- rate that is pure GC churn for a label that only says "(Modified)".
+	local now = PresetSystem.r.time_precise()
+	if now - (PresetSystem._last_mod_check or 0) < 0.5 then return end
+	PresetSystem._last_mod_check = now
 	local current_state = PresetSystem.captureFXChainState()
 	if not PresetSystem.compareFXChainState(PresetSystem.core.state.initial_fx_chain_state, current_state) then
 		if not PresetSystem.core.state.current_loaded_preset:find(" %(Modified%)$") then
@@ -295,10 +308,68 @@ function PresetSystem.checkPresetModification()
 	end
 end
 
+function PresetSystem.captureSoundGeneratorState()
+	local sg = PresetSystem.core.state.sound_generator
+	local sg_state = {
+		enabled = sg.enabled,
+		mode = sg.mode,
+		amplitude = sg.amplitude,
+		rhythmic = sg.rhythmic,
+		tick_rate = sg.tick_rate,
+		duty_cycle = sg.duty_cycle,
+		rhythmic_curve = sg.rhythmic_curve,
+		use_adsr = sg.use_adsr,
+		attack = sg.attack,
+		decay = sg.decay,
+		sustain = sg.sustain,
+		release = sg.release,
+		midi_mode = sg.midi_mode,
+		osc = {}
+	}
+	for i, osc in ipairs(sg.osc) do
+		sg_state.osc[i] = {
+			on = osc.on, wave = osc.wave, freq = osc.freq,
+			width = osc.width, vol = osc.vol, color = osc.color
+		}
+	end
+	return sg_state
+end
+
+-- Map an old single-osc preset (flat waveform/frequency/noise_color fields,
+-- width and rhythmic_curve were never saved) onto the multi-osc structure.
+function PresetSystem.normalizeSGPreset(p)
+	if not p then return nil end
+	if p.osc then return p end
+	return {
+		enabled = p.enabled,
+		mode = p.mode or 0,
+		amplitude = p.amplitude or 0.5,
+		rhythmic = p.rhythmic or false,
+		tick_rate = p.tick_rate or 4.0,
+		duty_cycle = p.duty_cycle or 0.5,
+		rhythmic_curve = p.rhythmic_curve or 0.0,
+		use_adsr = p.use_adsr ~= false,
+		attack = p.attack or 0.01,
+		decay = p.decay or 0.1,
+		sustain = p.sustain or 0.7,
+		release = p.release or 0.2,
+		midi_mode = p.midi_mode == true,
+		osc = {
+			{ on = true,  wave = p.waveform or 0, freq = p.frequency or 440.0,
+			  width = p.width or 10.0, vol = 1.0, color = p.noise_color or 0.5 },
+			{ on = false, wave = 3, freq = 220.0, width = 10.0, vol = 0.5, color = 0.5 },
+			{ on = false, wave = 1, freq = 880.0, width = 10.0, vol = 0.5, color = 0.5 }
+		}
+	}
+end
+
+local function isInternalFX(fx_name)
+	return fx_name:find("FX Constellation Bridge") or fx_name:find("Sound Generator")
+end
+
 function PresetSystem.captureCompleteState()
 	if not PresetSystem.core.isTrackValid() then return {} end
 
-	local sg = PresetSystem.core.state.sound_generator
 	local complete_state = {
 		gesture_x = PresetSystem.core.state.gesture_x,
 		gesture_y = PresetSystem.core.state.gesture_y,
@@ -306,25 +377,10 @@ function PresetSystem.captureCompleteState()
 		gesture_base_y = PresetSystem.core.state.gesture_base_y,
 		fx_chain = {},
 		track_guid = PresetSystem.core.getTrackGUID(),
-		sound_generator = {
-			enabled = sg.enabled,
-			mode = sg.mode,
-			waveform = sg.waveform,
-			frequency = sg.frequency,
-			rhythmic = sg.rhythmic,
-			tick_rate = sg.tick_rate,
-			duty_cycle = sg.duty_cycle,
-			noise_color = sg.noise_color,
-			base_freq = sg.base_freq,
-			use_adsr = sg.use_adsr,
-			attack = sg.attack,
-			decay = sg.decay,
-			sustain = sg.sustain,
-			release = sg.release,
-			midi_mode = sg.midi_mode,
-			amplitude = sg.amplitude,
-			stereo_width = sg.stereo_width
-		}
+		-- The generator and the bridge are NOT part of fx_chain: they are
+		-- managed FX recreated from this state block on load. Keeping them
+		-- out avoids double instances and index confusion.
+		sound_generator = PresetSystem.captureSoundGeneratorState()
 	}
 
 	-- Build reverse mapping: REAPER FX index -> visible_fx_id in fx_data
@@ -335,35 +391,50 @@ function PresetSystem.captureCompleteState()
 		end
 	end
 
+	local slot = 0
 	local fx_count = PresetSystem.r.TrackFX_GetCount(PresetSystem.core.state.track)
 	for fx_id = 0, fx_count - 1 do
 		local _, fx_name = PresetSystem.r.TrackFX_GetFXName(PresetSystem.core.state.track, fx_id, "")
-		local enabled = PresetSystem.r.TrackFX_GetEnabled(PresetSystem.core.state.track, fx_id)
-		local retval, preset = PresetSystem.r.TrackFX_GetPreset(PresetSystem.core.state.track, fx_id, "")
-		local param_count = PresetSystem.r.TrackFX_GetNumParams(PresetSystem.core.state.track, fx_id)
+		if not isInternalFX(fx_name) then
+			local enabled = PresetSystem.r.TrackFX_GetEnabled(PresetSystem.core.state.track, fx_id)
+			local retval, preset = PresetSystem.r.TrackFX_GetPreset(PresetSystem.core.state.track, fx_id, "")
+			local param_count = PresetSystem.r.TrackFX_GetNumParams(PresetSystem.core.state.track, fx_id)
 
-		complete_state.fx_chain[fx_id] = {
-			name = fx_name,
-			enabled = enabled,
-			preset = retval and preset or "",
-			param_count = param_count,
-			params = {}
-		}
+			-- Full value dump of EVERY parameter (normalized), including the
+			-- ones hidden by name filters or the license FX cap. Without it a
+			-- loaded preset only restored the visible subset and left things
+			-- like Wet/Dry at plugin defaults.
+			local raw_params = {}
+			for p = 0, param_count - 1 do
+				raw_params[p + 1] = PresetSystem.r.TrackFX_GetParamNormalized(PresetSystem.core.state.track, fx_id, p)
+			end
 
-		local visible_id = reaper_to_visible[fx_id]
-		if visible_id and PresetSystem.core.state.fx_data[visible_id] then
-			for param_id, param_data in pairs(PresetSystem.core.state.fx_data[visible_id].params) do
-				local x_assign, y_assign = PresetSystem.fxmanager.getParamXYAssign(visible_id, param_id)
-				complete_state.fx_chain[fx_id].params[param_id] = {
-					name = param_data.name,
-					current_value = param_data.current_value,
-					base_value = param_data.base_value,
-					selected = param_data.selected,
-					range = PresetSystem.fxmanager.getParamRange(visible_id, param_id),
-					x_assign = x_assign,
-					y_assign = y_assign,
-					invert = PresetSystem.fxmanager.getParamInvert(visible_id, param_id)
-				}
+			local entry = {
+				name = fx_name,
+				enabled = enabled,
+				preset = retval and preset or "",
+				param_count = param_count,
+				raw_params = raw_params,
+				params = {}
+			}
+			complete_state.fx_chain[slot] = entry
+			slot = slot + 1
+
+			local visible_id = reaper_to_visible[fx_id]
+			if visible_id and PresetSystem.core.state.fx_data[visible_id] then
+				for param_id, param_data in pairs(PresetSystem.core.state.fx_data[visible_id].params) do
+					local x_assign, y_assign = PresetSystem.fxmanager.getParamXYAssign(visible_id, param_id)
+					entry.params[param_id] = {
+						name = param_data.name,
+						current_value = param_data.current_value,
+						base_value = param_data.base_value,
+						selected = param_data.selected,
+						range = PresetSystem.fxmanager.getParamRange(visible_id, param_id),
+						x_assign = x_assign,
+						y_assign = y_assign,
+						invert = PresetSystem.fxmanager.getParamInvert(visible_id, param_id)
+					}
+				end
 			end
 		end
 	end
@@ -388,17 +459,25 @@ function PresetSystem.loadPreset(name)
 
 	local missing_fx, param_count_warnings = {}, {}
 
-	local original_fxfloat = PresetSystem.r.SNM_GetIntConfigVar("fxfloat_focus", -1)
-	if original_fxfloat >= 0 then
-		PresetSystem.r.SNM_SetIntConfigVar("fxfloat_focus", 0)
+	-- SWS is optional: guard every SNM_* call so a vanilla REAPER install
+	-- doesn't crash on preset load.
+	local original_fxfloat = -1
+	if PresetSystem.r.SNM_GetIntConfigVar then
+		original_fxfloat = PresetSystem.r.SNM_GetIntConfigVar("fxfloat_focus", -1)
+		if original_fxfloat >= 0 then
+			PresetSystem.r.SNM_SetIntConfigVar("fxfloat_focus", 0)
+		end
 	end
 
 	PresetSystem.r.Undo_BeginBlock()
 
+	-- Wipe the chain but keep the managed FX (bridge + sound generator):
+	-- they are recreated/updated from the preset state, never re-added by
+	-- name, so their envelopes and instance state survive the reload.
 	local fx_count = PresetSystem.r.TrackFX_GetCount(PresetSystem.core.state.track)
 	for fx_id = fx_count - 1, 0, -1 do
 		local _, fx_name = PresetSystem.r.TrackFX_GetFXName(PresetSystem.core.state.track, fx_id, "")
-		if not fx_name:find("FX Constellation Bridge") then
+		if not isInternalFX(fx_name) then
 			PresetSystem.r.TrackFX_Delete(PresetSystem.core.state.track, fx_id)
 		end
 	end
@@ -409,9 +488,14 @@ function PresetSystem.loadPreset(name)
 	end
 	table.sort(fx_order, function(a, b) return a.id < b.id end)
 
+	-- Add in saved order. added_list keeps the successful adds in chain
+	-- order: entry i corresponds to the i-th visible FX after the rescan,
+	-- which makes the mapping robust for duplicate plugin instances (the
+	-- old name-matching applied both saved copies to the first instance).
+	local added_list = {}
 	for _, fx_entry in ipairs(fx_order) do
 		local fx_preset = fx_entry.preset
-		if not fx_preset.name:find("FX Constellation Bridge") then
+		if not isInternalFX(fx_preset.name) then
 			local new_fx_id = PresetSystem.r.TrackFX_AddByName(PresetSystem.core.state.track, fx_preset.name, false, -1)
 			if new_fx_id >= 0 then
 				PresetSystem.r.TrackFX_SetEnabled(PresetSystem.core.state.track, new_fx_id, fx_preset.enabled)
@@ -428,78 +512,103 @@ function PresetSystem.loadPreset(name)
 						})
 					end
 				end
+				added_list[#added_list + 1] = fx_preset
 			else
 				table.insert(missing_fx, fx_preset.name)
 			end
 		end
 	end
 
+	-- Sound generator BEFORE the rescan: creating it inserts an FX at the
+	-- top of the chain and would shift every index captured afterwards.
+	local sg_preset = PresetSystem.normalizeSGPreset(preset.sound_generator)
+	if sg_preset then
+		local sg = PresetSystem.core.state.sound_generator
+		if sg_preset.enabled then
+			sg.mode = sg_preset.mode
+			sg.amplitude = sg_preset.amplitude
+			sg.rhythmic = sg_preset.rhythmic
+			sg.tick_rate = sg_preset.tick_rate
+			sg.duty_cycle = sg_preset.duty_cycle
+			sg.rhythmic_curve = sg_preset.rhythmic_curve
+			sg.use_adsr = sg_preset.use_adsr
+			sg.attack = sg_preset.attack
+			sg.decay = sg_preset.decay
+			sg.sustain = sg_preset.sustain
+			sg.release = sg_preset.release
+			sg.midi_mode = sg_preset.midi_mode
+			for i, osc_preset in ipairs(sg_preset.osc) do
+				local osc = sg.osc[i]
+				if osc then
+					osc.on = osc_preset.on
+					osc.wave = osc_preset.wave
+					osc.freq = osc_preset.freq
+					osc.width = osc_preset.width
+					osc.vol = osc_preset.vol
+					osc.color = osc_preset.color
+				end
+			end
+			PresetSystem.soundgen.createGenerator()
+			PresetSystem.soundgen.updateJSFXParams()
+		elseif PresetSystem.core.state.sound_generator.enabled then
+			PresetSystem.soundgen.removeGenerator()
+		end
+	end
+
 	PresetSystem.fxmanager.scanTrackFX()
 
-	for fx_id, fx_data in pairs(PresetSystem.core.state.fx_data) do
+	for fx_id in pairs(PresetSystem.core.state.fx_data) do
 		PresetSystem.core.state.fx_collapsed[fx_id] = false
 	end
 
 	PresetSystem.core.state.gesture_x = preset.gesture_x or 0.5
 	PresetSystem.core.state.gesture_y = preset.gesture_y or 0.5
-	PresetSystem.gesture.updateJSFXFromGesture()
 	PresetSystem.core.state.gesture_base_x = preset.gesture_base_x or 0.5
 	PresetSystem.core.state.gesture_base_y = preset.gesture_base_y or 0.5
+	PresetSystem.gesture.updateJSFXFromGesture()
 
-	for saved_fx_id, fx_preset in pairs(preset.fx_chain or {}) do
-		for current_fx_id, fx_data in pairs(PresetSystem.core.state.fx_data) do
-			if fx_data.full_name == fx_preset.name then
-				for saved_param_id, param_preset in pairs(fx_preset.params or {}) do
-					for current_param_id, param_data in pairs(fx_data.params) do
-						if param_data.name == param_preset.name then
-							local actual_fx_id = fx_data.actual_fx_id or current_fx_id
-							local denormalized_value = PresetSystem.core.denormalizeParamValue(param_preset.current_value, param_data.min_val, param_data.max_val)
-							PresetSystem.r.TrackFX_SetParam(PresetSystem.core.state.track, actual_fx_id, current_param_id, denormalized_value)
-							param_data.current_value = param_preset.current_value
-							param_data.base_value = param_preset.base_value
-							param_data.selected = param_preset.selected
+	-- Apply saved values positionally: added_list[i] ↔ visible fx_data[i-1].
+	PresetSystem.fxmanager.beginBatch()
+	for i, fx_preset in ipairs(added_list) do
+		local visible_id = i - 1
+		local fx_data = PresetSystem.core.state.fx_data[visible_id]
+		-- Positional match should always hold (same add order, internals
+		-- filtered on both sides); name check is a safety net for edge
+		-- cases like the license FX cap truncating the visible list.
+		if fx_data and fx_data.full_name == fx_preset.name then
+			local actual_fx_id = fx_data.actual_fx_id or visible_id
 
-							PresetSystem.fxmanager.setParamRange(current_fx_id, current_param_id, param_preset.range or 1.0)
-							PresetSystem.fxmanager.setParamXYAssign(current_fx_id, current_param_id, "x", param_preset.x_assign)
-							PresetSystem.fxmanager.setParamXYAssign(current_fx_id, current_param_id, "y", param_preset.y_assign)
-							PresetSystem.fxmanager.setParamInvert(current_fx_id, current_param_id, param_preset.invert or false)
-							break
-						end
+			-- 1) Full raw dump → every param, including filtered ones.
+			if fx_preset.raw_params then
+				local n = math.min(#fx_preset.raw_params,
+					PresetSystem.r.TrackFX_GetNumParams(PresetSystem.core.state.track, actual_fx_id))
+				for p = 1, n do
+					PresetSystem.r.TrackFX_SetParamNormalized(PresetSystem.core.state.track, actual_fx_id, p - 1, fx_preset.raw_params[p])
+				end
+			end
+
+			-- 2) Gesture metadata for the visible params (by name inside
+			-- this specific instance).
+			for _, param_preset in pairs(fx_preset.params or {}) do
+				for current_param_id, param_data in pairs(fx_data.params) do
+					if param_data.name == param_preset.name then
+						local denormalized_value = PresetSystem.core.denormalizeParamValue(param_preset.current_value, param_data.min_val, param_data.max_val)
+						PresetSystem.r.TrackFX_SetParam(PresetSystem.core.state.track, actual_fx_id, current_param_id, denormalized_value)
+						param_data.current_value = param_preset.current_value
+						param_data.base_value = param_preset.base_value
+						param_data.selected = param_preset.selected
+
+						PresetSystem.fxmanager.setParamRange(visible_id, current_param_id, param_preset.range or 1.0)
+						PresetSystem.fxmanager.setParamXYAssign(visible_id, current_param_id, "x", param_preset.x_assign)
+						PresetSystem.fxmanager.setParamXYAssign(visible_id, current_param_id, "y", param_preset.y_assign)
+						PresetSystem.fxmanager.setParamInvert(visible_id, current_param_id, param_preset.invert or false)
+						break
 					end
 				end
-				break
 			end
 		end
 	end
-
-	if preset.sound_generator then
-		local sg = PresetSystem.core.state.sound_generator
-		if preset.sound_generator.enabled then
-			sg.mode = preset.sound_generator.mode or 0
-			sg.waveform = preset.sound_generator.waveform or 0
-			sg.frequency = preset.sound_generator.frequency or 440
-			sg.rhythmic = preset.sound_generator.rhythmic or false
-			sg.tick_rate = preset.sound_generator.tick_rate or 4
-			sg.duty_cycle = preset.sound_generator.duty_cycle or 0.5
-			sg.noise_color = preset.sound_generator.noise_color or 0.5
-			sg.base_freq = preset.sound_generator.base_freq or 440
-			sg.use_adsr = preset.sound_generator.use_adsr ~= false
-			sg.attack = preset.sound_generator.attack or 0.01
-			sg.decay = preset.sound_generator.decay or 0.1
-			sg.sustain = preset.sound_generator.sustain or 0.7
-			sg.release = preset.sound_generator.release or 0.2
-			sg.midi_mode = preset.sound_generator.midi_mode ~= false
-			sg.amplitude = preset.sound_generator.amplitude or 0.5
-			sg.stereo_width = preset.sound_generator.stereo_width or 1.0
-			if not sg.enabled then
-				PresetSystem.soundgen.createGenerator()
-			else
-				PresetSystem.soundgen.updateJSFXParams()
-			end
-		elseif sg.enabled then
-			PresetSystem.soundgen.removeGenerator()
-		end
-	end
+	PresetSystem.fxmanager.endBatch()
 
 	PresetSystem.r.Undo_EndBlock("Load FX Constellation preset: " .. name, -1)
 	PresetSystem.fxmanager.updateSelectedCount()
@@ -509,7 +618,7 @@ function PresetSystem.loadPreset(name)
 	PresetSystem.core.state.initial_fx_chain_state = PresetSystem.captureFXChainState()
 	PresetSystem.fxmanager.saveTrackSelection()
 
-	if original_fxfloat >= 0 then
+	if original_fxfloat >= 0 and PresetSystem.r.SNM_SetIntConfigVar then
 		PresetSystem.r.SNM_SetIntConfigVar("fxfloat_focus", original_fxfloat)
 	end
 
@@ -517,14 +626,14 @@ function PresetSystem.loadPreset(name)
 		local msg = "FX Constellation - Preset Load Issues:\n\n"
 		if #missing_fx > 0 then
 			msg = msg .. "MISSING FX (not installed):\n"
-			for i, fx_name in ipairs(missing_fx) do
+			for _, fx_name in ipairs(missing_fx) do
 				msg = msg .. "  - " .. fx_name .. "\n"
 			end
 			msg = msg .. "\n"
 		end
 		if #param_count_warnings > 0 then
 			msg = msg .. "PARAMETER COUNT MISMATCHES (possible version change):\n"
-			for i, warning in ipairs(param_count_warnings) do
+			for _, warning in ipairs(param_count_warnings) do
 				msg = msg .. "  - " .. warning.name .. "\n"
 				msg = msg .. "    Expected: " .. warning.expected .. " params, Found: " .. warning.actual .. " params\n"
 			end

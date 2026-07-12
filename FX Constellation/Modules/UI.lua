@@ -239,6 +239,46 @@ end
 -- ---------------------------------------------------------------------------
 -- SOUND GENERATOR
 -- ---------------------------------------------------------------------------
+local SG_WAVEFORMS = { "Sine", "Triangle", "Square", "Saw", "Noise", "Click" }
+
+-- One oscillator's controls (Vital-style: wave / freq / width / volume per
+-- osc). Widget ids are suffixed with the osc index so per-widget state
+-- (inline edits, drag anchors) never leaks between tabs.
+local function drawSoundGenOsc(sg, idx)
+    local osc = sg.osc[idx]
+    if not osc then return end
+    local sfx = tostring(idx)
+
+    local tc, tv = Tgl("sg_osc_on" .. sfx, osc.on and "● ON" or "○ OFF", osc.on)
+    if tc then osc.on = tv; UI.soundgen.updateJSFXParams() end
+
+    local cc, ci = Combo("sg_wf" .. sfx, "Wave", osc.wave + 1, SG_WAVEFORMS)
+    if cc then osc.wave = ci - 1; UI.soundgen.updateJSFXParams() end
+
+    if osc.wave < 4 then
+        local fmin, fmax = math.log(20), math.log(20000)
+        local norm = (math.log(osc.freq) - fmin) / (fmax - fmin)
+        local fc, fv = Slid("sg_freq" .. sfx, "Freq", norm, 0, 1,
+            { format = fmtVal("%.1f Hz", osc.freq) })
+        if fc then
+            osc.freq = math.exp(fmin + fv * (fmax - fmin))
+            UI.soundgen.updateJSFXParams()
+        end
+    elseif osc.wave == 4 then
+        local cc2, cv = Slid("sg_color" .. sfx, "Color", osc.color, 0, 1,
+            { format = fmtVal("%.2f", osc.color) })
+        if cc2 then osc.color = cv; UI.soundgen.updateJSFXParams() end
+    end
+
+    local wc, wv = Slid("sg_w" .. sfx, "Width", osc.width, 0, 100,
+        { format = fmtVal("%.1f c", osc.width) })
+    if wc then osc.width = wv; UI.soundgen.updateJSFXParams() end
+
+    local vc, vv = Slid("sg_vol" .. sfx, "Vol", osc.vol, 0, 1,
+        { format = fmtVal("%.2f", osc.vol) })
+    if vc then osc.vol = vv; UI.soundgen.updateJSFXParams() end
+end
+
 local function drawSoundGen(theme)
     local UItk = UI.tk
     if not sectionHeader("soundgen", "SOUND GENERATOR", theme) then return end
@@ -252,7 +292,17 @@ local function drawSoundGen(theme)
     end
 
     local sg = UI.core.state.sound_generator
-    UI.soundgen.syncFromJSFX()
+
+    -- Resync from the JSFX at 4 Hz instead of every frame (it walks all 31
+    -- params through the API), and never while a mouse button is down: the
+    -- sliders are stepped on the JSFX side, so a same-frame read-back
+    -- quantizes the value under the user's drag.
+    local now = UI.r.time_precise()
+    if not UItk.Core.MouseDown(1)
+       and now - (UI._sg_sync_time or 0) >= 0.25 then
+        UI._sg_sync_time = now
+        UI.soundgen.syncFromJSFX()
+    end
 
     local toggled, _ = Tgl("sg_toggle",
         sg.enabled and "● ON" or "○ OFF", sg.enabled)
@@ -269,31 +319,15 @@ local function drawSoundGen(theme)
         UI.soundgen.updateJSFXParams()
     end
 
-    local waveforms = { "Sine", "Triangle", "Square", "Saw", "Noise", "Click" }
-    local cc, ci = Combo("sg_wf", "Type", sg.waveform + 1, waveforms)
-    if cc then sg.waveform = ci - 1; UI.soundgen.updateJSFXParams() end
+    -- ---- Oscillator bank -------------------------------------------------
+    local tab_changed, tab_idx = UItk.TabBar("sg_osc_tabs",
+        { "OSC 1", "OSC 2", "OSC 3" }, sg.ui_osc_tab or 1)
+    if tab_changed then sg.ui_osc_tab = tab_idx end
+    drawSoundGenOsc(sg, sg.ui_osc_tab or 1)
 
-    if sg.waveform < 4 then
-        local fmin, fmax = math.log(20), math.log(20000)
-        local norm = (math.log(sg.frequency) - fmin) / (fmax - fmin)
-        local fc, fv = Slid("sg_freq", "Freq", norm, 0, 1,
-            { format = fmtVal("%.1f Hz", sg.frequency) })
-        if fc then
-            sg.frequency = math.exp(fmin + fv * (fmax - fmin))
-            UI.soundgen.updateJSFXParams()
-        end
-        local wc, wv = Slid("sg_w", "Width", sg.width, 0, 100,
-            { format = fmtVal("%.1f c", sg.width) })
-        if wc then sg.width = wv; UI.soundgen.updateJSFXParams() end
-    elseif sg.waveform == 4 then
-        local cc2, cv = Slid("sg_color", "Color", sg.noise_color, 0, 1,
-            { format = fmtVal("%.2f", sg.noise_color) })
-        if cc2 then sg.noise_color = cv; UI.soundgen.updateJSFXParams() end
-        local wc, wv = Slid("sg_w2", "Width", sg.width, 0, 100,
-            { format = fmtVal("%.1f c", sg.width) })
-        if wc then sg.width = wv; UI.soundgen.updateJSFXParams() end
-    end
+    UItk.Separator()
 
+    -- ---- Master ------------------------------------------------------------
     local ac, av = Slid("sg_amp", "Amp", sg.amplitude, 0, 1,
         { format = fmtVal("%.2f", sg.amplitude) })
     if ac then sg.amplitude = av; UI.soundgen.updateJSFXParams() end
@@ -308,6 +342,9 @@ local function drawSoundGen(theme)
             local dc, dv = Slid("sg_du", "Duty", sg.duty_cycle, 0.01, 0.99,
                 { format = fmtVal("%.2f", sg.duty_cycle) })
             if dc then sg.duty_cycle = dv; UI.soundgen.updateJSFXParams() end
+            local cc, cv = Slid("sg_cur", "Curve", sg.rhythmic_curve, 0, 1,
+                { format = fmtVal("%.2f", sg.rhythmic_curve) })
+            if cc then sg.rhythmic_curve = cv; UI.soundgen.updateJSFXParams() end
         end
     else
         local ec, ev = Chk("sg_adsr", "ADSR", sg.use_adsr)
@@ -328,7 +365,25 @@ local function drawSoundGen(theme)
         end
         local mc, mv = Chk("sg_midi", "MIDI", sg.midi_mode)
         if mc then sg.midi_mode = mv; UI.soundgen.updateJSFXParams() end
-        Btn("sg_play", "HOLD TO PLAY")
+
+        -- Hold-to-play: press-and-hold gate on the trigger param. The old
+        -- button ignored its click entirely — setManualTrigger was never
+        -- called from the UI, so Triggered mode was unplayable without MIDI.
+        Btn("sg_play", UI._sg_play_held and "▶ PLAYING" or "HOLD TO PLAY")
+        local hovered = UItk.IsItemHovered()
+        local down = UItk.Core.MouseDown(1)
+        if hovered and down and not UI._sg_play_held then
+            UI._sg_play_held = true
+            UI.soundgen.setManualTrigger(true)
+        elseif UI._sg_play_held and not down then
+            UI._sg_play_held = false
+            UI.soundgen.setManualTrigger(false)
+        end
+        if UI._sg_play_held then
+            -- Keep the loop awake while held so the release edge is caught
+            -- even if nothing else animates.
+            UItk.RequestRedraw()
+        end
     end
 end
 
@@ -403,17 +458,41 @@ local function drawNavigation(theme)
             { format = fmtVal("%.1f", s.max_gesture_speed) })
         if c then s.max_gesture_speed = v end
     elseif s.navigation_mode == 1 then
-        local c, v = Slid("rw_speed", "Speed", s.random_walk_speed, 0.1, 10,
-            { format = fmtVal("%.1f Hz", s.random_walk_speed) })
-        if c then
-            s.random_walk_speed = v
-            if s.random_walk_active then
-                s.random_walk_next_time = UI.r.time_precise() + 1.0 / s.random_walk_speed
+        -- Jump: teleport to random points instead of traveling to them.
+        local jc, jv = Chk("rw_jump", "Jump", s.random_walk_jump)
+        if jc then
+            s.random_walk_jump = jv
+            s.random_walk_last_slot = nil
+            s.random_walk_next_time = UI.r.time_precise()
+            UI.persistence.scheduleSave()
+        end
+
+        if s.random_walk_jump then
+            local syncs = { "Free (Hz)", "1/16", "1/8", "1/4", "1/2", "1 bar" }
+            local sc, si = Combo("rw_sync", "", (s.random_walk_sync or 0) + 1, syncs)
+            if sc then
+                s.random_walk_sync = si - 1
+                s.random_walk_last_slot = nil
+                s.random_walk_next_time = UI.r.time_precise()
+                UI.persistence.scheduleSave()
             end
         end
-        c, v = Slid("rw_jit", "Jitter", s.random_walk_jitter, 0, 1,
-            { format = fmtVal("%.2f", s.random_walk_jitter) })
-        if c then s.random_walk_jitter = v end
+
+        -- Speed/Jitter drive the bezier walk, and jump mode only in Free
+        -- rate (beat-synced jumps follow the project tempo instead).
+        if not s.random_walk_jump or (s.random_walk_sync or 0) == 0 then
+            local c, v = Slid("rw_speed", "Speed", s.random_walk_speed, 0.1, 10,
+                { format = fmtVal("%.1f Hz", s.random_walk_speed) })
+            if c then
+                s.random_walk_speed = v
+                if s.random_walk_active then
+                    s.random_walk_next_time = UI.r.time_precise() + 1.0 / s.random_walk_speed
+                end
+            end
+            c, v = Slid("rw_jit", "Jitter", s.random_walk_jitter, 0, 1,
+                { format = fmtVal("%.2f", s.random_walk_jitter) })
+            if c then s.random_walk_jitter = v end
+        end
     elseif s.navigation_mode == 2 then
         -- Pattern grid — square cells, manual hit-testing so the click
         -- zones line up exactly with the drawn icons (BeginGrid only
@@ -483,11 +562,13 @@ local function drawNavigation(theme)
 
     if Btn("auto_jsfx", s.jsfx_automation_enabled and "Auto JSFX (ON)" or "Auto JSFX") then
         if s.jsfx_automation_enabled then
+            -- Keep the index: the bridge FX (and its envelopes) stay on the
+            -- track, only the coupling is switched off.
             s.jsfx_automation_enabled = false
-            s.jsfx_automation_index = -1
         else
             UI.gesture.createAutomationJSFX()
         end
+        UI.persistence.scheduleSave()
     end
 
     if Btn("show_env", "Show Env") then
@@ -954,16 +1035,31 @@ end
 -- ---------------------------------------------------------------------------
 local function drawParamRow(theme, fx_id, param_id, param_data)
     local UItk = UI.tk
-    local id = "p_" .. fx_id .. "_" .. param_id
+
+    -- Widget ids are hit every frame for every visible row: cache the
+    -- concatenations on the param table (fx_data is rebuilt on scan, so the
+    -- cache can never go stale).
+    local id = param_data._uid
+    if not id then
+        id = "p_" .. fx_id .. "_" .. param_id
+        param_data._uid = id
+        param_data._uid_sel = id .. "_sel"
+        param_data._uid_n = id .. "_n"
+        param_data._uid_x = id .. "_x"
+        param_data._uid_y = id .. "_y"
+        param_data._uid_vr = id .. "_vrng"
+    end
 
     -- All toggle/checkbox cells use 1 unit (button_height) — tight row.
+    -- The select cell must be button_height wide: the Chk helper sizes the
+    -- box to button_height, so a checkbox_size column truncated it.
     UItk.BeginColumns(id,
-        { theme.checkbox_size, 0,
+        { theme.button_height, 0,
           theme.button_height, theme.button_height, theme.button_height,
           0.5 },  -- last column = remaining ~half of row for the slider
         { gap = theme.item_spacing })
 
-    local cc, cv = Chk(id .. "_sel", "", param_data.selected)
+    local cc, cv = Chk(param_data._uid_sel, "", param_data.selected)
     if cc then
         param_data.selected = cv
         UI.fxmanager.updateSelectedCount()
@@ -974,20 +1070,20 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
 
     local name = param_data.name or "?"
     UItk.Text(name)
-    UItk.Tooltip(name)
+    if UItk.IsItemHovered() then UItk.Tooltip(name) end
     UItk.NextColumn()
 
     local invert = UI.fxmanager.getParamInvert(fx_id, param_id)
-    local tn, on = Tgl(id .. "_n", "N", invert)
+    local tn, on = Tgl(param_data._uid_n, "N", invert)
     if tn then UI.fxmanager.setParamInvert(fx_id, param_id, on) end
     UItk.NextColumn()
 
     local x_ass, y_ass = UI.fxmanager.getParamXYAssign(fx_id, param_id)
-    local tx, ox = Tgl(id .. "_x", "X", x_ass)
+    local tx, ox = Tgl(param_data._uid_x, "X", x_ass)
     if tx then UI.fxmanager.setParamXYAssign(fx_id, param_id, "x", ox) end
     UItk.NextColumn()
 
-    local ty, oy = Tgl(id .. "_y", "Y", y_ass)
+    local ty, oy = Tgl(param_data._uid_y, "Y", y_ass)
     if ty then UI.fxmanager.setParamXYAssign(fx_id, param_id, "y", oy) end
     UItk.NextColumn()
 
@@ -1017,7 +1113,7 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
         readout = string.format("%.2f", real_cur)
     end
 
-    local vc, new_v, rc, new_min, new_max = ValRngSlid(id .. "_vrng", "",
+    local vc, new_v, rc, new_min, new_max = ValRngSlid(param_data._uid_vr, "",
         cur_value, v_min, v_max, 0, 1, { format = readout })
 
     if vc then
@@ -1032,19 +1128,22 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
         UI.fxmanager.setParamRange(fx_id, param_id, span)
     end
 
-    -- Tooltip with real-units values
-    local real_base = UI.core.denormalizeParamValue(param_data.base_value or 0,
-                                                    real_min, real_max)
-    local tip = string.format("%s\nCurrent: %.3f, Base: %.3f\nRange: %.2f",
-        name, real_cur, real_base, range)
-    if real_min ~= 0 or real_max ~= 1 then
-        tip = tip .. string.format("\n(%.2f to %.2f)", real_min, real_max)
+    -- Tooltip with real-units values — built only while hovered (string
+    -- building per row per frame is pure GC churn otherwise).
+    if UItk.IsItemHovered() then
+        local real_base = UI.core.denormalizeParamValue(param_data.base_value or 0,
+                                                        real_min, real_max)
+        local tip = string.format("%s\nCurrent: %.3f, Base: %.3f\nRange: %.2f",
+            name, real_cur, real_base, range)
+        if real_min ~= 0 or real_max ~= 1 then
+            tip = tip .. string.format("\n(%.2f to %.2f)", real_min, real_max)
+        end
+        if x_ass and y_ass then tip = tip .. " [XY]"
+        elseif x_ass then tip = tip .. " [X]"
+        elseif y_ass then tip = tip .. " [Y]" end
+        if invert then tip = tip .. " [INVERTED]" end
+        UItk.Tooltip(tip)
     end
-    if x_ass and y_ass then tip = tip .. " [XY]"
-    elseif x_ass then tip = tip .. " [X]"
-    elseif y_ass then tip = tip .. " [Y]" end
-    if invert then tip = tip .. " [INVERTED]" end
-    UItk.Tooltip(tip)
 
     UItk.EndColumns()
 end
@@ -1063,9 +1162,11 @@ local function drawFXCard(theme, fx_id, fx_data, card_w)
         bg = theme.colors.frame_bg,
     })
 
-    -- Header: collapse | name | enabled
+    -- Header: collapse | name | enabled (the enabled cell is button_height
+    -- wide — the Chk helper sizes the box to button_height, a checkbox_size
+    -- column clipped its right edge)
     UItk.BeginColumns("fxcard_hd_" .. fx_id,
-        { theme.button_height, 0, theme.checkbox_size },
+        { theme.button_height, 0, theme.button_height },
         { gap = theme.item_spacing })
     if Btn("fxcol_" .. fx_id, collapsed and "+" or "−") then
         s.fx_collapsed[fx_id] = not collapsed
@@ -1142,13 +1243,35 @@ local function drawFXCard(theme, fx_id, fx_data, card_w)
 
     UItk.Separator()
 
-    -- Params (sorted)
-    local pids = {}
-    for pid, _ in pairs(fx_data.params) do pids[#pids + 1] = pid end
-    table.sort(pids)
-    for _, pid in ipairs(pids) do
+    -- Params — sorted ids cached on the fx entry (rebuilt with fx_data on
+    -- every scan, so the cache tracks chain changes for free).
+    local pids = fx_data._sorted_pids
+    if not pids then
+        pids = {}
+        for pid, _ in pairs(fx_data.params) do pids[#pids + 1] = pid end
+        table.sort(pids)
+        fx_data._sorted_pids = pids
+    end
+
+    -- The rows live in their own vertical-scrolling child, virtualized with
+    -- the list clipper: only the rows inside the viewport are laid out and
+    -- drawn. A big synth (hundreds of params) costs the same as a small FX,
+    -- and long lists finally get a scrollbar instead of being cut off.
+    local row_h = theme.button_height
+    local step = row_h + theme.item_spacing
+    local needed_h = #pids * step + theme.frame_padding_y * 2
+    local avail_h = UItk.GetAvailableHeight() - theme.frame_padding_y
+    local min_h = math.min(needed_h, step * 2)
+    local child_h = math.max(min_h, math.min(needed_h, avail_h))
+    UItk.BeginChild("fxparams_" .. fx_id, 0, child_h,
+        { scrollable = true, border = false, padding = 0 })
+    local first, last = UItk.ListClipper(#pids, row_h)
+    for i = first, last do
+        local pid = pids[i]
         drawParamRow(theme, fx_id, pid, fx_data.params[pid])
     end
+    UItk.EndListClipper(#pids, row_h)
+    UItk.EndChild()
 
     UItk.EndPanel()
 end
@@ -1207,6 +1330,12 @@ local function drawFXSettings(theme)
 
     UItk.NextColumn()
 
+    -- Viewport of the cards child, captured in the parent BEFORE BeginChild:
+    -- the child starts at the cursor and fills the available width. Used to
+    -- cull cards that are fully scrolled out of view.
+    local view_x, _ = UItk.GetCursorPos()
+    local view_r = view_x + UItk.GetAvailableWidth()
+
     -- FX cards: horizontal scrolling child. The new toolkit feature
     -- (scrollable_x) lets us lay all cards in a single row with SameLine
     -- and scroll them with a horizontal scrollbar / Shift+wheel.
@@ -1226,7 +1355,20 @@ local function drawFXSettings(theme)
         local card_w = math.floor(theme.button_height * 14)  -- ~336px @ scale 1
         for i, fid in ipairs(ids) do
             if i > 1 then UItk.SameLine(theme.item_spacing) end
-            drawFXCard(theme, fid, s.fx_data[fid], card_w)
+            -- Horizontal culling: a card fully outside the viewport is
+            -- replaced by an empty panel of the same width (2 rects), so
+            -- scroll geometry stays exact but off-screen cards cost nothing.
+            local cx, _ = UItk.GetCursorPos()
+            if cx + card_w < view_x or cx > view_r then
+                UItk.BeginPanel("fxcard_" .. fid, {
+                    style = "groupbox",
+                    width = card_w,
+                    bg = theme.colors.frame_bg,
+                })
+                UItk.EndPanel()
+            else
+                drawFXCard(theme, fid, s.fx_data[fid], card_w)
+            end
         end
     end
 
@@ -1359,9 +1501,13 @@ local function syncTrack()
             if s.track then UI.fxmanager.saveTrackSelection() end
             s.track = new_track
             if s.track then
+                -- scanTrackFX refreshes jsfx_automation_index itself; a
+                -- bridge already present on the track re-enables Auto JSFX.
                 UI.fxmanager.scanTrackFX()
-                s.jsfx_automation_index = UI.gesture.findAutomationJSFX()
                 s.jsfx_automation_enabled = s.jsfx_automation_index >= 0
+                if s.jsfx_automation_enabled then
+                    UI.gesture.syncBridgeState()
+                end
             end
         end
     elseif s.locked_track and UI.r.ValidatePtr(s.locked_track, "MediaTrack*") then
@@ -1473,6 +1619,13 @@ function UI.frame(theme)
            and (s.gesture_x ~= s.target_gesture_x
                 or s.gesture_y ~= s.target_gesture_y)) then
         UItk.RequestRedraw()
+    elseif s.jsfx_automation_enabled and (UI.r.GetPlayState() & 1) == 1 then
+        -- Envelope → pad coupling needs the loop alive while the transport
+        -- runs, otherwise the idle throttle freezes automation following.
+        -- Gated on playback: keeping a heavy UI repainting at 30 Hz while
+        -- stopped was a constant CPU drain for nothing (bridge moves are
+        -- still picked up on any interaction when stopped).
+        UItk.RequestRedrawAt(UI.r.time_precise() + 1 / 30)
     end
 
     if not UI.core.isTrackValid() then

@@ -16,8 +16,20 @@ function GestureSystem.applyGestureToSelection(gx, gy)
 				local param_range = GestureSystem.fxmanager.getParamRange(fx_id, param_id)
 				local x_assign, y_assign = GestureSystem.fxmanager.getParamXYAssign(fx_id, param_id)
 				local param_invert = GestureSystem.fxmanager.getParamInvert(fx_id, param_id)
+				-- The anchor for the whole gesture is param_base_values. If a
+				-- param has no captured base yet (e.g. envelope drives the pad
+				-- without a prior click), seed it ONCE from the param's base —
+				-- never fall through to the live base_value each frame: that
+				-- re-anchors on the last applied value and makes params drift
+				-- away until they hit the clamp.
 				local base_key = GestureSystem.core.getParamKey(fx_id, param_id)
-				local base_value = (base_key and GestureSystem.core.state.param_base_values[base_key]) or param_data.base_value
+				local base_value = base_key and GestureSystem.core.state.param_base_values[base_key]
+				if not base_value then
+					base_value = param_data.base_value
+					if base_key then
+						GestureSystem.core.state.param_base_values[base_key] = base_value
+					end
+				end
 				local up_range, down_range = GestureSystem.core.calculateAsymmetricRange(base_value, param_range, GestureSystem.core.state.gesture_range, GestureSystem.core.state.gesture_min, GestureSystem.core.state.gesture_max)
 				local new_value = base_value
 				local x_contribution, y_contribution = 0, 0
@@ -311,6 +323,18 @@ slider2:y_pos=0.5<0,1,0.001>Y Position
 spl0 = spl0;
 spl1 = spl1;]]
 
+	-- Reuse an existing bridge instance: TrackFX_AddByName with a negative
+	-- instantiate ALWAYS creates a new FX, so blindly adding would stack a
+	-- duplicate bridge every time the user re-enables Auto JSFX.
+	local existing = GestureSystem.findAutomationJSFX()
+	if existing >= 0 then
+		GestureSystem.core.state.jsfx_automation_index = existing
+		GestureSystem.core.state.jsfx_automation_enabled = true
+		GestureSystem.syncBridgeState()
+		GestureSystem.fxmanager.captureBaseValues()
+		return true
+	end
+
 	local jsfx_path = GestureSystem.r.GetResourcePath() .. "/Effects/FX Constellation Bridge.jsfx"
 	local file = io.open(jsfx_path, "w")
 	if file then
@@ -320,21 +344,70 @@ spl1 = spl1;]]
 		if fx_index >= 0 then
 			GestureSystem.core.state.jsfx_automation_index = fx_index
 			GestureSystem.core.state.jsfx_automation_enabled = true
+			-- Keep the count coherent with the cached index so the staleness
+			-- guard doesn't skip the anchor write below; the 0.25 s signature
+			-- pass picks up the full rescan.
+			GestureSystem.core.state.last_fx_count = GestureSystem.r.TrackFX_GetCount(GestureSystem.core.state.track)
+			-- Anchor the gesture: envelope-driven motion applies relative to
+			-- the values captured now, exactly like a pad drag starting here.
+			GestureSystem.updateJSFXFromGesture()
+			GestureSystem.syncBridgeState()
+			GestureSystem.fxmanager.captureBaseValues()
 			return true
 		end
 	end
 	return false
 end
 
+-- Reset the bidirectional bookkeeping to "in sync with the JSFX right now"
+-- so the next read doesn't misinterpret our own write as an envelope move.
+function GestureSystem.syncBridgeState()
+	local s = GestureSystem.core.state
+	if s.jsfx_automation_index < 0 or not GestureSystem.core.isTrackValid() then return end
+	s.jsfx_last_x = GestureSystem.r.TrackFX_GetParam(s.track, s.jsfx_automation_index, 0)
+	s.jsfx_last_y = GestureSystem.r.TrackFX_GetParam(s.track, s.jsfx_automation_index, 1)
+end
+
+-- JSFX → script (envelope playback, MIDI-learn on the bridge sliders, …).
+-- Runs only when the script is not itself the source of motion this frame:
+-- while the user drags the pad or a navigation mode animates, the script is
+-- authoritative and writes to the bridge instead. When the bridge sliders
+-- move on their own, the pad cursor ADOPTS the position (bidirectional) and
+-- the gesture is applied through the same code path as a manual drag.
+local JSFX_EPS = 0.0005
+
 function GestureSystem.updateAutomationFromJSFX()
-	if not GestureSystem.core.state.jsfx_automation_enabled or GestureSystem.core.state.jsfx_automation_index < 0 then return end
+	local s = GestureSystem.core.state
+	if not s.jsfx_automation_enabled or s.jsfx_automation_index < 0 then return end
 	if not GestureSystem.core.isTrackValid() then return end
 
-	local jsfx_x = GestureSystem.r.TrackFX_GetParam(GestureSystem.core.state.track, GestureSystem.core.state.jsfx_automation_index, 0)
-	local jsfx_y = GestureSystem.r.TrackFX_GetParam(GestureSystem.core.state.track, GestureSystem.core.state.jsfx_automation_index, 1)
+	-- Script-driven this frame → the bridge is an output, not an input.
+	if s.gesture_active then return end
+	if s.navigation_mode == 1 and s.random_walk_active then return end
+	if s.navigation_mode == 2 and s.figures_active then return end
 
-	if GestureSystem.core.state.pad_mode == 1 then
-		if not GestureSystem.core.state.granular_grains or #GestureSystem.core.state.granular_grains == 0 then
+	-- Chain mutated since the last scan → the cached index may point at a
+	-- different FX for one frame. Skip; checkForFXChanges rescans right after.
+	if GestureSystem.r.TrackFX_GetCount(s.track) ~= s.last_fx_count then return end
+
+	local jsfx_x = GestureSystem.r.TrackFX_GetParam(s.track, s.jsfx_automation_index, 0)
+	local jsfx_y = GestureSystem.r.TrackFX_GetParam(s.track, s.jsfx_automation_index, 1)
+
+	local last_x = s.jsfx_last_x or jsfx_x
+	local last_y = s.jsfx_last_y or jsfx_y
+	if math.abs(jsfx_x - last_x) < JSFX_EPS and math.abs(jsfx_y - last_y) < JSFX_EPS then
+		s.jsfx_last_x, s.jsfx_last_y = jsfx_x, jsfx_y
+		return
+	end
+	s.jsfx_last_x, s.jsfx_last_y = jsfx_x, jsfx_y
+
+	-- Adopt the external position: pad dot follows the envelope, and the
+	-- smooth-mode target is pinned so manual smoothing doesn't tug it back.
+	s.gesture_x, s.gesture_y = jsfx_x, jsfx_y
+	s.target_gesture_x, s.target_gesture_y = jsfx_x, jsfx_y
+
+	if s.pad_mode == 1 then
+		if not s.granular_grains or #s.granular_grains == 0 then
 			GestureSystem.initializeGranularGrid()
 		end
 		GestureSystem.applyGranularGesture(jsfx_x, jsfx_y)
@@ -343,11 +416,78 @@ function GestureSystem.updateAutomationFromJSFX()
 	end
 end
 
+-- Script → JSFX. Skips redundant writes (same value = no automation churn)
+-- and records what was written so the read path can tell "our own write"
+-- apart from an actual envelope move.
 function GestureSystem.updateJSFXFromGesture()
-	if not GestureSystem.core.state.jsfx_automation_enabled or GestureSystem.core.state.jsfx_automation_index < 0 then return end
+	local s = GestureSystem.core.state
+	if not s.jsfx_automation_enabled or s.jsfx_automation_index < 0 then return end
 	if not GestureSystem.core.isTrackValid() then return end
-	GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, GestureSystem.core.state.jsfx_automation_index, 0, GestureSystem.core.state.gesture_x)
-	GestureSystem.r.TrackFX_SetParam(GestureSystem.core.state.track, GestureSystem.core.state.jsfx_automation_index, 1, GestureSystem.core.state.gesture_y)
+	if GestureSystem.r.TrackFX_GetCount(s.track) ~= s.last_fx_count then return end
+	local gx, gy = s.gesture_x, s.gesture_y
+	if s.jsfx_last_x and math.abs(gx - s.jsfx_last_x) < JSFX_EPS
+	   and s.jsfx_last_y and math.abs(gy - s.jsfx_last_y) < JSFX_EPS then
+		return
+	end
+	GestureSystem.r.TrackFX_SetParam(s.track, s.jsfx_automation_index, 0, gx)
+	GestureSystem.r.TrackFX_SetParam(s.track, s.jsfx_automation_index, 1, gy)
+	s.jsfx_last_x, s.jsfx_last_y = gx, gy
+end
+
+-- Beat-sync divisions for jump mode, in quarter notes (4/4 reference):
+-- Free (Hz), 1/16, 1/8, 1/4, 1/2, 1 bar.
+local JUMP_SYNC_QN = { 0.25, 0.5, 1, 2, 4 }
+
+-- Teleport variant of the random walk: the cursor JUMPS to a random point
+-- (no interpolated travel), either at a free rate in Hz (with jitter) or
+-- locked to the beat grid while the transport plays.
+function GestureSystem.updateRandomJump(current_time)
+	local s = GestureSystem.core.state
+	local due = false
+
+	if s.random_walk_sync > 0 then
+		local qn_mult = JUMP_SYNC_QN[s.random_walk_sync] or 1
+		if (GestureSystem.r.GetPlayState() & 1) == 1 then
+			-- Playing: quantize to the project beat grid so jumps land on
+			-- musical boundaries whatever the tempo map does.
+			local qn = GestureSystem.r.TimeMap2_timeToQN(0, GestureSystem.r.GetPlayPosition())
+			local slot = math.floor(qn / qn_mult + 1e-9)
+			if slot ~= s.random_walk_last_slot then
+				s.random_walk_last_slot = slot
+				due = true
+			end
+		else
+			-- Stopped: derive the interval from the current tempo.
+			local bpm = GestureSystem.r.Master_GetTempo()
+			local interval = qn_mult * 60.0 / (bpm > 0 and bpm or 120)
+			if current_time >= s.random_walk_next_time then
+				s.random_walk_next_time = current_time + interval
+				due = true
+			end
+		end
+	else
+		if current_time >= s.random_walk_next_time then
+			local base_interval = 1.0 / s.random_walk_speed
+			local jitter = (math.random() * 2 - 1) * base_interval * s.random_walk_jitter
+			s.random_walk_next_time = current_time + math.max(0.05, base_interval + jitter)
+			due = true
+		end
+	end
+
+	if not due then return end
+
+	s.gesture_x = math.random()
+	s.gesture_y = math.random()
+	s.target_gesture_x, s.target_gesture_y = s.gesture_x, s.gesture_y
+	GestureSystem.updateJSFXFromGesture()
+	if s.pad_mode == 1 then
+		if not s.granular_grains or #s.granular_grains == 0 then
+			GestureSystem.initializeGranularGrid()
+		end
+		GestureSystem.applyGranularGesture(s.gesture_x, s.gesture_y)
+	else
+		GestureSystem.applyGestureToSelection(s.gesture_x, s.gesture_y)
+	end
 end
 
 function GestureSystem.updateGestureMotion()
@@ -356,6 +496,11 @@ function GestureSystem.updateGestureMotion()
 
 	if GestureSystem.core.state.navigation_mode == 1 then
 		if GestureSystem.core.state.random_walk_active then
+			if GestureSystem.core.state.random_walk_jump then
+				GestureSystem.updateRandomJump(current_time)
+				GestureSystem.core.state.last_smooth_update = current_time
+				return
+			end
 			if current_time >= GestureSystem.core.state.random_walk_next_time then
 				GestureSystem.generateRandomWalkControlPoints()
 				local base_interval = 1.0 / GestureSystem.core.state.random_walk_speed
@@ -409,7 +554,10 @@ function GestureSystem.updateGestureMotion()
 		end
 		GestureSystem.core.state.last_figures_update = current_time
 	else
-		if not GestureSystem.core.state.gesture_active and GestureSystem.core.state.smooth_speed > 0 then
+		-- Smooth chase runs during the drag too (lazy-cursor feel); the drag
+		-- handler only moves the target in smooth mode, so without this the
+		-- dot stayed frozen until mouse release.
+		if GestureSystem.core.state.smooth_speed > 0 then
 			local dx = GestureSystem.core.state.target_gesture_x - GestureSystem.core.state.gesture_x
 			local dy = GestureSystem.core.state.target_gesture_y - GestureSystem.core.state.gesture_y
 			local distance = math.sqrt(dx * dx + dy * dy)
@@ -421,6 +569,7 @@ function GestureSystem.updateGestureMotion()
 				end
 				GestureSystem.core.state.gesture_x = GestureSystem.core.state.gesture_x + dx * GestureSystem.core.state.smooth_speed
 				GestureSystem.core.state.gesture_y = GestureSystem.core.state.gesture_y + dy * GestureSystem.core.state.smooth_speed
+				GestureSystem.updateJSFXFromGesture()
 				if GestureSystem.core.state.pad_mode == 1 then
 					if not GestureSystem.core.state.granular_grains or #GestureSystem.core.state.granular_grains == 0 then
 						GestureSystem.initializeGranularGrid()
