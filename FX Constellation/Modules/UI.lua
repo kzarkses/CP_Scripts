@@ -878,7 +878,9 @@ local function drawLFOSection(theme)
     local mj = le.modjsfx
 
     local function touchedParam()
-        local tr, fx, parm, name = mj.getTouchedParam(UI.r)
+        -- Real last-touched param merged with the click-to-focus hint
+        -- (param name clicks) — most recent event wins.
+        local tr, fx, parm, name = mj.getFocusParam(UI.r)
         if not tr or mj.isInternalFX(name) then return nil end
         return tr, fx, parm, name
     end
@@ -1396,9 +1398,19 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
     end
     UItk.NextColumn()
 
+    -- Param name: clicking it FOCUSES the param (cross-script touch hint)
+    -- so the CP LFO inspector locks onto it without wiggling its value —
+    -- and while Map is armed, a name click maps it directly.
     local name = param_data.name or "?"
     UItk.Text(name)
-    if UItk.IsItemHovered() then UItk.Tooltip(name) end
+    if UItk.IsItemHovered() then
+        UItk.SetCursor("hand")
+        UItk.Tooltip(name .. "\nClick: focus as modulation target")
+        if UItk.IsItemClicked() and le then
+            le.modjsfx.pokeTouch(UI.r, UI.core.state.track,
+                param_data.actual_fx_id, param_id)
+        end
+    end
     UItk.NextColumn()
 
     local invert = UI.fxmanager.getParamInvert(fx_id, param_id)

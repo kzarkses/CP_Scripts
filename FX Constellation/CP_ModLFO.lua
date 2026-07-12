@@ -80,7 +80,9 @@ UI_TK.Run(function(theme)
 	-- last touched one. Base/Depth of the touched target edit the link
 	-- directly (raw writes — FX Constellation re-syncs its own params).
 	ctx.touched = function()
-		local tr, fx, parm, name = ModJSFX.getTouchedParam(r)
+		-- Real last-touched merged with the click-to-focus hint (clicking
+		-- a param name in FX Constellation) — most recent event wins.
+		local tr, fx, parm, name = ModJSFX.getFocusParam(r)
 		if not tr or ModJSFX.isInternalFX(name) then return nil end
 		return tr, fx, parm, name
 	end

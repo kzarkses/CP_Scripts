@@ -263,6 +263,68 @@ function ModJSFX.getTouchedParam(r)
 	return track, fxidx, parmidx, name
 end
 
+-- ---------------------------------------------------------------------------
+-- Click-to-focus channel. Clicking a param NAME in FX Constellation makes
+-- it the modulation target without wiggling its value: a cross-script
+-- ExtState hint (plus a best-effort native touch). getFocusParam merges
+-- the hint with REAPER's real last-touched param — most recent event wins.
+-- ---------------------------------------------------------------------------
+function ModJSFX.pokeTouch(r, track, fxidx, parmidx)
+	if not track then return end
+	-- Best effort: rewriting the current value may mark the param as last
+	-- touched natively (harmless either way — under PM the own storage is
+	-- ignored, without PM the value is unchanged).
+	local v = r.TrackFX_GetParam(track, fxidx, parmidx)
+	r.TrackFX_SetParam(track, fxidx, parmidx, v)
+	local _, guid = r.GetSetMediaTrackInfo_String(track, "GUID", "", false)
+	r.SetExtState("CP_Mod", "touch",
+		guid .. "|" .. fxidx .. "|" .. parmidx .. "|" .. r.time_precise(), false)
+end
+
+local _hint_cache = { raw = nil }
+local function getTouchHint(r)
+	local raw = r.GetExtState("CP_Mod", "touch")
+	if raw == "" then return nil end
+	if _hint_cache.raw ~= raw then
+		local guid, fx, parm, t = raw:match("^(.-)|(%d+)|(%d+)|([%d%.]+)$")
+		local track
+		if guid then
+			for i = 0, r.GetNumTracks() - 1 do
+				local tr = r.GetTrack(0, i)
+				local _, g = r.GetSetMediaTrackInfo_String(tr, "GUID", "", false)
+				if g == guid then track = tr break end
+			end
+		end
+		_hint_cache.raw = raw
+		_hint_cache.track = track
+		_hint_cache.fx = tonumber(fx)
+		_hint_cache.parm = tonumber(parm)
+		_hint_cache.t = tonumber(t)
+	end
+	if not _hint_cache.track
+	   or not r.ValidatePtr(_hint_cache.track, "MediaTrack*") then
+		return nil
+	end
+	return _hint_cache.track, _hint_cache.fx, _hint_cache.parm, _hint_cache.t
+end
+
+local _touch_state = { sig = "", t = 0 }
+function ModJSFX.getFocusParam(r)
+	local tr, fx, parm, name = ModJSFX.getTouchedParam(r)
+	local now = r.time_precise()
+	local sig = tr and (tostring(tr) .. ":" .. fx .. ":" .. parm) or ""
+	if sig ~= _touch_state.sig then
+		_touch_state.sig = sig
+		_touch_state.t = now
+	end
+	local htr, hfx, hparm, ht = getTouchHint(r)
+	if htr and ht and ht >= _touch_state.t then
+		local _, hname = r.TrackFX_GetFXName(htr, hfx, "")
+		return htr, hfx, hparm, hname
+	end
+	return tr, fx, parm, name
+end
+
 -- Tiny plink plumbing (duplicated from LinkEngine on purpose: this module
 -- stays dependency-free so the standalone panel can link params).
 local function setPlink(r, track, fx, parm, key, value)
