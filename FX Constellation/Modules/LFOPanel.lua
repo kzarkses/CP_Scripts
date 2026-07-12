@@ -152,6 +152,7 @@ function LFOPanel.draw(theme, ctx)
 			if tr and sigOf(tr, fx, parm) ~= LFOPanel._armed.sig then
 				ctx.link(tr, fx, parm, sel)
 				LFOPanel._armed = nil
+				LFOPanel._targets = nil
 				LFOPanel._flash = { msg = "Linked: " .. (name or "?"), t = now }
 			else
 				-- Poll the touched param while armed.
@@ -163,6 +164,7 @@ function LFOPanel.draw(theme, ctx)
 			local tr, fx, parm, name = ctx.touched()
 			if tr then
 				ctx.link(tr, fx, parm, sel)
+				LFOPanel._targets = nil
 				LFOPanel._flash = { msg = "Linked: " .. (name or "?"), t = now }
 			else
 				LFOPanel._flash = { msg = "No parameter touched yet", t = now }
@@ -177,6 +179,65 @@ function LFOPanel.draw(theme, ctx)
 			UItk.SetFontBody()
 		elseif LFOPanel._flash then
 			LFOPanel._flash = nil
+		end
+	end
+
+	-- Per-slot target registry (Bitwig routing-list pattern): every param
+	-- linked to the selected slot, with inline depth and removal. Rebuilt
+	-- from the ACTUAL project links (scan) — never goes stale, whatever
+	-- created or deleted the links.
+	if ctx.targets then
+		local cache_key = (ctx.tag or "?") .. ":" .. sel
+		local cache = LFOPanel._targets
+		if not cache or cache.key ~= cache_key then
+			cache = { key = cache_key, list = ctx.targets(sel) }
+			LFOPanel._targets = cache
+		end
+		local list = cache.list
+
+		UItk.Separator()
+		UItk.BeginColumns("lfopanel_tgt_hd", { 0, theme.button_height * 2.2 },
+			{ gap = theme.item_spacing })
+		UItk.SetFontH2Bold()
+		UItk.Text("TARGETS (" .. #list .. ")")
+		UItk.SetFontBody()
+		UItk.NextColumn()
+		if UItk.Button("lfopanel_tgt_scan", "Scan",
+				opts(theme, { width = -1 })) then
+			cache.list = ctx.targets(sel)
+			list = cache.list
+		end
+		UItk.EndColumns()
+
+		if #list > 0 then
+			local row_h = theme.button_height
+			local step = row_h + theme.item_spacing
+			local child_h = math.min(#list, 6) * step + theme.frame_padding_y
+			UItk.BeginChild("lfopanel_tgt_list", 0, child_h,
+				{ scrollable = true, border = false, padding = 0 })
+			for i, t in ipairs(list) do
+				UItk.BeginColumns("lfopanel_tgt_" .. i,
+					{ 0.4, 0, theme.button_height },
+					{ gap = theme.item_spacing })
+				UItk.Text(t.pname or "?")
+				if UItk.IsItemHovered() then UItk.Tooltip(t.fxname or "") end
+				UItk.NextColumn()
+				local dc2, dv2 = UItk.SliderDouble("lfopanel_tgtd_" .. i, "",
+					t.scale, -1, 1,
+					opts(theme, { format = string.format("%+.0f%%", t.scale * 100) }))
+				if dc2 and ctx.set_depth then
+					t.scale = dv2
+					ctx.set_depth(t.tr, t.fx, t.parm, dv2)
+				end
+				UItk.NextColumn()
+				if UItk.Button("lfopanel_tgtx_" .. i, "X",
+						opts(theme, { width = -1 })) and ctx.unlink then
+					ctx.unlink(t.tr, t.fx, t.parm)
+					LFOPanel._targets = nil
+				end
+				UItk.EndColumns()
+			end
+			UItk.EndChild()
 		end
 	end
 

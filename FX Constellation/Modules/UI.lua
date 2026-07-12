@@ -925,12 +925,25 @@ local function drawLFOSection(theme)
         end
     end
 
+    -- Unlink from the registry: FXC-managed params also clear their
+    -- mod_source so the sweep doesn't recreate the link.
+    local function unlinkTarget(tr, fx, parm)
+        local fid = findManagedParam(tr, fx, parm)
+        if fid then
+            le.releaseParamLink(fid, parm)
+            le.setParamModSource(fid, parm, 0)
+        else
+            mj.releaseParamLink(UI.r, tr, fx, parm)
+        end
+    end
+
     local ctx
     if s.lfo_panel_mode == 2 then
         local mtrack, midx = le.findGlobalMIDI()
         ctx = {
             present = mtrack ~= nil and midx >= 0,
             hint = "Global bank: hidden CP MOD track, modulates ANY track through 14-bit CC.",
+            tag = "global",
             get = le.getGlobalSlot,
             set = le.setGlobalSlot,
             add = function() le.ensureGlobalMIDI() end,
@@ -943,11 +956,16 @@ local function drawLFOSection(theme)
             inspect = inspectParam,
             set_base = setTargetBase,
             set_depth = setTargetDepth,
+            targets = function(slot)
+                return mj.scanSlotTargets(UI.r, "global", nil, slot)
+            end,
+            unlink = unlinkTarget,
         }
     else
         ctx = {
             present = (s.modlfo_index or -1) >= 0,
             hint = "Track LFO bank (CP_Mod). Right-click a param to follow a slot.",
+            tag = "track:" .. tostring(s.track),
             get = le.getLFOSlot,
             set = le.setLFOSlot,
             add = function() le.ensureModLFO() end,
@@ -957,6 +975,10 @@ local function drawLFOSection(theme)
             inspect = inspectParam,
             set_base = setTargetBase,
             set_depth = setTargetDepth,
+            targets = function(slot)
+                return mj.scanSlotTargets(UI.r, "lfo", s.track, slot)
+            end,
+            unlink = unlinkTarget,
         }
     end
     UI.lfopanel.draw(theme, ctx)
@@ -1343,6 +1365,7 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
         param_data._uid_n = id .. "_n"
         param_data._uid_x = id .. "_x"
         param_data._uid_y = id .. "_y"
+        param_data._uid_src = id .. "_src"
         param_data._uid_vr = id .. "_vrng"
     end
 
@@ -1350,12 +1373,17 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
     local row_x, row_y = UItk.GetCursorPos()
     local row_w = UItk.GetAvailableWidth()
 
+    -- Current modulation source: 0 = pad, 1..8 = track LFO, 101..108 = global.
+    local le = UI.linkengine
+    local src_slot = (le and le.getParamModSource(fx_id, param_id)) or 0
+
     -- All toggle/checkbox cells use 1 unit (button_height) — tight row.
     -- The select cell must be button_height wide: the Chk helper sizes the
     -- box to button_height, so a checkbox_size column truncated it.
     UItk.BeginColumns(id,
         { theme.button_height, 0,
           theme.button_height, theme.button_height, theme.button_height,
+          theme.button_height,
           0.5 },  -- last column = remaining ~half of row for the slider
         { gap = theme.item_spacing })
 
@@ -1378,13 +1406,56 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
     if tn then UI.fxmanager.setParamInvert(fx_id, param_id, on) end
     UItk.NextColumn()
 
+    -- X/Y show the PAD routing: they light up only while the pad is the
+    -- source. Clicking one while an LFO drives the param reclaims it for
+    -- the pad (release the LFO link, back to pad assignment).
+    local function reclaimForPad()
+        if src_slot > 0 and le then
+            le.releaseParamLink(fx_id, param_id)
+            le.setParamModSource(fx_id, param_id, 0)
+            src_slot = 0
+        end
+    end
+
+    local pad_src = src_slot == 0
     local x_ass, y_ass = UI.fxmanager.getParamXYAssign(fx_id, param_id)
-    local tx, ox = Tgl(param_data._uid_x, "X", x_ass)
-    if tx then UI.fxmanager.setParamXYAssign(fx_id, param_id, "x", ox) end
+    local tx, ox = Tgl(param_data._uid_x, "X", x_ass and pad_src)
+    if tx then
+        reclaimForPad()
+        UI.fxmanager.setParamXYAssign(fx_id, param_id, "x", pad_src and ox or true)
+    end
     UItk.NextColumn()
 
-    local ty, oy = Tgl(param_data._uid_y, "Y", y_ass)
-    if ty then UI.fxmanager.setParamXYAssign(fx_id, param_id, "y", oy) end
+    local ty, oy = Tgl(param_data._uid_y, "Y", y_ass and pad_src)
+    if ty then
+        reclaimForPad()
+        UI.fxmanager.setParamXYAssign(fx_id, param_id, "y", pad_src and oy or true)
+    end
+    UItk.NextColumn()
+
+    -- Modulation-source badge: L1..L8 = track LFO, G1..G8 = global. Click
+    -- opens the assignment menu (same as right-clicking the row).
+    local src_label
+    if le and src_slot > le.GLOBAL_SLOT_BASE then
+        src_label = "G" .. (src_slot - le.GLOBAL_SLOT_BASE)
+    elseif src_slot > 0 then
+        src_label = "L" .. src_slot
+    else
+        src_label = "·"
+    end
+    if src_slot > 0 then
+        UItk.PushStyleColor("button", theme.colors.accent[1],
+            theme.colors.accent[2], theme.colors.accent[3])
+    end
+    if Btn(param_data._uid_src, src_label) then
+        openParamModMenu(fx_id, param_id, param_data)
+    end
+    if src_slot > 0 then UItk.PopStyleColor() end
+    if UItk.IsItemHovered() then
+        UItk.Tooltip(src_slot > 0
+            and ("Modulation source (click to change)")
+            or "Assign a modulation source (LFO)")
+    end
     UItk.NextColumn()
 
     -- Value-range slider — three handles in one widget:

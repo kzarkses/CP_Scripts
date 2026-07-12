@@ -93,9 +93,23 @@ UI_TK.Run(function(theme)
 	ctx.set_depth = function(tr, fx, parm, v)
 		ModJSFX.setParamLinkDepth(r, tr, fx, parm, v)
 	end
+	ctx.unlink = function(tr, fx, parm)
+		ModJSFX.releaseParamLink(r, tr, fx, parm)
+	end
 	if mode == 2 then
+		ctx.tag = "global"
 		ctx.link = function(tr, fx, parm, slot)
 			ModJSFX.linkParamToGlobalSlot(r, tr, fx, parm, slot, 0.5)
+		end
+		ctx.targets = function(slot)
+			return ModJSFX.scanSlotTargets(r, "global", nil, slot)
+		end
+	else
+		-- Track identity in the tag: switching tracks must invalidate the
+		-- panel's cached target registry.
+		ctx.tag = "track:" .. tostring(track)
+		ctx.targets = function(slot)
+			return ModJSFX.scanSlotTargets(r, "lfo", track, slot)
 		end
 	end
 	LFOPanel.draw(theme, ctx)

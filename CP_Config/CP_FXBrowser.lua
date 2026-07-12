@@ -16,12 +16,12 @@ return {
   rand_from_visible = true,
   rand_replace = true,
   recents = {
+    "kHs Chorus (Kilohearts)",
     "kHs Pitch Shifter (Kilohearts)",
     "kHs Dual Delay (Kilohearts)",
     "kHs Distortion (Kilohearts)",
     "kHs Formant Filter (Kilohearts)",
     "kHs Ensemble (Kilohearts)",
-    "kHs Chorus (Kilohearts)",
     "CP FX Constellation/CP_FC_Phaser.jsfx",
     "CP FX Constellation/CP_FC_RingMod.jsfx",
     "CP FX Constellation/CP_FC_Distortion.jsfx",

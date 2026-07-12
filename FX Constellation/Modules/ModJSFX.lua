@@ -359,6 +359,58 @@ function ModJSFX.setParamLinkDepth(r, track, fxidx, parmidx, scale)
 	setPlink(r, track, fxidx, parmidx, "scale", scale)
 end
 
+-- Remove a CP link. The PM slot is released only when the user has no
+-- LFO/ACS of their own riding on the parameter.
+function ModJSFX.releaseParamLink(r, track, fxidx, parmidx)
+	setPlink(r, track, fxidx, parmidx, "active", 0)
+	local _, lfo = r.TrackFX_GetNamedConfigParm(track, fxidx,
+		"param." .. parmidx .. ".lfo.active")
+	local _, acs = r.TrackFX_GetNamedConfigParm(track, fxidx,
+		"param." .. parmidx .. ".acs.active")
+	if lfo ~= "1" and acs ~= "1" then
+		setModParm(r, track, fxidx, parmidx, "active", 0)
+	end
+end
+
+-- Enumerate every param linked to a bank slot (the per-slot target
+-- registry). Bounded scan:
+--   kind "lfo"    → the given track only (track bank targets live there)
+--   kind "global" → every track receiving a send from the CP MOD track
+-- Cost: 1 GetNamedConfigParm per unlinked param (the active check short-
+-- circuits), a handful more per linked one. Event-driven only.
+function ModJSFX.scanSlotTargets(r, kind, track, slot)
+	local targets = {}
+	local function scanTrack(tr)
+		for fx = 0, r.TrackFX_GetCount(tr) - 1 do
+			local _, fxname = r.TrackFX_GetFXName(tr, fx, "")
+			if not ModJSFX.isInternalFX(fxname) then
+				for parm = 0, r.TrackFX_GetNumParams(tr, fx) - 1 do
+					local info = ModJSFX.getParamLink(r, tr, fx, parm)
+					if info and info.kind == kind and info.slot == slot then
+						targets[#targets + 1] = {
+							tr = tr, fx = fx, parm = parm,
+							pname = info.pname, fxname = fxname,
+							scale = info.scale, baseline = info.baseline,
+						}
+					end
+				end
+			end
+		end
+	end
+	if kind == "lfo" then
+		if track then scanTrack(track) end
+	else
+		local mod = ModJSFX.findModTrack(r)
+		if mod then
+			for i = 0, r.GetTrackNumSends(mod, 0) - 1 do
+				local dest = r.GetTrackSendInfo_Value(mod, 0, i, "P_DESTTRACK")
+				if dest then scanTrack(dest) end
+			end
+		end
+	end
+	return targets
+end
+
 -- MIDI-only send MOD → target (created once, reused afterwards).
 function ModJSFX.ensureMIDISend(r, mod_track, target_track)
 	if not mod_track or not target_track or mod_track == target_track then return end
