@@ -757,7 +757,9 @@ function Widgets.Button(id, label, theme, opts)
         Core.SetHot(id)
         if Core.MouseClicked(1) then
             Core.SetActive(id)
-            if Log then Log.WidgetClicked(id, "Button", string.format("pos=(%d,%d) size=(%d,%d)", x, y, w, h)) end
+            -- %.0f, not %d: layout coordinates are floats (fractional
+            -- column widths) and %d errors on them in Lua 5.3.
+            if Log then Log.WidgetClicked(id, "Button", string.format("pos=(%.0f,%.0f) size=(%.0f,%.0f)", x, y, w, h)) end
         end
     end
 
@@ -1159,7 +1161,7 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
 
     -- Toggle popup on click
     if hovered and Core.MouseClicked(1) then
-        if Log then Log.Popup("Combo opening: " .. id, string.format("pos=(%d,%d) items=%d", cx, cy, #items)) end
+        if Log then Log.Popup("Combo opening: " .. id, string.format("pos=(%.0f,%.0f) items=%d", cx, cy, #items)) end
         -- Open popup
         local popup_items = items
         local popup_x = cx
