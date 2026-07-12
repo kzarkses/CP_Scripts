@@ -91,7 +91,7 @@ local function drawOsc(theme, ctx, idx)
 			-- the displayed tempered note.
 			if math.abs(cents) >= 1 then
 				UItk.SetFontCaption()
-				UItk.Text(string.format("%.1f Hz (%+d ct)", osc.freq, cents))
+				UItk.Text(string.format("%.1f Hz (%+.0f ct)", osc.freq, cents))
 				UItk.SetFontBody()
 			end
 		else
