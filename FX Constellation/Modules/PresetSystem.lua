@@ -269,7 +269,8 @@ function PresetSystem.captureFXChainState()
 	local fx_count = PresetSystem.r.TrackFX_GetCount(PresetSystem.core.state.track)
 	for fx_id = 0, fx_count - 1 do
 		local _, fx_name = PresetSystem.r.TrackFX_GetFXName(PresetSystem.core.state.track, fx_id, "")
-		if not fx_name:find("FX Constellation Bridge") then
+		if not fx_name:find("FX Constellation Bridge")
+		   and not fx_name:find("CP_Mod", 1, true) then
 			table.insert(state.fx_list, fx_name)
 			state.bypass_states[fx_name] = not PresetSystem.r.TrackFX_GetEnabled(PresetSystem.core.state.track, fx_id)
 		end
@@ -365,6 +366,7 @@ end
 
 local function isInternalFX(fx_name)
 	return fx_name:find("FX Constellation Bridge") or fx_name:find("Sound Generator")
+	    or fx_name:find("CP_Mod", 1, true)
 end
 
 function PresetSystem.captureCompleteState()

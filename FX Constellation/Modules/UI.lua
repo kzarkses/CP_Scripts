@@ -1060,6 +1060,132 @@ local function drawRandomizer(theme)
 end
 
 -- ---------------------------------------------------------------------------
+-- PARAM MODULATION MENU (right-click on a param row)
+-- Assign the param's modulation source (Pad X/Y/XY or a CP_Mod LFO slot)
+-- and drive REAPER's native per-param LFO — which stacks ON TOP of the
+-- link, so "LFO + pad shifts it proportionally" works out of the box.
+-- ---------------------------------------------------------------------------
+local LFO_SHAPES = { "Sine", "Square", "Saw L>R", "Saw R>L", "Triangle", "Random" }
+local LFO_SPEEDS_HZ = { 0.1, 0.25, 0.5, 1, 2, 4, 8 }
+-- Native LFO tempo-sync speed is assumed to be in LFO cycles per quarter
+-- note (1/4 → 1.0). If runtime shows otherwise, adjust this table only.
+local LFO_SYNCS = {
+    { label = "1/16",   speed = 4 },
+    { label = "1/8",    speed = 2 },
+    { label = "1/4",    speed = 1 },
+    { label = "1/2",    speed = 0.5 },
+    { label = "1 bar",  speed = 0.25 },
+    { label = "2 bars", speed = 0.125 },
+}
+local LFO_STRENGTHS = { 0.1, 0.25, 0.5, 1.0 }
+
+local function openParamModMenu(fx_id, param_id, param_data)
+    local UItk = UI.tk
+    local s = UI.core.state
+    local le = UI.linkengine
+    if not le then return end
+
+    local src = le.getParamModSource(fx_id, param_id)
+    local x_ass, y_ass = UI.fxmanager.getParamXYAssign(fx_id, param_id)
+    local lfo = le.getParamLFO(fx_id, param_id) or
+        { active = false, shape = 0, speed = 1, strength = 0.25, temposync = false }
+
+    -- Direct map writes: the menu expresses an explicit choice, so the
+    -- exclusive-XY auto-clear of setParamXYAssign must not interfere.
+    local function followPad(x, y)
+        le.setParamModSource(fx_id, param_id, 0)
+        local x_key = UI.core.getParamKey(fx_id, param_id, "x")
+        local y_key = UI.core.getParamKey(fx_id, param_id, "y")
+        if x_key then s.param_xy_assign[x_key] = x end
+        if y_key then s.param_xy_assign[y_key] = y end
+        UI.fxmanager.saveTrackSelection()
+    end
+
+    local function followLFO(slot)
+        le.setParamModSource(fx_id, param_id, slot)
+        if not param_data.selected then
+            -- Selection gates modulation — assigning a source implies it.
+            param_data.selected = true
+            UI.fxmanager.updateSelectedCount()
+            UI.fxmanager.saveTrackSelection()
+        end
+        le.ensureModLFO()
+    end
+
+    local lfo_children = {}
+    for i = 1, 8 do
+        lfo_children[i] = {
+            label = "CP LFO " .. i,
+            checked = src == i,
+            action = function() followLFO(i) end,
+        }
+    end
+
+    local shape_children = {}
+    for i, name in ipairs(LFO_SHAPES) do
+        shape_children[i] = {
+            label = name,
+            checked = lfo.shape == i - 1,
+            action = function() le.setParamLFO(fx_id, param_id, { shape = i - 1 }) end,
+        }
+    end
+    local speed_children = {}
+    for i, hz in ipairs(LFO_SPEEDS_HZ) do
+        speed_children[i] = {
+            label = hz .. " Hz",
+            checked = not lfo.temposync and math.abs(lfo.speed - hz) < 0.001,
+            action = function()
+                le.setParamLFO(fx_id, param_id, { speed = hz, temposync = false })
+            end,
+        }
+    end
+    local sync_children = {}
+    for i, sy in ipairs(LFO_SYNCS) do
+        sync_children[i] = {
+            label = sy.label,
+            checked = lfo.temposync and math.abs(lfo.speed - sy.speed) < 0.001,
+            action = function()
+                le.setParamLFO(fx_id, param_id, { speed = sy.speed, temposync = true })
+            end,
+        }
+    end
+    local strength_children = {}
+    for i, st in ipairs(LFO_STRENGTHS) do
+        strength_children[i] = {
+            label = math.floor(st * 100) .. "%",
+            checked = math.abs(lfo.strength - st) < 0.005,
+            action = function() le.setParamLFO(fx_id, param_id, { strength = st }) end,
+        }
+    end
+
+    UItk.NativeMenu({
+        { label = param_data.name or "?", disabled = true },
+        { separator = true },
+        { label = "Follow Pad X", checked = src == 0 and x_ass and not y_ass,
+          action = function() followPad(true, false) end },
+        { label = "Follow Pad Y", checked = src == 0 and y_ass and not x_ass,
+          action = function() followPad(false, true) end },
+        { label = "Follow Pad XY", checked = src == 0 and x_ass and y_ass,
+          action = function() followPad(true, true) end },
+        { label = "Follow CP LFO", children = lfo_children },
+        { separator = true },
+        { label = "Param LFO (native)", children = {
+            { label = lfo.active and "Disable" or "Enable",
+              checked = lfo.active,
+              action = function()
+                  le.setParamLFO(fx_id, param_id, { active = not lfo.active })
+              end },
+            { label = "Shape", children = shape_children },
+            { label = "Speed (Hz)", children = speed_children },
+            { label = "Tempo sync", children = sync_children },
+            { label = "Strength", children = strength_children },
+        } },
+        { separator = true },
+        { label = "Edit CP LFO bank...", action = function() le.openModLFO() end },
+    })
+end
+
+-- ---------------------------------------------------------------------------
 -- PARAM ROW (one row per FX parameter inside an FX card)
 -- ---------------------------------------------------------------------------
 local function drawParamRow(theme, fx_id, param_id, param_data)
@@ -1078,6 +1204,10 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
         param_data._uid_y = id .. "_y"
         param_data._uid_vr = id .. "_vrng"
     end
+
+    -- Row screen rect, captured before layout for the right-click hit test.
+    local row_x, row_y = UItk.GetCursorPos()
+    local row_w = UItk.GetAvailableWidth()
 
     -- All toggle/checkbox cells use 1 unit (button_height) — tight row.
     -- The select cell must be button_height wide: the Chk helper sizes the
@@ -1175,6 +1305,13 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
     end
 
     UItk.EndColumns()
+
+    -- Right-click anywhere on the row → modulation assignment menu
+    -- (NativeMenu: blocking while open, zero cost otherwise).
+    if UItk.Core.MouseClicked(2) and not UItk.Core.HasPopup()
+       and UItk.Core.MouseInRect(row_x, row_y, row_w, theme.button_height) then
+        openParamModMenu(fx_id, param_id, param_data)
+    end
 end
 
 -- ---------------------------------------------------------------------------

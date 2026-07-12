@@ -64,7 +64,8 @@ function FXManager.scanTrackFX()
 			-- index is refreshed here — a stale index would read/WRITE the
 			-- first two params of an unrelated plugin.
 			if bridge_index < 0 then bridge_index = fx end
-		elseif not fx_name:find("Sound Generator") then
+		elseif not fx_name:find("Sound Generator")
+		   and not fx_name:find("CP_Mod", 1, true) then
 			if visible_fx_id >= max_fx then
 				break
 			end
@@ -187,7 +188,8 @@ function FXManager.checkForFXChanges()
 			local current_value = FXManager.core.normalizeParamValue(raw_value, param_data.min_val, param_data.max_val)
 			if math.abs(param_data.current_value - current_value) > 0.001 then
 				param_data.current_value = current_value
-				if not param_data.selected then
+				if not param_data.selected
+				   and not (param_data.key and FXManager.core.state.param_mod_source[param_data.key]) then
 					param_data.base_value = current_value
 				end
 			end
@@ -282,10 +284,17 @@ function FXManager.captureBaseValues()
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
 		for param_id, param_data in pairs(fx_data.params) do
 			if param_data.selected then
-				param_data.base_value = param_data.current_value
 				local key = FXManager.core.getParamKey(fx_id, param_id)
-				if key then
-					FXManager.core.state.param_base_values[key] = param_data.current_value
+				if key and FXManager.core.state.param_mod_source[key] then
+					-- LFO-linked param: current_value is the modulated
+					-- readback — re-anchoring on it would randomize the base
+					-- with the LFO phase. Keep the stored base as anchor.
+					FXManager.core.state.param_base_values[key] = param_data.base_value
+				else
+					param_data.base_value = param_data.current_value
+					if key then
+						FXManager.core.state.param_base_values[key] = param_data.current_value
+					end
 				end
 			end
 		end
@@ -343,6 +352,7 @@ function FXManager.saveTrackSelection()
 	local guid = FXManager.core.getTrackGUID()
 	if not guid then return end
 	local selection, ranges, xy_assign, invert_assign, fx_rand_max, base_values = {}, {}, {}, {}, {}, {}
+	local mod_sources = {}
 	for fx_id, fx_data in pairs(FXManager.core.state.fx_data) do
 		local fx_key = guid .. "_" .. fx_data.full_name
 		fx_rand_max[fx_data.full_name] = FXManager.core.state.fx_random_max[fx_key] or 3
@@ -350,6 +360,9 @@ function FXManager.saveTrackSelection()
 			local key = fx_data.full_name .. "||" .. param_data.name
 			if param_data.selected then
 				selection[key] = true
+			end
+			if param_data.key and FXManager.core.state.param_mod_source[param_data.key] then
+				mod_sources[key] = FXManager.core.state.param_mod_source[param_data.key]
 			end
 			local range_key = guid .. "_" .. key .. "_range"
 			local invert_key = guid .. "_" .. key .. "_invert"
@@ -376,7 +389,8 @@ function FXManager.saveTrackSelection()
 		gesture_x = FXManager.core.state.gesture_x,
 		gesture_y = FXManager.core.state.gesture_y,
 		current_preset = FXManager.core.state.current_loaded_preset,
-		linked = FXManager.core.state.linked_mode
+		linked = FXManager.core.state.linked_mode,
+		mod_sources = mod_sources
 	}
 	-- Everything that changes selection/range/invert/assign/base funnels
 	-- through here — single chokepoint to re-sync native links.
@@ -412,6 +426,7 @@ function FXManager.loadTrackSelection()
 	local xy_assign = track_data.xy_assign or {}
 	local invert_assign = track_data.invert_assign or {}
 	local fx_rand_max = track_data.fx_random_max or {}
+	local mod_sources = track_data.mod_sources or {}
 	local base_values = track_data.base_values or {}
 	FXManager.core.state.gesture_base_x = track_data.gesture_base_x or 0.5
 	FXManager.core.state.gesture_base_y = track_data.gesture_base_y or 0.5
@@ -429,6 +444,9 @@ function FXManager.loadTrackSelection()
 			local key = fx_data.full_name .. "||" .. param_data.name
 			param_data.selected = selection[key] or false
 			param_data.base_value = base_values[key] or param_data.current_value
+			if param_data.key then
+				FXManager.core.state.param_mod_source[param_data.key] = mod_sources[key]
+			end
 			local range_key = guid .. "_" .. key .. "_range"
 			FXManager.core.state.param_ranges[range_key] = ranges[key] or 1.0
 			local invert_key = guid .. "_" .. key .. "_invert"
@@ -656,10 +674,12 @@ function FXManager.randomizeFXOrder()
 
 	for i = fx_count - 1, start_index + 1, -1 do
 		local _, fx_name_i = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, i, "")
-		if not fx_name_i:find("FX Constellation Bridge") and not fx_name_i:find("Sound Generator") then
+		if not fx_name_i:find("FX Constellation Bridge") and not fx_name_i:find("Sound Generator")
+		   and not fx_name_i:find("CP_Mod", 1, true) then
 			local j = math.random(start_index, i - 1)
 			local _, fx_name_j = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, j, "")
-			if not fx_name_j:find("FX Constellation Bridge") and not fx_name_j:find("Sound Generator") and i ~= j then
+			if not fx_name_j:find("FX Constellation Bridge") and not fx_name_j:find("Sound Generator")
+			   and not fx_name_j:find("CP_Mod", 1, true) and i ~= j then
 				local temp_pos = fx_count
 				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, i, FXManager.core.state.track, temp_pos, true)
 				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, j, FXManager.core.state.track, i, true)
@@ -678,7 +698,8 @@ function FXManager.randomBypassFX()
 	FXManager.r.Undo_BeginBlock()
 	for fx_id = 0, fx_count - 1 do
 		local _, fx_name = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, fx_id, "")
-		if not fx_name:find("FX Constellation Bridge") and not fx_name:find("Sound Generator") then
+		if not fx_name:find("FX Constellation Bridge") and not fx_name:find("Sound Generator")
+		   and not fx_name:find("CP_Mod", 1, true) then
 			local should_bypass = math.random() < FXManager.core.state.random_bypass_percentage
 			FXManager.r.TrackFX_SetEnabled(FXManager.core.state.track, fx_id, not should_bypass)
 		end

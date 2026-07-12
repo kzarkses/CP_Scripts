@@ -2,9 +2,9 @@
 return {
   auto_close = true,
   batch_mode = false,
-  number_format = " %d",
+  number_format = "%03d",
   prefix = "SFX_",
-  spacer_type = "none",
+  spacer_type = "underscore",
   suffix = "_TEST",
   use_numbering = true,
   use_prefix = false,

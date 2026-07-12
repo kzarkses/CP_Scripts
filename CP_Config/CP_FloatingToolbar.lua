@@ -63,17 +63,17 @@ return {
       enabled = true,
       id = "98298282831",
       layout = {
-        bg_alpha = 0,
-        bg_border = false,
+        bg_alpha = 0.269103,
+        bg_border = true,
         bg_color = {
-          0.289063,
-          0.289063,
-          0.289063
+          0.28125,
+          0.279053,
+          0.279053
         },
         bg_radius = 0,
         direction = "horizontal",
         icon_size = 30,
-        padding = 1,
+        padding = 0,
         spacing = 0
       },
       name = "Default"
