@@ -1396,7 +1396,11 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
     -- Mapping: the `range` window stays centered on the BASE value so the
     -- modulation breathes inside a stable frame.
     local base_value = param_data.base_value or param_data.current_value or 0.5
-    local live_value = param_data.current_value or base_value
+    -- The API only reports the base value under parameter modulation; the
+    -- link engine recomputes the modulated value from the link source.
+    local live_value = (UI.linkengine
+        and UI.linkengine.getLiveValue(fx_id, param_id, param_data))
+        or param_data.current_value or base_value
     local range = UI.fxmanager.getParamRange(fx_id, param_id) or 1.0
     local v_min = clamp(base_value - range * 0.5, 0, 1)
     local v_max = clamp(base_value + range * 0.5, 0, 1)
@@ -1973,10 +1977,11 @@ function UI.frame(theme)
     UItk.BeginColumns("main_cols", widths, { gap = col_gap })
     for i, k in ipairs(UI.section_order) do
         if i > 1 then UItk.NextColumn() end
+        local renderer = SECTION_RENDERERS[k]
         if s.section_collapsed[k] then
             drawCollapsedColumn(theme, k)
-        else
-            SECTION_RENDERERS[k](theme)
+        elseif renderer then
+            renderer(theme)
         end
     end
     UItk.EndColumns()

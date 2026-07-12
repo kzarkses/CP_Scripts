@@ -410,6 +410,44 @@ function LinkEngine.syncLinks()
 	if want_links then LinkEngine.applySlew() end
 end
 
+-- Live display value of a param. TrackFX_GetParam returns the BASE value —
+-- parameter modulation (plink/LFO) is applied downstream and is invisible
+-- to the API. For params linked to one of our sources we recompute the
+-- modulated value from the source slider (which IS readable: the bridge
+-- and the LFO bank write their own output sliders):
+--   value = base + (source − 0.5) × span
+-- Native per-param LFO can't be recomputed (phase is REAPER-internal).
+function LinkEngine.getLiveValue(fx_id, param_id, param_data)
+	local s = LinkEngine.core.state
+	if not param_data.selected or not LinkEngine.core.isTrackValid() then
+		return param_data.current_value
+	end
+	local key = param_data.key
+	local slot = key and s.param_mod_source[key] or 0
+	local src_val
+	if slot > 0 then
+		local lfo_idx = s.modlfo_index or -1
+		if lfo_idx >= 0 then
+			src_val = LinkEngine.r.TrackFX_GetParam(s.track, lfo_idx, MODLFO_OUT_BASE + slot - 1)
+		end
+	elseif s.links_active and s.jsfx_automation_index >= 0 then
+		local x_ass, y_ass = LinkEngine.fxmanager.getParamXYAssign(fx_id, param_id)
+		local src
+		if x_ass and y_ass then src = SRC_MIX
+		elseif x_ass then src = SRC_X
+		elseif y_ass then src = SRC_Y end
+		if src then
+			src_val = LinkEngine.r.TrackFX_GetParam(s.track, s.jsfx_automation_index, src)
+		end
+	end
+	if not src_val then return param_data.current_value end
+	local range = LinkEngine.fxmanager.getParamRange(fx_id, param_id)
+	local span = range * (s.gesture_range or 1.0)
+	if LinkEngine.fxmanager.getParamInvert(fx_id, param_id) then span = -span end
+	local base = param_data.base_value or 0.5
+	return math.max(0, math.min(1, base + (src_val - 0.5) * span))
+end
+
 -- Full teardown (linked mode toggled off, script closing with mode off…).
 function LinkEngine.releaseAll()
 	local s = LinkEngine.core.state
