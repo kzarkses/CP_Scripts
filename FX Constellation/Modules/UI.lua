@@ -1012,6 +1012,13 @@ local function drawLFOSection(theme)
             add = function() le.ensureGlobalMIDI() end,
             sel = s.lfo_sel_slot or 1,
             onSelect = function(i) s.lfo_sel_slot = i end,
+            rnd = function(i)
+                local mt, mi = le.findGlobalMIDI()
+                if mt and mi >= 0 then
+                    le.modjsfx.randomizeSlot(UI.r, mt, mi, i,
+                        s.lfo_random_settings or { shape = true, rate = true })
+                end
+            end,
             touched = touchedParam,
             link = function(tr, fx, parm, slot)
                 mj.linkParamToGlobalSlot(UI.r, tr, fx, parm, slot, 0.5)
@@ -1051,6 +1058,12 @@ local function drawLFOSection(theme)
             add = function() le.ensureModLFO() end,
             sel = s.lfo_sel_slot or 1,
             onSelect = function(i) s.lfo_sel_slot = i end,
+            rnd = function(i)
+                if (s.modlfo_index or -1) >= 0 then
+                    le.modjsfx.randomizeSlot(UI.r, s.track, s.modlfo_index, i,
+                        s.lfo_random_settings or { shape = true, rate = true })
+                end
+            end,
             touched = touchedParam,
             inspect = inspectParam,
             set_base = setTargetBase,
@@ -1946,7 +1959,7 @@ local function drawSettingsModal()
     if not UI.core.state.show_settings_window then return end
     local UItk = UI.tk
     UItk.BeginModal("settings_modal", "Settings",
-        { width = 420, height = 380 })
+        { width = 420, height = 560 })
     UItk.SetFontH2Bold()
     UItk.Text("ULTRA RANDOM SETTINGS")
     UItk.SetFontBody()
@@ -1964,6 +1977,31 @@ local function drawSettingsModal()
     flag("urs_ord",  "Randomize FX Order",        "fx_order")
     flag("urs_inv",  "Randomize Invert",          "invert")
     flag("urs_sf",   "Randomize Sound Generator Frequency", "sound_frequency")
+
+    UItk.Separator()
+    UItk.SetFontH2Bold()
+    UItk.Text("LFO RANDOMIZER")
+    UItk.SetFontBody()
+    -- Scope of the LFO randomizer button: params are distributed over
+    -- G1..Gn (enabled automatically); the flags gate which engine
+    -- settings of those slots get re-rolled.
+    local lrs = UI.core.state.lfo_random_settings
+    if not lrs then
+        lrs = { slots = 8, shape = true, rate = true,
+                sync = false, phase = false }
+        UI.core.state.lfo_random_settings = lrs
+    end
+    local sc2, sv2 = SlidInt("lrs_slots", "Slots", lrs.slots or 8, 1, 8)
+    if sc2 then lrs.slots = sv2; UI.persistence.scheduleSave() end
+    local function lflag(id, label, key)
+        local c, v = Chk(id, label, lrs[key] or false)
+        if c then lrs[key] = v; UI.persistence.scheduleSave() end
+    end
+    lflag("lrs_shape", "Randomize Shape", "shape")
+    lflag("lrs_rate",  "Randomize Rate (free Hz)", "rate")
+    lflag("lrs_sync",  "Randomize Tempo Sync", "sync")
+    lflag("lrs_phase", "Randomize Phase", "phase")
+    lflag("lrs_meta",  "Pad → LFO Rate (meta-links)", "pad_meta")
 
     UItk.Separator()
     UItk.SetFontH2Bold()
@@ -2021,6 +2059,8 @@ local function syncTrack()
             UI.linkengine.checkExternalUnlink()
             -- External raw edits (panel knobs, Map) sync back live.
             UI.linkengine.checkExternalEdits()
+            -- Pad → LFO rate meta-links (early-out when none / pad idle).
+            UI.linkengine.applyMetaMod()
             if s.links_dirty then
                 UI.linkengine.syncLinks()
             end

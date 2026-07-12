@@ -66,6 +66,22 @@ function Core.init(reaper_api)
 		-- Chance for the assign randomizer to route a param to a global
 		-- CP_Mod LFO (G1-8) instead of the pad (0 = pad XY only).
 		random_lfo_probability = 0.0,
+		-- LFO randomizer scope (Settings window): pool size (params are
+		-- distributed over G1..Gn, which get enabled) and which engine
+		-- settings of the participating slots get re-rolled.
+		lfo_random_settings = {
+			slots = 8,
+			shape = true,
+			rate = true,
+			sync = false,
+			phase = false,
+			-- Pad → LFO meta-links: the randomizer may also route the
+			-- pad's X/Y to the RATE of pool slots (script-side, 30 Hz).
+			pad_meta = false
+		},
+		-- Active pad→LFO meta-links, created by the LFO randomizer:
+		-- { slot, axis = "x"|"y"|"xy", invert, base_rate }. Session state.
+		lfo_meta = {},
 		layout_mode = 0,
 		fx_collapsed = {},
 		show_filters_window = false,

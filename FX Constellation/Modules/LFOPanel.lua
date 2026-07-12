@@ -180,9 +180,23 @@ function LFOPanel.draw(theme, ctx)
 	local slot = ctx.get(sel)
 	if not slot then return end
 
-	local tc2, on2 = UItk.ToggleButton("lfopanel_on",
-		slot.on and "● ON" or "○ OFF", slot.on, opts(theme))
-	if tc2 then ctx.set(sel, { on = on2 }) end
+	if ctx.rnd then
+		UItk.BeginColumns("lfopanel_on_row", { 0, theme.button_height * 2 },
+			{ gap = theme.item_spacing })
+		local tc2, on2 = UItk.ToggleButton("lfopanel_on",
+			slot.on and "● ON" or "○ OFF", slot.on, opts(theme))
+		if tc2 then ctx.set(sel, { on = on2 }) end
+		UItk.NextColumn()
+		-- Re-roll this slot's engine settings (host decides which fields).
+		if UItk.Button("lfopanel_rnd", "Rnd", opts(theme)) then
+			ctx.rnd(sel)
+		end
+		UItk.EndColumns()
+	else
+		local tc2, on2 = UItk.ToggleButton("lfopanel_on",
+			slot.on and "● ON" or "○ OFF", slot.on, opts(theme))
+		if tc2 then ctx.set(sel, { on = on2 }) end
+	end
 
 	local sc, si = UItk.Combo("lfopanel_shape", "Shape", slot.shape + 1,
 		LFOPanel.SHAPES, opts(theme))

@@ -206,6 +206,36 @@ function ModJSFX.setSlot(r, track, fx_idx, slot, patch)
 	if patch.phase then set(4, patch.phase) end
 end
 
+-- Randomize a slot's engine settings (and enable it). opts flags gate each
+-- field: shape (0-5), rate (log-uniform 0.05..10 Hz, forces Free), sync
+-- (random division; combined with rate → per-slot coin flip free/synced),
+-- phase (0..1). Pure slider writes — works from any script, FXC running
+-- or not.
+function ModJSFX.randomizeSlot(r, track, fx_idx, slot, opts)
+	if not track or fx_idx < 0 then return end
+	local patch = { on = true }
+	if opts.shape then patch.shape = math.random(0, 5) end
+	local function randRate()
+		local lo, hi = math.log(0.05), math.log(10)
+		return math.exp(lo + math.random() * (hi - lo))
+	end
+	if opts.rate and opts.sync then
+		if math.random() < 0.5 then
+			patch.sync = 0
+			patch.rate = randRate()
+		else
+			patch.sync = math.random(1, 6)
+		end
+	elseif opts.rate then
+		patch.sync = 0
+		patch.rate = randRate()
+	elseif opts.sync then
+		patch.sync = math.random(0, 6)
+	end
+	if opts.phase then patch.phase = math.random() end
+	ModJSFX.setSlot(r, track, fx_idx, slot, patch)
+end
+
 -- ---------------------------------------------------------------------------
 -- Global MOD track (hidden utility track hosting the cross-track MIDI bank)
 -- ---------------------------------------------------------------------------

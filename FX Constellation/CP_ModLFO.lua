@@ -108,6 +108,10 @@ UI_TK.Run(function(theme)
 		add = add,
 		sel = sel,
 		onSelect = function(i) sel = i end,
+		rnd = function(i)
+			ModJSFX.randomizeSlot(r, track, bank_idx, i,
+				{ shape = true, rate = true, phase = true })
+		end,
 	}
 	-- Target inspector (both tabs) + Bitwig-style mapping (global tab):
 	-- arm "Map" then touch any parameter anywhere in REAPER, or link the

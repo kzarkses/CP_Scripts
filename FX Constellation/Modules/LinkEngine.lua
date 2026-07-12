@@ -565,6 +565,35 @@ function LinkEngine.checkExternalEdits()
 	end
 end
 
+-- Pad → LFO meta-modulation: randomizer-created links where the pad's
+-- X/Y offset sweeps a global slot's RATE around its captured base (log
+-- space, ±2 octaves at full course, same X/Y/XY + invert vocabulary as
+-- plugin params). Script-side at defer rate — a rate knob is control-
+-- rate by nature, and this reaches the cross-track global bank where
+-- native links can't. Early-outs when idle: zero cost without metas.
+function LinkEngine.applyMetaMod()
+	local s = LinkEngine.core.state
+	local metas = s.lfo_meta
+	if not metas or #metas == 0 then return end
+	if s._meta_gx == s.gesture_x and s._meta_gy == s.gesture_y then return end
+	s._meta_gx, s._meta_gy = s.gesture_x, s.gesture_y
+	local track, idx = LinkEngine.findGlobalMIDI()
+	if not track or idx < 0 then return end
+	local ox = ((s.gesture_x or 0.5) - (s.gesture_base_x or 0.5)) * 2
+	local oy = ((s.gesture_y or 0.5) - (s.gesture_base_y or 0.5)) * 2
+	for _, m in ipairs(metas) do
+		local off
+		if m.axis == "x" then off = ox
+		elseif m.axis == "y" then off = oy
+		else off = (ox + oy) / 2 end
+		if m.invert then off = -off end
+		local rate = math.max(0.01, math.min(20,
+			(m.base_rate or 1) * 2 ^ (off * 2)))
+		LinkEngine.modjsfx.setSlot(LinkEngine.r, track, idx, m.slot,
+			{ rate = rate })
+	end
+end
+
 -- Write the pad slew time (seconds) to the bridge.
 function LinkEngine.applySlew()
 	local s = LinkEngine.core.state

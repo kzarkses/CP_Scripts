@@ -594,23 +594,6 @@ function FXManager.randomizeAllBases()
 	FXManager.saveTrackSelection()
 end
 
--- Global LFO slots eligible for random assignment, encoded for
--- param_mod_source (GLOBAL_SLOT_BASE + 1..8). Only slots that are ON: a
--- link to a muted slot freezes the param instead of modulating it — the
--- user picks which LFOs participate by enabling them in the Global tab.
-local function enabledGlobalSlots()
-	local le = FXManager.link_engine
-	if not le then return nil end
-	local slots = nil
-	for i = 1, le.modjsfx.SLOTS do
-		local slot = le.getGlobalSlot(i)
-		if slot and slot.on then
-			slots = slots or {}
-			slots[#slots + 1] = le.GLOBAL_SLOT_BASE + i
-		end
-	end
-	return slots
-end
 
 function FXManager.randomizeXYAssign(params, fx_id)
 	local le = FXManager.link_engine
@@ -629,20 +612,47 @@ function FXManager.randomizeXYAssign(params, fx_id)
 end
 
 -- Random modulation sources (the "LFO" randomizer button): each selected
--- param rolls against random_lfo_probability — hit → a random ENABLED
--- global slot (G1-8), miss → back to the pad (existing X/Y assignment).
+-- param rolls against random_lfo_probability — hit → a random slot from
+-- the pool G1..Gn, miss → back to the pad (existing X/Y assignment).
 -- 0% therefore clears all LFO routings, 100% routes everything.
+-- The pool slots are enabled and their engine settings re-rolled per
+-- state.lfo_random_settings (Settings window: slots / shape / rate /
+-- sync / phase).
 function FXManager.globalRandomLFOAssign()
 	local s = FXManager.core.state
 	local le = FXManager.link_engine
 	if not le then return end
 	local p = s.random_lfo_probability or 0
 	local lfo_slots = nil
+	-- Each roll redefines the whole randomized LFO state, metas included.
+	s.lfo_meta = {}
 	if p > 0 then
-		-- Fresh banks have slot 1 ON; the user picks the participating
-		-- LFOs by enabling slots in the Global tab.
-		le.ensureGlobalMIDI()
-		lfo_slots = enabledGlobalSlots()
+		local mtrack, midx = le.ensureGlobalMIDI()
+		if mtrack and midx >= 0 then
+			local cfg = s.lfo_random_settings or {}
+			local n = math.max(1, math.min(le.modjsfx.SLOTS,
+				cfg.slots or le.modjsfx.SLOTS))
+			lfo_slots = {}
+			local axes = { "x", "y", "xy" }
+			for i = 1, n do
+				lfo_slots[i] = le.GLOBAL_SLOT_BASE + i
+				le.modjsfx.randomizeSlot(FXManager.r, mtrack, midx, i, cfg)
+				-- Pad → LFO meta-link: with the same probability, the pad
+				-- also sweeps this slot's rate (free-running slots only —
+				-- a synced slot ignores its Hz rate).
+				if cfg.pad_meta and math.random() < p then
+					local sl = le.modjsfx.getSlot(FXManager.r, mtrack, midx, i)
+					if sl and (sl.sync or 0) == 0 then
+						s.lfo_meta[#s.lfo_meta + 1] = {
+							slot = i,
+							axis = axes[math.random(3)],
+							invert = math.random() < 0.5,
+							base_rate = sl.rate or 1,
+						}
+					end
+				end
+			end
+		end
 	end
 	FXManager.beginBatch()
 	for fx_id, fx_data in pairs(s.fx_data) do
