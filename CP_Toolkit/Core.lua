@@ -1554,6 +1554,17 @@ end
 
 -- Recursive Lua-table serializer. Supports: nil, boolean, number, string,
 -- and tables (mixed array/hash). Cycles will infinite-loop — don't pass them.
+-- Lua reserved words cannot be used as bare table keys ({ function = 1 } is a
+-- syntax error) — they must be bracket-quoted ({ ["function"] = 1 }).
+local _lua_keywords = {
+    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
+    ["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,
+    ["function"] = true, ["goto"] = true, ["if"] = true, ["in"] = true,
+    ["local"] = true, ["nil"] = true, ["not"] = true, ["or"] = true,
+    ["repeat"] = true, ["return"] = true, ["then"] = true, ["true"] = true,
+    ["until"] = true, ["while"] = true,
+}
+
 local function _serialize(value, indent)
     local t = type(value)
     if t == "nil" then
@@ -1594,7 +1605,8 @@ local function _serialize(value, indent)
             for _, k in ipairs(keys) do
                 local v = value[k]
                 local key_str
-                if type(k) == "string" and k:match("^[%a_][%w_]*$") then
+                if type(k) == "string" and k:match("^[%a_][%w_]*$")
+                    and not _lua_keywords[k] then
                     key_str = k
                 else
                     key_str = "[" .. _serialize(k, indent + 1) .. "]"
