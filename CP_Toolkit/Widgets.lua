@@ -8,6 +8,14 @@ local pi, sin, cos, sqrt = math.pi, math.sin, math.cos, math.sqrt
 local Widgets = {}
 local Core, Layout, Theme, Log, Icons, Keys  -- set via init
 
+-- Accumulated gfx wheel delta → whole notches, rounded away from zero
+-- (±120 per notch; fast spins deliver multiples in one defer tick and must
+-- scroll proportionally, sub-120 trackpad deltas still move min one step).
+local function wheel_notches(wheel)
+    local n = wheel / 120
+    return n > 0 and ceil(n) or floor(n)
+end
+
 -- ============================================================================
 -- SHARED OFFSCREEN BUFFERS (module-level — visible to all widgets below)
 -- ============================================================================
@@ -1221,8 +1229,7 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
             local wheel = Core.GetState().mouse_wheel
             if wheel ~= 0 and not Core.IsWheelConsumed()
                and Core.MouseInRect(popup_x, popup_y, popup_w, popup_h) then
-                local dir = wheel > 0 and -1 or 1
-                data.scroll = max(0, min(max_scroll, data.scroll + dir))
+                data.scroll = max(0, min(max_scroll, data.scroll - wheel_notches(wheel)))
                 Core.ConsumeWheel()
             end
             local scroll = max(0, min(max_scroll, data.scroll or 0))
@@ -2895,9 +2902,8 @@ function Widgets.TextEdit(id, text, theme, opts)
     if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
         local wheel = Core.GetState().mouse_wheel
         if wheel ~= 0 then
-            -- 3 lines per notch, independent of platform wheel-delta magnitude.
-            local dir = wheel > 0 and -1 or 1
-            data.scroll_y = max(0, min(data.scroll_y + dir * (line_h + 2) * 3,
+            -- 3 lines per notch, proportional to accumulated notch count.
+            data.scroll_y = max(0, min(data.scroll_y - wheel_notches(wheel) * (line_h + 2) * 3,
                 max(0, content_h - h + pad * 2)))
             -- Consumed (audit B4): otherwise the parent container scrolls too
             Core.ConsumeWheel()
@@ -3393,8 +3399,8 @@ function Widgets.Table(id, columns, rows, theme, opts)
                 local state = Core.GetState()
                 if state.mouse_wheel ~= 0 then
                     local step = opts.scroll_step or 3
-                    local dir = state.mouse_wheel > 0 and -1 or 1
-                    data.scroll_y = max(0, min(data.scroll_y + dir * step, #rows - visible_rows))
+                    data.scroll_y = max(0, min(data.scroll_y - wheel_notches(state.mouse_wheel) * step,
+                                               #rows - visible_rows))
                     -- Consumed (audit B4): otherwise the parent scrolls too
                     Core.ConsumeWheel()
                 end
@@ -5187,8 +5193,8 @@ function Widgets.ActionList(id, items, actions, theme, opts)
                 local wheel = Core.GetState().mouse_wheel
                 if wheel ~= 0 then
                     local step = opts.scroll_step or 3
-                    local dir = wheel > 0 and -1 or 1
-                    data.scroll = max(0, min(data.scroll + dir * step, #items - visible_count))
+                    data.scroll = max(0, min(data.scroll - wheel_notches(wheel) * step,
+                                             #items - visible_count))
                     -- Consumed (audit B4): otherwise the parent scrolls too
                     Core.ConsumeWheel()
                 end
@@ -5659,8 +5665,8 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
                 local wheel = Core.GetState().mouse_wheel
                 if wheel ~= 0 then
                     local step = opts.scroll_step or 3
-                    local dir = wheel > 0 and -1 or 1
-                    data.scroll = max(0, min(data.scroll + dir * step, row_count - visible_rows))
+                    data.scroll = max(0, min(data.scroll - wheel_notches(wheel) * step,
+                                             row_count - visible_rows))
                     -- Consumed (audit B4): otherwise the parent scrolls too
                     Core.ConsumeWheel()
                 end

@@ -458,6 +458,10 @@ UI.GetLastItemRect = Core.GetLastItemRect
 UI.ConsumeChar = Core.ConsumeChar
 UI.ConsumeWheel = Core.ConsumeWheel
 
+-- Pixel-true clipping region (offscreen buffer + blit) — see Core.lua
+UI.BeginBufferedClip = Core.BeginBufferedClip
+UI.EndBufferedClip = Core.EndBufferedClip
+
 -- Focus chain (Tab navigation)
 UI.FocusNext = Core.FocusNext
 UI.FocusPrev = Core.FocusPrev

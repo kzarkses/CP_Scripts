@@ -253,14 +253,23 @@ UI.EndChild()
 ```lua
 UI.BeginChild(id, width, height, opts)
     -- opts: {scrollable=true, scrollable_x=false, border=true,
-    --        padding=6, bg={r,g,b,a}}
+    --        padding=6, bg={r,g,b,a}, scroll_step=nil}
     -- width=0 or height=0 → fill available space
     -- scrollable    = vertical scroll (default true)
     -- scrollable_x  = horizontal scroll (default false). When enabled,
     --                 content can extend past the right edge and the user
     --                 scrolls with the bottom scrollbar or Shift+wheel.
+    -- scroll_step   = pixels per wheel notch (default Layout.SCROLL_STEP=66).
 UI.EndChild()
 ```
+
+Wheel scrolling is notch-proportional: the accumulated `gfx.mouse_wheel`
+delta (±120 per notch, multiples per frame on fast spins) maps to
+`scroll_step` pixels per notch — no ticks are ever dropped.
+
+**Middle-click pan**: press and drag mouse3 inside any scrollable region
+(window or child) to pan it hand-tool style — the content follows the
+mouse; the innermost hovered region wins. No setup needed.
 
 ---
 
@@ -360,6 +369,26 @@ UI.ConsumeWheel()   -- a custom widget scrolled: parents won't also scroll
 UI.RequestRedrawAt(t)  -- wake the idle loop at reaper.time_precise() = t
                        -- (egui request_repaint_after — timed reveals/fades)
 ```
+
+---
+
+## Buffered Clip (pixel-true region clipping)
+
+gfx has no scissor: `DrawText` drops a partially-clipped string entirely and
+the antialiased icon primitives ignore the clip stack. For regions whose
+edges must crop content seamlessly (scrolling lists), draw through a shared
+offscreen buffer — everything inside is pixel-cropped at the region bounds.
+
+```lua
+if UI.BeginBufferedClip(x, y, w, h) then  -- opt. 5th arg: margin (default 64)
+    -- draw with normal SCREEN coordinates; fill the region with an opaque
+    -- background first (buffer pixels persist across frames)
+    UI.EndBufferedClip()                   -- restores gfx.dest, blits region
+end
+```
+
+Not nestable (returns false if a region is already active). Cost: one
+window-sized gfx buffer (id 904) + one blit per frame.
 
 ---
 
@@ -637,6 +666,68 @@ UI.Icons.ChevronDown(x, y, size, r, g, b, a)
 -- Tools: Crosshair, Pipette
 -- Lists/tabs: Star, StarFilled, Clock, Scan, Sort, Dice, Erase, Grip, Layers
 ```
+
+Rendering: each (icon, size, color) is baked once — drawn at 4x supersample,
+then downscaled through two filtered blits (real antialiasing) — and blitted
+per frame (buffers 926-989; scratch 990-992).
+
+**PNG overrides**: drop white-on-transparent PNGs (64-128px, square) named
+after the icon function (`Play.png`, `StarFilled.png`, …) into
+`CP_Toolkit/IconOverrides/` — they replace the vector glyph and are tinted
+to the requested color at bake time. `UI.Icons.ReloadOverrides()` rescans
+without a restart. See `IconOverrides/README.md`.
+
+---
+
+## Shared non-UI modules (dofile separately — not part of CP_Toolkit.lua)
+
+### Audio.lua — audition engine (SWS CF_Preview)
+
+```lua
+local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
+Audio.init(reaper)                 -- Audio.available = SWS present
+Audio.Play(path, {start_s, end_s, loop, rate, pitch, vol})  -- section-aware
+Audio.Poll()                       -- once per frame: section end stop/loop
+Audio.Stop() / Audio.IsPlaying(path?) / Audio.Progress()  -- pos_s, len
+Audio.Meta(path)                   -- len, channels, samplerate
+Audio.SetVolume(v) / Audio.Destroy()
+```
+
+Tiny cached PCM_source pool, pcall-guarded dead handles, negative-cache
+on unreadable files. For the full browser preview stack (LRU + prefetch
++ tempo-sync) use CP_MediaExplorer's own module.
+
+### DragBus.lua — cross-script drag & drop
+
+ReaScript windows are separate processes to each other: the bus is an
+ExtState protocol (session-only), **rect-based and JS-free** — every
+consumer publishes its window's screen rect via `gfx.clienttoscreen`
+(works docked), the publisher point-tests those rects on release.
+Publisher (drag source):
+
+```lua
+DragBus.Begin(kind, path, label [, self_id])  -- at drag promotion
+DragBus.HoverTarget(sx, sy)   -- target id under the point (nil inside
+                              --   the publisher's own window)
+DragBus.Drop(sx, sy)          -- deliver on release → true if consumed
+DragBus.End()                 -- always end the drag
+```
+
+Consumer (drop target):
+
+```lua
+DragBus.Register(id)          -- once
+DragBus.RectSync(id)          -- every frame (writes only on move/resize)
+DragBus.ActiveDrag()          -- kind, path, label (highlight UI)
+DragBus.TakeDrop(id)          -- kind, path, sx, sy (one-shot)
+DragBus.Unregister(id)        -- OnClose + atexit
+```
+
+A publisher that gets `Drop() == true` must skip its own drop handling.
+During a foreign drag the consumer's window gets no mouse events (the
+source holds capture): track `reaper.GetMousePosition()` +
+`Core.ScreenToClient` and call `RequestRedraw`. Rect tests ignore
+z-order — CP targets take priority by design.
 
 ---
 

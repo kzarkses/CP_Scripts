@@ -843,6 +843,109 @@ function Core.GetClipRect()
     return 0, 0, state.win_w, state.win_h
 end
 
+-- ============================================================================
+-- BUFFERED CLIP REGION (pixel-true clipping via offscreen buffer)
+-- ============================================================================
+-- gfx has no scissor: DrawText drops a string as soon as any part of it
+-- would extend past the clip rect, and the antialiased primitives (icon
+-- triangles/circles/arcs) ignore the software clip stack entirely — content
+-- pops in/out at container edges instead of sliding behind them. For regions
+-- where seamless edges matter (scrolling browser lists), render into a
+-- shared offscreen buffer and blit only the region back to screen:
+-- everything gets true pixel cropping at the region bounds.
+--
+-- Usage (NOT nestable — one region at a time):
+--   if Core.BeginBufferedClip(x, y, w, h) then
+--       -- draw with normal SCREEN coordinates
+--       Core.EndBufferedClip()   -- restores gfx.dest, blits the region
+--   end
+--
+-- While active, the top of the clip stack is temporarily REPLACED by the
+-- region expanded by `margin` px (default 64), so DrawText's whole-string
+-- rejection and line clipping don't kick in for content straddling the
+-- edges — the final blit performs the real cropping. The caller must fill
+-- the region with an opaque background first: buffer pixels persist across
+-- frames.
+--
+-- Buffer id 904 (0-899 = image pool, 900-903 = input/colorpicker widgets).
+local BUFCLIP_ID = 904
+local bufclip_active = false
+-- Pooled state — a fresh table per Begin call was one garbage table per
+-- region per frame (PERFORMANCE.md rule 1; cf. audit P8 container pooling).
+local bufclip_state = { x = 0, y = 0, w = 0, h = 0, dest = -1,
+                        sx = 0, sy = 0, sw = 0, sh = 0, pushed = false,
+                        hx = 0, hy = 0, hw = 0, hh = 0 }
+local bufclip_w, bufclip_h = -1, -1
+
+function Core.BeginBufferedClip(x, y, w, h, margin)
+    if bufclip_active then return false end   -- not nestable
+    x, y = floor(x), floor(y)
+    w, h = math.ceil(w), math.ceil(h)
+    if w <= 0 or h <= 0 then return false end
+    margin = margin or 64
+
+    -- Grow-only shared buffer sized to the window.
+    if gfx.w > bufclip_w or gfx.h > bufclip_h then
+        bufclip_w = max(gfx.w, bufclip_w)
+        bufclip_h = max(gfx.h, bufclip_h)
+        gfx.setimgdim(BUFCLIP_ID, 0, 0)  -- force a real clear (audit B9)
+        gfx.setimgdim(BUFCLIP_ID, bufclip_w, bufclip_h)
+    end
+
+    local b = bufclip_state
+    b.x, b.y, b.w, b.h = x, y, w, h
+    b.dest = gfx.dest
+    b.sx, b.sy = clip_x[clip_top], clip_y[clip_top]
+    b.sw, b.sh = clip_w[clip_top], clip_h[clip_top]
+    b.pushed = (clip_top == 0)
+
+    -- Hit-test rect: the TRUE region intersected with the enclosing clip.
+    -- The margin-expanded draw clip below must never leak into hit-testing
+    -- (widgets used to stay clickable up to `margin` px outside the region
+    -- while the blit visually cropped at the true edge).
+    local hx, hy, hw, hh = x, y, w, h
+    if clip_top > 0 then
+        local sx2, sy2 = b.sx + b.sw, b.sy + b.sh
+        if b.sx > hx then hw = hw - (b.sx - hx); hx = b.sx end
+        if b.sy > hy then hh = hh - (b.sy - hy); hy = b.sy end
+        if hx + hw > sx2 then hw = sx2 - hx end
+        if hy + hh > sy2 then hh = sy2 - hy end
+    end
+    b.hx, b.hy, b.hw, b.hh = hx, hy, hw, hh
+
+    bufclip_active = true
+    gfx.dest = BUFCLIP_ID
+
+    -- Replace the clip top with the expanded region (absolute — no
+    -- intersection with the container's own rect; the blit crops for real).
+    if clip_top == 0 then clip_top = 1 end
+    clip_x[clip_top] = x - margin
+    clip_y[clip_top] = y - margin
+    clip_w[clip_top] = w + margin * 2
+    clip_h[clip_top] = h + margin * 2
+    return true
+end
+
+function Core.EndBufferedClip()
+    if not bufclip_active then return end
+    local b = bufclip_state
+    bufclip_active = false
+
+    gfx.dest = b.dest or -1
+    if b.pushed then
+        clip_top = 0
+    else
+        clip_x[clip_top] = b.sx
+        clip_y[clip_top] = b.sy
+        clip_w[clip_top] = b.sw
+        clip_h[clip_top] = b.sh
+    end
+
+    gfx.a = 1
+    gfx.mode = 0
+    gfx.blit(BUFCLIP_ID, 1, 0, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h)
+end
+
 -- Returns true if a rect is at least partially visible in current clip.
 -- Inlined clip lookup + bounds intersection (no helper call in hot path).
 -- Audit B3: this used to demand FULL vertical containment (while allowing
@@ -907,7 +1010,13 @@ function Core.MouseInClippedRect(x, y, w, h)
         return false
     end
     local cx, cy, cw, ch
-    if clip_top > 0 then
+    if bufclip_active then
+        -- Buffered region: hit-test against the TRUE region rect, not the
+        -- margin-expanded draw clip (which exists only so DrawText doesn't
+        -- reject strings straddling the edges).
+        local b = bufclip_state
+        cx, cy, cw, ch = b.hx, b.hy, b.hw, b.hh
+    elseif clip_top > 0 then
         cx, cy, cw, ch = clip_x[clip_top], clip_y[clip_top], clip_w[clip_top], clip_h[clip_top]
     else
         cx, cy, cw, ch = 0, 0, state.win_w, state.win_h
@@ -1029,11 +1138,19 @@ function Core.SetFrameless()
 
     win_hwnd = hwnd
 
-    -- Remove frame: WS_POPUP style = no title bar, no border
+    -- Remove the frame: WS_POPUP = no title bar, no border. SetStyle only
+    -- changes the style bits — Windows keeps drawing (and hit-testing) the
+    -- old frame until a SetWindowPos with FRAMECHANGED recalculates the
+    -- non-client area. JS_Window_Resize never sets that flag (doc: NOMOVE,
+    -- NOZORDER, NOACTIVATE only), which is why frameless historically did
+    -- nothing. Keep the current screen position and size the now-borderless
+    -- window to the intended client size.
     reaper.JS_Window_SetStyle(hwnd, "POPUP")
-
-    -- Force resize to apply (gfx window might jump)
-    reaper.JS_Window_Resize(hwnd, init_w, init_h)
+    local ok, left, top = reaper.JS_Window_GetRect(hwnd)
+    if not ok then left, top = 0, 0 end
+    reaper.JS_Window_SetPosition(hwnd, left, top, init_w, init_h,
+                                 "TOP", "NOZORDER,NOACTIVATE,FRAMECHANGED")
+    gfx.update()  -- JS doc: required after resizing a script GUI
 
     is_frameless = true
     if Log then Log.Info("CORE", "Frameless mode enabled") end
@@ -1485,11 +1602,20 @@ end
 -- close latency low. Format: "dock,x,y,w,h" — undocked saves x/y/w/h, docked
 -- only saves dock.
 function Core.SaveWindowState(script_id)
-    local dock_state = gfx.dock(-1)
+    -- The gfx window is typically already destroyed when OnClose handlers
+    -- run (gfx.getchar() returned -1), and gfx.dock(-1) then reads back 0 —
+    -- silently forgetting a docked state (and which docker it was in).
+    -- Trust the per-frame cache; only query live if no frame ever ran.
+    local dock_state = state.dock
+    local wx, wy = state.win_sx, state.win_sy
+    local ww, wh = state.win_sw, state.win_sh
+    if dock_state == nil or ww == nil then
+        dock_state, wx, wy, ww, wh = gfx.dock(-1, 0, 0, 0, 0)
+    end
     local payload
-    if dock_state == 0 then
-        local _, wx, wy, ww, wh = gfx.dock(-1, 0, 0, 0, 0)
-        payload = string.format("%d,%d,%d,%d,%d", dock_state, wx, wy, ww, wh)
+    if (dock_state or 0) == 0 then
+        payload = string.format("0,%d,%d,%d,%d",
+                                wx or 0, wy or 0, ww or 0, wh or 0)
     else
         payload = tostring(dock_state)
     end
@@ -1888,7 +2014,12 @@ function Core.Run(loop_fn)
         state.char_consumed = false
         state.win_w = gfx.w
         state.win_h = gfx.h
-        state.dock = gfx.dock(-1)
+        do  -- cache dock + screen rect for SaveWindowState (see there)
+            local dk, dx, dy, dw, dh = gfx.dock(-1, 0, 0, 0, 0)
+            state.dock = dk
+            state.win_sx, state.win_sy = dx, dy
+            state.win_sw, state.win_sh = dw, dh
+        end
         state.frame = state.frame + 1
 
         -- Any user input on this frame → refresh momentum so follow-up events
@@ -1996,9 +2127,27 @@ function Core.Run(loop_fn)
         else
             -- Run user OnClose BEFORE gfx.quit() so it can still query
             -- gfx state (window position, dock, etc.)
-            if Core._on_close then Core._on_close() end
+            if Core._on_close and not Core._closed then
+                Core._closed = true
+                Core._on_close()
+            end
             gfx.quit()
         end
+    end
+
+    -- "Terminate instances" (relaunching an already-running action) kills
+    -- the defer chain without ever reaching the graceful-close branch above
+    -- — OnClose (dock persistence, config saves, cleanup) never ran on that
+    -- path. atexit fires on EVERY termination; the _closed guard makes a
+    -- normal close not dispatch twice.
+    if not Core._atexit_registered then
+        Core._atexit_registered = true
+        reaper.atexit(function()
+            if Core._on_close and not Core._closed then
+                Core._closed = true
+                pcall(Core._on_close)
+            end
+        end)
     end
 
     frame()

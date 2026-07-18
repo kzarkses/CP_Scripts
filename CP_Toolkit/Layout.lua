@@ -15,6 +15,53 @@ function Layout.Init(core)
 end
 
 -- ============================================================================
+-- SCROLL FEEL
+-- ============================================================================
+-- Pixels scrolled per mouse-wheel notch. gfx.mouse_wheel accumulates ±120
+-- per notch between defer ticks; scrolling is proportional to the
+-- accumulated delta, so fast spins cover real distance (a fixed per-frame
+-- step used to collapse any number of notches into a single 40px hop).
+Layout.SCROLL_STEP = 66  -- ≈ 3 rows of 22px (Windows "3 lines" convention)
+
+-- Notch-proportional wheel → pixel delta. High-resolution wheels report
+-- sub-120 deltas; those scroll fractionally instead of being rounded up.
+local function wheel_to_px(wheel, step)
+    return -(wheel / 120) * (step or Layout.SCROLL_STEP)
+end
+
+-- Middle-click drag pans a scrollable region (hand-tool style: the content
+-- follows the mouse). One pan id per container, built once and cached.
+-- Innermost region wins naturally: EndChild runs before the parent's
+-- End/EndChild, so the deepest hovered container claims Active first and
+-- ancestors see Active ~= nil.
+local function pan_update(c, data, hit_w, allow_v, allow_h)
+    local pan = data._pan_id
+    if not pan then
+        pan = "__pan:" .. c.id
+        data._pan_id = pan
+    end
+    if Core.IsActive(pan) then
+        if Core.MouseDown(64) then
+            local dx, dy = Core.MouseDelta()
+            if allow_v then data.scroll_y = data.scroll_y - dy end
+            if allow_h then data.scroll_x = (data.scroll_x or 0) - dx end
+            Core.SetCursor("size_all")
+        else
+            Core.ClearActive()
+        end
+        return
+    end
+    if (allow_v or allow_h)
+       and Core.MouseClicked(64)
+       and Core.GetState().active == nil
+       and not Core.HasPopup()
+       and Core.MouseInClippedRect(c.x, c.y, hit_w, c.h) then
+        Core.SetActive(pan)
+        Core.SetCursor("size_all")
+    end
+end
+
+-- ============================================================================
 -- CONTAINER DEFINITION
 -- ============================================================================
 -- A container tracks a rectangular region and a layout cursor within it.
@@ -145,18 +192,21 @@ function Layout.End()
         local data = Core.GetWidgetSubData("root", c.id)
         data.content_h = content_h
 
-        -- Scroll with mouse wheel when content overflows (skipped when no_scroll).
-        -- Notch-based step: one wheel tick scrolls by SCROLL_STEP pixels,
-        -- independent of platform wheel-delta magnitude.
-        if not c._no_scroll and content_h > c.h then
+        -- Scroll with mouse wheel when content overflows (skipped when
+        -- no_scroll). Notch-proportional: the accumulated wheel delta maps
+        -- to SCROLL_STEP pixels per notch (see wheel_to_px).
+        -- pan_update runs unconditionally: its release branch must fire even
+        -- when the content just shrank below overflow mid-drag, or the pan
+        -- capture would strand state.active.
+        local can_scroll = not c._no_scroll and content_h > c.h
+        pan_update(c, data, c.w, can_scroll, false)
+        if can_scroll then
             local state = Core.GetState()
             local scroll_range = content_h - c.h
             if not Core.HasPopup() and not Core.IsWheelConsumed() then
                 local wheel = state.mouse_wheel
                 if wheel ~= 0 then
-                    local SCROLL_STEP = 40  -- pixels per wheel notch
-                    local dir = wheel > 0 and -1 or 1
-                    data.scroll_y = data.scroll_y + dir * SCROLL_STEP
+                    data.scroll_y = data.scroll_y + wheel_to_px(wheel, c.scroll_step)
                 end
             end
             -- Re-clamp every frame (audit B22: a section collapse that
@@ -215,9 +265,28 @@ function Layout.BeginChild(id, w, h, opts)
     end
     data.scroll_x = data.scroll_x or 0
 
+    -- Scrollbar gutter: once content overflows (known from the previous
+    -- frame), the vertical bar becomes a RESERVED section on the right —
+    -- content width shrinks so rows and their hit-tests never sit under the
+    -- bar (no click-through, no overlap). Hysteresis: measured content_h
+    -- shrinks with the narrower width, so `<= h` is safe to release.
+    if scrollable then
+        local ch = data.content_h or 0
+        if data._gutter_on then
+            if ch <= h then data._gutter_on = false end
+        elseif ch > h then
+            data._gutter_on = true
+        end
+    else
+        data._gutter_on = false
+    end
+    local gutter = data._gutter_on and Layout.SCROLLBAR_GUTTER or 0
+
     local c = data.c
     if not c then c = {}; data.c = c end
-    fill_container(c, id, abs_x, abs_y, w, h, pad, pad, spacing, scrollable, scrollable_x)
+    fill_container(c, id, abs_x, abs_y, w - gutter, h, pad, pad, spacing, scrollable, scrollable_x)
+    c.gutter = gutter
+    c.scroll_step = opts.scroll_step  -- optional px-per-notch override
     c.scroll_y = data.scroll_y
     c.scroll_x = data.scroll_x
 
@@ -265,21 +334,24 @@ function Layout.EndChild()
     -- regular wheel scrolls vertically when scrollable is enabled.
     local has_v_scroll = c.scrollable   and content_h > c.h
     local has_h_scroll = c.scrollable_x and content_w > c.w
+    -- Unconditional: the pan release branch must fire even when content just
+    -- shrank below overflow mid-drag (else state.active would be stranded).
+    pan_update(c, data, c.w + (c.gutter or 0), has_v_scroll, has_h_scroll)
     if (has_v_scroll or has_h_scroll) then
         local state = Core.GetState()
         -- Clipped hit-test (audit B21: a child partially scrolled out of an
-        -- ancestor used to keep an invisible wheel/click zone alive)
-        if Core.MouseInClippedRect(c.x, c.y, c.w, c.h) and not Core.HasPopup() and not Core.IsWheelConsumed() then
+        -- ancestor used to keep an invisible wheel/click zone alive).
+        -- Includes the scrollbar gutter (wheel works over the bar too).
+        if Core.MouseInClippedRect(c.x, c.y, c.w + (c.gutter or 0), c.h) and not Core.HasPopup() and not Core.IsWheelConsumed() then
             local wheel = state.mouse_wheel
             if wheel ~= 0 then
-                local SCROLL_STEP = 40
-                local dir = wheel > 0 and -1 or 1
+                local px = wheel_to_px(wheel, c.scroll_step)
                 local horizontal = Core.ModShift() and has_h_scroll
                 if has_v_scroll and not horizontal then
-                    data.scroll_y = data.scroll_y + dir * SCROLL_STEP
+                    data.scroll_y = data.scroll_y + px
                     Core.ConsumeWheel()
                 elseif has_h_scroll then
-                    data.scroll_x = data.scroll_x + dir * SCROLL_STEP
+                    data.scroll_x = data.scroll_x + px
                     Core.ConsumeWheel()
                 end
             end
@@ -303,60 +375,148 @@ function Layout.EndChild()
     Core.PopClipRect()
     Core.PopContainer()
 
-    -- Advance parent cursor
+    -- Advance parent cursor by the child's REAL footprint: c.w was reduced
+    -- by the reserved scrollbar gutter, but the border/background/bar still
+    -- occupy the requested width — advancing the reduced width made
+    -- SameLine siblings overlap the gutter and shift with the hysteresis.
     local parent = Core.CurrentContainer()
     if parent then
-        Layout._AdvanceCursor(parent, c.w, c.h)
+        Layout._AdvanceCursor(parent, c.w + (c.gutter or 0), c.h)
     end
 end
 
 -- ============================================================================
 -- SCROLLBAR
 -- ============================================================================
-function Layout._DrawScrollbar(c, data)
-    local bar_w = 6
-    local bar_x = c.x + c.w - bar_w - 2
-    local bar_y = c.y + 2
-    local bar_h = c.h - 4
+-- Gutter width reserved by BeginChild once content overflows (the bar is a
+-- separate SECTION, not an overlay — its clicks never reach the content).
+Layout.SCROLLBAR_GUTTER = 13
 
+-- Vertical scrollbar. With a reserved gutter (c.gutter > 0) it is a classic
+-- bar: arrow buttons, page-jump track, draggable thumb. Without one (first
+-- overflow frame, or the root window) it falls back to the thin overlay —
+-- but even then it claims clicks so nothing behind reacts.
+function Layout._DrawScrollbar(c, data)
+    local gutter = c.gutter or 0
+    local overlay = gutter <= 0
+    local bar_w, bar_x, bar_y, bar_h, arrow_h
+
+    if overlay then
+        bar_w   = 6
+        bar_x   = c.x + c.w - bar_w - 2
+        arrow_h = 0
+        bar_y   = c.y + 2
+        bar_h   = c.h - 4
+    else
+        bar_w   = gutter - 3
+        bar_x   = c.x + c.w + 1          -- gutter starts after content width
+        arrow_h = min(gutter + 1, floor(c.h / 3))
+        bar_y   = c.y + arrow_h
+        bar_h   = c.h - arrow_h * 2
+    end
+
+    local scroll_range  = data.content_h - c.h
     local visible_ratio = c.h / data.content_h
-    local thumb_h = max(20, bar_h * visible_ratio)
-    -- Same range as the wheel handlers (audit B22)
-    local scroll_range = data.content_h - c.h
+    local thumb_h = max(16, bar_h * visible_ratio)
     local scroll_ratio = scroll_range > 0 and (data.scroll_y / scroll_range) or 0
     local thumb_y = bar_y + (bar_h - thumb_h) * scroll_ratio
 
-    -- Track background
-    Core.DrawRect(bar_x, bar_y, bar_w, bar_h, 0.2, 0.2, 0.2, 0.3)
+    -- Gutter + track background
+    if not overlay then
+        Core.DrawRect(c.x + c.w, c.y, gutter, c.h, 0.13, 0.13, 0.13, 1)
+    end
+    Core.DrawRect(bar_x, bar_y, bar_w, bar_h, 0.2, 0.2, 0.2, overlay and 0.3 or 1)
 
-    -- Thumb (clipped hit-test — audit B21; drag id cached — audit P9)
-    local hover = Core.MouseInClippedRect(bar_x - 2, thumb_y, bar_w + 4, thumb_h)
     local drag_id = data._sb_id
     if not drag_id then
         drag_id = "scrollbar_" .. c.id
         data._sb_id = drag_id
     end
+    local active = Core.IsActive(drag_id)
+    local mode = data._sb_mode
 
-    if hover or Core.IsActive(drag_id) then
+    -- Thumb (clipped hit-test — audit B21; drag id cached — audit P9)
+    local hover_thumb = Core.MouseInClippedRect(bar_x - 2, thumb_y, bar_w + 4, thumb_h)
+    if hover_thumb or (active and mode == "thumb") then
         Core.DrawRect(bar_x, thumb_y, bar_w, thumb_h, 0.5, 0.5, 0.5, 0.7)
     else
         Core.DrawRect(bar_x, thumb_y, bar_w, thumb_h, 0.4, 0.4, 0.4, 0.5)
     end
 
-    -- Drag scrollbar thumb
-    if hover and Core.MouseClicked(1) then
-        Core.SetActive(drag_id)
+    -- Arrow buttons (gutter mode only)
+    local hover_up, hover_down = false, false
+    if not overlay then
+        hover_up   = Core.MouseInClippedRect(bar_x, c.y, bar_w, arrow_h)
+        hover_down = Core.MouseInClippedRect(bar_x, c.y + c.h - arrow_h, bar_w, arrow_h)
+        local mx = bar_x + bar_w / 2
+        local aw = min(bar_w - 3, 7)
+        local ah = aw * 0.6
+        local g = (hover_up or (active and mode == "up")) and 0.75 or 0.5
+        gfx.set(g, g, g, 1)
+        local uy = c.y + arrow_h / 2
+        gfx.triangle(mx, uy - ah / 2, mx - aw / 2, uy + ah / 2, mx + aw / 2, uy + ah / 2)
+        g = (hover_down or (active and mode == "down")) and 0.75 or 0.5
+        gfx.set(g, g, g, 1)
+        local dy = c.y + c.h - arrow_h / 2
+        gfx.triangle(mx, dy + ah / 2, mx - aw / 2, dy - ah / 2, mx + aw / 2, dy - ah / 2)
     end
+
+    -- Press: claim the interaction so nothing behind the bar reacts — but
+    -- never steal a press a widget already claimed earlier this frame. In
+    -- overlay mode (root windows / first overflow frame) the bar sits ON
+    -- TOP of content, so only the thumb itself is interactive; track
+    -- page-clicks and arrows are gutter-mode only (a full-height overlay
+    -- track claim used to convert clicks on underlying widgets into
+    -- page-jumps).
+    if Core.MouseClicked(1) and not Core.HasPopup()
+       and Core.GetState().active == nil then
+        if hover_thumb then
+            Core.SetActive(drag_id)
+            data._sb_mode = "thumb"
+        elseif not overlay then
+            if hover_up or hover_down then
+                Core.SetActive(drag_id)
+                data._sb_mode = hover_up and "up" or "down"
+                data._sb_next = -1  -- fire immediately, then repeat
+            elseif Core.MouseInClippedRect(bar_x, bar_y, bar_w + 2, bar_h) then
+                -- Track click: page toward the click (and swallow it).
+                Core.SetActive(drag_id)
+                data._sb_mode = "page"
+                local _, my = Core.GetMousePos()
+                local page = c.h * 0.9
+                if my < thumb_y then
+                    data.scroll_y = max(0, data.scroll_y - page)
+                else
+                    data.scroll_y = min(scroll_range, data.scroll_y + page)
+                end
+            end
+        end
+    end
+
     if Core.IsActive(drag_id) then
         if Core.MouseDown(1) then
-            local _, dy = Core.MouseDelta()
-            if dy ~= 0 and bar_h > thumb_h then
-                local scroll_per_pixel = scroll_range / (bar_h - thumb_h)
-                data.scroll_y = data.scroll_y + dy * scroll_per_pixel
-                data.scroll_y = max(0, min(data.scroll_y, scroll_range))
+            mode = data._sb_mode
+            if mode == "thumb" then
+                local _, dy = Core.MouseDelta()
+                if dy ~= 0 and bar_h > thumb_h then
+                    local scroll_per_pixel = scroll_range / (bar_h - thumb_h)
+                    data.scroll_y = data.scroll_y + dy * scroll_per_pixel
+                    data.scroll_y = max(0, min(data.scroll_y, scroll_range))
+                end
+            elseif mode == "up" or mode == "down" then
+                -- Arrow autorepeat: instant step, 0.35 s delay, then 20 Hz.
+                local now = reaper.time_precise()
+                local due = data._sb_next
+                if due == -1 or now >= due then
+                    local step = (mode == "up") and -40 or 40
+                    data.scroll_y = max(0, min(data.scroll_y + step, scroll_range))
+                    data._sb_next = now + (due == -1 and 0.35 or 0.05)
+                end
+                Core.RequestRedraw()  -- keep repeating while held
             end
         else
             Core.ClearActive()
+            data._sb_mode = nil
         end
     end
 end
@@ -471,10 +631,13 @@ end
 function Layout.NewLine()
     local c = Core.CurrentContainer()
     if not c then return end
-    -- Flush pending SameLine row
+    -- Flush pending SameLine row. max_row_h must reset here: the second
+    -- advance below used to re-add the full row height, so closing a
+    -- SameLine row with NewLine cost TWO row heights of dead space.
     if c.sameline_pending then
         c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
         c.sameline_pending = false
+        c.max_row_h = 0
     end
     c.cursor_y = c.cursor_y + c.max_row_h + c.spacing
     c.cursor_x = c.pad_x + c.indent_x
