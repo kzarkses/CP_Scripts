@@ -42,16 +42,24 @@ start/end offsets — no slice files), **Sel to pad**.
 | Input | Action |
 |---|---|
 | click empty cell | insert a note in the cell under the cursor (grid length, current velocity) and drag it |
-| drag a note | move (grid snap; **Ctrl = free**) |
+| drag a note | move (grid snap; **Ctrl = free**) — moves the whole selection if several are selected |
 | drag the right edge | resize |
-| right-click / right-drag | delete / eraser |
+| **right-drag** | **marquee multi-select** (Shift = add to selection) |
+| right-click on a note | delete it |
+| click a piano key / drum-row header | select the whole row (that pitch) |
 | **Ctrl+Shift+Wheel** on a note | **subdivide** the run: ×2 up, ÷2 down (1 → 2 → 4 → 8… fills the same span — trap rolls) |
-| velocity lane (bottom) | drag a note's bar |
-| Q | quantize (selected note, else all) |
-| Delete | delete the selected note |
-| arrows | transpose / nudge the selected note |
+| velocity lane (bottom) | drag a note's bar (whole selection if multi-selected) |
+| Q | quantize (selection, else all) |
+| Ctrl+A | select all · Delete | delete the selection |
+| arrows | transpose (Up/Down) / nudge (Left/Right) the selection |
 | Space | REAPER transport — the item plays in context |
 | Native editor | escape hatch: opens the built-in MIDI editor |
+
+**Top ruler strip**: click to move the edit cursor, drag to set a time
+selection (both drive REAPER's transport, so Space plays from there).
+The left lane is a **piano keyboard** in melodic mode (black/white keys,
+C rows labelled) or the **named pad rows** in drum mode — click either
+to select the whole row.
 
 The **Grid** button in the toolbar sets the editor's snap division
 (1/1…1/64, triplets) or follows the project grid. Snap toggles

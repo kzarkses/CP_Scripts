@@ -124,8 +124,9 @@ UI.NumberInput(id, label, value, min, max, opts)
 
 -- Knob (rotary). Returns: changed, new_value (0-1)
 UI.Knob(id, label, value, default_value, opts)
-    -- opts: {size=40, sensitivity=0.004}
-    -- Double-click to reset to default
+    -- opts: {size=40, sensitivity=0.004, wheel_step=0.05}
+    -- Double-click to reset to default; mouse wheel steps the value
+    -- (Ctrl = fine, ×0.25). Combo also cycles its selection on wheel.
 
 -- ModKnob (knob + modulation overlay, Bitwig-style).
 -- Returns: base_changed, new_base, depth_changed, new_depth

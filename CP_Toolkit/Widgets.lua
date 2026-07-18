@@ -1167,6 +1167,21 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
         Core.SetHot(id)
     end
 
+    -- Mouse wheel cycles the selection without opening the popup (wheel up
+    -- = previous, down = next). Consumed so the parent doesn't scroll too.
+    if hovered and #items > 1 and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            local ni = current_index - wheel_notches(wheel)
+            if ni < 1 then ni = 1 elseif ni > #items then ni = #items end
+            if ni ~= current_index then
+                selected = ni
+                changed = true
+            end
+            Core.ConsumeWheel()
+        end
+    end
+
     -- Toggle popup on click
     if hovered and Core.MouseClicked(1) then
         if Log then Log.Popup("Combo opening: " .. id, string.format("pos=(%.0f,%.0f) items=%d", cx, cy, #items)) end
@@ -1654,6 +1669,18 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
     if hovered and Core.MouseDoubleClicked() then
         new_value = default_value or 0.5
         changed = true
+    end
+
+    -- Mouse wheel: one notch = a small step of the 0..1 range (Ctrl = fine).
+    -- Consumed so the parent container doesn't scroll the same tick.
+    if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            local step = (opts.wheel_step or 0.05) * (Core.ModCtrl() and 0.25 or 1)
+            new_value = max(0, min(1, value + wheel_notches(wheel) * step))
+            if new_value ~= value then changed = true end
+            Core.ConsumeWheel()
+        end
     end
 
     -- Cursor
