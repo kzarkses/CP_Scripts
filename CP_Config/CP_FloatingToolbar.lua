@@ -13,46 +13,30 @@ return {
           native_icon = "AI_Other_Sign_Question_Information_Alt_DF.png"
         },
         {
-          command_id = "_RS589684ffe32e7bdfb7540aea4ed99b44d625f577",
-          native_icon = "toolbar_tool_brush_paint.png"
-        },
-        {
-          command_id = "_RS569358e94d11743e7c8c61b2fdbd181f27e57e3d",
-          native_icon = "toolbar_theme_tweak-configuration_window.png"
-        },
-        {
-          command_id = "_RSbb5a357eb5934b878a8602e475cc69e3f53a6559",
-          native_icon = "CP_VideoKit_Inspector.png"
-        },
-        {
-          command_id = "_RS89282c1ec09494a5adfb9ac8e61331099acebb63",
-          native_icon = "CP_VideoKit_Modules.png"
-        },
-        {
           command_id = "_RSa47e58056071ba82b7387573680bc79e40318e70",
           native_icon = "AI_Function_Settings_Preferences_DF.png"
         },
         {
-          command_id = "_RS669e329908d211113ee1a48fa3f60701d10132b2",
-          native_icon = "AI_Function_Stereo_DF.png"
-        },
-        {
-          command_id = "_RS1205701e2cb7da9fb404435c9ce5158b1877476b",
-          native_icon = "00 - Toggle Spectral Peaks.png"
-        },
-        {
-          command_id = "_RSe7d701bc5dbac6fff525b296bc0814ccac32f231",
-          native_icon = "toolbar_envelope_LFO_generator_and_shaper.png"
-        },
-        {
           command_id = "_RSdbf64708ea8abea46b82a08cabc050148d65176c",
           native_icon = "AI_Function_Sample_View_Show_SampleTrack_Waveform_DF.png"
+        },
+        {
+          command_id = "_RS2e67a348c8382da59ab536761470db4660a13c60",
+          native_icon = "00 - Chord Display.png"
+        },
+        {
+          command_id = "_RSee65833abf297ade2151045331df05293a293ef3",
+          native_icon = "AI_Device_Drum_Pads_Alt_DF.png"
+        },
+        {
+          command_id = "_RS7849129836a92a137f75a8deaaca35c9a3700368",
+          native_icon = "AI_Function_Edit_Alt1_DF.png"
         }
       },
       anchor = {
         auto_hide_min_width = 1800,
         hide_when_target_hidden = false,
-        offset_x = 337,
+        offset_x = 309,
         offset_y = 4,
         snap = "left",
         target = "transport",
@@ -73,7 +57,7 @@ return {
         direction = "horizontal",
         icon_size = 30,
         padding = 0,
-        spacing = 0
+        spacing = 1
       },
       name = "Default"
     },
