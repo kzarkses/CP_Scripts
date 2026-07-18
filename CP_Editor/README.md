@@ -56,11 +56,18 @@ start/end offsets — no slice files), **Sel to pad**.
 | Space | REAPER transport — the item plays in context |
 | Native editor | escape hatch: opens the built-in MIDI editor |
 
-**Top ruler strip**: click to move the edit cursor, drag to set a time
-selection — both snap to the grid (Ctrl = free) and drive REAPER's
-transport, so Space plays from there. The left lane is a **piano
-keyboard** in melodic mode (black/white keys, C rows labelled) or the
-**named pad rows** in drum mode.
+**Top ruler strip** (real handles): click empty space to move the edit
+cursor, drag to make a time selection; then **grab an edge** of the time
+selection to resize it, its **body** to move it, or the **edit-cursor
+flag** to drag it. All snap to the grid (Ctrl = free) and drive REAPER's
+transport, so Space plays from there. The cursor shape reacts as you
+hover a handle. The left lane is a **piano keyboard** in melodic mode
+(black/white keys, C rows labelled) or the **named pad rows** in drum
+mode.
+
+The controls are grouped into labelled clusters (SHAPE / PROCESS,
+SLICE / SEND, GRID / VIEW / EDIT) separated by dividers — so where to go
+is visual, not a flat row.
 
 The **Grid** button sets the editor's snap division (1/1…1/64, triplets)
 or follows the project grid; **Note names** draws each note's name

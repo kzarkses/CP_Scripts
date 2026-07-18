@@ -459,6 +459,36 @@ local function iconBtn(id, icon_fn, tip, size)
     return clicked
 end
 
+-- Section tag: a small labelled marker that opens a cluster of controls on
+-- the same row — the visual grouping the flat rows were missing. Drawn as
+-- a caption in the (dim) accent colour, vertically centred to the button
+-- row so it reads as a group header, not a widget.
+local GAP_GROUP = 18   -- gap between logical clusters on one row
+local function rowTag(theme, text)
+    local x, y = UI.GetCursorPos()
+    local c = theme.colors.accent_dim or theme.colors.text_mute
+                or theme.colors.text_disabled
+    UI.SetFontCaption()
+    local _, th = Core_tk.MeasureText(text)
+    Core_tk.DrawText(text, x, y + math.floor((theme.button_height - th) / 2),
+                     c[1], c[2], c[3], 0.9)
+    local tw = Core_tk.MeasureText(text)
+    UI.SetFontBody()
+    UI.Layout.AdvanceCursor(tw, theme.button_height)
+    UI.SameLine(8)
+end
+
+-- Thin vertical divider between two clusters on the same row.
+local function rowDiv(theme)
+    UI.SameLine(GAP_GROUP * 0.5)
+    local x, y = UI.GetCursorPos()
+    local c = theme.colors.border
+    Core_tk.DrawRect(x, y + 3, 1, theme.button_height - 6,
+                     c[1], c[2], c[3], (c[4] or 1) * 0.7)
+    UI.Layout.AdvanceCursor(1, theme.button_height)
+    UI.SameLine(GAP_GROUP * 0.5)
+end
+
 local function openSettings()
     local function normItem(db)
         return { label = db == 0 and "0 dBFS" or (db .. " dBFS"),
@@ -545,7 +575,8 @@ local function drawOpsRow(theme)
         return
     end
 
-    -- gain / pitch / rate — live take values, event-driven writes
+    -- SHAPE cluster: the take-property tweaks (gain / pitch / rate)
+    rowTag(theme, "SHAPE")
     local db = Ops.VolDB(state.take)
     local changed, ndb = UI.NumberInput("op_gain", "Gain dB", db, -60, 24, NUM_W)
     if changed then Ops.SetVolDB(state.item, state.take, ndb) end
@@ -560,7 +591,9 @@ local function drawOpsRow(theme)
     local rch, nrate = UI.NumberInput("op_rate", "Rate", rate, 0.25, 4, NUM_R)
     if rch then Ops.SetRate(state.item, state.take, nrate, true) end
 
-    UI.SameLine()
+    -- PROCESS cluster: the one-shot operations
+    rowDiv(theme)
+    rowTag(theme, "PROCESS")
     if UI.Button("op_norm", "Normalize") then
         local a, b = targetRegion()
         if state.sel_a then a, b = state.sel_a, state.sel_b end
@@ -584,6 +617,8 @@ local function drawOpsRow(theme)
 end
 
 local function drawSliceRow(theme)
+    -- SLICE cluster: transient detection + what to do with the slices
+    rowTag(theme, "SLICE")
     local sch, nsens = UI.SliderDouble("sl_sens", "Sens", state.sens, 0, 1, SENS_OPTS)
     if sch then
         state.sens = nsens
@@ -596,7 +631,11 @@ local function drawSliceRow(theme)
     if UI.Button("sl_clear", "Clear") then clearMarkers() end
     UI.SameLine()
     if UI.Button("sl_split", "Split item") then splitAtMarkers() end
-    UI.SameLine()
+    UI.EndDisabled()
+
+    rowDiv(theme)
+    rowTag(theme, "SEND")
+    UI.BeginDisabled(#state.markers == 0)
     if UI.Button("sl_pads", "Slices to pads") then slicesToPads() end
     UI.EndDisabled()
     UI.SameLine()
@@ -727,6 +766,21 @@ local function waveInput(theme)
         end
     end
 
+    -- hover affordance: cursor reacts to the fade handles + selection edges
+    -- (skipped mid-pan so the middle-drag size_all cursor wins)
+    if inside and not state.wpress and not Core_tk.MouseDown(64) then
+        local fin_x, fout_x = fadeHandles()
+        if (fin_x and my < wave.ry + 14 and math.abs(mx - fin_x) < 7)
+           or (fout_x and my < wave.ry + 14 and math.abs(mx - fout_x) < 7) then
+            UI.SetCursor("size_we")
+        elseif state.sel_a and (math.abs(mx - xAtTime(state.sel_a)) <= 5
+               or math.abs(mx - xAtTime(state.sel_b)) <= 5) then
+            UI.SetCursor("size_we")
+        else
+            UI.SetCursor("ibeam")   -- the waveform body selects text-style
+        end
+    end
+
     -- press: fade handles first, then selection
     if inside and Core_tk.MouseClicked(1) then
         local fin_x, fout_x = fadeHandles()
@@ -764,6 +818,7 @@ local function waveInput(theme)
                     if f < 0 then f = 0 end
                     Ops.SetFades(state.item, nil, f)
                 end
+                UI.SetCursor("size_we")
             end
         else
             -- release
@@ -1110,17 +1165,21 @@ end
 local VEL_OPTS = { step = 1, format = "%.0f", width = 56 }
 
 local function drawMidiBar(theme)
+    -- GRID cluster: snapping + grid division
+    rowTag(theme, "GRID")
     local stog, son = UI.Checkbox("m_snap", "Snap", opts.midi_snap)
     if stog then
         opts.midi_snap = son
         markDirty()
     end
     UI.SameLine()
-    -- grid picker (project grid by default, or a fixed division)
     if UI.Button("m_grid", gridLabel()) then
         gridMenu()
     end
-    UI.SameLine()
+
+    -- VIEW cluster: how the roll is displayed
+    rowDiv(theme)
+    rowTag(theme, "VIEW")
     local rows = rollRows()
     local dtog, don = UI.Checkbox("m_drum", "Drum rows", rows.drum)
     if dtog then
@@ -1133,7 +1192,10 @@ local function drawMidiBar(theme)
         opts.note_names = non
         markDirty()
     end
-    UI.SameLine()
+
+    -- EDIT cluster: default velocity + quantize + native escape hatch
+    rowDiv(theme)
+    rowTag(theme, "EDIT")
     local vch, nv = UI.NumberInput("m_vel", "Vel", state.last_vel, 1, 127, VEL_OPTS)
     if vch then
         state.last_vel = math.floor(nv + 0.5)
@@ -1145,7 +1207,7 @@ local function drawMidiBar(theme)
         flash(n .. " notes quantized" .. (Roll.sel and " (selected)" or ""))
     end
     UI.SameLine()
-    if UI.Button("m_native", "Native editor") then
+    if UI.Button("m_native", "Native") then
         r.SelectAllMediaItems(0, false)
         r.SetMediaItemSelected(state.item, true)
         r.Main_OnCommand(40153, 0)   -- Item: open in built-in MIDI editor
@@ -1264,24 +1326,73 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local pos = itemPos()
     local add = Core_tk.ModShift()   -- additive selection
 
-    -- ruler strip (top): click = move edit cursor, drag = time selection.
-    -- Grid-snapped (Ctrl = free), so cursor and range land on the grid.
+    -- ruler strip (top): real handles. Grab a time-selection EDGE to
+    -- resize, its BODY to move it, the edit-cursor flag to drag it; an
+    -- empty click sets the cursor, an empty drag makes a new selection.
+    -- Grid-snapped unless Ctrl.
     local rfree = Core_tk.ModCtrl()
+    local ts_a, ts_b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+    local has_ts = ts_b > ts_a + 0.0001
+    local tsa = has_ts and (ts_a - pos) or nil
+    local tsb = has_ts and (ts_b - pos) or nil
+    local ecur = r.GetCursorPosition() - pos
+    -- hover affordance (cursor shape) over grabbable ruler handles
+    if in_ruler and not state.ruler_drag then
+        if (tsa and math.abs(mx - xAtTime(tsa)) <= 6)
+           or (tsb and math.abs(mx - xAtTime(tsb)) <= 6) then
+            UI.SetCursor("size_we")
+        elseif tsa and tsb and mx > xAtTime(tsa) and mx < xAtTime(tsb) then
+            UI.SetCursor("size_all")
+        elseif math.abs(mx - xAtTime(ecur)) <= 5 then
+            UI.SetCursor("size_we")
+        end
+    end
     if in_ruler and Core_tk.MouseClicked(1) then
-        local st = rfree and t or midiSnap(t)
-        state.ruler_drag = { t0 = st }
-        r.SetEditCurPos(pos + math.max(0, st), false, false)
-        r.GetSet_LoopTimeRange(true, false, 0, 0, false)  -- clear
+        if tsa and math.abs(mx - xAtTime(tsa)) <= 6 then
+            state.ruler_drag = { mode = "resize_a", anchor = tsb }
+        elseif tsb and math.abs(mx - xAtTime(tsb)) <= 6 then
+            state.ruler_drag = { mode = "resize_b", anchor = tsa }
+        elseif tsa and tsb and mx > xAtTime(tsa) and mx < xAtTime(tsb) then
+            state.ruler_drag = { mode = "move", grab = t - tsa, len = tsb - tsa }
+        elseif math.abs(mx - xAtTime(ecur)) <= 5 then
+            state.ruler_drag = { mode = "cursor" }
+        else
+            local st = rfree and t or midiSnap(t)
+            state.ruler_drag = { mode = "new", t0 = st }
+            r.SetEditCurPos(pos + math.max(0, st), false, false)
+            r.GetSet_LoopTimeRange(true, false, 0, 0, false)  -- clear
+        end
     end
     if state.ruler_drag then
+        local rd = state.ruler_drag
         if Core_tk.MouseDown(1) then
             local ct = rfree and t or midiSnap(t)
-            local a = math.min(state.ruler_drag.t0, ct)
-            local b = math.max(state.ruler_drag.t0, ct)
-            if b - a > 0.001 then
+            if ct < 0 then ct = 0 end
+            if rd.mode == "cursor" then
+                r.SetEditCurPos(pos + ct, false, false)
+            elseif rd.mode == "new" then
+                local a = math.min(rd.t0, ct)
+                local b = math.max(rd.t0, ct)
+                if b - a > 0.001 then
+                    r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
+                end
+            elseif rd.mode == "resize_a" then
+                local a = math.min(ct, rd.anchor)
+                local b = math.max(ct, rd.anchor)
                 r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
+            elseif rd.mode == "resize_b" then
+                local a = math.min(rd.anchor, ct)
+                local b = math.max(rd.anchor, ct)
+                r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
+            elseif rd.mode == "move" then
+                -- snap the RESULT, not the grab point (like note-move) — else
+                -- the sub-grid grab offset lands the range off-grid
+                local na = t - rd.grab
+                if not rfree then na = midiSnap(na) end
+                if na < 0 then na = 0 end
+                r.GetSet_LoopTimeRange(true, false, pos + na, pos + na + rd.len, false)
             end
-            UI.SetCursor("size_we")
+            UI.SetCursor(rd.mode == "move" and "size_all" or "size_we")
         else
             state.ruler_drag = nil
         end
@@ -1290,6 +1401,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     -- labels lane (piano key / drum header): left-click selects the whole
     -- pitch row, right-click auditions the note (play the pad / key).
     if in_lane and pitch then
+        UI.SetCursor("hand")
         if Core_tk.MouseClicked(1) then
             Roll.SelectPitch(pitch, add)
             state.row_hi = pitch
@@ -1494,11 +1606,19 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         end
     end
 
-    -- hover cursor hint (resize zone)
-    if in_grid and not state.mdrag and pitch then
+    -- hover affordance: edge = resize, note body = move, empty = insert
+    -- (skipped mid-pan so the middle-drag size_all cursor wins)
+    if in_grid and not state.mdrag and not state.marquee and pitch
+       and not Core_tk.MouseDown(64) then
         local idx = Roll.At(t, pitch)
-        if idx and mx > xAtTime(Roll.starts[idx] + Roll.lens[idx]) - 6 then
-            UI.SetCursor("size_we")
+        if idx then
+            if mx > xAtTime(Roll.starts[idx] + Roll.lens[idx]) - 6 then
+                UI.SetCursor("size_we")
+            else
+                UI.SetCursor("size_all")
+            end
+        else
+            UI.SetCursor("cross")
         end
     end
 end
@@ -1641,31 +1761,43 @@ local function drawRoll(theme, area_h)
         end
     end
 
-    -- time selection (native loop/time range) painted over the grid + ruler
+    -- time selection (native loop/time range) painted over the grid + ruler,
+    -- with grab handles (notches) at both edges in the ruler strip
     local ts_a, ts_b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
     if ts_b > ts_a then
         local pos = itemPos()
-        local xa = xAtTime(ts_a - pos)
-        local xb = xAtTime(ts_b - pos)
+        local xaf = xAtTime(ts_a - pos)   -- true edge x (unclamped, for handles)
+        local xbf = xAtTime(ts_b - pos)
+        local xa = math.max(xaf, wave.x)
+        local xb = math.min(xbf, wave.x + wave.w)
         if xb > wave.x and xa < wave.x + wave.w then
-            xa = math.max(xa, wave.x)
-            xb = math.min(xb, wave.x + wave.w)
             Core_tk.DrawRect(xa, gy, xb - xa, RULER_H + grid_h,
                              col_acc[1], col_acc[2], col_acc[3], 0.12)
             Core_tk.DrawRect(xa, gy, 1, RULER_H + grid_h,
                              col_acc[1], col_acc[2], col_acc[3], 0.7)
             Core_tk.DrawRect(xb, gy, 1, RULER_H + grid_h,
                              col_acc[1], col_acc[2], col_acc[3], 0.7)
+            -- edge handles in the ruler (only if the edge is actually visible)
+            if xaf >= wave.x then
+                Core_tk.DrawRect(xaf, gy, 4, RULER_H,
+                                 col_acc[1], col_acc[2], col_acc[3], 0.9)
+            end
+            if xbf <= wave.x + wave.w then
+                Core_tk.DrawRect(xbf - 4, gy, 4, RULER_H,
+                                 col_acc[1], col_acc[2], col_acc[3], 0.9)
+            end
         end
     end
 
-    -- edit cursor
+    -- edit cursor + a small flag handle at the top (grabbable)
     do
         local ec = r.GetCursorPosition() - itemPos()
         if ec >= state.t0 and ec <= state.t1 then
             local x = xAtTime(ec)
             Core_tk.DrawRect(x, gy, 1, RULER_H + grid_h,
-                             col_text[1], col_text[2], col_text[3], 0.5)
+                             col_text[1], col_text[2], col_text[3], 0.6)
+            UI.DrawTriangle(x - 4, gy, x + 4, gy, x, gy + 6,
+                            col_text[1], col_text[2], col_text[3], 0.9)
         end
     end
 
@@ -1780,10 +1912,15 @@ local function frame(theme)
 
     UI.SetWindowPadding(theme.pad_large or 10)
     drawToolbar(theme)
+    -- zone rule: separate the action bar from the control clusters
+    UI.Spacing(2)
+    UI.Separator()
+    UI.Spacing(2)
     if state.mode == "midi" then
         drawMidiBar(theme)
     else
         drawOpsRow(theme)
+        UI.Spacing(3)
         drawSliceRow(theme)
     end
 
