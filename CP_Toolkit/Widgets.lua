@@ -1676,7 +1676,7 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
     if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
         local wheel = Core.GetState().mouse_wheel
         if wheel ~= 0 then
-            local step = (opts.wheel_step or 0.05) * (Core.ModCtrl() and 0.25 or 1)
+            local step = (opts.wheel_step or 0.02) * (Core.ModCtrl() and 0.25 or 1)
             new_value = max(0, min(1, value + wheel_notches(wheel) * step))
             if new_value ~= value then changed = true end
             Core.ConsumeWheel()

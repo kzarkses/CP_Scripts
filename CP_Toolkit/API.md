@@ -124,7 +124,7 @@ UI.NumberInput(id, label, value, min, max, opts)
 
 -- Knob (rotary). Returns: changed, new_value (0-1)
 UI.Knob(id, label, value, default_value, opts)
-    -- opts: {size=40, sensitivity=0.004, wheel_step=0.05}
+    -- opts: {size=40, sensitivity=0.004, wheel_step=0.02}
     -- Double-click to reset to default; mouse wheel steps the value
     -- (Ctrl = fine, ×0.25). Combo also cycles its selection on wheel.
 

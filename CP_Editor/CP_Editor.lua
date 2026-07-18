@@ -51,6 +51,7 @@ local opts = {
     norm_db   = cfg.norm_db or 0,         -- normalize target
     midi_snap = cfg.midi_snap ~= false,   -- piano roll: snap to the grid
     grid_div  = cfg.grid_div,             -- editor grid (whole notes), nil = project
+    note_names = cfg.note_names == true,  -- draw note names inside notes
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -103,6 +104,8 @@ local function persistConfig()
     cfg.vol       = Audio.volume
     cfg.midi_snap = opts.midi_snap
     cfg.last_vel  = state.last_vel
+    cfg.grid_div  = opts.grid_div
+    cfg.note_names = opts.note_names
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -347,6 +350,18 @@ local function togglePlay()
     end
     PLAY_OPTS.start_s = state.sel_a or state.cursor
     PLAY_OPTS.end_s   = state.sel_b
+    -- Reflect the take's non-destructive edits so the preview SOUNDS like
+    -- the item (gain/normalize, pitch, rate) — playing the raw file
+    -- otherwise ignores every edit.
+    PLAY_OPTS.vol, PLAY_OPTS.pitch, PLAY_OPTS.rate = nil, nil, nil
+    if state.mode == "item" and state.take then
+        local v = r.GetMediaItemTakeInfo_Value(state.take, "D_VOL")
+        -- compose take gain WITH the user's preview-volume setting (an OR in
+        -- Audio.Play would otherwise let take gain replace the monitor level)
+        PLAY_OPTS.vol   = Audio.volume * math.abs(v)
+        PLAY_OPTS.pitch = r.GetMediaItemTakeInfo_Value(state.take, "D_PITCH")
+        PLAY_OPTS.rate  = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
+    end
     Audio.Play(state.path, PLAY_OPTS)
 end
 
@@ -640,6 +655,13 @@ local function renderWave(theme, entry, w, h)
     gfx.set(bg[1], bg[2], bg[3], 1)
     gfx.rect(0, 0, w, h, 1)
 
+    -- Take volume scales the drawn waveform so gain / normalize are
+    -- visible (the peaks are source-domain, i.e. pre take-volume).
+    local vol = 1
+    if state.mode == "item" and state.take then
+        vol = math.abs(r.GetMediaItemTakeInfo_Value(state.take, "D_VOL"))
+    end
+
     local ch = entry.ch
     local lane_h = h / ch
     local mid_c = theme.colors.text_mute or theme.colors.text_disabled
@@ -650,10 +672,15 @@ local function renderWave(theme, entry, w, h)
         gfx.line(0, mid, w - 1, mid)
         gfx.set(wf[1], wf[2], wf[3], 0.9)
         local scale = lane_h * 0.47
+        local cap = lane_h * 0.5
         local maxs, mins = entry.maxs[c], entry.mins[c]
         for px = 1, entry.n do
-            local y1 = mid - (maxs[px] or 0) * scale
-            local y2 = mid - (mins[px] or 0) * scale
+            local d1 = (maxs[px] or 0) * scale * vol
+            local d2 = (mins[px] or 0) * scale * vol
+            if d1 > cap then d1 = cap elseif d1 < -cap then d1 = -cap end
+            if d2 > cap then d2 = cap elseif d2 < -cap then d2 = -cap end
+            local y1 = mid - d1
+            local y2 = mid - d2
             if y2 - y1 < 1 then y2 = y1 + 1 end
             gfx.line(px - 1, y1, px - 1, y2)
         end
@@ -1101,6 +1128,12 @@ local function drawMidiBar(theme)
         mrows.key = nil
     end
     UI.SameLine()
+    local ntog, non = UI.Checkbox("m_names", "Note names", opts.note_names)
+    if ntog then
+        opts.note_names = non
+        markDirty()
+    end
+    UI.SameLine()
     local vch, nv = UI.NumberInput("m_vel", "Vel", state.last_vel, 1, 127, VEL_OPTS)
     if vch then
         state.last_vel = math.floor(nv + 0.5)
@@ -1198,13 +1231,15 @@ local function noteRun(idx)
     return a, b, count
 end
 
--- Snapshot the current selection's original starts/pitches (group move).
+-- Snapshot the current selection's original start/pitch/length (group
+-- move + group resize both read from this).
 local move_snap = {}
 local function snapshotSel()
     local n = 0
     for i in pairs(Roll.selset) do
         n = n + 1
-        move_snap[n] = { i = i, s = Roll.starts[i], p = Roll.pitches[i] }
+        move_snap[n] = { i = i, s = Roll.starts[i], p = Roll.pitches[i],
+                         l = Roll.lens[i] }
     end
     for k = #move_snap, n + 1, -1 do move_snap[k] = nil end
     return n
@@ -1229,17 +1264,21 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local pos = itemPos()
     local add = Core_tk.ModShift()   -- additive selection
 
-    -- ruler strip (top): click = move edit cursor, drag = time selection
+    -- ruler strip (top): click = move edit cursor, drag = time selection.
+    -- Grid-snapped (Ctrl = free), so cursor and range land on the grid.
+    local rfree = Core_tk.ModCtrl()
     if in_ruler and Core_tk.MouseClicked(1) then
-        state.ruler_drag = { t0 = t }
-        r.SetEditCurPos(pos + math.max(0, t), false, false)
+        local st = rfree and t or midiSnap(t)
+        state.ruler_drag = { t0 = st }
+        r.SetEditCurPos(pos + math.max(0, st), false, false)
         r.GetSet_LoopTimeRange(true, false, 0, 0, false)  -- clear
     end
     if state.ruler_drag then
         if Core_tk.MouseDown(1) then
-            local a = math.min(state.ruler_drag.t0, t)
-            local b = math.max(state.ruler_drag.t0, t)
-            if b - a > 0.01 then
+            local ct = rfree and t or midiSnap(t)
+            local a = math.min(state.ruler_drag.t0, ct)
+            local b = math.max(state.ruler_drag.t0, ct)
+            if b - a > 0.001 then
                 r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
             end
             UI.SetCursor("size_we")
@@ -1248,11 +1287,15 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         end
     end
 
-    -- labels lane (piano key / drum header): select the whole pitch row
-    if in_lane and pitch and Core_tk.MouseClicked(1) then
-        Roll.SelectPitch(pitch, add)
-        state.row_hi = pitch
-        auditionNote(pitch, state.last_vel)
+    -- labels lane (piano key / drum header): left-click selects the whole
+    -- pitch row, right-click auditions the note (play the pad / key).
+    if in_lane and pitch then
+        if Core_tk.MouseClicked(1) then
+            Roll.SelectPitch(pitch, add)
+            state.row_hi = pitch
+        elseif Core_tk.MouseClicked(2) then
+            auditionNote(pitch, state.last_vel)
+        end
     end
 
     -- zoom / pan / subdivide over grid + velocity lane
@@ -1301,7 +1344,9 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 end
                 state.row_hi = nil
                 if mx > x1 - 6 then
-                    state.mdrag = { mode = "resize", idx = idx, moved = false }
+                    state.mdrag = { mode = "resize", idx = idx, moved = false,
+                                    multi = Roll.seln > 1 and snapshotSel() or nil,
+                                    ol = Roll.lens[idx] }
                 else
                     state.mdrag = { mode = "move", idx = idx, moved = false,
                                     grab = t - Roll.starts[idx],
@@ -1322,9 +1367,11 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                                     grab = t - t0, op = t0, opp = pitch }
                 end
             end
-        elseif Core_tk.MouseClicked(2) then
-            -- right-press: start a marquee; a release without movement over
-            -- a note deletes it (FL quick-delete preserved)
+        elseif Core_tk.MouseClicked(2) and not state.mdrag then
+            -- right-press (only when no left-drag is active — a marquee's
+            -- delete would Sync mid-drag and corrupt move_snap indices):
+            -- start a marquee; a release without movement over a note
+            -- deletes it (FL quick-delete preserved)
             state.marquee = { x = mx, y = my, cx = mx, cy = my,
                               t0 = t, p0 = pitch, moved = false }
         end
@@ -1375,7 +1422,8 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         end
         if best then
             if not Roll.IsSel(best) then Roll.SelectOnly(best) end
-            state.mdrag = { mode = "vel", idx = best, moved = false }
+            state.mdrag = { mode = "vel", idx = best, moved = false,
+                            multi = Roll.seln > 1 and snapshotSel() or nil }
         end
     end
 
@@ -1411,7 +1459,17 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 local min_len = gridStepSec(Roll.starts[md.idx]) * 0.25
                 local len = e - Roll.starts[md.idx]
                 if len < min_len then len = min_len end
-                if math.abs(len - Roll.lens[md.idx]) > 0.0001 then
+                if md.multi and md.multi > 1 then
+                    -- group resize: same length delta on every selected note
+                    local dl = len - md.ol
+                    for k = 1, md.multi do
+                        local en = move_snap[k]
+                        local nl = en.l + dl
+                        if nl < 0.01 then nl = 0.01 end
+                        Roll.ResizeLive(en.i, nl)
+                    end
+                    md.moved = true
+                elseif math.abs(len - Roll.lens[md.idx]) > 0.0001 then
                     Roll.ResizeLive(md.idx, len)
                     md.moved = true
                 end
@@ -1541,6 +1599,8 @@ local function drawRoll(theme, area_h)
     UI.SetFontBody()
 
     -- notes
+    local show_names = opts.note_names
+    if show_names then UI.SetFontCaption() end
     for i = 1, Roll.count do
         local rowi = rows.map[Roll.pitches[i]]
         if rowi then
@@ -1557,9 +1617,15 @@ local function drawRoll(theme, area_h)
                     Core_tk.DrawRect(x0, y + 1, x1 - x0 - 1, row_h - 2,
                                      col_text[1], col_text[2], col_text[3], 1, false)
                 end
+                if show_names and row_h >= 11 and (x1 - x0) > 22 then
+                    Core_tk.DrawText(NOTE_NAMES[Roll.pitches[i]], x0 + 3,
+                                     y + row_h * 0.5 - 6,
+                                     col_text[1], col_text[2], col_text[3], 0.9)
+                end
             end
         end
     end
+    if show_names then UI.SetFontBody() end
 
     -- velocity lane
     Core_tk.DrawRect(gx, vy, aw, VEL_H, col_bg[1], col_bg[2], col_bg[3], 1)
@@ -1639,6 +1705,11 @@ local function handleKeys()
     if Core_tk.GetState().focus then return end
 
     local midi = state.mode == "midi"
+    -- Note-editing / selection keys are BLOCKED while a mouse drag is in
+    -- flight: they Commit → Sort → Sync, which reshuffles note indices and
+    -- would leave the drag's move_snap pointing at the wrong notes (silent
+    -- MIDI corruption). Mirrors the pollTarget mid-drag Sync guard.
+    local midi_edit = midi and not state.mdrag
 
     if char == Keys.SPACE then
         togglePlay()
@@ -1649,7 +1720,7 @@ local function handleKeys()
     elseif char == Keys.ESCAPE and not midi and state.sel_a then
         state.sel_a, state.sel_b = nil, nil
         UI.ConsumeChar()
-    elseif char == Keys.ESCAPE and midi and Roll.seln > 0 then
+    elseif char == Keys.ESCAPE and midi_edit and Roll.seln > 0 then
         Roll.ClearSel()
         state.row_hi = nil
         UI.ConsumeChar()
@@ -1659,17 +1730,17 @@ local function handleKeys()
     elseif char == 45 then          -- '-'
         zoomAt(wave.x + wave.w / 2, 1.5)
         UI.ConsumeChar()
-    elseif midi and char == 1 then  -- Ctrl+A: select all
+    elseif midi_edit and char == 1 then  -- Ctrl+A: select all
         Roll.SelectBox(-1e9, 1e9, 0, 127, false)
         UI.ConsumeChar()
-    elseif midi and char == Keys.DELETE and Roll.seln > 0 then
+    elseif midi_edit and char == Keys.DELETE and Roll.seln > 0 then
         if Roll.seln > 1 then Roll.DeleteSel() else Roll.Delete(Roll.sel) end
         UI.ConsumeChar()
-    elseif midi and (char == 113 or char == 81) then   -- q / Q
+    elseif midi_edit and (char == 113 or char == 81) then   -- q / Q
         local n = Roll.Quantize(midiSnap)
         flash(n .. " notes quantized")
         UI.ConsumeChar()
-    elseif midi and Roll.seln > 0 and (char == Keys.UP or char == Keys.DOWN) then
+    elseif midi_edit and Roll.seln > 0 and (char == Keys.UP or char == Keys.DOWN) then
         local d = (char == Keys.UP) and 1 or -1
         for i in pairs(Roll.selset) do
             local np = Roll.pitches[i] + d
@@ -1680,7 +1751,7 @@ local function handleKeys()
         Roll.Commit("MIDI: transpose")
         if Roll.sel then auditionNote(Roll.pitches[Roll.sel], Roll.vels[Roll.sel]) end
         UI.ConsumeChar()
-    elseif midi and Roll.sel and (char == Keys.LEFT or char == Keys.RIGHT) then
+    elseif midi_edit and Roll.sel and (char == Keys.LEFT or char == Keys.RIGHT) then
         local i = Roll.sel
         local step = gridStepSec(Roll.starts[i])
         local t = Roll.starts[i] + (char == Keys.RIGHT and step or -step)

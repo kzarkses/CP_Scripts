@@ -43,10 +43,11 @@ start/end offsets — no slice files), **Sel to pad**.
 |---|---|
 | click empty cell | insert a note in the cell under the cursor (grid length, current velocity) and drag it |
 | drag a note | move (grid snap; **Ctrl = free**) — moves the whole selection if several are selected |
-| drag the right edge | resize |
+| drag the right edge | resize (resizes the whole selection together) |
 | **right-drag** | **marquee multi-select** (Shift = add to selection) |
 | right-click on a note | delete it |
-| click a piano key / drum-row header | select the whole row (that pitch) |
+| **left-click** a piano key / drum-row header | select the whole row (that pitch) |
+| **right-click** a piano key / drum-row header | audition that note |
 | **Ctrl+Shift+Wheel** on a note | **subdivide** the run: ×2 up, ÷2 down (1 → 2 → 4 → 8… fills the same span — trap rolls) |
 | velocity lane (bottom) | drag a note's bar (whole selection if multi-selected) |
 | Q | quantize (selection, else all) |
@@ -56,14 +57,23 @@ start/end offsets — no slice files), **Sel to pad**.
 | Native editor | escape hatch: opens the built-in MIDI editor |
 
 **Top ruler strip**: click to move the edit cursor, drag to set a time
-selection (both drive REAPER's transport, so Space plays from there).
-The left lane is a **piano keyboard** in melodic mode (black/white keys,
-C rows labelled) or the **named pad rows** in drum mode — click either
-to select the whole row.
+selection — both snap to the grid (Ctrl = free) and drive REAPER's
+transport, so Space plays from there. The left lane is a **piano
+keyboard** in melodic mode (black/white keys, C rows labelled) or the
+**named pad rows** in drum mode.
 
-The **Grid** button in the toolbar sets the editor's snap division
-(1/1…1/64, triplets) or follows the project grid. Snap toggles
-independently.
+The **Grid** button sets the editor's snap division (1/1…1/64, triplets)
+or follows the project grid; **Note names** draws each note's name
+inside it; **Snap** toggles snapping. All independent.
+
+## Preview reflects the edits
+
+In audio mode the in-editor preview (Space) now applies the take's
+gain/normalize, pitch and rate, so you **hear** the edits — and the
+waveform is scaled by the take volume so you **see** gain/normalize.
+(The peaks themselves are source-domain; pitch/rate don't change the
+drawn shape, which is correct — reverse does, since the source is
+swapped.) Baking edits **destructively** into a new file is still V2.
 
 **Drum rows**: when a CP_Sampler kit exists the rows are the kit pads,
 labeled with the pad names (plus any pitch present in the item) — the
