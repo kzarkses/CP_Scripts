@@ -107,9 +107,12 @@ local CHOKE_STR   = { "1", "2", "3", "4", "5", "6", "7", "8" }
 local CHOKE_ITEMS = { "Off", "1", "2", "3", "4", "5", "6", "7", "8" }
 local PAGE_IDS    = { "pg1", "pg2", "pg3", "pg4" }
 local PAGE_LBL    = { "1", "2", "3", "4" }
+local MODE_TABS   = { { key = "drum", id = "mode_drum", label = "Drum" },
+                      { key = "instrument", id = "mode_instr", label = "Instr" } }
 local ICONBTN_OPTS = { width = 0, height = 0 }
 local KNOB_OPTS   = { size = 34 }
 local COMBO_OPTS  = { width = 58 }
+local ROOT_OPTS   = { step = 1, format = "%.0f", width = 50 }
 local PLAY_OPTS   = {}            -- pooled Audio.Play opts
 local GRID_GAP    = 6
 local CTRL_H      = 176           -- control strip reserve (grid gets the rest)
@@ -260,6 +263,12 @@ local function handleFileDrops()
     end
     gfx.getdropfile(-1)
     if #drop_paths == 0 then return end
+    if Kit.mode == "instrument" then
+        if Kit.LoadInstrument(drop_paths[1]) then
+            flash("Instrument: " .. (Kit.instr and Kit.instr.name or ""))
+        end
+        return
+    end
     local note = padAt(gfx.mouse_x, gfx.mouse_y) or firstEmpty() or state.sel
     loadMany(note, drop_paths)
 end
@@ -273,10 +282,42 @@ local function busConsume()
     end
     DragBus.RectSync(BUS_ID)   -- publish our screen rect (write-on-change)
     local kind, path, sx, sy = DragBus.TakeDrop(BUS_ID)
-    if kind == "file" and path and path ~= "" then
-        local cx, cy = Core_tk.ScreenToClient(sx, sy)
-        local note = padAt(cx, cy) or firstEmpty() or state.sel
-        loadInto(note, path)
+    if (kind == "file" or kind == "instrument") and path and path ~= "" then
+        -- an explicit "instrument" drop (editor "Send to instrument") or a
+        -- plain file dropped while in instrument mode loads the instrument
+        if kind == "instrument" or Kit.mode == "instrument" then
+            if kind == "instrument" and Kit.mode ~= "instrument" then
+                Kit.SetMode("instrument")
+            end
+            if Kit.LoadInstrument(path) then
+                flash("Instrument: " .. (Kit.instr and Kit.instr.name or ""))
+            end
+        else
+            local cx, cy = Core_tk.ScreenToClient(sx, sy)
+            local note = padAt(cx, cy) or firstEmpty() or state.sel
+            loadInto(note, path)
+        end
+    end
+end
+
+-- "Send to instrument" from CP_Editor: an ExtState message (path + optional
+-- selection offsets) — switches to instrument mode and loads the sample.
+local last_instr_msg = ""
+local function instrumentPoll()
+    local v = r.GetExtState("CP_Sampler", "instrument")
+    if v == "" or v == last_instr_msg then return end
+    last_instr_msg = v
+    local ts, path, s, e = v:match("^([^\n]+)\n([^\n]+)\n([^\n]+)\n(.*)$")
+    ts = tonumber(ts)
+    if not ts or not path or path == "" or r.time_precise() - ts >= 5.0 then return end
+    Kit.SetMode("instrument")
+    if Kit.LoadInstrument(path) then
+        local ss, ee = tonumber(s), tonumber(e)
+        if ss and ee and (ss > 0 or ee < 1) then
+            Kit.SetInstrParam(Kit.P.SOFFS, ss)
+            Kit.SetInstrParam(Kit.P.EOFFS, ee)
+        end
+        flash("Instrument: " .. (Kit.instr and Kit.instr.name or ""))
     end
 end
 
@@ -475,17 +516,34 @@ local function drawToolbar(theme)
         end
     end
 
-    -- Pages
-    for p = 1, 4 do
-        UI.SameLine()
-        if p == state.page + 1 then UI.PushStyleColor("button",
-            theme.colors.accent[1], theme.colors.accent[2], theme.colors.accent[3]) end
-        ICONBTN_OPTS.width, ICONBTN_OPTS.height = btn, btn
-        if UI.Button(PAGE_IDS[p], PAGE_LBL[p], ICONBTN_OPTS) then
-            state.page = p - 1
-            markDirty()
+    -- Mode toggle: Drum (4x4 pads) vs Instrument (chromatic, one sample)
+    if Kit.Exists() then
+        UI.SameLine(12)
+        local acc = theme.colors.accent
+        for _, m in ipairs(MODE_TABS) do
+            UI.SameLine()
+            local on = Kit.mode == m.key
+            if on then UI.PushStyleColor("button", acc[1], acc[2], acc[3]) end
+            if UI.Button(m.id, m.label) then
+                if not on then Kit.SetMode(m.key) end
+            end
+            if on then UI.PopStyleColor() end
         end
-        if p == state.page + 1 then UI.PopStyleColor() end
+    end
+
+    -- Pages (drum mode only)
+    if Kit.mode == "drum" then
+        for p = 1, 4 do
+            UI.SameLine()
+            if p == state.page + 1 then UI.PushStyleColor("button",
+                theme.colors.accent[1], theme.colors.accent[2], theme.colors.accent[3]) end
+            ICONBTN_OPTS.width, ICONBTN_OPTS.height = btn, btn
+            if UI.Button(PAGE_IDS[p], PAGE_LBL[p], ICONBTN_OPTS) then
+                state.page = p - 1
+                markDirty()
+            end
+            if p == state.page + 1 then UI.PopStyleColor() end
+        end
     end
 
     -- Right group: save / load / settings
@@ -916,10 +974,271 @@ local function drawControls(theme)
 end
 
 -- ---------------------------------------------------------------------------
+-- Instrument (chromatic) view: one sample across the keyboard
+-- ---------------------------------------------------------------------------
+local INST_BUF   = 907
+local WHITE_STEP = { [0]=true,[2]=true,[4]=true,[5]=true,[7]=true,[9]=true,[11]=true }
+local istrip = { path = nil, w = 0, h = 0 }
+local KB_LO, KB_HI = 36, 84   -- C2..C6 mini keyboard range
+
+local function iknob(id, label, pid, default)
+    local v = Kit.InstrParam(pid)
+    if not v then return end
+    local changed, nv = UI.Knob(id, label, v, default or v, KNOB_OPTS)
+    if changed then Kit.SetInstrParam(pid, nv) end
+    if UI.IsItemHovered() then UI.Tooltip(Kit.InstrParamFmt(pid)) end
+    UI.SameLine()
+end
+
+local function instrNoteOn(note)
+    local instr = Kit.instr
+    if not instr or not instr.path then return end
+    local use_midi = opts.audition == "midi"
+        or (opts.audition == "auto" and Kit.Armed())
+    if use_midi then
+        Kit.StuffNote(note, true, opts.velocity)
+        state.press_midi = note
+    else
+        PLAY_OPTS.start_s, PLAY_OPTS.end_s = nil, nil
+        PLAY_OPTS.pitch = note - instr.root
+        Audio.Play(instr.path, PLAY_OPTS)
+        PLAY_OPTS.pitch = nil
+    end
+end
+
+-- Waveform + draggable region over the instrument sample.
+local function instrWave(theme, x, y, w, h)
+    local instr = Kit.instr
+    local col_bg   = theme.colors.list_bg or theme.colors.window_bg
+    local col_acc  = theme.colors.accent
+    local col_bord = theme.colors.border
+    local len = instr.path and Audio.Meta(instr.path) or nil
+    local entry = nil
+    if Wave and len and len > 0 then
+        local src = Audio.GetSource(instr.path)
+        if src then entry = Wave.Read(src, instr.path, 0, len, w, 0) end
+    end
+    if entry and (istrip.path ~= instr.path or istrip.w ~= w or istrip.h ~= h) then
+        istrip.path, istrip.w, istrip.h = instr.path, w, h
+        gfx.dest = INST_BUF
+        gfx.setimgdim(INST_BUF, w, h)
+        gfx.muladdrect(0, 0, w, h, 0, 0, 0, 0)
+        gfx.set(col_bg[1], col_bg[2], col_bg[3], 1)
+        gfx.rect(0, 0, w, h, 1)
+        gfx.set(col_acc[1], col_acc[2], col_acc[3], 0.8)
+        local mid, scale = h * 0.5, h * 0.46
+        for px = 1, entry.n do
+            local vmax, vmin = -1, 1
+            for c = 1, entry.ch do
+                local v = entry.maxs[c][px] or 0
+                if v > vmax then vmax = v end
+                v = entry.mins[c][px] or 0
+                if v < vmin then vmin = v end
+            end
+            local y1 = mid - vmax * scale
+            local y2 = mid - vmin * scale
+            if y2 - y1 < 1 then y2 = y1 + 1 end
+            gfx.line(px - 1, y1, px - 1, y2)
+        end
+        gfx.dest = -1
+    end
+    if istrip.path == instr.path and istrip.w == w and instr.path then
+        gfx.dest = -1
+        gfx.a, gfx.mode = 1, 0
+        gfx.blit(INST_BUF, 1, 0, 0, 0, w, h, x, y, w, h)
+    else
+        Core_tk.DrawRect(x, y, w, h, col_bg[1], col_bg[2], col_bg[3], 1)
+        if instr.path then UI.RequestRedraw() end
+    end
+
+    -- region overlay + drag (RS5K start/end offsets)
+    local s = Kit.InstrParam(Kit.P.SOFFS) or 0
+    local e = Kit.InstrParam(Kit.P.EOFFS) or 1
+    local xs, xe = x + s * w, x + e * w
+    if xs > x then Core_tk.DrawRect(x, y, xs - x, h, 0, 0, 0, 0.55) end
+    if xe < x + w then Core_tk.DrawRect(xe, y, x + w - xe, h, 0, 0, 0, 0.55) end
+    Core_tk.DrawRect(xs, y, 1, h, col_acc[1], col_acc[2], col_acc[3], 1)
+    Core_tk.DrawRect(xe - 1, y, 1, h, col_acc[1], col_acc[2], col_acc[3], 1)
+    Core_tk.DrawRect(xs, y, 5, 8, col_acc[1], col_acc[2], col_acc[3], 1)
+    Core_tk.DrawRect(xe - 5, y, 5, 8, col_acc[1], col_acc[2], col_acc[3], 1)
+    Core_tk.DrawRect(x, y, w, h, col_bord[1], col_bord[2], col_bord[3],
+                     (col_bord[4] or 1) * 0.6, false)
+
+    local mx, my = Core_tk.GetMousePos()
+    local inside = mx >= x and mx < x + w and my >= y and my < y + h
+    if not Core_tk.HasPopup() then
+        if inside and Core_tk.MouseClicked(1) then
+            if math.abs(mx - xs) <= 6 then state.rdrag = { mode = "s", instr = true }
+            elseif math.abs(mx - xe) <= 6 then state.rdrag = { mode = "e", instr = true }
+            elseif mx > xs and mx < xe then
+                state.rdrag = { mode = "m", instr = true, grab = (mx - x) / w - s }
+            else state.rdrag = { mode = (mx < xs) and "s" or "e", instr = true } end
+        end
+        if state.rdrag and state.rdrag.instr then
+            if Core_tk.MouseDown(1) then
+                local frac = (mx - x) / w
+                if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+                local MINW = 0.004
+                if state.rdrag.mode == "s" then
+                    Kit.SetInstrParam(Kit.P.SOFFS, math.min(frac, e - MINW))
+                elseif state.rdrag.mode == "e" then
+                    Kit.SetInstrParam(Kit.P.EOFFS, math.max(frac, s + MINW))
+                else
+                    local wd = e - s
+                    local ns = frac - state.rdrag.grab
+                    if ns < 0 then ns = 0 end
+                    if ns + wd > 1 then ns = 1 - wd end
+                    Kit.SetInstrParam(Kit.P.SOFFS, ns)
+                    Kit.SetInstrParam(Kit.P.EOFFS, ns + wd)
+                end
+                UI.SetCursor(state.rdrag.mode == "m" and "size_all" or "size_we")
+            else
+                state.rdrag = nil
+            end
+        elseif inside then
+            UI.SetCursor((math.abs(mx - xs) <= 6 or math.abs(mx - xe) <= 6)
+                         and "size_we" or "arrow")
+        end
+    end
+end
+
+-- Static keyboard layout (built once — the frame loop must not allocate).
+local KB_WHITES = {}
+for n = KB_LO, KB_HI do if WHITE_STEP[n % 12] then KB_WHITES[#KB_WHITES + 1] = n end end
+local KB_NW = #KB_WHITES
+local KB_WIDX = {}                 -- note → white-key column index (0-based)
+for i = 1, KB_NW do KB_WIDX[KB_WHITES[i]] = i - 1 end
+
+-- Mini piano keyboard: white keys full height, black keys on top; click
+-- plays chromatically, the root note is outlined.
+local function instrKeyboard(theme, x, y, w, h)
+    local instr = Kit.instr
+    local col_acc  = theme.colors.accent
+    local col_mute = theme.colors.text_mute or theme.colors.text_disabled
+    local nw = KB_NW
+    local kw = w / nw
+    -- white-key screen x for a note = x + KB_WIDX[note]*kw (built once)
+
+    local mx, my = Core_tk.GetMousePos()
+    local inside = mx >= x and mx < x + w and my >= y and my < y + h
+    local hit = nil
+
+    -- white keys
+    for i = 1, nw do
+        local n = KB_WHITES[i]
+        local kx = x + (i - 1) * kw
+        local playing = state.press_midi == n
+        local rc = (n == instr.root)
+        Core_tk.DrawRect(kx, y, kw - 1, h,
+            playing and col_acc[1] or 0.85,
+            playing and col_acc[2] or 0.85,
+            playing and col_acc[3] or 0.87, 1)
+        if rc then
+            Core_tk.DrawRect(kx, y, kw - 1, h, col_acc[1], col_acc[2], col_acc[3], 1, false)
+        end
+        if n % 12 == 0 then
+            Core_tk.DrawText(NOTE_NAMES[n], kx + 2, y + h - 14, 0.2, 0.2, 0.2, 1)
+        end
+    end
+    -- black keys (on top, half height, between whites)
+    local bh = h * 0.6
+    for n = KB_LO, KB_HI do
+        if not WHITE_STEP[n % 12] then
+            local bx = x + (KB_WIDX[n - 1] or 0) * kw + kw * 0.62
+            local bw = kw * 0.66
+            local playing = state.press_midi == n
+            local rc = (n == instr.root)
+            Core_tk.DrawRect(bx, y, bw, bh,
+                playing and col_acc[1] or 0.12,
+                playing and col_acc[2] or 0.12,
+                playing and col_acc[3] or 0.13, 1)
+            if rc then
+                Core_tk.DrawRect(bx, y, bw, bh, col_acc[1], col_acc[2], col_acc[3], 1, false)
+            end
+        end
+    end
+
+    -- hit test on click: black keys first (they sit on top)
+    if inside and not Core_tk.HasPopup() and Core_tk.MouseClicked(1) then
+        for n = KB_LO, KB_HI do
+            if not WHITE_STEP[n % 12] then
+                local bx = x + (KB_WIDX[n - 1] or 0) * kw + kw * 0.62
+                local bw = kw * 0.66
+                if mx >= bx and mx < bx + bw and my < y + bh then hit = n break end
+            end
+        end
+        if not hit then
+            local i = math.floor((mx - x) / kw) + 1
+            hit = KB_WHITES[math.max(1, math.min(nw, i))]
+        end
+        if hit then
+            local set_root = Core_tk.ModCtrl()
+            if set_root then Kit.SetRoot(hit) flash("Root = " .. NOTE_NAMES[hit])
+            else instrNoteOn(hit) end
+        end
+    end
+    if inside then UI.SetCursor("hand") end
+    -- octave label hint
+    Core_tk.DrawText("Ctrl+click = set root", x, y - 13,
+                     col_mute[1], col_mute[2], col_mute[3], 0.8)
+end
+
+local function drawInstrument(theme, avail_h)
+    local instr = Kit.instr
+    if not instr then Kit.EnsureInstrument() instr = Kit.instr end
+
+    UI.SetFontH2()
+    UI.Text(instr.path and instr.name or "Instrument")
+    UI.SetFontCaption()
+    UI.SameLine(10)
+    if instr.path then
+        UI.Text("root " .. NOTE_NAMES[instr.root] .. "  ·  play with a MIDI keyboard",
+                { disabled = true })
+    else
+        UI.Text("Drop a sample — it plays chromatically across the keyboard",
+                { disabled = true })
+    end
+    UI.SetFontBody()
+
+    local x, y = UI.GetCursorPos()
+    local w = UI.GetAvailableWidth()
+    -- layout: waveform (fills), knobs row, keyboard at the bottom
+    local kb_h   = 90
+    local knob_h = 58
+    local wave_h = math.max(60, avail_h - kb_h - knob_h - 24)
+
+    instrWave(theme, x, y, w, wave_h)
+    UI.Layout.AdvanceCursor(w, wave_h)
+    UI.Spacing(4)
+
+    -- knobs + root
+    iknob("i_vol", "Vol", Kit.P.VOL, Kit.DEFAULT_VOL)
+    iknob("i_pan", "Pan", Kit.P.PAN, 0.5)
+    iknob("i_tune", "Tune", Kit.P.TUNE, 0.5)
+    iknob("i_att", "A", Kit.P.ATTACK, Kit.DEFAULT_ATT)
+    iknob("i_dec", "D", Kit.P.DECAY, Kit.DEFAULT_DEC)
+    iknob("i_sus", "S", Kit.P.SUSTAIN, Kit.DEFAULT_SUS)
+    iknob("i_rel", "R", Kit.P.RELEASE, Kit.DEFAULT_REL)
+    local rootv, nroot = UI.NumberInput("i_root", "Root", instr.root, 0, 127,
+                                        ROOT_OPTS)
+    if rootv then Kit.SetRoot(nroot) end
+    UI.SameLine()
+    local lv = Kit.InstrParam(Kit.P.LOOP) or 0
+    local ltog, lon = UI.Checkbox("i_loop", "Loop", lv >= 0.5)
+    if ltog then Kit.SetInstrParam(Kit.P.LOOP, lon and 1 or 0) end
+
+    UI.Spacing(16)
+    local kx, ky = UI.GetCursorPos()
+    instrKeyboard(theme, kx, ky, w, kb_h)
+    UI.Layout.AdvanceCursor(w, kb_h)
+end
+
+-- ---------------------------------------------------------------------------
 -- Keyboard
 -- ---------------------------------------------------------------------------
 local function handleKeys()
     if Core_tk.HasPopup() then return end
+    if Kit.mode == "instrument" then return end   -- played via MIDI/mouse
     local char = Core_tk.GetChar()
     if not char or char <= 0 then return end
     if Core_tk.GetState().focus then return end
@@ -986,6 +1305,7 @@ local function frame(theme)
     Audio.Poll()
     if Wave and Wave.Step() then UI.RequestRedraw() end
     busConsume()
+    instrumentPoll()
     handleFileDrops()
     handleKeys()
 
@@ -1000,19 +1320,29 @@ local function frame(theme)
 
     drawToolbar(theme)
 
-    -- Controls reserve tracks the selection: a loaded pad needs the full
-    -- strip, an empty one two lines — the grid gets everything else.
-    local avail = UI.GetAvailableHeight()
-    local selpad = state.sel and Kit.pads[state.sel]
-    local ctrl_h = (selpad and selpad.fx) and CTRL_H or 56
-    local grid_h = avail - ctrl_h
-    if grid_h < 120 then grid_h = math.max(80, avail - 60) end
-    drawGrid(theme, grid_h)
+    if Kit.Exists() and Kit.mode == "instrument" then
+        UI.Spacing(theme.pad_small or 4)
+        drawInstrument(theme, UI.GetAvailableHeight())
+        -- release a MIDI-triggered note on mouse-up (keyboard clicks)
+        if state.press_midi and not Core_tk.MouseDown(1) then
+            Kit.StuffNote(state.press_midi, false)
+            state.press_midi = nil
+        end
+    else
+        -- Controls reserve tracks the selection: a loaded pad needs the full
+        -- strip, an empty one two lines — the grid gets everything else.
+        local avail = UI.GetAvailableHeight()
+        local selpad = state.sel and Kit.pads[state.sel]
+        local ctrl_h = (selpad and selpad.fx) and CTRL_H or 56
+        local grid_h = avail - ctrl_h
+        if grid_h < 120 then grid_h = math.max(80, avail - 60) end
+        drawGrid(theme, grid_h)
 
-    UI.Spacing(theme.pad_small or 4)
-    drawControls(theme)
+        UI.Spacing(theme.pad_small or 4)
+        drawControls(theme)
 
-    handlePadDrag()
+        handlePadDrag()
+    end
 
     -- status flash
     if state.flash_msg ~= "" then
@@ -1041,6 +1371,8 @@ UI.Init("Sampler", 420, 560, {
 
 UI.OnClose(function()
     r.TrackCtl_SetToolTip("", 0, 0, true)
+    if state.press_midi then Kit.StuffNote(state.press_midi, false) end
+    if state.key_off_note then Kit.StuffNote(state.key_off_note, false) end
     DragBus.Unregister(BUS_ID)
     persistConfig()
     Audio.Destroy()

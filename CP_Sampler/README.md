@@ -31,6 +31,25 @@ performance as a MIDI item on the bus track; its playback drives the
 kit the same way. Older CP kits are migrated automatically on first
 scan (choke moved to the bus, dead sends removed, pads disarmed).
 
+## Two modes (Drum / Instrument)
+
+The **Drum / Instr** toggle in the toolbar switches the whole rack, like
+Ableton's Simpler/Sampler split:
+
+- **Drum** — the 4x4 pad grid below (one sound per pad, fixed pitch).
+- **Instrument** — **one** sample spread chromatically across the whole
+  keyboard, pitched per semitone from a **root note** (RS5K's "Note
+  (Semitone shifted)" mode). Big waveform with a draggable region, the
+  usual Vol/Pan/Tune/ADSR knobs, a **Root** control, and a mini piano
+  keyboard you can click to play (Ctrl+click a key = set the root). Play
+  it melodically with any MIDI keyboard through the armed kit bus. Drop a
+  sample (from CP_MediaExplorer, Windows, or the editor's **To
+  instrument** button) and it loads straight in.
+
+The editor loop: edit/trim a sample in **CP_Editor**, then **To
+instrument** sends it here as a playable chromatic instrument (the
+selection becomes the region) — sample-design → instrument in two clicks.
+
 ## Using it
 
 - **Create kit bus** (toolbar) once per project — or just drop a sample

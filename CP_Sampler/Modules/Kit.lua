@@ -36,7 +36,15 @@ Kit.P = {
     ATTACK = 9, RELEASE = 10, OBEY = 11, LOOP = 12,
     SOFFS = 13, EOFFS = 14, TUNE = 15, MINVEL = 17, MAXVEL = 18,
     LOOPOFFS = 23, DECAY = 24, SUSTAIN = 25,
+    PITCH_LO = 5, PITCH_HI = 6,   -- pitch@start/end (chromatic instrument)
 }
+
+-- RS5K pitch param scale: normalized 0.5 = 0 st, ±80 st across 0..1.
+local function pitchNorm(st)
+    local v = 0.5 + st / 160
+    if v < 0 then v = 0 elseif v > 1 then v = 1 end
+    return v
+end
 
 local RS5K_ADD  = "ReaSamplOmatic5000 (Cockos)"
 local CHOKE_ADD = "JS:CP_Scripts/cp_kit_choke.jsfx"
@@ -51,6 +59,8 @@ Kit.bus    = nil       -- "CP Kit MIDI" child track — the INPUT bus.
                        -- silently mutes the send (mpl's "MIDI bus" design
                        -- exists for exactly this reason).
 Kit.pads   = {}        -- [note] = { track, fx, path, name, note, fmt = {} }
+Kit.mode   = "drum"    -- "drum" (4x4 pads) | "instrument" (chromatic)
+Kit.instr  = nil       -- instrument track { track, fx, path, name, root, fmt }
 local choke_fx = nil   -- index of the choke JSFX…
 local choke_tr = nil   -- …and the track carrying it (bus; parent = legacy)
 local last_change = -1 -- GetProjectStateChangeCount snapshot
@@ -256,8 +266,23 @@ end
 
 -- Full rebuild of Kit.pads from the project. Event-driven only (allocations
 -- fine here) — never called per frame unless the project actually changed.
+local function scanInstrument(tr)
+    local fx = findRS5K(tr)
+    local path, root = nil, tonumber(getExt(tr, "CP_KIT_ROOT") or "") or 60
+    if fx then
+        local ok, fn = r.TrackFX_GetNamedConfigParm(tr, fx, "FILE0")
+        if ok and fn ~= "" then path = fn end
+    end
+    local _, tname = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+    Kit.instr = {
+        track = tr, fx = fx, path = path, root = root,
+        name = (tname ~= "" and tname) or (path and baseName(path)) or "Instrument",
+        fmt = {},
+    }
+end
+
 function Kit.Scan()
-    Kit.parent, Kit.bus, choke_fx = nil, nil, nil
+    Kit.parent, Kit.bus, Kit.instr, choke_fx = nil, nil, nil, nil
     local pads = {}
     local count = r.CountTracks(0)
     for i = 0, count - 1 do
@@ -268,9 +293,12 @@ function Kit.Scan()
         end
     end
     if Kit.parent then
+        Kit.mode = getExt(Kit.parent, "CP_KIT_MODE") or "drum"
         folderWalk(Kit.parent, function(tr)
             if getExt(tr, "CP_KIT_MIDI") then
                 Kit.bus = tr
+            elseif getExt(tr, "CP_KIT_INSTR") then
+                scanInstrument(tr)
             else
                 scanPad(tr, pads, true)
             end
@@ -347,6 +375,9 @@ function Kit.Poll()
         Kit.Repair()
         Kit.Scan()
     end
+    -- keep the inactive set (pads vs instrument) muted per the saved mode —
+    -- newly scanned/created tracks are unmuted by default
+    Kit.EnforceMode()
     return true
 end
 
@@ -590,6 +621,193 @@ function Kit.SwapPads(a, b)
     Kit.SetChoke(b, ga or 0)
     Kit.version = Kit.version + 1
     uend("Sampler: swap pads")
+end
+
+-- ---------------------------------------------------------------------------
+-- Instrument (chromatic) mode: one sample spread across the whole keyboard,
+-- pitched per semitone from a root note — Ableton Simpler-style.
+-- ---------------------------------------------------------------------------
+-- Root note → RS5K note range + pitch@start/end for exactly 1 semitone per
+-- MIDI note. RS5K interpolates pitch linearly across the NOTE range, and the
+-- pitch params clamp to ±80 st — so the note range must be tied to the root
+-- (root ± 80) instead of a fixed 0-127, otherwise a clamped endpoint changes
+-- the slope and detunes the whole keyboard (root included). Within [root-80,
+-- root+80]: pitch_start = lo-root, pitch_end = hi-root ⇒ pitch(N) = N - root
+-- exactly, root plays at original pitch. Notes past ±80 st don't sound
+-- (±6.6 octaves of range — musically ample).
+local function applyRoot(instr)
+    if not instr or not instr.fx then return end
+    local root = instr.root
+    local lo = math.max(0, root - 80)
+    local hi = math.min(127, root + 80)
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.NOTE_LO, lo / 127)
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.NOTE_HI, hi / 127)
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.PITCH_LO,
+                                 pitchNorm(lo - root))
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.PITCH_HI,
+                                 pitchNorm(hi - root))
+end
+
+function Kit.EnsureInstrument()
+    if Kit.instr and valid(Kit.instr.track) then return Kit.instr end
+    local parent = Kit.Ensure()
+    local count = r.CountTracks(0)
+    for i = 0, count - 1 do
+        local tr = r.GetTrack(0, i)
+        if getExt(tr, "CP_KIT_INSTR") then
+            scanInstrument(tr)
+            return Kit.instr
+        end
+    end
+    ubegin()
+    local bus = Kit.EnsureBus()
+    local tr = insertChildTrack(parent)
+    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Instrument", true)
+    setExt(tr, "CP_KIT_INSTR", "1")
+    setExt(tr, "CP_KIT_ROOT", "60")
+    local s = r.CreateTrackSend(bus, tr)
+    if s >= 0 then
+        r.SetTrackSendInfo_Value(bus, 0, s, "I_SRCCHAN", -1)
+        r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", 0)
+    end
+    local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
+    if fx >= 0 then
+        hideFX(tr, fx)
+        if not Kit.DEFAULT_VOL then
+            Kit.DEFAULT_VOL = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.VOL)
+            Kit.DEFAULT_ATT = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.ATTACK)
+            Kit.DEFAULT_REL = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.RELEASE)
+            Kit.DEFAULT_DEC = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.DECAY)
+            Kit.DEFAULT_SUS = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.SUSTAIN)
+        end
+        -- chromatic mapping: full note range, freely-configurable mode,
+        -- more voices for held/overlapping chords
+        r.TrackFX_SetNamedConfigParm(tr, fx, "MODE", 0)
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.NOTE_LO, 0)
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.NOTE_HI, 1)
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.OBEY, 1)   -- honour note length
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.MAXV, 16 / 64)
+    else
+        fx = nil
+    end
+    Kit.instr = { track = tr, fx = fx, path = nil, root = 60,
+                  name = "Instrument", fmt = {} }
+    applyRoot(Kit.instr)
+    Kit.version = Kit.version + 1
+    uend("Sampler: create instrument")
+    return Kit.instr
+end
+
+function Kit.LoadInstrument(path, root)
+    if not path or path == "" then return false end
+    ubegin()
+    local instr = Kit.EnsureInstrument()
+    if not instr or not instr.fx then
+        uend("Sampler: load instrument")
+        return false
+    end
+    r.TrackFX_SetNamedConfigParm(instr.track, instr.fx, "FILE0", path)
+    r.TrackFX_SetNamedConfigParm(instr.track, instr.fx, "DONE", "")
+    r.TrackFX_SetNamedConfigParm(instr.track, instr.fx, "MODE", 0)
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.NOTE_LO, 0)
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.NOTE_HI, 1)
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.SOFFS, 0)
+    r.TrackFX_SetParamNormalized(instr.track, instr.fx, Kit.P.EOFFS, 1)
+    instr.path = path
+    instr.name = baseName(path)
+    instr.fmt = {}
+    if root then instr.root = root end
+    setExt(instr.track, "CP_KIT_ROOT", tostring(instr.root))
+    applyRoot(instr)
+    r.GetSetMediaTrackInfo_String(instr.track, "P_NAME", instr.name, true)
+    Kit.version = Kit.version + 1
+    uend("Sampler: load instrument " .. instr.name)
+    return true
+end
+
+function Kit.SetRoot(note)
+    if not Kit.instr or not Kit.instr.fx then return end
+    note = math.max(0, math.min(127, math.floor(note + 0.5)))
+    Kit.instr.root = note
+    setExt(Kit.instr.track, "CP_KIT_ROOT", tostring(note))
+    applyRoot(Kit.instr)
+    last_change = r.GetProjectStateChangeCount(0)
+end
+
+-- Isolate the active set: the MIDI bus fans out to BOTH the pads and the
+-- instrument track (all note-range 0-127-ish), so without muting they'd
+-- sound together. Mute the inactive set's tracks (reversible, undo-safe).
+-- Idempotent: only writes B_MUTE when it actually differs, so EnforceMode
+-- can run every scan without bumping the project change count (which would
+-- retrigger Poll → rescan → mute → … in a loop).
+local function setMute(tr, want)
+    if not valid(tr) then return end
+    if (r.GetMediaTrackInfo_Value(tr, "B_MUTE") >= 0.5) ~= want then
+        r.SetMediaTrackInfo_Value(tr, "B_MUTE", want and 1 or 0)
+    end
+end
+local function applyModeMutes()
+    local instr_on = Kit.mode == "instrument"
+    for _, pad in pairs(Kit.pads) do setMute(pad.track, instr_on) end
+    if Kit.instr then setMute(Kit.instr.track, not instr_on) end
+end
+
+-- Switch the whole kit between drum and instrument (Simpler/Sampler split).
+function Kit.SetMode(mode)
+    if mode ~= "drum" and mode ~= "instrument" then return end
+    local parent = Kit.Ensure()
+    ubegin()
+    setExt(parent, "CP_KIT_MODE", mode)
+    Kit.mode = mode
+    if mode == "instrument" then Kit.EnsureInstrument() end
+    applyModeMutes()
+    Kit.version = Kit.version + 1
+    uend("Sampler: set mode " .. mode)
+end
+
+-- Re-assert the active-set mutes (called after Scan, since new pads/
+-- instrument tracks are created unmuted and a fresh session must respect
+-- the persisted mode).
+function Kit.EnforceMode()
+    if valid(Kit.parent) then applyModeMutes() end
+end
+
+function Kit.InstrParam(pid)
+    if not Kit.instr or not Kit.instr.fx then return nil end
+    return r.TrackFX_GetParamNormalized(Kit.instr.track, Kit.instr.fx, pid)
+end
+
+function Kit.SetInstrParam(pid, v)
+    if not Kit.instr or not Kit.instr.fx then return end
+    r.TrackFX_SetParamNormalized(Kit.instr.track, Kit.instr.fx, pid, v)
+    Kit.instr.fmt[pid] = nil
+    last_change = r.GetProjectStateChangeCount(0)
+end
+
+function Kit.InstrParamFmt(pid)
+    local instr = Kit.instr
+    if not instr or not instr.fx then return "" end
+    local s = instr.fmt[pid]
+    if s then return s end
+    local ok, buf = r.TrackFX_GetFormattedParamValue(instr.track, instr.fx, pid, "")
+    s = ok and buf or ""
+    instr.fmt[pid] = s
+    return s
+end
+
+function Kit.InstrPeak()
+    local instr = Kit.instr
+    if not instr or not instr.path or not valid(instr.track) then return 0 end
+    local a = r.Track_GetPeakInfo(instr.track, 0)
+    local b = r.Track_GetPeakInfo(instr.track, 1)
+    if b > a then a = b end
+    return a
+end
+
+function Kit.FloatInstrRS5K()
+    if Kit.instr and Kit.instr.fx then
+        r.TrackFX_Show(Kit.instr.track, Kit.instr.fx, 3)
+    end
 end
 
 -- ---------------------------------------------------------------------------

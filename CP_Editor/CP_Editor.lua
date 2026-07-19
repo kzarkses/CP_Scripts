@@ -438,6 +438,25 @@ local function selectionToPad()
     flash("Selection sent to pad " .. note)
 end
 
+-- Send the current file (or its selection) to the CP_Sampler as a
+-- chromatic INSTRUMENT — the Ableton "sample → Simpler" move. Delivered by
+-- ExtState; the Sampler switches to instrument mode and loads it (5s window).
+local function sendToInstrument()
+    if state.path == "" then
+        flash("No previewable file for this source")
+        return
+    end
+    local s, e = 0, 1
+    if state.sel_a and state.len > 0 then
+        s = state.sel_a / state.len
+        e = state.sel_b / state.len
+    end
+    r.SetExtState("CP_Sampler", "instrument",
+        string.format("%.3f\n%s\n%.6f\n%.6f", r.time_precise(), state.path, s, e),
+        false)
+    flash("Sent to Sampler instrument")
+end
+
 -- ---------------------------------------------------------------------------
 -- Toolbar
 -- ---------------------------------------------------------------------------
@@ -641,6 +660,10 @@ local function drawSliceRow(theme)
     UI.SameLine()
     UI.BeginDisabled(state.sel_a == nil)
     if UI.Button("sl_selpad", "Sel to pad") then selectionToPad() end
+    UI.EndDisabled()
+    UI.SameLine()
+    UI.BeginDisabled(state.path == "")
+    if UI.Button("sl_instr", "To instrument") then sendToInstrument() end
     UI.EndDisabled()
 end
 
