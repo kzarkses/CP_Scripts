@@ -484,6 +484,18 @@ local function isInternalFX(fx_name)
 	    or fx_name:find("CP_Mod", 1, true)
 end
 
+-- FX that must survive a preset load untouched, and never be captured into one.
+-- A sampler is an instrument: wiping the chain to restore a preset used to
+-- delete a whole CP_Sampler kit. Identity-based (RS5K renames itself), so the
+-- track and index are required — hence a second predicate next to the name-only
+-- one above, which is still used for the SAVED chain entries.
+local function isKeepFX(fx_id)
+	local tr = PresetSystem.core.state.track
+	local _, fx_name = PresetSystem.r.TrackFX_GetFXName(tr, fx_id, "")
+	if isInternalFX(fx_name) then return true end
+	return PresetSystem.core.isProtectedFX(tr, fx_id)
+end
+
 function PresetSystem.captureCompleteState()
 	if not PresetSystem.core.isTrackValid() then return {} end
 
@@ -517,7 +529,7 @@ function PresetSystem.captureCompleteState()
 	local fx_count = PresetSystem.r.TrackFX_GetCount(PresetSystem.core.state.track)
 	for fx_id = 0, fx_count - 1 do
 		local _, fx_name = PresetSystem.r.TrackFX_GetFXName(PresetSystem.core.state.track, fx_id, "")
-		if not isInternalFX(fx_name) then
+		if not isKeepFX(fx_id) then
 			local enabled = PresetSystem.r.TrackFX_GetEnabled(PresetSystem.core.state.track, fx_id)
 			local retval, preset = PresetSystem.r.TrackFX_GetPreset(PresetSystem.core.state.track, fx_id, "")
 			local param_count = PresetSystem.r.TrackFX_GetNumParams(PresetSystem.core.state.track, fx_id)
@@ -602,8 +614,7 @@ function PresetSystem.loadPreset(name)
 	-- name, so their envelopes and instance state survive the reload.
 	local fx_count = PresetSystem.r.TrackFX_GetCount(PresetSystem.core.state.track)
 	for fx_id = fx_count - 1, 0, -1 do
-		local _, fx_name = PresetSystem.r.TrackFX_GetFXName(PresetSystem.core.state.track, fx_id, "")
-		if not isInternalFX(fx_name) then
+		if not isKeepFX(fx_id) then
 			PresetSystem.r.TrackFX_Delete(PresetSystem.core.state.track, fx_id)
 		end
 	end

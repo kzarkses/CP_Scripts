@@ -184,7 +184,8 @@ function FXManagerUI.draw(theme)
                 local _, fx_name = FXManagerUI.r.TrackFX_GetFXName(track, fx_idx, "")
                 local display = FXManagerUI.core.extractFXName(fx_name)
                 local raw_low = (fx_name or ""):lower()
-                if not (raw_low:find("sound generator") or raw_low:find("jsfx sound")) then
+                if not (raw_low:find("sound generator") or raw_low:find("jsfx sound"))
+                   and not FXManagerUI.core.isProtectedFX(track, fx_idx) then
                     local enabled = FXManagerUI.r.TrackFX_GetEnabled(track, fx_idx)
                     local label = (fx_idx + 1) .. ". " .. display
                                   .. (enabled and "" or " (bypassed)")

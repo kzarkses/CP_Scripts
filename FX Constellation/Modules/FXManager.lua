@@ -69,7 +69,11 @@ function FXManager.scanTrackFX()
 			-- first two params of an unrelated plugin.
 			if bridge_index < 0 then bridge_index = fx end
 		elseif not fx_name:find("Sound Generator")
-		   and not fx_name:find("CP_Mod", 1, true) then
+		   and not fx_name:find("CP_Mod", 1, true)
+		   -- samplers are instruments, not effects: never listed, so never
+		   -- randomized, ranged, XY-assigned or snapshotted either — every one of
+		   -- those features reads state.fx_data and nothing else
+		   and not FXManager.core.isProtectedFX(state.track, fx) then
 			if visible_fx_id >= max_fx then
 				break
 			end
@@ -759,6 +763,16 @@ end
 function FXManager.ultraRandom()
 	local urs = FXManager.core.state.ultra_random_settings
 
+	-- The param-level randomizers below each end in saveTrackSelection, which
+	-- rebuilds the ENTIRE selection table — the O(params²) trap the batch scope
+	-- above was written for. Ultra Random fires four of them in one frame and
+	-- never opened a batch: that is the hitch after every roll.
+	--
+	-- The scope MUST close before the chain-level randomizers: randomBypassFX
+	-- and randomizeFXOrder both end in scanTrackFX -> loadTrackSelection, which
+	-- would read a stale table and undo the roll we just deferred.
+	FXManager.beginBatch()
+
 	if urs.xy_assignments then
 		-- Sources first (some params move pad↔LFO), then the XY roll for
 		-- whatever ends up pad-driven. The LFO roll is gated by its own
@@ -781,6 +795,8 @@ function FXManager.ultraRandom()
 	if urs.ranges then
 		FXManager.globalRandomRanges()
 	end
+
+	FXManager.endBatch()   -- one selection save for everything above
 
 	if urs.bypass then
 		FXManager.randomBypassFX()
@@ -820,11 +836,14 @@ function FXManager.randomizeFXOrder()
 	for i = fx_count - 1, start_index + 1, -1 do
 		local _, fx_name_i = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, i, "")
 		if not fx_name_i:find("FX Constellation Bridge") and not fx_name_i:find("Sound Generator")
-		   and not fx_name_i:find("CP_Mod", 1, true) then
+		   and not fx_name_i:find("CP_Mod", 1, true)
+		   -- raw indices again: a sampler must keep its place in the chain
+		   and not FXManager.core.isProtectedFX(FXManager.core.state.track, i) then
 			local j = math.random(start_index, i - 1)
 			local _, fx_name_j = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, j, "")
 			if not fx_name_j:find("FX Constellation Bridge") and not fx_name_j:find("Sound Generator")
-			   and not fx_name_j:find("CP_Mod", 1, true) and i ~= j then
+			   and not fx_name_j:find("CP_Mod", 1, true)
+			   and not FXManager.core.isProtectedFX(FXManager.core.state.track, j) and i ~= j then
 				local temp_pos = fx_count
 				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, i, FXManager.core.state.track, temp_pos, true)
 				FXManager.r.TrackFX_CopyToTrack(FXManager.core.state.track, j, FXManager.core.state.track, i, true)
@@ -844,7 +863,10 @@ function FXManager.randomBypassFX()
 	for fx_id = 0, fx_count - 1 do
 		local _, fx_name = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, fx_id, "")
 		if not fx_name:find("FX Constellation Bridge") and not fx_name:find("Sound Generator")
-		   and not fx_name:find("CP_Mod", 1, true) then
+		   and not fx_name:find("CP_Mod", 1, true)
+		   -- this loop walks RAW indices, so it needs its own guard: bypassing a
+		   -- sampler would silence a whole kit on an Ultra Random
+		   and not FXManager.core.isProtectedFX(FXManager.core.state.track, fx_id) then
 			local should_bypass = math.random() < FXManager.core.state.random_bypass_percentage
 			FXManager.r.TrackFX_SetEnabled(FXManager.core.state.track, fx_id, not should_bypass)
 		end

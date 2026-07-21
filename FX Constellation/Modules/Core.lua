@@ -227,6 +227,49 @@ function Core.extractFXName(full_name)
 	return clean_name:len() > 25 and (clean_name:sub(1, 22) .. "...") or clean_name
 end
 
+-- ---------------------------------------------------------------------------
+-- Protected FX — instruments this app must never list, randomize or delete
+-- ---------------------------------------------------------------------------
+-- ReaSamplOmatic5000 is the engine behind every CP_Sampler pad and every kit.
+-- Showing it here is not a cosmetic problem: "clear chain" would delete a whole
+-- kit, and Ultra Random would scramble the sample start/end offsets, tune and
+-- envelopes of an instrument the user spent time building. It is not an effect,
+-- so it has no business in an effects app.
+--
+-- CRITICAL: match on the plugin IDENTITY, not the display name. RS5K RENAMES
+-- its instance to the loaded sample's filename, so TrackFX_GetFXName returns
+-- e.g. "KRANE_OverU_Kick.wav" — a name filter would miss exactly the loaded
+-- pads that matter most. fx_ident / fx_name are the immutable identity
+-- (REAPER 6.37+); the display name stays as a last resort for older builds.
+local PROTECTED_IDENT = {
+	"reasamplomatic",     -- CP_Sampler pads and kits
+	"cp_kit_choke",       -- CP_Sampler choke groups
+}
+
+function Core.isProtectedFX(track, fx_idx)
+	local r = Core.r
+	if not track or not r.TrackFX_GetNamedConfigParm then return false end
+	local ok, ident = r.TrackFX_GetNamedConfigParm(track, fx_idx, "fx_ident")
+	if not (ok and ident) then
+		ok, ident = r.TrackFX_GetNamedConfigParm(track, fx_idx, "fx_name")
+	end
+	if ok and ident then
+		local low = ident:lower()
+		for i = 1, #PROTECTED_IDENT do
+			if low:find(PROTECTED_IDENT[i], 1, true) then return true end
+		end
+	end
+	-- last resort: a fresh instance that has not been renamed yet
+	local _, disp = r.TrackFX_GetFXName(track, fx_idx, "")
+	if disp then
+		local low = disp:lower()
+		for i = 1, #PROTECTED_IDENT do
+			if low:find(PROTECTED_IDENT[i], 1, true) then return true end
+		end
+	end
+	return false
+end
+
 function Core.normalizeParamValue(value, min_val, max_val)
 	if min_val == 0 and max_val == 1 then return value end
 	if max_val == min_val then return 0 end

@@ -101,8 +101,21 @@ end
 -- vertical metric (`theme.button_height`) so checkboxes, sliders, combos
 -- and buttons line up on the same row. The toolkit accepts opts.height /
 -- opts.size on each widget — we set them here once for FX Constellation.
+-- Hoisted default opts (CP_Toolkit/PERFORMANCE.md rule 1: zero allocation in
+-- the hot path). `opts = opts or {}` allocated ONE TABLE PER WIDGET CALL, and
+-- every widget in this app funnels through here — several hundred throwaway
+-- tables per frame, at a frame rate the LFO section pins to 30 Hz. The widgets
+-- read these fields synchronously and never retain the table, so a single shared
+-- instance is safe (CP_MediaExplorer does exactly this).
+local DEFAULT_OPTS = { width = -1, height = 0 }
+local CHK_OPTS     = { size = 0 }
+
 local function _commonOpts(opts, theme)
-    opts = opts or {}
+    if opts == nil then
+        DEFAULT_OPTS.width  = -1
+        DEFAULT_OPTS.height = theme.button_height
+        return DEFAULT_OPTS
+    end
     if opts.width  == nil then opts.width  = -1 end
     if opts.height == nil then opts.height = theme.button_height end
     return opts
@@ -138,9 +151,15 @@ end
 
 local function Chk(id, label, checked, opts)
     local theme = UI.tk.GetTheme()
-    opts = opts or {}
     -- Match button height by sizing the checkbox box to button_height.
-    if opts.size == nil then opts.size = theme.button_height end
+    -- Its own scratch table: `size` is not `width`/`height`, so it must not
+    -- share DEFAULT_OPTS.
+    if opts == nil then
+        CHK_OPTS.size = theme.button_height
+        opts = CHK_OPTS
+    elseif opts.size == nil then
+        opts.size = theme.button_height
+    end
     return UI.tk.Checkbox(id, label, checked, opts)
 end
 

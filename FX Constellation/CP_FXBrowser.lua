@@ -367,13 +367,19 @@ local function isSoundGenFX(track, fx_idx)
     return low:find("sound generator") ~= nil or low:find("jsfx sound") ~= nil
 end
 
--- Delete every FX on the track except the SoundGenerator helper.
--- Returns the number of FX removed.
+-- FX this browser must never show, and above all never DELETE: a sampler is an
+-- instrument, and clearing a chain used to take a whole CP_Sampler kit with it.
+local function isHiddenFX(track, fx_idx)
+    return isSoundGenFX(track, fx_idx) or Core.isProtectedFX(track, fx_idx)
+end
+
+-- Delete every FX on the track except the protected ones (SoundGenerator
+-- helper, samplers). Returns the number of FX removed.
 local function clearChain(track)
     local removed = 0
     -- Walk top-down so deletes don't shift indices we haven't processed yet.
     for fx_idx = r.TrackFX_GetCount(track) - 1, 0, -1 do
-        if not isSoundGenFX(track, fx_idx) then
+        if not isHiddenFX(track, fx_idx) then
             r.TrackFX_Delete(track, fx_idx)
             removed = removed + 1
         end
@@ -874,12 +880,12 @@ local function drawChainPane(theme, w, h)
     local track = Core.state.track
     local fx_count = Core.isTrackValid() and r.TrackFX_GetCount(track) or 0
 
-    -- Build visible items (skip Sound Generator helpers).
+    -- Build visible items (skip helpers and instruments we must not touch).
     local visible = {}
     if Core.isTrackValid() then
         for fx_idx = 0, fx_count - 1 do
             local _, fx_name = r.TrackFX_GetFXName(track, fx_idx, "")
-            if not isSoundGenFX(track, fx_idx) then
+            if not isHiddenFX(track, fx_idx) then
                 visible[#visible + 1] = {
                     fx_idx  = fx_idx,
                     display = Core.extractFXName(fx_name),

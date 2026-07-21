@@ -14,28 +14,39 @@ function Persistence.init(reaper_api, core, data_path, presets_file)
 	}
 end
 
+-- Emits into a buffer joined once, NOT by `s = s .. piece`.
+--
+-- The old form was quadratic in the output size: every append copied the whole
+-- string built so far. The settings blob is well over a megabyte once a few
+-- tracks carry selections, so a single save took long enough to be felt as a
+-- freeze — and it fires on a 0.75 s debounce after *every* parameter edit, which
+-- is exactly the hitch reported after changing one value. Same output, O(n).
 function Persistence.serialize(t)
+	local buf, n = {}, 0
+	local function put(s) n = n + 1; buf[n] = s end
 	local function ser(v)
 		local vtype = type(v)
 		if vtype == "string" then
-			return string.format("%q", v)
+			put(string.format("%q", v))
 		elseif vtype == "number" then
-			return string.format("%.17g", v)
+			put(string.format("%.17g", v))
 		elseif vtype == "boolean" then
-			return tostring(v)
+			put(tostring(v))
 		elseif vtype == "table" then
-			local s = "{"
+			put("{")
 			local first = true
 			for k, val in pairs(v) do
-				if not first then s = s .. "," end
+				if not first then put(",") end
 				first = false
-				s = s .. "[" .. ser(k) .. "]=" .. ser(val)
+				put("[") ser(k) put("]=") ser(val)
 			end
-			return s .. "}"
+			put("}")
+		else
+			put("nil")
 		end
-		return "nil"
 	end
-	return ser(t)
+	ser(t)
+	return table.concat(buf)
 end
 
 function Persistence.deserialize(s)
