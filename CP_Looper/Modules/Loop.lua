@@ -419,6 +419,23 @@ function Loop.GetFreeRun()   return attached and gread(G_FREERUN) >= 0.5 end
 -- Armed lane: the lane whose routed instrument you hear while playing live (the
 -- JSFX re-channels incoming MIDI onto that lane's channel).
 function Loop.SetArmedLane(lane) if attached then gwrite(G_ARMED, lane) end end
+
+-- Live MIDI listening. The router is armed on ALL inputs and fans your playing
+-- out to each lane's instrument through channel-filtered sends — and a send
+-- ignores the destination's arm state, which is why unarmed tracks sound. Turn
+-- this off and the router stops receiving, so the keyboard is yours again.
+-- It is a track property, so the choice is saved with the project.
+function Loop.SetListen(on)
+    if not valid(Loop.track) then return end
+    r.SetMediaTrackInfo_Value(Loop.track, "I_RECARM", on and 1 or 0)
+    r.SetMediaTrackInfo_Value(Loop.track, "I_RECMON", on and 1 or 0)
+end
+
+function Loop.GetListen()
+    if not valid(Loop.track) then return false end
+    return r.GetMediaTrackInfo_Value(Loop.track, "I_RECARM") == 1
+       and r.GetMediaTrackInfo_Value(Loop.track, "I_RECMON") > 0
+end
 function Loop.GetArmedLane()
     return attached and math.floor((gread(G_ARMED) or 0) + 0.5) or 0
 end
@@ -493,6 +510,11 @@ function Loop.SetNoteCount(lane, n)
     if attached then gwrite(G_LANE_STATE + lane * 8 + 1, n) end
 end
 
+-- Restore a lane's playing state on recall (0 empty · 2 stopped · 3 playing).
+function Loop.SetMode(lane, m)
+    if attached then gwrite(G_LANE_STATE + lane * 8 + 0, m) end
+end
+
 function Loop.BumpVer(lane)
     if not attached then return end
     gwrite(G_LANE_STATE + lane * 8 + 4, (gread(G_LANE_STATE + lane * 8 + 4) or 0) + 1)
@@ -538,8 +560,12 @@ end
 --
 -- Wire format, one string, printable separators only (P_EXT is one line of the
 -- track chunk, so no newlines):
---   "1;<lane>;<lane>;<lane>;<lane>"            1 = format version
---   lane = "bars|muted|n|s,l,p,v|s,l,p,v|…"    starts/lengths in beats
+--   "2;<global>;<lane>;<lane>;<lane>;<lane>"        2 = format version
+--   global = "freerun|armedlane"
+--   lane   = "bars|muted|mode|n|s,l,p,v|s,l,p,v|…"  starts/lengths in beats
+--
+-- v1 (no global block, no per-lane mode) is still read: loops saved before the
+-- format grew come back stopped, which is the safe interpretation.
 -- ---------------------------------------------------------------------------
 local DATA_KEY = "P_EXT:" .. EXT_TAG .. "_DATA"
 
@@ -549,11 +575,17 @@ end
 
 function Loop.Serialize()
     if not attached then return "" end
-    local out = { "1" }
+    local out = { "2",
+                  (Loop.GetFreeRun() and "1" or "0") .. "|" .. Loop.GetArmedLane() }
     for lane = 0, Loop.MAX_LANES - 1 do
         local n = Loop.NoteCount(lane)
+        local m = math.floor(Loop.Mode(lane) + 0.5)
+        -- an in-flight recording (1) or an arm (4) is not a state to restore:
+        -- store what the lane actually holds
+        if m == 1 or m == 4 then m = (n > 0) and 3 or 0 end
         local parts = { num(Loop.GetLengthBars(lane)),
                         Loop.GetMute(lane) and "1" or "0",
+                        tostring(m),
                         tostring(n) }
         for i = 0, n - 1 do
             local s, l, p, v = Loop.GetNote(lane, i)
@@ -572,20 +604,35 @@ function Loop.Deserialize(str)
     if not attached or not str or str == "" then return false end
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
-    if fields[1] ~= "1" then return false end
+    local ver = fields[1]
+    if ver ~= "1" and ver ~= "2" then return false end
+    local v2 = (ver == "2")
+
+    -- lane blocks start after the version, and after the global block in v2
+    local base = v2 and 2 or 1
+    if v2 and fields[2] then
+        local fr, arm = fields[2]:match("^([^|]*)|([^|]*)$")
+        if fr then
+            Loop.SetFreeRun(fr == "1")
+            Loop.SetArmedLane(math.floor(tonumber(arm) or 0))
+        end
+    end
+
     local loaded = 0
     for lane = 0, Loop.MAX_LANES - 1 do
-        local blk = fields[lane + 2]
+        local blk = fields[base + lane + 1]
         if blk then
             local t = {}
             for f in blk:gmatch("[^|]+") do t[#t + 1] = f end
             local bars  = tonumber(t[1]) or 1
             local muted = t[2] == "1"
-            local n     = math.floor(tonumber(t[3]) or 0)
+            local mode  = v2 and math.floor(tonumber(t[3]) or 0) or nil
+            local hdr   = v2 and 4 or 3          -- fields before the notes
+            local n     = math.floor(tonumber(t[hdr]) or 0)
             if n > Loop.MAX_NOTES then n = Loop.MAX_NOTES end
             local written = 0
             for i = 1, n do
-                local rec = t[3 + i]
+                local rec = t[hdr + i]
                 if rec then
                     local s, l, p, v = rec:match("^([^,]*),([^,]*),([^,]*),([^,]*)$")
                     if s then
@@ -598,6 +645,16 @@ function Loop.Deserialize(str)
             Loop.SetLengthBars(lane, bars)
             Loop.SetMute(lane, muted)
             Loop.SetNoteCount(lane, written)
+            -- mode last: it is what makes the lane sound, so nothing may be
+            -- playing off a half-written note list. v1 data has no mode, and an
+            -- empty lane can only be empty.
+            if written == 0 then
+                Loop.SetMode(lane, 0)
+            elseif mode == 3 then
+                Loop.SetMode(lane, 3)          -- it was playing: launch it back
+            else
+                Loop.SetMode(lane, 2)          -- has content, stopped
+            end
             Loop.BumpVer(lane)
             loaded = loaded + written
         end

@@ -403,6 +403,22 @@ local function drawToolbar(attached)
             flash(free and "Follow host transport" or "Free run (launch without transport)")
         end
         UI.SameLine()
+        -- The router is armed on ALL MIDI inputs and fans your playing to each
+        -- lane's instrument through sends — and a send ignores the destination's
+        -- arm state, so those tracks sound even unarmed. This is the off switch:
+        -- turn it off and the keyboard is free for whatever track you armed.
+        local listen = Loop.GetListen()
+        if listen then
+            UI.PushStyleColor("button", 0.75, 0.30, 0.28)
+        end
+        if UI.Button("listen", listen and "Listen: on" or "Listen: off") then
+            Loop.SetListen(not listen)
+            flash(listen and "MIDI input released - lanes won't sound live"
+                          or "Listening: your playing reaches the routed lanes")
+        end
+        if listen then UI.PopStyleColor() end
+
+        UI.SameLine()
         if UI.Button("panic", "Panic") then Loop.Panic(); flash("All notes off") end
         UI.SameLine()
         if UI.Button("allsel", "Sound → sel") then
@@ -1083,16 +1099,22 @@ local function pollPersist(attached)
             roll_ver = -1
             flash("Loops recalled from the project")
         end
-        for l = 0, LANES - 1 do save_vers[l] = Loop.EvtVersion(l) end
+        for l = 0, LANES - 1 do
+            save_vers[l] = Loop.EvtVersion(l) * 8 + math.floor(Loop.Mode(l) + 0.5)
+        end
         return
     end
 
     local now = r.time_precise()
     for l = 0, LANES - 1 do
-        local v = Loop.EvtVersion(l)
+        -- mode too, not just note edits: launching or stopping a clip changes
+        -- the state to restore but bumps no event version
+        local v = Loop.EvtVersion(l) * 8 + math.floor(Loop.Mode(l) + 0.5)
         if v ~= save_vers[l] then
             save_vers[l] = v
-            save_due = now + 1.5          -- trailing: bumped, not reset
+            -- short: you may hit Ctrl+S right after an edit, and anything still
+            -- pending would simply not be in the project file
+            save_due = now + 0.4          -- trailing: bumped, not reset
         end
     end
     if save_due > 0 and now >= save_due and not state.edrag then

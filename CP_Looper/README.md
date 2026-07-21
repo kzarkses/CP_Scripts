@@ -128,11 +128,20 @@ The toolbar **Clock** toggle decides what drives the loops:
 - **Loops are saved with the project.** They are mirrored into the router
   track's `P_EXT` state, so they live inside the `.rpp` like any other track
   data — no side-car file, and they travel with the track if you copy it.
-  Saving is automatic (1.5 s after the last edit, and on close); recall is
-  automatic when the engine comes up empty, which is every fresh REAPER
-  session. **Recall** (toolbar) forces it back over lanes that already hold
-  notes — the automatic one never overwrites what is playing.
-  Routing and lane lengths are saved too.
+  Saved: every lane's **notes**, its **bar length**, **mute** and **playing
+  state**, plus the **clock mode** and the **armed lane**. Routing already was.
+  Reopen the project and you get the set back as you left it, playing lanes
+  included.
+  Saving is automatic (0.4 s after the last edit, and on close); recall is
+  automatic when the engine comes up empty — every fresh REAPER session — and
+  also when you switch project inside one session. **Recall** (toolbar) forces
+  it back over lanes that already hold notes; the automatic one never
+  overwrites what is playing.
+- **Listen** (toolbar) is the MIDI off switch. The router is armed on all MIDI
+  inputs and fans your playing to each lane's instrument through sends — and a
+  send ignores the destination's arm state, which is why lane tracks sound even
+  when they are not armed. Turn Listen off and your keyboard is free for
+  whatever track you armed yourself.
 - **REC with the clock stopped arms the lane** (status `ARM`) instead of wiping
   it: capture starts by itself on the first running block. Click ARM to cancel.
   A take interrupted by a transport stop is **kept**, not dropped — it is
