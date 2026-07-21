@@ -609,6 +609,17 @@ function PresetSystem.loadPreset(name)
 
 	PresetSystem.r.Undo_BeginBlock()
 
+	-- Mute for the rebuild. A preset load is the worst offender: the chain is
+	-- wiped, re-added plugin by plugin, and then EVERY parameter is written one
+	-- at a time (the raw sweep below), so the sound morphs audibly from plugin
+	-- defaults to the target long after the chain is correct. Restored at the
+	-- end of this function; there is no early return past this point.
+	local mute_track = PresetSystem.core.state.track
+	local prev_mute = PresetSystem.r.GetMediaTrackInfo_Value(mute_track, "B_MUTE")
+	if prev_mute == 0 then
+		PresetSystem.r.SetMediaTrackInfo_Value(mute_track, "B_MUTE", 1)
+	end
+
 	-- Wipe the chain but keep the managed FX (bridge + sound generator):
 	-- they are recreated/updated from the preset state, never re-added by
 	-- name, so their envelopes and instance state survive the reload.
@@ -786,6 +797,11 @@ function PresetSystem.loadPreset(name)
 	-- Loaded bases/ranges must reach existing links: force a full rewrite.
 	PresetSystem.core.state.links_rebuild = true
 	PresetSystem.fxmanager.saveTrackSelection()
+
+	-- chain and parameters are settled: let it be heard again
+	if prev_mute == 0 and PresetSystem.r.ValidatePtr2(0, mute_track, "MediaTrack*") then
+		PresetSystem.r.SetMediaTrackInfo_Value(mute_track, "B_MUTE", 0)
+	end
 
 	if original_fxfloat >= 0 and PresetSystem.r.SNM_SetIntConfigVar then
 		PresetSystem.r.SNM_SetIntConfigVar("fxfloat_focus", original_fxfloat)

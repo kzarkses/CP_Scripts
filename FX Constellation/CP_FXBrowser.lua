@@ -1178,8 +1178,12 @@ local function addSelectionToTrack(plugins)
     end
     r.Undo_BeginBlock()
     local removed = 0
-    if state.rand_replace then removed = clearChain(Core.state.track) end
-    for _, p in ipairs(sel) do addPlugin(p) end
+    -- muted for the whole rebuild: the chain is torn down and re-added one
+    -- plugin at a time, and every intermediate half-chain is audible
+    Core.withMutedTrack(Core.state.track, function()
+        if state.rand_replace then removed = clearChain(Core.state.track) end
+        for _, p in ipairs(sel) do addPlugin(p) end
+    end)
     r.Undo_EndBlock(state.rand_replace and "Replace chain with selection"
                                        or  "Add selected FX", -1)
     local msg = "Added " .. #sel .. " FX"
@@ -1241,8 +1245,10 @@ local function drawFooter(theme, plugins)
             local track = Core.state.track
             r.Undo_BeginBlock()
             local removed = 0
+            local before, after = 0, 0
+            Core.withMutedTrack(track, function()
             if state.rand_replace then removed = clearChain(track) end
-            local before = r.TrackFX_GetCount(track)
+            before = r.TrackFX_GetCount(track)
             if from_visible and #plugins > 0 then
                 local pool, picks = {}, {}
                 for _, p in ipairs(plugins) do pool[#pool + 1] = p end
@@ -1256,7 +1262,8 @@ local function drawFooter(theme, plugins)
             else
                 FXManager.addRandomFX(state.rand_count, state.rand_fav_only)
             end
-            local after = r.TrackFX_GetCount(track)
+            after = r.TrackFX_GetCount(track)
+            end)
             if not state.auto_open then
                 for i = before, after - 1 do r.TrackFX_Show(track, i, 2) end
             end
@@ -1296,7 +1303,10 @@ local function drawFooter(theme, plugins)
         refreshTrack()
         if Core.isTrackValid() then
             r.Undo_BeginBlock()
-            local removed = clearChain(Core.state.track)
+            local removed = 0
+            Core.withMutedTrack(Core.state.track, function()
+                removed = clearChain(Core.state.track)
+            end)
             r.Undo_EndBlock("Clear FX chain", -1)
             flash("Cleared " .. removed .. " FX")
         else

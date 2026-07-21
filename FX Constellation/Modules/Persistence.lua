@@ -6,6 +6,10 @@ function Persistence.init(reaper_api, core, data_path, presets_file)
 	Persistence.data_path = data_path
 	Persistence.presets_file = presets_file
 	Persistence.settings_file = data_path .. "settings.dat"
+	-- Track selections live in their OWN file. They are three orders of
+	-- magnitude bigger than the app settings, and merging both into one file
+	-- meant every parameter edit paid for the whole blob (see writeSettingsFile).
+	Persistence.selections_file = data_path .. "selections.dat"
 	Persistence._presets_loaded = false
 	Persistence.save_flags = {
 		settings = false,
@@ -152,12 +156,33 @@ function Persistence.loadSettings()
 	local saved_selections = Persistence.r.GetExtState("CP_FXConstellation", "track_selections")
 	if saved_selections ~= "" then
 		state.track_selections = Persistence.deserialize(saved_selections) or {}
-	elseif file_data and type(file_data.track_selections) == "table" then
-		state.track_selections = file_data.track_selections
-		-- Seed the cross-process channel so the FX Browser sees the same
-		-- selections without needing this script to save first.
-		Persistence.r.SetExtState("CP_FXConstellation", "track_selections",
-			Persistence.serialize(state.track_selections), false)
+	else
+		-- Own file first; fall back to the old combined settings.dat so an
+		-- existing install keeps its selections on the first run after the split.
+		local sels = nil
+		if Persistence.r.file_exists(Persistence.selections_file) then
+			local f = io.open(Persistence.selections_file, "r")
+			if f then
+				local content = f:read("*all")
+				f:close()
+				if content and content ~= "" then sels = Persistence.deserialize(content) end
+			end
+		end
+		if type(sels) ~= "table" and file_data and type(file_data.track_selections) == "table" then
+			sels = file_data.track_selections
+			-- Migrating off the combined file: schedule a settings write so the
+			-- old blob is dropped from settings.dat instead of lingering there.
+			Persistence.save_flags.settings = true
+			Persistence.save_flags.track_selections = true
+		end
+		if type(sels) == "table" then
+			state.track_selections = sels
+			Persistence.pruneTrackSelections()
+			-- Seed the cross-process channel so the FX Browser sees the same
+			-- selections without needing this script to save first.
+			Persistence.r.SetExtState("CP_FXConstellation", "track_selections",
+				Persistence.serialize(state.track_selections), false)
+		end
 	end
 
 	Persistence.loadPresetsFromFile()
@@ -209,6 +234,48 @@ function Persistence.flushAll()
 	Persistence.save_flags.presets = false
 end
 
+-- track_selections is keyed by track GUID and never expired, so it grew with
+-- every track ever touched — that unbounded growth is what turned a save into a
+-- visible freeze. Keep the most recently used tracks and drop the rest.
+local MAX_TRACK_SELECTIONS = 32
+
+function Persistence.pruneTrackSelections()
+	local state = Persistence.core.state
+	local sel = state.track_selections
+	if not sel then return end
+
+	local mru = state._sel_mru
+	if not mru then mru = {}; state._sel_mru = mru end
+	local guid = Persistence.core.getTrackGUID()
+	if guid then
+		for i = #mru, 1, -1 do
+			if mru[i] == guid then table.remove(mru, i) end
+		end
+		table.insert(mru, 1, guid)
+		for i = #mru, MAX_TRACK_SELECTIONS + 1, -1 do mru[i] = nil end
+	end
+
+	local n = 0
+	for _ in pairs(sel) do n = n + 1 end
+	if n <= MAX_TRACK_SELECTIONS then return end
+
+	local keep, kept = {}, 0
+	for i = 1, #mru do
+		if sel[mru[i]] and not keep[mru[i]] then
+			keep[mru[i]] = true; kept = kept + 1
+		end
+	end
+	-- After a fresh load the MRU list is empty, so top it up arbitrarily rather
+	-- than wiping everything down to the one track in hand.
+	for g in pairs(sel) do
+		if kept >= MAX_TRACK_SELECTIONS then break end
+		if not keep[g] then keep[g] = true; kept = kept + 1 end
+	end
+	for g in pairs(sel) do
+		if not keep[g] then sel[g] = nil end
+	end
+end
+
 local function buildSettingsData(state)
 	return {
 		gesture_x = state.gesture_x,
@@ -256,49 +323,68 @@ local function buildSettingsData(state)
 	}
 end
 
--- Durable mirror of the RAM ExtState. Sections are merged into the existing
--- file so a process that only owns one section (the FX Browser flushes just
--- track_selections) can never wipe the other's data.
+-- Write a payload, optionally skipping when this process already wrote exactly
+-- that text.
+--
+-- `memo` is only safe on a SINGLE-WRITER file. selections.dat has two writers
+-- (this app and the standalone FX Browser), so a memo there would corrupt state:
+-- A writes X, B writes Y, A writes X again and skips — leaving Y on disk while A
+-- believes X was saved. settings.dat is written by this app alone, so it may
+-- memo.
+local last_written = {}
+local function writeFile(path, text, memo)
+	if memo and last_written[path] == text then return false end
+	local f = io.open(path, "w")
+	if not f then return false end
+	f:write(text)
+	f:close()
+	if memo then last_written[path] = text end
+	return true
+end
+
+-- Durable mirror of the RAM ExtState, one file per section.
+--
+-- This used to be ONE file holding both sections, rewritten read-modify-write
+-- so a process owning a single section couldn't wipe the other's. The cost was
+-- brutal and it landed on EVERY parameter edit: read 1.3 MB back, run it
+-- through deserialize (which is `load()` on a megabyte-plus table literal —
+-- Lua compiles the whole thing), merge, re-serialize everything, write 1.3 MB.
+-- Separate files give the same isolation for free: each writer owns its file.
 function Persistence.writeSettingsFile(state_data, selections_data)
 	Persistence.ensureDataDirectory()
-	local existing = {}
-	if Persistence.r.file_exists(Persistence.settings_file) then
-		local f = io.open(Persistence.settings_file, "r")
-		if f then
-			local content = f:read("*all")
-			f:close()
-			if content and content ~= "" then
-				existing = Persistence.deserialize(content) or {}
-			end
-		end
+	if state_data then
+		writeFile(Persistence.settings_file,
+			Persistence.serialize({ state = state_data }), true)
 	end
-	if state_data then existing.state = state_data end
-	if selections_data then existing.track_selections = selections_data end
-	local f = io.open(Persistence.settings_file, "w")
-	if f then
-		f:write(Persistence.serialize(existing))
-		f:close()
+	if selections_data then
+		writeFile(Persistence.selections_file,
+			Persistence.serialize(selections_data), false)
 	end
 end
 
 function Persistence.saveSettings()
 	local state = Persistence.core.state
 	local state_data = nil
+	local sel_data = nil
 
 	if Persistence.save_flags.settings then
 		state_data = buildSettingsData(state)
 		Persistence.r.SetExtState("CP_FXConstellation", "state", Persistence.serialize(state_data), false)
 	end
 
-	if Persistence.save_flags.track_selections then
-		if next(state.track_selections) then
-			Persistence.r.SetExtState("CP_FXConstellation", "track_selections", Persistence.serialize(state.track_selections), false)
-		end
+	if Persistence.save_flags.track_selections and next(state.track_selections) then
+		Persistence.pruneTrackSelections()
+		sel_data = state.track_selections
+		-- serialize ONCE and reuse for both the cross-process channel and disk
+		local blob = Persistence.serialize(sel_data)
+		Persistence.r.SetExtState("CP_FXConstellation", "track_selections", blob, false)
+		Persistence.ensureDataDirectory()
+		writeFile(Persistence.selections_file, blob, false)
+		sel_data = nil   -- already written
 	end
 
-	if Persistence.save_flags.settings or Persistence.save_flags.track_selections then
-		Persistence.writeSettingsFile(state_data,
-			Persistence.save_flags.track_selections and next(state.track_selections) and state.track_selections or nil)
+	if state_data or sel_data then
+		Persistence.writeSettingsFile(state_data, sel_data)
 	end
 
 	if Persistence.save_flags.presets then

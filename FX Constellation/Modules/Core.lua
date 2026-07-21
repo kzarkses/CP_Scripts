@@ -270,6 +270,30 @@ function Core.isProtectedFX(track, fx_idx)
 	return false
 end
 
+-- Run fn with the track muted, restoring the previous state.
+--
+-- A chain edit is a SEQUENCE of REAPER mutations (M deletes then N adds), and
+-- REAPER commits each one to the live audio graph immediately — so every
+-- intermediate half-chain is briefly audible, and a signal running through 3 of
+-- its intended 8 effects is garbage by definition. That is the second of noise
+-- when iterating over a running loop.
+--
+-- This does NOT make it faster: plugin instantiation, state deserialization and
+-- PDC renegotiation are irreducible. It turns garbage into clean silence, which
+-- is the difference between unusable and acceptable. REAPER fades its own mute,
+-- so there is no click at either edge.
+--
+-- pcall'd: a failure inside fn must never leave the track muted for good.
+function Core.withMutedTrack(track, fn)
+	local r = Core.r
+	if not track or not r.ValidatePtr2(0, track, "MediaTrack*") then return fn() end
+	local prev = r.GetMediaTrackInfo_Value(track, "B_MUTE")
+	if prev == 0 then r.SetMediaTrackInfo_Value(track, "B_MUTE", 1) end
+	local ok, err = pcall(fn)
+	if prev == 0 then r.SetMediaTrackInfo_Value(track, "B_MUTE", 0) end
+	if not ok then error(err, 0) end
+end
+
 function Core.normalizeParamValue(value, min_val, max_val)
 	if min_val == 0 and max_val == 1 then return value end
 	if max_val == min_val then return 0 end

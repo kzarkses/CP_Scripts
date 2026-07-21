@@ -419,13 +419,26 @@ function FXManager.saveTrackSelection()
 			local invert_key = guid .. "_" .. key .. "_invert"
 			local x_key = guid .. "_" .. key .. "_x"
 			local y_key = guid .. "_" .. key .. "_y"
-			ranges[key] = FXManager.core.state.param_ranges[range_key] or 1.0
-			invert_assign[key] = FXManager.core.state.param_invert[invert_key] or false
-			xy_assign[key] = {
-				x = FXManager.core.state.param_xy_assign[x_key] ~= false,
-				y = FXManager.core.state.param_xy_assign[y_key] ~= false
-			}
-			base_values[key] = param_data.base_value
+			-- Store only what DIFFERS from the default. loadTrackSelection
+			-- already treats a missing key as the default (range 1.0, invert
+			-- false, xy both true, base = the live value), so writing a row for
+			-- every param of every FX was pure weight: measured, these four
+			-- tables were 85% of a 1.4 MB blob, a third of it describing params
+			-- the user had never even selected. That blob is re-serialized and
+			-- rewritten on every edit, which is the hitch.
+			local rng = FXManager.core.state.param_ranges[range_key]
+			if rng and rng ~= 1.0 then ranges[key] = rng end
+			if FXManager.core.state.param_invert[invert_key] then
+				invert_assign[key] = true
+			end
+			local ax = FXManager.core.state.param_xy_assign[x_key] ~= false
+			local ay = FXManager.core.state.param_xy_assign[y_key] ~= false
+			if not (ax and ay) then xy_assign[key] = { x = ax, y = ay } end
+			-- a base value only means something for a param the gesture drives;
+			-- for the rest the live plugin value IS the base
+			if param_data.selected and param_data.base_value then
+				base_values[key] = param_data.base_value
+			end
 		end
 	end
 	FXManager.core.state.track_selections[guid] = {
@@ -833,6 +846,8 @@ function FXManager.randomizeFXOrder()
 
 	local start_index = FXManager.core.state.sound_generator.enabled and 1 or 0
 
+	-- up to 3x(N-1) individually audible chain moves: silence beats garbage
+	FXManager.core.withMutedTrack(FXManager.core.state.track, function()
 	for i = fx_count - 1, start_index + 1, -1 do
 		local _, fx_name_i = FXManager.r.TrackFX_GetFXName(FXManager.core.state.track, i, "")
 		if not fx_name_i:find("FX Constellation Bridge") and not fx_name_i:find("Sound Generator")
@@ -851,6 +866,7 @@ function FXManager.randomizeFXOrder()
 			end
 		end
 	end
+	end)
 	FXManager.r.Undo_EndBlock("Randomize FX order", -1)
 	FXManager.scanTrackFX()
 end
