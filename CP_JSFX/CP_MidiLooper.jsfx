@@ -1,0 +1,406 @@
+desc: CP_MidiLooper
+author: Cedric Pamalio
+version: 0.5
+
+// MIDI looper engine for CP_Looper. The CP_Toolkit UI drives it over gmem.
+//
+// Phase-locked to the host beat grid: the loop boundary for a lane sits at
+// every N bars from project start, so when REAPER is slaved to an external
+// clock the loops stay locked to it (and to a friend's Ableton) for free.
+//
+// Storage is NOTE OBJECTS (start, length, pitch, vel) in beats — the same
+// shape the CP_Toolkit piano-roll edits, so drawing/moving/deleting a note in
+// the UI is a direct write. Playback is a per-block GATE: each block the JSFX
+// reconciles the notes currently sounding against whichever notes cover the
+// current phase. That means an edit takes effect on the next block with no
+// stuck notes, ever — at the cost of block-granular timing (a few ms), which
+// is inaudible for the melodic/pad material this is for.
+//
+// Each lane plays on its own MIDI channel (lane 0 -> ch 1 …) so overlapping
+// pitches across lanes never cut each other on a shared (omni) instrument.
+//
+// Placement: this JSFX lives alone on a dedicated (armed, input-monitored)
+// "router" track that CP_Looper creates. Each lane plays on its own MIDI
+// channel and is carried from that track to a per-lane destination instrument
+// track by a channel-filtered MIDI send — so lane 1 can drive one synth and
+// lane 2 another (FL/Ableton style). Live input is re-channeled to the ARMED
+// lane's channel so you hear that lane's routed instrument while you play.
+// gmem=CP_MidiLooper mirrors the indices on the Lua side.
+//
+// LOOP LIFETIME: the recorded loops live in gmem, which belongs to the REAPER
+// session, not to this plugin instance. @init therefore does NOT clear them — it
+// only rebuilds per-instance state — because REAPER re-runs @init on every
+// plugin reset (transport start among them) and that used to wipe every lane.
+// Loops end in exactly two ways: the user clears them, or REAPER quits.
+
+options:gmem=CP_MidiLooper
+
+@init
+
+MAX_LANES   = 4;
+MAX_NOTES   = 1024;
+NOTE_STRIDE = 4;           // start, length, pitch, vel
+
+// ---- local heap (per-instance, reset on @init) ----
+ACTIVE    = 0;                         // ACTIVE[lane*128+pitch] = sounding note idx+1 (0 off)
+PEND_ST   = ACTIVE  + MAX_LANES*128;   // capture: pending note-on start phase (-1 none)
+PEND_VL   = PEND_ST + MAX_LANES*128;   // capture: pending note-on velocity
+DESIRE    = PEND_VL + MAX_LANES*128;   // scratch[128]: note idx+1 that should sound
+DVEL      = DESIRE  + 128;             // scratch[128]: its velocity
+PREV_MUTE = DVEL    + 128;             // per-lane mute edge memory
+REC_START = PREV_MUTE + MAX_LANES;     // per-lane record-start beat (for auto-stop)
+heap_top  = REC_START + MAX_LANES;
+freembuf(heap_top);
+
+// ---- gmem layout (shared with Lua) ----
+GMEM_CMD        = 0;    // edge command (1 rec, 2 stop-rec, 3 clear, 4 panic, 5 play, 6 stop, 7 clear-all)
+GMEM_CMD_LANE   = 1;
+GMEM_CMD_ARG    = 2;
+GMEM_FREERUN    = 3;    // 0 = follow host transport, 1 = free internal clock
+GMEM_ARMED      = 4;    // lane index that live input is monitored on (0..MAX_LANES-1)
+GMEM_CMD_SEQ    = 5;
+GMEM_LANE_CTRL  = 100;  // stride 8: +0 length_bars, +1 muted   (Lua -> JSFX)
+GMEM_LANE_STATE = 200;  // stride 8: +0 mode,+1 nev(SHARED),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent
+GMEM_TRANSPORT  = 3000;
+GMEM_INIT_COUNT = 3095;
+GMEM_FREEBEAT   = 3096; // free clock position, mirrored so a reset doesn't warp it
+GMEM_MAGIC      = 3098; // layout signature — its absence means "cold gmem"
+GMEM_VERSION    = 3099;
+GMEM_NOTE_BASE  = 10000; // per lane: MAX_NOTES * NOTE_STRIDE floats
+
+// Bump LAYOUT_VER on ANY change to the gmem layout above: it forces the next
+// @init to treat the block as cold, so a stale layout is never reinterpreted.
+LAYOUT_VER = 5;
+MAGIC      = 8451000 + LAYOUT_VER;
+
+// Finalize the pending note of (cl, p): append a note object ending at endphase.
+// heldstop=1 means the note was still held when recording stopped, so a ~0 span
+// means it was held the whole loop -> full length; otherwise (a real note-off) a
+// ~0 span is a genuinely short note. nev lives in gmem (shared).
+function finalize_note(cl, p, endphase, Lb, heldstop) local(n, ln, na) (
+  PEND_ST[cl*128+p] >= 0 ? (
+    n = gmem[GMEM_LANE_STATE + cl*8 + 1];
+    n < MAX_NOTES ? (
+      ln = endphase - PEND_ST[cl*128+p];
+      ln < 0 ? ln += Lb;
+      ln < 0.02 ? ln = (heldstop ? Lb : 0.05);
+      ln > Lb ? ln = Lb;
+      na = GMEM_NOTE_BASE + (cl*MAX_NOTES + n) * NOTE_STRIDE;
+      gmem[na+0] = PEND_ST[cl*128+p];
+      gmem[na+1] = ln;
+      gmem[na+2] = p;
+      gmem[na+3] = PEND_VL[cl*128+p];
+      gmem[GMEM_LANE_STATE + cl*8 + 1] = n + 1;
+      gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
+    );
+    PEND_ST[cl*128+p] = -1;
+  );
+);
+
+// @init is NOT only "the looper was created". REAPER re-runs it whenever the
+// plugin is reset — transport start, samplerate change, FX chain reload, project
+// switch. So @init must rebuild the per-instance heap (ACTIVE / PEND / …, which
+// is genuinely gone) WITHOUT touching the recorded loops, which live in gmem and
+// survive. A cold block (first attach in this REAPER session: all zeros, so no
+// MAGIC) is the only case that may clear them.
+cold = gmem[GMEM_MAGIC] != MAGIC;
+gmem[GMEM_MAGIC] = MAGIC;
+
+li = 0;
+loop(MAX_LANES,
+  PREV_MUTE[li] = 0;
+  REC_START[li] = 0;
+  ni = 0;
+  loop(128,
+    ACTIVE[li*128+ni]  = 0;
+    PEND_ST[li*128+ni] = -1;
+    ni += 1;
+  );
+  cold ? (
+    gmem[GMEM_LANE_STATE + li*8 + 0] = 0;   // mode idle
+    gmem[GMEM_LANE_STATE + li*8 + 1] = 0;   // nev
+    gmem[GMEM_LANE_STATE + li*8 + 5] = 0;   // hascontent
+  ) : (
+    // warm reset: the notes stay. Only a take still being CAPTURED is lost (its
+    // held-note state lived in the heap), so don't strand the lane in "recording"
+    // — settle it on what it actually holds.
+    gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+      gmem[GMEM_LANE_STATE + li*8 + 1] > 0 ? (
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
+      ) : (
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 0;
+      );
+    );
+    gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;  // UI re-reads
+  );
+  gmem[GMEM_LANE_CTRL  + li*8 + 0] <= 0 ? (gmem[GMEM_LANE_CTRL + li*8 + 0] = 1);
+  li += 1;
+);
+
+// adopt the command cursor rather than -1: a reset must not re-dispatch the last
+// command, and the free clock must not jump back to 0 mid-jam.
+last_seq  = gmem[GMEM_CMD_SEQ];
+free_beat = cold ? 0 : gmem[GMEM_FREEBEAT];
+prev_active = 0;
+prev_freerun = -1;   // -1 = no previous block yet (skip the first edge)
+last_pb = 0;
+gmem[GMEM_VERSION]    = LAYOUT_VER;
+gmem[GMEM_INIT_COUNT] = gmem[GMEM_INIT_COUNT] + 1;
+
+@block
+
+playing = play_state & 1;
+spb = srate * 60.0 / max(tempo, 1);
+block_beats = samplesblock / spb;
+
+// clock source: the host transport (locks to an external clock when slaved),
+// or a free-running internal clock so clips can launch with the transport
+// stopped. `active` = the looper is advancing; `pb` = its beat position.
+freerun = gmem[GMEM_FREERUN] >= 0.5;
+free_beat += block_beats;
+gmem[GMEM_FREEBEAT] = free_beat;   // mirrored so a plugin reset resumes in place
+pb = freerun ? free_beat : beat_position;
+active = freerun || playing;
+
+// Clock-source switch: pb jumps to a different timebase. Re-anchor every lane's
+// record start by the SAME jump so an in-flight recording keeps its elapsed
+// length — otherwise (pb - REC_START) goes wildly negative, the one-loop
+// auto-stop never fires, the take is never finalized and the recording is lost.
+(prev_freerun >= 0 && freerun != prev_freerun) ? (
+  pbd = pb - last_pb;
+  li = 0;
+  loop(MAX_LANES, REC_START[li] = REC_START[li] + pbd; li += 1;);
+);
+prev_freerun = freerun;
+last_pb = pb;
+
+// falling edge of `active` (e.g. transport stop in Follow mode): release every
+// sounding looped note so nothing hangs downstream and ACTIVE stays consistent
+(active < 0.5 && prev_active >= 0.5) ? (
+  li = 0;
+  loop(MAX_LANES,
+    ni = 0;
+    loop(128,
+      ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+      ni += 1;
+    );
+    li += 1;
+  );
+);
+prev_active = active;
+
+gmem[GMEM_TRANSPORT + 0] = tempo;
+gmem[GMEM_TRANSPORT + 1] = play_state;
+gmem[GMEM_TRANSPORT + 2] = beat_position;
+gmem[GMEM_TRANSPORT + 3] = spb;
+gmem[GMEM_TRANSPORT + 4] = ts_num;
+gmem[GMEM_TRANSPORT + 5] = ts_denom;
+gmem[GMEM_TRANSPORT + 6] = srate;
+
+// ---- edge command ----
+seq = gmem[GMEM_CMD_SEQ];
+seq != last_seq ? (
+  last_seq = seq;
+  cmd = gmem[GMEM_CMD];
+  cl  = gmem[GMEM_CMD_LANE];
+  (cl >= 0 && cl < MAX_LANES) ? (
+    Lbc = max(gmem[GMEM_LANE_CTRL + cl*8 + 0], 0.125) * max(ts_num, 1);
+
+    cmd == 1 ? (                              // REC: release playing notes, clear, capture
+      ni = 0;
+      loop(128,
+        ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+        PEND_ST[cl*128+ni] = -1;
+        ni += 1;
+      );
+      gmem[GMEM_LANE_STATE + cl*8 + 1] = 0;
+      gmem[GMEM_LANE_STATE + cl*8 + 0] = 1;
+      REC_START[cl] = pb;
+      gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
+    );
+
+    cmd == 2 ? (                              // STOP-REC: finalize held -> playing
+      gmem[GMEM_LANE_STATE + cl*8 + 0] == 1 ? (
+        cph = pb - floor(pb / Lbc) * Lbc;
+        ni = 0;
+        loop(128, finalize_note(cl, ni, cph, Lbc, 1); ni += 1;);
+        gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+      );
+    );
+
+    cmd == 5 ? (                              // PLAY: launch a stopped clip
+      gmem[GMEM_LANE_STATE + cl*8 + 0] == 2 ? gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+    );
+
+    cmd == 6 ? (                              // STOP: halt a playing clip
+      gmem[GMEM_LANE_STATE + cl*8 + 0] == 3 ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 0] = 2;
+        ni = 0;
+        loop(128,
+          ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+          ni += 1;
+        );
+      );
+    );
+
+    cmd == 3 ? (                              // CLEAR: idle, notes off
+      gmem[GMEM_LANE_STATE + cl*8 + 0] = 0;
+      gmem[GMEM_LANE_STATE + cl*8 + 1] = 0;
+      ni = 0;
+      loop(128,
+        ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+        PEND_ST[cl*128+ni] = -1;
+        ni += 1;
+      );
+      gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
+    );
+
+    cmd == 4 ? (                              // PANIC: stop all clips + flush notes
+      li = 0;
+      loop(MAX_LANES,
+        gmem[GMEM_LANE_STATE + li*8 + 0] == 3 ? (gmem[GMEM_LANE_STATE + li*8 + 0] = 2);
+        ni = 0;
+        loop(128,
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          ni += 1;
+        );
+        li += 1;
+      );
+    );
+
+    cmd == 7 ? (                              // CLEAR ALL: the explicit wipe.
+      li = 0;                                 // Loops now survive a plugin reset,
+      loop(MAX_LANES,                         // so this is the ONLY way to lose one.
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 0;
+        gmem[GMEM_LANE_STATE + li*8 + 1] = 0;
+        ni = 0;
+        loop(128,
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          PEND_ST[li*128+ni] = -1;
+          ni += 1;
+        );
+        gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;
+        li += 1;
+      );
+    );
+  );
+  gmem[GMEM_CMD] = 0;
+);
+
+// ---- auto-stop recording after one full loop (one-click REC) ----
+active ? (
+  li = 0;
+  loop(MAX_LANES,
+    gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+      Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+      (pb - REC_START[li]) >= Lb ? (
+        cph = pb - floor(pb / Lb) * Lb;
+        ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
+      );
+    );
+    li += 1;
+  );
+);
+
+// ---- mute rising edge: release a lane's held playback notes ----
+li = 0;
+loop(MAX_LANES,
+  muted = gmem[GMEM_LANE_CTRL + li*8 + 1] >= 0.5;
+  (muted && PREV_MUTE[li] < 0.5) ? (
+    ni = 0;
+    loop(128,
+      ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+      ni += 1;
+    );
+  );
+  PREV_MUTE[li] = muted ? 1 : 0;
+  li += 1;
+);
+
+// ---- incoming MIDI: live thru (re-channeled to the armed lane) + capture ----
+armed = gmem[GMEM_ARMED];
+(armed < 0 || armed >= MAX_LANES) ? (armed = 0);
+while (midirecv(mofs, m1, m2, m3)) (
+  hi = m1 & 0xF0;
+  // channel-voice messages are re-emitted on the armed lane's channel so live
+  // play is heard on that lane's routed instrument; system messages pass as-is
+  (hi >= 0x80 && hi < 0xF0) ? (
+    midisend(mofs, hi + armed, m2, m3);
+  ) : (
+    midisend(mofs, m1, m2, m3);
+  );
+  (active && (hi == 0x90 || hi == 0x80)) ? (
+    ison = (hi == 0x90 && m3 > 0);
+    beat_o = pb + mofs / spb;
+    li = 0;
+    loop(MAX_LANES,
+      gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+        Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+        ph = beat_o - floor(beat_o / Lb) * Lb;
+        ison ? (
+          // a new note-on closes any pending note of the same pitch first
+          finalize_note(li, m2, ph, Lb, 0);
+          PEND_ST[li*128+m2] = ph;
+          PEND_VL[li*128+m2] = m3;
+        ) : (
+          finalize_note(li, m2, ph, Lb, 0);
+        );
+      );
+      li += 1;
+    );
+  );
+);
+
+// ---- gate playback: reconcile sounding notes with the note list ----
+active ? (
+  li = 0;
+  loop(MAX_LANES,
+    muted = gmem[GMEM_LANE_CTRL + li*8 + 1] >= 0.5;
+    (gmem[GMEM_LANE_STATE + li*8 + 0] == 3 && !muted) ? (
+      Lb  = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+      p0  = pb - floor(pb / Lb) * Lb;
+      nev = gmem[GMEM_LANE_STATE + li*8 + 1];
+
+      p = 0; loop(128, DESIRE[p] = 0; p += 1;);
+
+      k = 0;
+      loop(nev,
+        na  = GMEM_NOTE_BASE + (li*MAX_NOTES + k) * NOTE_STRIDE;
+        nst = gmem[na+0]; nln = gmem[na+1]; np = gmem[na+2];
+        dd = p0 - nst; dd -= floor(dd / Lb) * Lb;
+        dd < nln ? ( DESIRE[np] = k + 1; DVEL[np] = gmem[na+3]; );
+        k += 1;
+      );
+
+      p = 0;
+      loop(128,
+        des = DESIRE[p];
+        cur = ACTIVE[li*128+p];
+        des != cur ? (
+          cur > 0 ? midisend(0, 0x80 + li, p, 0);
+          des > 0 ? midisend(0, 0x90 + li, p, DVEL[p]);
+          ACTIVE[li*128+p] = des;
+        );
+        p += 1;
+      );
+    );
+    li += 1;
+  );
+);
+
+// ---- publish per-lane state (NOT nev — that cell is shared) ----
+li = 0;
+loop(MAX_LANES,
+  Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+  // notes drawn into an empty lane (via the editor) promote it to "stopped" so
+  // it becomes launchable; deleting all notes demotes it back to empty
+  (gmem[GMEM_LANE_STATE + li*8 + 0] == 0 && gmem[GMEM_LANE_STATE + li*8 + 1] > 0) ?
+    (gmem[GMEM_LANE_STATE + li*8 + 0] = 2);
+  (gmem[GMEM_LANE_STATE + li*8 + 0] == 2 && gmem[GMEM_LANE_STATE + li*8 + 1] <= 0) ?
+    (gmem[GMEM_LANE_STATE + li*8 + 0] = 0);
+  gmem[GMEM_LANE_STATE + li*8 + 2] = active ? pb - floor(pb / Lb) * Lb : 0;
+  gmem[GMEM_LANE_STATE + li*8 + 3] = Lb;
+  gmem[GMEM_LANE_STATE + li*8 + 5] = gmem[GMEM_LANE_STATE + li*8 + 1] > 0 ? 1 : 0;
+  li += 1;
+);
