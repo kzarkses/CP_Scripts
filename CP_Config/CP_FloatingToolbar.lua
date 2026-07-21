@@ -39,13 +39,17 @@ return {
         {
           command_id = "_RSeda384d565421c44d7383c6d80b9df917dfe4110",
           native_icon = "toolbar_open_track_chain_fx.png"
+        },
+        {
+          command_id = "_RSe7d701bc5dbac6fff525b296bc0814ccac32f231",
+          native_icon = "toolbar_envelope_LFO_generator_and_shaper.png"
         }
       },
       anchor = {
         auto_hide_min_width = 1800,
         hide_when_target_hidden = false,
-        offset_x = 355,
-        offset_y = 4,
+        offset_x = 352,
+        offset_y = 3,
         snap = "left",
         target = "transport",
         x = 0,
