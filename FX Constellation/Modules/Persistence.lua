@@ -176,8 +176,9 @@ function Persistence.loadSettings()
 			Persistence.save_flags.track_selections = true
 		end
 		if type(sels) == "table" then
+			-- NEVER prune on load: the MRU list is empty at that point, so the
+			-- kept set would be arbitrary. Loading must not lose anything.
 			state.track_selections = sels
-			Persistence.pruneTrackSelections()
 			-- Seed the cross-process channel so the FX Browser sees the same
 			-- selections without needing this script to save first.
 			Persistence.r.SetExtState("CP_FXConstellation", "track_selections",
@@ -234,10 +235,19 @@ function Persistence.flushAll()
 	Persistence.save_flags.presets = false
 end
 
--- track_selections is keyed by track GUID and never expired, so it grew with
--- every track ever touched — that unbounded growth is what turned a save into a
--- visible freeze. Keep the most recently used tracks and drop the rest.
-local MAX_TRACK_SELECTIONS = 32
+-- Runaway guard ONLY. This is deliberately far above any real project.
+--
+-- It was 32, which lost data: a measured install had 51 tracks with selections,
+-- so a fifth of them silently lost their selected params, ranges, XY assignments
+-- AND their mod_sources — which is where "the LFO isn't mapped like it was"
+-- comes from, since the LFO routing per param lives in this same table.
+--
+-- It was also not worth it: capping 51 -> 32 removed 1.3% of the payload,
+-- because size comes from a few huge tracks, not from track count. The real fix
+-- was to stop storing rows that carry nothing but defaults (see
+-- FXManager.saveTrackSelection); this cap now only exists so the table cannot
+-- grow without bound over years.
+local MAX_TRACK_SELECTIONS = 512
 
 function Persistence.pruneTrackSelections()
 	local state = Persistence.core.state
