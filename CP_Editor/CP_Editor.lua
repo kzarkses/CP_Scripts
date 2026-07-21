@@ -28,6 +28,7 @@ local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 local Wave  = dofile(script_path .. "Modules/Wave.lua")
 local Ops   = dofile(script_path .. "Modules/Ops.lua")
 local Roll  = dofile(script_path .. "Modules/Roll.lua")
+local RollUI = dofile(script_path .. "Modules/RollUI.lua")
 local Kit   = dofile(cp_root .. "CP_Sampler/Modules/Kit.lua")
 local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 
@@ -209,6 +210,16 @@ local function setItem(item)
         state.len = r.GetMediaItemInfo_Value(item, "D_LENGTH")
         state.ch, state.sr = 0, 0
         Roll.Attach(take, item)
+        -- fit the vertical view to the notes (scrollable/zoomable afterwards)
+        do
+            local vlo, vhi = 127, 0
+            for i = 1, Roll.count do local p = Roll.pitches[i]; if p < vlo then vlo = p end; if p > vhi then vhi = p end end
+            if Roll.count == 0 then vlo, vhi = 48, 71 end
+            local rows = (vhi - vlo) + 6
+            if rows < 18 then rows = 18 elseif rows > 48 then rows = 48 end
+            state.view_rows = rows
+            state.view_hi = math.min(127, vhi + 2)
+        end
         state.mdrag = nil
         resetForTarget()
         return true
@@ -1090,6 +1101,39 @@ local function gridStepSec(t)
     return r.TimeMap2_QNToTime(0, qn + gridStepQN()) - (pos + t)
 end
 
+-- Context handed to the shared RollUI (keyboard map + transform menu). The
+-- take's cache unit is item-relative SECONDS, so every amount here is seconds.
+local midiCtx = {
+    Roll = Roll, Keys = Keys,
+    Shift = Core_tk.ModShift, Ctrl = Core_tk.ModCtrl, Alt = Core_tk.ModAlt,
+    flash = flash,
+    audition = function(p, v) auditionNote(p, v) end,
+    gridStep = function(t) return gridStepSec(t) end,
+    snap = function(t) return midiSnap(t) end,
+    divToUnit = function(div)
+        local pos = itemPos()
+        local t0 = (Roll.sel and Roll.starts[Roll.sel]) or 0
+        local qn = r.TimeMap2_timeToQN(0, pos + t0)
+        return r.TimeMap2_QNToTime(0, qn + div * 4) - r.TimeMap2_QNToTime(0, qn)
+    end,
+    pasteAt = function()
+        local at = r.GetCursorPosition() - itemPos()
+        return at < 0 and 0 or at
+    end,
+    swingSnap = function(amt)
+        return function(t)
+            local pos = itemPos()
+            local step = gridStepQN()
+            local qn = r.TimeMap2_timeToQN(0, pos + t)
+            local idx = math.floor(qn / step + 0.5)
+            local base = idx * step
+            if idx % 2 == 1 then base = base + step * amt end
+            local nt = r.TimeMap2_QNToTime(0, base) - pos
+            return nt < 0 and 0 or nt
+        end
+    end,
+}
+
 -- "Grid 1/16" display label, cached until the division changes (read per
 -- frame — no concat in the frame path)
 local grid_lbl = { div = -1, s = "" }
@@ -1145,6 +1189,7 @@ local function rollRows()
     local drum = state.drum_mode
     if drum == nil then drum = Kit.Exists() end
     local key = (drum and 1 or 0) .. ":" .. Roll.version .. ":" .. Kit.version
+             .. ":" .. (state.view_hi or 0) .. ":" .. (state.view_rows or 0)
     if mrows.key == key then return mrows end
     mrows.key = key
     mrows.drum = drum
@@ -1164,15 +1209,13 @@ local function rollRows()
             for p = 51, 36, -1 do list[#list + 1] = p end
         end
     else
-        local lo, hi = 127, 0
-        for i = 1, Roll.count do
-            local p = Roll.pitches[i]
-            if p < lo then lo = p end
-            if p > hi then hi = p end
-        end
-        if hi < lo then lo, hi = 48, 71 end
-        lo, hi = math.max(0, lo - 2), math.min(127, hi + 2)
-        if hi - lo < 11 then hi = math.min(127, lo + 11) end
+        -- manual, scrollable/zoomable vertical view (wheel + Ctrl+wheel)
+        local rows = state.view_rows or 30
+        local hi = state.view_hi or 71
+        local lo = hi - rows + 1
+        if lo < 0 then lo = 0; hi = math.min(127, rows - 1) end
+        if hi > 127 then hi = 127; lo = math.max(0, 127 - rows + 1) end
+        state.view_hi, state.view_rows = hi, (hi - lo + 1)
         for p = hi, lo, -1 do list[#list + 1] = p end
     end
     local map = mrows.map
@@ -1230,6 +1273,10 @@ local function drawMidiBar(theme)
         flash(n .. " notes quantized" .. (Roll.sel and " (selected)" or ""))
     end
     UI.SameLine()
+    if UI.Button("m_transform", "Transform") then
+        UI.NativeMenu(RollUI.TransformMenu(midiCtx))
+    end
+    UI.SameLine()
     if UI.Button("m_native", "Native") then
         r.SelectAllMediaItems(0, false)
         r.SetMediaItemSelected(state.item, true)
@@ -1245,11 +1292,12 @@ local wbm = { t0 = -1, t1 = -1, w = 0, h = 0, rows = nil, step = 0 }
 local function renderRollGrid(theme, rows, w, h, row_h)
     local step = gridStepQN()
     if wbm.t0 == state.t0 and wbm.t1 == state.t1 and wbm.w == w
-       and wbm.h == h and wbm.rows == rows.key and wbm.step == step then
+       and wbm.h == h and wbm.rows == rows.key and wbm.step == step
+       and wbm.sver == Roll.scale_ver then
         return
     end
     wbm.t0, wbm.t1, wbm.w, wbm.h = state.t0, state.t1, w, h
-    wbm.rows, wbm.step = rows.key, step
+    wbm.rows, wbm.step, wbm.sver = rows.key, step, Roll.scale_ver
 
     gfx.dest = MROLL_BUF
     gfx.setimgdim(MROLL_BUF, w, h)
@@ -1265,6 +1313,15 @@ local function renderRollGrid(theme, rows, w, h, row_h)
         local shade = rows.drum and (i % 2 == 0) or BLACK_KEY[p % 12]
         if shade then
             gfx.rect(0, (i - 1) * row_h, w, row_h + 1, 1)
+        end
+    end
+    -- scale highlight: dim out-of-scale rows so the in-scale ones read as "playable"
+    if Roll.scale_on then
+        gfx.set(0, 0, 0, 0.30)
+        for i = 1, rows.n do
+            if not Roll.InScale(rows.list[i]) then
+                gfx.rect(0, (i - 1) * row_h, w, row_h + 1, 1)
+            end
         end
     end
     -- row separators
@@ -1437,11 +1494,14 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     if in_grid or in_vel then
         local wheel = Core_tk.GetState().mouse_wheel
         if wheel and wheel ~= 0 then
-            -- Ctrl+Shift+Wheel on a note = trap-roll subdivide.
-            local idx = (in_grid and pitch) and Roll.At(t, pitch) or nil
-            if idx and Core_tk.ModCtrl() and Core_tk.ModShift() then
-                local a, b, n = noteRun(idx)
-                local vel = Roll.vels[idx]
+            local notches = wheel / 120
+            local ctrl, shift, alt = Core_tk.ModCtrl(), Core_tk.ModShift(), Core_tk.ModAlt()
+            local onNote = (in_grid and pitch) and Roll.At(t, pitch) or nil
+            if onNote and ctrl and shift and not state.mdrag and not state.marquee then
+                -- Ctrl+Shift+Wheel on a note = trap-roll subdivide. NEVER mid-drag:
+                -- it Syncs, which reshuffles indices and strands the drag snapshot.
+                local a, b, n = noteRun(onNote)
+                local vel = Roll.vels[onNote]
                 if wheel > 0 then n = n * 2 else n = math.max(1, math.floor(n / 2)) end
                 if n <= 64 then
                     Roll.Subdivide(a, b, pitch, vel, n)
@@ -1449,9 +1509,31 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 end
                 UI.ConsumeWheel()
                 return
+            elseif shift then                         -- horizontal zoom
+                zoomAt(mx, notches > 0 and (1 / 1.25) ^ notches or 1.25 ^ (-notches))
+            elseif alt then                           -- horizontal scroll
+                local dt = -notches * span() * 0.15
+                state.t0 = state.t0 + dt; state.t1 = state.t1 + dt; clampView()
+            elseif ctrl then                          -- vertical zoom about the mouse pitch
+                local vrows = state.view_rows or 30
+                local anchor = pitch or state.view_hi or 71
+                local ns = math.floor(vrows * (notches > 0 and 1 / 1.2 or 1.2) + 0.5)
+                if ns < 6 then ns = 6 elseif ns > 100 then ns = 100 end
+                local vlo = (state.view_hi or 71) - vrows + 1
+                local frac = (anchor - vlo) / math.max(1, vrows - 1)
+                local nlo = math.floor(anchor - frac * (ns - 1) + 0.5)
+                local nhi = nlo + ns - 1
+                if nlo < 0 then nlo = 0; nhi = ns - 1 end
+                if nhi > 127 then nhi = 127; nlo = math.max(0, 127 - ns + 1) end
+                state.view_hi, state.view_rows = nhi, (nhi - nlo + 1)
+            else                                      -- vertical scroll (up = higher)
+                local vrows = state.view_rows or 30
+                local step = math.max(1, math.floor(vrows * 0.2))
+                local vhi = (state.view_hi or 71) + (notches > 0 and step or -step)
+                if vhi > 127 then vhi = 127 end
+                if vhi - vrows + 1 < 0 then vhi = vrows - 1 end
+                state.view_hi = vhi
             end
-            local notches = wheel / 120
-            zoomAt(mx, notches > 0 and (1 / 1.25) ^ notches or 1.25 ^ (-notches))
             UI.ConsumeWheel()
         end
         if Core_tk.MouseDown(64) then
@@ -1479,7 +1561,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 end
                 state.row_hi = nil
                 if mx > x1 - 6 then
-                    state.mdrag = { mode = "resize", idx = idx, moved = false,
+                    state.mdrag = { mode = "resize", idx = idx, moved = false, px = mx, py = my,
                                     multi = Roll.seln > 1 and snapshotSel() or nil,
                                     ol = Roll.lens[idx] }
                 else
@@ -1490,7 +1572,9 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 end
                 auditionNote(pitch, Roll.vels[idx])
             else
-                -- FL: click on empty = insert in the cell UNDER the cursor
+                -- FL: click on empty = insert in the cell UNDER the cursor.
+                -- Draw-then-drag: keep the button held and drag right to set the
+                -- length (a plain click keeps the one-cell default).
                 local t0 = midiSnapFloor(t)
                 local len = gridStepSec(t0)
                 if len <= 0.001 then len = 0.1 end
@@ -1498,8 +1582,8 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 state.row_hi = nil
                 auditionNote(pitch, state.last_vel)
                 if Roll.sel then
-                    state.mdrag = { mode = "move", idx = Roll.sel, moved = false,
-                                    grab = t - t0, op = t0, opp = pitch }
+                    state.mdrag = { mode = "resize", idx = Roll.sel, moved = false,
+                                    fresh = true, px = mx, py = my, ol = Roll.lens[Roll.sel] }
                 end
             end
         elseif Core_tk.MouseClicked(2) and not state.mdrag then
@@ -1591,7 +1675,10 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 UI.SetCursor("size_all")
             elseif md.mode == "resize" and md.idx then
                 local e = free and t or midiSnap(t)
-                local min_len = gridStepSec(Roll.starts[md.idx]) * 0.25
+                -- a freshly drawn note may never shrink BELOW the cell it was
+                -- drawn as (the snapped end can round back onto its own start);
+                -- only an existing-note resize may go sub-cell
+                local min_len = md.fresh and md.ol or (gridStepSec(Roll.starts[md.idx]) * 0.25)
                 local len = e - Roll.starts[md.idx]
                 if len < min_len then len = min_len end
                 if md.multi and md.multi > 1 then
@@ -1604,7 +1691,11 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                         Roll.ResizeLive(en.i, nl)
                     end
                     md.moved = true
-                elseif math.abs(len - Roll.lens[md.idx]) > 0.0001 then
+                elseif (md.moved or not md.px
+                        or math.abs(mx - md.px) > 3 or math.abs(my - md.py) > 3)
+                       and math.abs(len - Roll.lens[md.idx]) > 0.0001 then
+                    -- draw-then-drag: a fresh insert only sets length once the
+                    -- pointer actually moves (a plain click keeps the one cell)
                     Roll.ResizeLive(md.idx, len)
                     md.moved = true
                 end
@@ -1860,59 +1951,30 @@ local function handleKeys()
     if Core_tk.GetState().focus then return end
 
     local midi = state.mode == "midi"
-    -- Note-editing / selection keys are BLOCKED while a mouse drag is in
-    -- flight: they Commit → Sort → Sync, which reshuffles note indices and
-    -- would leave the drag's move_snap pointing at the wrong notes (silent
-    -- MIDI corruption). Mirrors the pollTarget mid-drag Sync guard.
+    -- Note-editing keys are BLOCKED mid-drag: they Commit → Sort → Sync, which
+    -- reshuffles indices and would strand the drag's move_snap (silent MIDI
+    -- corruption). Mirrors the pollTarget mid-drag Sync guard.
     local midi_edit = midi and not state.mdrag
 
-    if char == Keys.SPACE then
-        togglePlay()
-        UI.ConsumeChar()
-    elseif char == Keys.HOME then
-        fitView()
-        UI.ConsumeChar()
-    elseif char == Keys.ESCAPE and not midi and state.sel_a then
-        state.sel_a, state.sel_b = nil, nil
-        UI.ConsumeChar()
-    elseif char == Keys.ESCAPE and midi_edit and Roll.seln > 0 then
-        Roll.ClearSel()
+    -- host navigation (all modes)
+    if char == Keys.SPACE then togglePlay(); UI.ConsumeChar(); return end
+    if char == Keys.HOME then fitView(); UI.ConsumeChar(); return end
+    if char == 43 then zoomAt(wave.x + wave.w / 2, 1 / 1.5); UI.ConsumeChar(); return end
+    if char == 45 then zoomAt(wave.x + wave.w / 2, 1.5); UI.ConsumeChar(); return end
+    if char == Keys.ESCAPE and not midi and state.sel_a then
+        state.sel_a, state.sel_b = nil, nil; UI.ConsumeChar(); return
+    end
+
+    if not midi_edit then return end
+
+    -- in-editor undo / redo (the take is part of REAPER's undo). pollTarget
+    -- re-validates + re-syncs the roll next frame, so don't touch it here.
+    if char == 26 then r.Undo_DoUndo2(0); UI.ConsumeChar(); return end   -- Ctrl+Z
+    if char == 25 then r.Undo_DoRedo2(0); UI.ConsumeChar(); return end   -- Ctrl+Y
+
+    -- shared note-editing commands (identical keyboard map in CP_Looper)
+    if RollUI.HandleKey(char, midiCtx) then
         state.row_hi = nil
-        UI.ConsumeChar()
-    elseif char == 43 then          -- '+'
-        zoomAt(wave.x + wave.w / 2, 1 / 1.5)
-        UI.ConsumeChar()
-    elseif char == 45 then          -- '-'
-        zoomAt(wave.x + wave.w / 2, 1.5)
-        UI.ConsumeChar()
-    elseif midi_edit and char == 1 then  -- Ctrl+A: select all
-        Roll.SelectBox(-1e9, 1e9, 0, 127, false)
-        UI.ConsumeChar()
-    elseif midi_edit and char == Keys.DELETE and Roll.seln > 0 then
-        if Roll.seln > 1 then Roll.DeleteSel() else Roll.Delete(Roll.sel) end
-        UI.ConsumeChar()
-    elseif midi_edit and (char == 113 or char == 81) then   -- q / Q
-        local n = Roll.Quantize(midiSnap)
-        flash(n .. " notes quantized")
-        UI.ConsumeChar()
-    elseif midi_edit and Roll.seln > 0 and (char == Keys.UP or char == Keys.DOWN) then
-        local d = (char == Keys.UP) and 1 or -1
-        for i in pairs(Roll.selset) do
-            local np = Roll.pitches[i] + d
-            if np >= 0 and np <= 127 then
-                Roll.MoveLive(i, Roll.starts[i], np)
-            end
-        end
-        Roll.Commit("MIDI: transpose")
-        if Roll.sel then auditionNote(Roll.pitches[Roll.sel], Roll.vels[Roll.sel]) end
-        UI.ConsumeChar()
-    elseif midi_edit and Roll.sel and (char == Keys.LEFT or char == Keys.RIGHT) then
-        local i = Roll.sel
-        local step = gridStepSec(Roll.starts[i])
-        local t = Roll.starts[i] + (char == Keys.RIGHT and step or -step)
-        if t < 0 then t = 0 end
-        Roll.MoveLive(i, midiSnap(t), Roll.pitches[i])
-        Roll.Commit("MIDI: nudge")
         UI.ConsumeChar()
     end
 end
@@ -1973,7 +2035,7 @@ local function frame(theme)
                                   Roll.vels[Roll.sel], Roll.lens[Roll.sel]),
                     { disabled = true })
         else
-            UI.Text("click = add · drag = move · edge = resize · right-drag = select · right-click = delete · Q = quantize",
+            UI.Text("click/drag = add · edge = resize · right-drag = select · Ctrl+D dup · Ctrl+C/V · Q quant · Transform menu",
                     { disabled = true })
         end
     elseif state.sel_a then

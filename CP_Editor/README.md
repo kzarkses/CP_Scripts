@@ -41,7 +41,7 @@ start/end offsets — no slice files), **Sel to pad**.
 
 | Input | Action |
 |---|---|
-| click empty cell | insert a note in the cell under the cursor (grid length, current velocity) and drag it |
+| click empty cell | insert a note (grid length, current velocity); **keep dragging right to set its length** (a plain click keeps one cell) |
 | drag a note | move (grid snap; **Ctrl = free**) — moves the whole selection if several are selected |
 | drag the right edge | resize (resizes the whole selection together) |
 | **right-drag** | **marquee multi-select** (Shift = add to selection) |
@@ -51,10 +51,31 @@ start/end offsets — no slice files), **Sel to pad**.
 | **Ctrl+Shift+Wheel** on a note | **subdivide** the run: ×2 up, ÷2 down (1 → 2 → 4 → 8… fills the same span — trap rolls) |
 | velocity lane (bottom) | drag a note's bar (whole selection if multi-selected) |
 | Q | quantize (selection, else all) |
-| Ctrl+A | select all · Delete | delete the selection |
-| arrows | transpose (Up/Down) / nudge (Left/Right) the selection |
+| Ctrl+A · Delete | select all · delete the selection |
+| **Ctrl+D** · **Ctrl+C/X/V** | duplicate (offset by the selection span, chains) · copy / cut / paste (at the edit cursor) |
+| **Ctrl+Z / Ctrl+Y** | undo / redo, in the editor |
+| arrows | transpose Up/Down (**Shift = octave**, **Ctrl = in-scale**) · nudge Left/Right, whole selection |
+| **Transform** button | the command menu (see below) |
 | Space | REAPER transport — the item plays in context |
 | Native editor | escape hatch: opens the built-in MIDI editor |
+
+### Transform menu & scale (shared with CP_Looper)
+
+The **Transform** button opens one menu of offline note operations, driven by the
+same shared command layer both editors use — so the shortcuts and commands are
+**identical in CP_Looper**:
+
+- **Duplicate / Copy / Cut / Paste**.
+- **Transpose** (octave / semitone / fifth), **Nudge**, **Length** (set to grid /
+  legato), **Reverse**, **Invert pitch**.
+- **Velocity** (set / ramp up-down / compress / expand), **Humanize** (light /
+  medium / heavy, seeded so it's reproducible), **Quantize** (100 / 66 / 50 % +
+  swing).
+- **Scale** — pick a root + scale; out-of-scale rows dim in the grid, "Snap
+  selection to scale" pulls notes in, and Ctrl+↑/↓ transposes *within* the scale.
+- **Chord from note** (stamp a chord on a single selected note) and
+  **Arpeggiate** (bake the selected chord into an up/down/updown/random pattern)
+  and **Euclidean fill** (spread N hits over the selection's span).
 
 **Top ruler strip** (real handles): click empty space to move the edit
 cursor, drag to make a time selection; then **grab an edge** of the time
@@ -105,9 +126,13 @@ Modules/Wave.lua    PCM_Source_GetPeaks reader: arbitrary [t0,t1] at
                     region strip)
 Modules/Ops.lua     item/take property edits + peaks-based analysis
                     (true-peak, transient onsets, zero-cross snap)
-Modules/Roll.lua    MIDI note cache (item-relative seconds ↔ PPQ) +
-                    edit layer: live no-sort writes during drags, one
-                    sorted Commit + undo point at release
+Modules/Roll.lua    MIDI note cache + edit layer over a pluggable
+                    backend: live no-sort writes during drags, one
+                    sorted Commit + undo point at release. The take
+                    backend (item-relative seconds ↔ PPQ) is what the
+                    editor uses; a caller can inject another backend
+                    (e.g. a beat-based loop) — selection, hit-testing,
+                    subdivide and quantize are storage-agnostic.
 ```
 
 Rendering: the waveform / roll grid renders into an offscreen buffer
@@ -115,9 +140,18 @@ only when the view changes; a steady frame is one blit plus overlays.
 Known limit: looped MIDI items edit their first iteration (source
 notes), like the arrange inline editor.
 
+## Where the MIDI feature set came from
+
+[`docs/midi-editor-benchmark.md`](docs/midi-editor-benchmark.md) — the comparative
+study behind the piano roll: every editing feature scored across Ableton 12, FL
+21, Cubase 14, Studio One 7, Bitwig 5, Logic 11 and REAPER's native editor, with
+the gap analysis and the tiered roadmap it produced. Its "CP now" column is a
+snapshot of the state *before* that work, kept on purpose as the baseline.
+
 ## Ideas for next
 
 - Destructive audio ops via a pure-Lua WAV writer (export selection as
   a new sample → pad or folder — Edison's "drag region out").
-- Marquee multi-select + batch move in the roll; CC lanes.
+- **CC / automation lanes** (the one big missing MIDI category), a live
+  preview→apply→dice loop over the transforms, and keyboard note-navigation.
 - Spectral view; warp-marker UI on take stretch markers.
