@@ -1054,15 +1054,30 @@ local last_init = -1     -- engine reset counter, watched to invalidate caches
 local save_vers = {}     -- [lane] = last EvtVersion mirrored
 local save_due  = 0      -- time_precise deadline, 0 = clean
 local recalled  = false  -- one auto-recall per attach
+local last_router = nil  -- router GUID, to notice a project switch
+local force_recall = false
 
 local function pollPersist(attached)
     if not attached then recalled = false; return end
 
-    -- Recall once, and only into an engine that holds nothing: a fresh REAPER
-    -- session cold-inits gmem, so the project's copy is the only one left.
+    -- gmem is REAPER-session scoped, so switching project inside one session
+    -- leaves the PREVIOUS project's loops loaded. Noticing the router change is
+    -- what makes recall feel automatic instead of "why are these not mine?".
+    -- Forced, because those lanes are full of the other project's take — whose
+    -- own copy is safe in its own .rpp. Never forced on the first attach: there
+    -- the engine may legitimately hold a live set the user just recorded.
+    local guid = Loop.track and r.GetTrackGUID(Loop.track) or nil
+    if guid ~= last_router then
+        if last_router ~= nil then recalled = false; force_recall = true end
+        last_router = guid
+    end
+
+    -- Recall once. Non-forced it only fills an engine that holds nothing, which
+    -- is every fresh REAPER session (the JSFX cold-inits gmem).
     if not recalled then
         recalled = true
-        local ok, n = Loop.LoadState(false)
+        local ok, n = Loop.LoadState(force_recall)
+        force_recall = false
         if ok and n and n > 0 then
             for l = 0, LANES - 1 do ev[l].ver = -1 end
             roll_ver = -1
