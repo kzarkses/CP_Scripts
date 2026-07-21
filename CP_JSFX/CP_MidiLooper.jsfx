@@ -1,6 +1,6 @@
 desc: CP_MidiLooper
 author: Cedric Pamalio
-version: 0.5
+version: 0.6
 
 // MIDI looper engine for CP_Looper. The CP_Toolkit UI drives it over gmem.
 //
@@ -123,8 +123,8 @@ loop(MAX_LANES,
   ) : (
     // warm reset: the notes stay. Only a take still being CAPTURED is lost (its
     // held-note state lived in the heap), so don't strand the lane in "recording"
-    // — settle it on what it actually holds.
-    gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+    // or "armed" — settle it on what it actually holds.
+    (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 4) ? (
       gmem[GMEM_LANE_STATE + li*8 + 1] > 0 ? (
         gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
       ) : (
@@ -174,11 +174,26 @@ active = freerun || playing;
 prev_freerun = freerun;
 last_pb = pb;
 
-// falling edge of `active` (e.g. transport stop in Follow mode): release every
-// sounding looped note so nothing hangs downstream and ACTIVE stays consistent
+// Falling edge of `active` (transport stop in Follow mode, or switching to
+// Follow while stopped). Two jobs:
+//   1. CLOSE any take still being captured. The one-loop auto-stop below only
+//      runs while `active`, so without this a stop strands the recording: the
+//      held notes stay in PEND_ST (local heap), the lane stays in mode REC and
+//      the next REC wipes it. Stopping mid-take now KEEPS what was played.
+//   2. Release every sounding looped note so nothing hangs downstream.
 (active < 0.5 && prev_active >= 0.5) ? (
   li = 0;
   loop(MAX_LANES,
+    gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+      Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+      cph = pb - floor(pb / Lb) * Lb;
+      ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
+      gmem[GMEM_LANE_STATE + li*8 + 1] > 0 ? (
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 3;   // keep it, playable
+      ) : (
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 0;   // nothing was played
+      );
+    );
     ni = 0;
     loop(128,
       ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
@@ -206,17 +221,25 @@ seq != last_seq ? (
   (cl >= 0 && cl < MAX_LANES) ? (
     Lbc = max(gmem[GMEM_LANE_CTRL + cl*8 + 0], 0.125) * max(ts_num, 1);
 
-    cmd == 1 ? (                              // REC: release playing notes, clear, capture
-      ni = 0;
-      loop(128,
-        ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
-        PEND_ST[cl*128+ni] = -1;
-        ni += 1;
+    cmd == 1 ? (                              // REC
+      // With the clock stopped (Follow + transport stopped) nothing can be
+      // captured, so clearing here would destroy the existing loop for nothing.
+      // ARM instead: keep the notes, and start capturing the instant the clock
+      // runs. Armed is mode 4.
+      active ? (
+        ni = 0;
+        loop(128,
+          ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+          PEND_ST[cl*128+ni] = -1;
+          ni += 1;
+        );
+        gmem[GMEM_LANE_STATE + cl*8 + 1] = 0;
+        gmem[GMEM_LANE_STATE + cl*8 + 0] = 1;
+        REC_START[cl] = pb;
+        gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
+      ) : (
+        gmem[GMEM_LANE_STATE + cl*8 + 0] = 4;
       );
-      gmem[GMEM_LANE_STATE + cl*8 + 1] = 0;
-      gmem[GMEM_LANE_STATE + cl*8 + 0] = 1;
-      REC_START[cl] = pb;
-      gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
     );
 
     cmd == 2 ? (                              // STOP-REC: finalize held -> playing
@@ -225,6 +248,14 @@ seq != last_seq ? (
         ni = 0;
         loop(128, finalize_note(cl, ni, cph, Lbc, 1); ni += 1;);
         gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+      );
+      // cancel an arm: fall back to whatever the lane already holds
+      gmem[GMEM_LANE_STATE + cl*8 + 0] == 4 ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 1] > 0 ? (
+          gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+        ) : (
+          gmem[GMEM_LANE_STATE + cl*8 + 0] = 0;
+        );
       );
     );
 
@@ -287,10 +318,24 @@ seq != last_seq ? (
   gmem[GMEM_CMD] = 0;
 );
 
-// ---- auto-stop recording after one full loop (one-click REC) ----
+// ---- armed lanes start capturing as soon as the clock runs, then auto-stop
+//      after one full loop (one-click REC). Both live here, before the capture
+//      loop below, so an armed lane records this very block. ----
 active ? (
   li = 0;
   loop(MAX_LANES,
+    gmem[GMEM_LANE_STATE + li*8 + 0] == 4 ? (   // armed -> recording
+      ni = 0;
+      loop(128,
+        ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+        PEND_ST[li*128+ni] = -1;
+        ni += 1;
+      );
+      gmem[GMEM_LANE_STATE + li*8 + 1] = 0;
+      gmem[GMEM_LANE_STATE + li*8 + 0] = 1;
+      REC_START[li] = pb;
+      gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;
+    );
     gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
       Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
       (pb - REC_START[li]) >= Lb ? (

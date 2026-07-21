@@ -458,9 +458,11 @@ local function drawViz(theme, l, x, y, w, h, mode)
         Core.DrawLine(px, y, px, y + h, 1, 1, 1, 0.65)
     end
 
-    -- recording tint
+    -- recording tint (dimmer while merely armed)
     if mode == 1 then
         Core.DrawRect(x, y, w, h, C.danger[1], C.danger[2], C.danger[3], 0.07)
+    elseif mode == 4 then
+        Core.DrawRect(x, y, w, h, 0.85, 0.65, 0.25, 0.05)
     end
     -- empty hint
     if e.bc == 0 and mode ~= 1 then
@@ -474,7 +476,7 @@ end
 local function drawLane(theme, l, x, y, w, h)
     local C = theme.colors
     refreshLane(l)
-    local mode  = math.floor(Loop.Mode(l) + 0.5)   -- 0 empty, 1 rec, 2 stopped, 3 playing
+    local mode  = math.floor(Loop.Mode(l) + 0.5)   -- 0 empty,1 rec,2 stopped,3 playing,4 armed
     local muted = Loop.GetMute(l)
     local nev   = math.floor(Loop.NEv(l) + 0.5)
 
@@ -504,10 +506,11 @@ local function drawLane(theme, l, x, y, w, h)
     -- status word (right)
     local sw, scr, scg, scb
     if mode == 1 then sw, scr, scg, scb = "REC", C.danger[1], C.danger[2], C.danger[3]
+    elseif mode == 4 then sw, scr, scg, scb = "ARM", 0.85, 0.65, 0.25
     elseif mode == 3 then sw, scr, scg, scb = "PLAY", 0.30, 0.75, 0.40
     elseif mode == 2 then sw, scr, scg, scb = "STOP", C.text_mute[1], C.text_mute[2], C.text_mute[3]
     else sw, scr, scg, scb = "", C.text_mute[1], C.text_mute[2], C.text_mute[3] end
-    if muted and mode ~= 1 then sw = "MUTE"; scr, scg, scb = 0.85, 0.65, 0.25 end
+    if muted and mode ~= 1 and mode ~= 4 then sw = "MUTE"; scr, scg, scb = 0.85, 0.65, 0.25 end
     if sw ~= "" then
         local tw = gfx.measurestr(sw)
         Core.DrawText(sw, x + w - pad - tw, y + 5, scr, scg, scb, 1)
@@ -518,14 +521,24 @@ local function drawLane(theme, l, x, y, w, h)
     local bh = 20
     local bx = x + pad
 
-    -- REC (click while recording = finish the take -> plays)
+    -- REC (click while recording/armed = finish the take / cancel the arm)
     if mode == 1 then
         if tinyBtn(bx, cy, 46, bh, "REC", C.danger[1], C.danger[2], C.danger[3], theme) then
             Loop.Stop(l)
         end
+    elseif mode == 4 then
+        if tinyBtn(bx, cy, 46, bh, "ARM", 0.72, 0.55, 0.20, theme) then
+            Loop.Stop(l); flash("Lane " .. (l + 1) .. ": arm cancelled")
+        end
     else
         if tinyBtn(bx, cy, 46, bh, "REC", 0.30, 0.30, 0.32, theme) then
-            Loop.SetArmedLane(l); Loop.Rec(l); flash("Lane " .. (l + 1) .. ": recording")
+            Loop.SetArmedLane(l); Loop.Rec(l)
+            -- with the clock stopped the engine arms instead of wiping the lane
+            if Loop.GetFreeRun() or Loop.Playing() then
+                flash("Lane " .. (l + 1) .. ": recording")
+            else
+                flash("Lane " .. (l + 1) .. ": armed - starts on play")
+            end
         end
     end
     bx = bx + 50
@@ -646,7 +659,7 @@ local function drawEditor(theme)
     local pxx = lxx - 4 - 46
     if mode == 3 then
         if tinyBtn(pxx, hy, 46, hbh, "Stop", 0.28, 0.66, 0.38, theme) then Loop.StopClip(lane) end
-    else
+    elseif mode == 2 then
         if tinyBtn(pxx, hy, 46, hbh, "Play", 0.22, 0.30, 0.24, theme) then Loop.Play(lane) end
     end
 

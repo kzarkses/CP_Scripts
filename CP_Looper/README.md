@@ -127,6 +127,10 @@ The toolbar **Clock** toggle decides what drives the loops:
 
 - Loops are **runtime-only** — a live performance tool, not saved with the
   project (V2 could persist them via track state). Routing *is* saved.
+- **REC with the clock stopped arms the lane** (status `ARM`) instead of wiping
+  it: capture starts by itself on the first running block. Click ARM to cancel.
+  A take interrupted by a transport stop is **kept**, not dropped — it is
+  finalized at the phase it reached.
 - Their real lifetime is **the REAPER session**, not the plugin. They live in the
   shared gmem block, so they survive an engine reset — and REAPER resets a JSFX
   more often than it looks (transport start, samplerate change, FX reload). That

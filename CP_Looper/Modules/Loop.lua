@@ -372,7 +372,9 @@ local function sendCmd(cmd, lane, arg)
     gwrite(G_CMD_SEQ, seq)
 end
 
-function Loop.Rec(lane)      sendCmd(1, lane) end  -- clear + start capturing
+-- REC: clears + captures when the clock runs; ARMS (non-destructive, mode 4)
+-- when it doesn't, and capture begins by itself on the first running block.
+function Loop.Rec(lane)      sendCmd(1, lane) end
 function Loop.Stop(lane)     sendCmd(2, lane) end  -- finalize recording -> playing
 function Loop.Clear(lane)    sendCmd(3, lane) end  -- -> empty, notes off
 function Loop.Panic()        sendCmd(4, 0)    end  -- all playback notes off
@@ -380,9 +382,10 @@ function Loop.Play(lane)     sendCmd(5, lane) end  -- launch a stopped clip
 function Loop.StopClip(lane) sendCmd(6, lane) end  -- halt a playing clip
 function Loop.ClearAll()     sendCmd(7, 0)    end  -- wipe every lane (explicit only)
 
--- REC button behaviour: recording -> stop, otherwise (re)record.
+-- REC button behaviour: recording or armed -> stop/cancel, otherwise (re)record.
 function Loop.ToggleRec(lane)
-    if Loop.Mode(lane) == 1 then Loop.Stop(lane) else Loop.Rec(lane) end
+    local m = Loop.Mode(lane)
+    if m == 1 or m == 4 then Loop.Stop(lane) else Loop.Rec(lane) end
 end
 
 -- Play/Stop button: launch a stopped clip / halt a playing one.
@@ -424,6 +427,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Per-lane state (read)
 -- ---------------------------------------------------------------------------
+-- 0 empty · 1 recording · 2 stopped (has content) · 3 playing · 4 armed
 function Loop.Mode(lane)       return attached and gread(G_LANE_STATE + lane * 8 + 0) or 0 end
 function Loop.NEv(lane)        return attached and gread(G_LANE_STATE + lane * 8 + 1) or 0 end
 function Loop.Phase(lane)      return attached and gread(G_LANE_STATE + lane * 8 + 2) or 0 end
