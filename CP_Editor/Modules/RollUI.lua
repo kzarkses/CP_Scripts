@@ -14,6 +14,12 @@
 --   ctx.snap(t)            snap a cache-time to the grid (cache units)
 --   ctx.divToUnit(div)     whole-note division (0.0625 = 1/16) -> cache units
 --   ctx.pasteAt()          paste anchor time (cache units)           [optional]
+--   ctx.barFloor(t)        largest bar boundary <= t (cache units)   [optional]
+--   ctx.barCeil(t)         smallest bar boundary >= t (cache units)  [optional]
+--                          — both or neither; they make Duplicate bar-aware
+--   ctx.fitLen()           length of a FIXED canvas (cache units)    [optional]
+--   ctx.grow(need)         try to extend that canvas to `need`;      [optional]
+--                          returns true on success
 --   ctx.swingSnap(amt)     -> a swing-aware snap fn (0..1 amount)    [optional]
 --   ctx.flash(msg)         status message                            [optional]
 --   ctx.audition(p,v)      preview a pitch                           [optional]
@@ -44,6 +50,52 @@ local function selSpan(Roll)
 end
 RollUI.SelSpan = selSpan
 
+-- How far a Duplicate should move the copy.
+--
+-- Musicians think in bars, not in "the span of what I selected". A one-bar
+-- pattern whose last note is a 16th ending just before the barline must repeat
+-- at bar 2, not a 16th early — which is what the raw span gives. So the offset
+-- is the distance from the BAR CONTAINING the selection start to the BAR END at
+-- or after the selection end. Using barFloor(a) rather than a itself preserves
+-- the pattern's position inside its bar (a phrase starting on the "and" of 1
+-- lands on the "and" of 1 in the next bar).
+--
+-- Hosts that don't provide barFloor/barCeil keep the old span behaviour.
+local function dupOffset(ctx)
+    local a, b = selBounds(ctx.Roll)
+    if a == math.huge then return 0 end
+    if ctx.barFloor and ctx.barCeil then
+        local dt = ctx.barCeil(b) - ctx.barFloor(a)
+        if dt > 1e-9 then return dt end
+    end
+    local dt = b - a
+    if dt <= 0 then dt = ctx.gridStep(a) end
+    return dt
+end
+RollUI.DupOffset = dupOffset
+
+-- Duplicate, making room first when the host has a fixed-length canvas (the
+-- looper's lane). Returns the message to flash.
+local function doDuplicate(ctx)
+    local dt = dupOffset(ctx)
+    if dt <= 0 then return "nothing to duplicate" end
+    local _, b = selBounds(ctx.Roll)
+    local fit = ctx.fitLen and ctx.fitLen()
+    if fit and fit > 0 then
+        local need = b + dt
+        if need > fit + 1e-9 then
+            -- Do NOT wrap: for a full-loop selection the offset is a multiple of
+            -- the loop length, so wrapping would stack every copy exactly on its
+            -- original — a duplicate that doubles the note count and changes
+            -- nothing audible. Grow the lane instead (FL/Ableton behaviour).
+            if not (ctx.grow and ctx.grow(need)) then
+                return "no room - raise the loop length"
+            end
+        end
+    end
+    return ctx.Roll.Duplicate(dt, 0) .. " duplicated"
+end
+
 -- ---------------------------------------------------------------------------
 -- Keyboard map (note-editing commands only; the host keeps play/zoom/undo/home)
 -- Returns true when it consumed the key.
@@ -59,8 +111,7 @@ function RollUI.HandleKey(char, ctx)
     if char == 1 then                                   -- Ctrl+A: select all
         Roll.SelectAll(); return true
     elseif char == 4 then                               -- Ctrl+D: duplicate
-        local dt = selSpan(Roll); if dt <= 0 then dt = ctx.gridStep(ref) end
-        local n = Roll.Duplicate(dt, 0); flash(n .. " duplicated"); return true
+        flash(doDuplicate(ctx)); return true
     elseif char == 3 then                               -- Ctrl+C: copy
         local n = Roll.Copy(); flash(n .. " copied"); return true
     elseif char == 24 then                              -- Ctrl+X: cut
@@ -105,8 +156,7 @@ function RollUI.TransformMenu(ctx)
 
     -- clipboard / duplicate
     add({ label = "Duplicate", action = function()
-        local dt = selSpan(Roll); if dt <= 0 then dt = grid end
-        flash(Roll.Duplicate(dt, 0) .. " duplicated")
+        flash(doDuplicate(ctx))
     end })
     add({ label = "Copy", disabled = not hasSel,
           action = function() flash(Roll.Copy() .. " copied") end })

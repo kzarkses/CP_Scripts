@@ -52,7 +52,7 @@ start/end offsets — no slice files), **Sel to pad**.
 | velocity lane (bottom) | drag a note's bar (whole selection if multi-selected) |
 | Q | quantize (selection, else all) |
 | Ctrl+A · Delete | select all · delete the selection |
-| **Ctrl+D** · **Ctrl+C/X/V** | duplicate (offset by the selection span, chains) · copy / cut / paste (at the edit cursor) |
+| **Ctrl+D** · **Ctrl+C/X/V** | duplicate (**bar-aware**: the copy lands on the next barline, not a 16th early — chains) · copy / cut / paste (at the edit cursor) |
 | **Ctrl+Z / Ctrl+Y** | undo / redo, in the editor |
 | arrows | transpose Up/Down (**Shift = octave**, **Ctrl = in-scale**) · nudge Left/Right, whole selection |
 | **Transform** button | the command menu (see below) |

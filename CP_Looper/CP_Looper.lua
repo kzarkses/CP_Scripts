@@ -308,6 +308,19 @@ end
 
 -- Context handed to the shared RollUI (keyboard map + transform menu). The
 -- loop's cache unit is BEATS, so every amount here is in beats.
+-- Bar length in beats, derived from the lane itself (loop beats / loop bars) so
+-- it stays exact whatever the meter; TsNum is the fallback before a lane is open.
+local function barBeats()
+    local lane = state.edit_lane
+    if lane then
+        local bars = Loop.GetLengthBars(lane)
+        local bts  = Loop.LenBeats(lane)
+        if bars and bars > 0 and bts and bts > 0 then return bts / bars end
+    end
+    local n = Loop.TsNum()
+    return (n and n > 0) and n or 4
+end
+
 local loopCtx = {
     Roll = Roll, Keys = Keys,
     Shift = Core.ModShift, Ctrl = Core.ModCtrl, Alt = Core.ModAlt,
@@ -316,6 +329,24 @@ local loopCtx = {
     snap      = function(t) return snapRound(t, snapBeats()) end,
     divToUnit = function(div) return div * 4 end,   -- whole-note division -> beats
     pasteAt   = function() return 0 end,             -- paste at the loop start
+    -- loop phase 0 is bar-aligned by construction, so bars are pure arithmetic
+    barFloor  = function(t) local b = barBeats(); return math.floor(t / b + 1e-6) * b end,
+    barCeil   = function(t) local b = barBeats(); return math.ceil (t / b - 1e-6) * b end,
+    -- the lane is a fixed canvas: a duplicate that would land past its end grows
+    -- the loop instead of silently wrapping on top of the original
+    fitLen    = function()
+        return state.edit_lane and Loop.LenBeats(state.edit_lane) or nil
+    end,
+    grow      = function(need)
+        local lane = state.edit_lane
+        if not lane then return false end
+        local b = barBeats(); if b <= 0 then return false end
+        local want = math.ceil(need / b - 1e-6)
+        for _, n in ipairs(LEN_OPTS) do
+            if n >= want then Loop.SetLengthBars(lane, n); return true end
+        end
+        return false
+    end,
     swingSnap = function(amt)
         return function(t)
             local s = snapBeats(); if s <= 0 then return t end

@@ -1120,6 +1120,26 @@ local midiCtx = {
         local at = r.GetCursorPosition() - itemPos()
         return at < 0 and 0 or at
     end,
+    -- Bar boundaries, item-relative seconds. Routed through the measure map
+    -- rather than arithmetic, so tempo maps and odd meters come out right.
+    barFloor = function(t)
+        local pos = itemPos()
+        local qn = r.TimeMap2_timeToQN(0, pos + t)
+        local _, ms = r.TimeMap_QNToMeasures(0, qn + 1e-6)
+        if not ms then return t end
+        local nt = r.TimeMap2_QNToTime(0, ms) - pos
+        return nt < 0 and 0 or nt
+    end,
+    barCeil = function(t)
+        local pos = itemPos()
+        local qn = r.TimeMap2_timeToQN(0, pos + t)
+        local _, ms, me = r.TimeMap_QNToMeasures(0, qn + 1e-6)
+        if not ms then return t end
+        -- already sitting on a barline: that bar IS the answer, don't skip ahead
+        local qb = (qn <= ms + 1e-6) and ms or (me or ms)
+        local nt = r.TimeMap2_QNToTime(0, qb) - pos
+        return nt < 0 and 0 or nt
+    end,
     swingSnap = function(amt)
         return function(t)
             local pos = itemPos()
