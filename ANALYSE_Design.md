@@ -260,14 +260,114 @@ chose qu'Ableton ne peut pas faire.
 
 ---
 
-## 8. Questions ouvertes — à trancher, pas à deviner
+## 8. Décisions arrêtées (2026-07-21)
 
-1. **Les scènes** : le Looper reste-t-il un rack de 4 lanes indépendantes (simple,
-   live, proche d'une pédale) ou devient-il une grille clips × pistes (puissant,
-   mais c'est un autre logiciel) ?
-2. **Le slicing** : mode du Sampler, outil de l'Editor, ou les deux avec un modèle
-   partagé ?
-3. **Le bake** : écrivain WAV en Lua pur (contrôle total, travail réel) ou passage
-   par les actions de rendu natives de REAPER (rapide, moins maîtrisé) ?
-4. **BPM/tonalité** : analyse maison budgétée, ou se contenter des noms de fichiers
-   et des tags MediaDB ?
+Quatre questions ouvertes ont été discutées et tranchées. Elles sont ici avec leur
+raisonnement, pour que l'implémentation n'ait pas à les rejouer.
+
+### 8.1 Scènes — lanes × slots, pas une grille
+
+**Décision : garder la lane comme unité d'interface et lui ajouter des slots.**
+Une rangée conserve son identité (routage, longueur, mute, mini-roll du clip
+actif) et gagne une bande de petits boutons 1…8. **Une « scène » = le slot N sur
+toutes les lanes.** Sémantique complète, sans transformer l'UI en tableur.
+
+Le modèle actuel n'est pas « 4 lanes » mais **4 pistes × 1 clip** ; ce qui manque
+est la deuxième dimension, pas la grille.
+
+Coûts, mesurés :
+- **gmem : négligeable.** Les notes coûtent aujourd'hui 16 384 flottants
+  (4 lanes × 1024 notes × 4). Huit slots → 131 072. Trois ordres de grandeur sous
+  ce qui a coulé le ClipEngine — **les notes ont leur place dans gmem, pas l'audio.**
+- **JSFX : contenu.** Il faut `cur_clip[lane]` + `pending_clip[lane]` + la
+  quantisation : c'est exactement le `COL_STATE` du ClipEngine, design déjà validé.
+- **UI : le vrai travail**, et il est réversible.
+
+**Ordre impératif : persistance AVANT scènes.** Tant qu'un clip n'est pas un objet
+sérialisable, ajouter une dimension ne fait que multiplier ce qu'on perd à la
+fermeture.
+
+Gain collatéral à ne pas rater : `MAX_LANES = 4` est arbitraire. Chaque lane occupe
+un canal MIDI, donc **16 lanes sont structurellement possibles** ; passer à 8 coûte
+une constante.
+
+### 8.2 Slicing — dans l'Engine, exposé des deux côtés
+
+**Décision : l'opération monte dans `Engine/Slice.lua`, les deux apps l'exposent à
+des granularités différentes.** La dichotomie « Sampler ou Editor » était fausse.
+
+- `Engine/Slice.lua` : source + région + méthode (transitoires avec sensibilité /
+  N divisions égales / divisions en beats) → liste de points.
+  `Ops.DetectTransients` en est déjà 80 %.
+- **Sampler** — « slicer ce sample sur les pads » : un clic, choix de méthode,
+  curseur de sensibilité. Le chemin *fabrication d'instrument*, comme les ténors.
+- **Editor** — les slices deviennent des marqueurs déplaçables sur la forme
+  d'onde. Le chemin *affinage*.
+
+Point non évident : la liste de slices a **déjà un stockage** — les offsets
+SOFFS/EOFFS des pads. Un kit slicé se relit donc comme une liste de slices, et
+l'aller-retour Sampler ⇄ Editor marche sans inventer de format.
+
+Dépendance : le découpage **en beats** exige le tempo → dépend de 8.4.
+
+### 8.3 Bake — écrivain WAV en Lua pur, actions natives en échappatoire
+
+**Décision : écrivain WAV maison comme chemin principal.** La raison est
+fonctionnelle : les cibles de bake de l'écosystème sont **une slice, une sélection,
+une prise** — souvent sur un **fichier brut sans item dans l'arrangement**. Les
+actions de rendu natives opèrent sur la sélection d'items, passent par le moteur de
+rendu avec ses réglages projet, et exigent que la matière soit d'abord un item :
+elles ne peuvent structurellement pas servir le cas principal.
+
+La lecture audio est **déjà résolue et éprouvée** :
+`Clip Launcher/Modules/ClipManager.lua` lit n'importe quel format via
+`CreateTakeAudioAccessor` + `GetAudioAccessorSamples` par blocs de 4096, avec le
+contournement du take temporaire pour un fichier brut (piste jetable, puis
+`Undo_CanUndo2(0)` pour effacer le point d'annulation). C'est la moitié la plus
+coûteuse, à récupérer telle quelle. Reste l'en-tête RIFF/WAVE et l'écriture via
+`string.pack`.
+
+Les actions natives gardent un rôle précis : « applique toute la chaîne FX de la
+piste et donne un fichier » — ce que l'accessor de take ne fait pas. Deux entrées,
+deux usages assumés.
+
+⚠️ **À vérifier AVANT de s'engager, car ça change l'estimation du simple au
+triple :** est-ce que `CreateTakeAudioAccessor` restitue l'audio **après**
+volume / pitch / rate / take FX ? Si oui, le bake capture exactement ce que les
+éditions non destructives de CP_Editor ont produit, et la fonctionnalité devient
+presque triviale. Sinon, il faut réappliquer ces transformations à la main.
+
+**Destination :** baker vers un dossier voisin du projet (`<projet>/CP_Bakes/`),
+jamais un temp. C'est ce qui fait du résultat un citoyen de la bibliothèque, donc
+ce qui **referme réellement la boucle** vers l'Explorer.
+
+### 8.4 BPM / tonalité — métadonnées, pas de DSP
+
+**Décision : exploiter les tags, pas analyser l'audio.** Trois niveaux :
+
+1. **Nom de fichier** — gratuit, déjà fait, couvre bien les packs type Splice.
+2. **Tags `DATA` de MediaDB — quasi gratuit et NON exploité.** `MediaDB.lua` lit
+   déjà chaque ligne et jette explicitement les `DATA` (« ignored here — paths
+   only »). REAPER y a pourtant déjà extrait les métadonnées embarquées, et **les
+   WAV ACIDisés portent tempo et tonalité**. Pour les fichiers hors base,
+   `GetMediaFileMetadata` lit les métadonnées directement. *(Cette piste est déjà
+   listée dans les « Ideas for V3 » du README de l'Explorer.)*
+3. **Analyse audio** — écartée pour l'instant.
+
+Nuance qui rend le niveau 3 largement inutile ici : pour une **boucle**, le tempo
+n'a pas besoin d'être détecté, il se **déduit** de la durée et d'un nombre de
+mesures plausible — c'est exactement ce que fait `GetTempoMatchPlayRate`, déjà
+branché. Pour l'usage qui compte (Sampler et Looper calés), la DSP n'apporte rien.
+
+La **tonalité** est le seul cas qui exigerait vraiment de l'analyse. La laisser
+**vide quand la métadonnée est absente** : une tonalité fausse est pire qu'une case
+vide.
+
+### 8.5 Ordre découlant de ces décisions
+
+**8.4** (quasi gratuit, débloque le tempo partout) → **8.3** (bake : débloque
+l'édition destructive, le stretch vrai, l'enregistrement audio, et referme la
+boucle) → **8.2** (slicing, qui a besoin du tempo) → persistance → **8.1** (scènes).
+
+Le seul risque d'estimation est en 8.3, et il se lève par un test : l'accessor
+applique-t-il les propriétés de take ?
