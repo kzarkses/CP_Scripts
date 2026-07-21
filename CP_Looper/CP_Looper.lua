@@ -422,6 +422,21 @@ local function drawToolbar(attached)
             Loop.ReloadEngine(); flash("Engine reloaded (loops kept)")
         end
         UI.SameLine()
+        -- Explicit recall: the automatic one refuses to overwrite lanes that
+        -- already hold notes, so this is how you get the project's copy back
+        -- over a live set.
+        if UI.Button("recall", "Recall") then
+            if not Loop.HasSavedState() then
+                flash("Nothing saved in this project yet")
+            elseif r.MB("Recall the loops saved in this project?\n\nThis REPLACES every lane.",
+                        "CP Looper", 4) == 6 then
+                local ok, n = Loop.LoadState(true)
+                for l = 0, LANES - 1 do ev[l].ver = -1 end
+                roll_ver = -1
+                flash(ok and (n .. " notes recalled") or "Recall failed")
+            end
+        end
+        UI.SameLine()
         -- the ONLY way to lose every loop, so it asks
         if UI.Button("clearall", "Clear all") then
             if r.MB("Clear every recorded loop?", "CP Looper", 4) == 6 then
@@ -1033,6 +1048,44 @@ end
 -- ---------------------------------------------------------------------------
 local last_init = -1     -- engine reset counter, watched to invalidate caches
 
+-- Session recall. Loops live in gmem (REAPER-session scoped); this mirrors them
+-- into the router track's P_EXT so they are saved inside the project. Written on
+-- a trailing debounce so a note drag doesn't rewrite the blob every frame.
+local save_vers = {}     -- [lane] = last EvtVersion mirrored
+local save_due  = 0      -- time_precise deadline, 0 = clean
+local recalled  = false  -- one auto-recall per attach
+
+local function pollPersist(attached)
+    if not attached then recalled = false; return end
+
+    -- Recall once, and only into an engine that holds nothing: a fresh REAPER
+    -- session cold-inits gmem, so the project's copy is the only one left.
+    if not recalled then
+        recalled = true
+        local ok, n = Loop.LoadState(false)
+        if ok and n and n > 0 then
+            for l = 0, LANES - 1 do ev[l].ver = -1 end
+            roll_ver = -1
+            flash("Loops recalled from the project")
+        end
+        for l = 0, LANES - 1 do save_vers[l] = Loop.EvtVersion(l) end
+        return
+    end
+
+    local now = r.time_precise()
+    for l = 0, LANES - 1 do
+        local v = Loop.EvtVersion(l)
+        if v ~= save_vers[l] then
+            save_vers[l] = v
+            save_due = now + 1.5          -- trailing: bumped, not reset
+        end
+    end
+    if save_due > 0 and now >= save_due and not state.edrag then
+        save_due = 0
+        Loop.SaveState()
+    end
+end
+
 local function frame(theme)
     if not (Loop.track and r.ValidatePtr2(0, Loop.track, "MediaTrack*")) then
         Loop.reconnect()
@@ -1052,6 +1105,8 @@ local function frame(theme)
         end
         last_init = ic
     end
+
+    pollPersist(attached)
 
     -- leaving a valid attachment (or losing it) drops out of the editor
     if state.edit_lane ~= nil and not attached then exitEdit() end
@@ -1103,10 +1158,13 @@ UI.Init("Looper", 470, 620, {
 })
 
 UI.OnClose(function()
+    -- the debounce would drop anything edited in the last 1.5 s
+    pcall(Loop.SaveState)
     Loop.Panic()
 end)
 
 r.atexit(function()
+    pcall(Loop.SaveState)
     pcall(Loop.Panic)
 end)
 

@@ -528,4 +528,109 @@ function Loop.ReadNotes(lane, out_start, out_len, out_pitch, out_vel)
     return n
 end
 
+-- ---------------------------------------------------------------------------
+-- Session recall
+--
+-- The loops live in gmem, which belongs to the REAPER session, not the project.
+-- This mirrors them into the ROUTER TRACK's P_EXT state, so they are saved
+-- inside the .rpp like any other track data — no side-car file, no format of
+-- our own, and they travel with the project (copy the track, keep the loops).
+--
+-- Wire format, one string, printable separators only (P_EXT is one line of the
+-- track chunk, so no newlines):
+--   "1;<lane>;<lane>;<lane>;<lane>"            1 = format version
+--   lane = "bars|muted|n|s,l,p,v|s,l,p,v|…"    starts/lengths in beats
+-- ---------------------------------------------------------------------------
+local DATA_KEY = "P_EXT:" .. EXT_TAG .. "_DATA"
+
+local function num(v)          -- compact, still exact enough for beats
+    return string.format("%.6g", v or 0)
+end
+
+function Loop.Serialize()
+    if not attached then return "" end
+    local out = { "1" }
+    for lane = 0, Loop.MAX_LANES - 1 do
+        local n = Loop.NoteCount(lane)
+        local parts = { num(Loop.GetLengthBars(lane)),
+                        Loop.GetMute(lane) and "1" or "0",
+                        tostring(n) }
+        for i = 0, n - 1 do
+            local s, l, p, v = Loop.GetNote(lane, i)
+            parts[#parts + 1] = num(s) .. "," .. num(l) .. ","
+                             .. string.format("%d,%d", math.floor((p or 0) + 0.5),
+                                                       math.floor((v or 100) + 0.5))
+        end
+        out[#out + 1] = table.concat(parts, "|")
+    end
+    return table.concat(out, ";")
+end
+
+-- Fill gmem from a serialized string. Notes are written BEFORE the count, so the
+-- engine can never read a count that outruns the data it points at.
+function Loop.Deserialize(str)
+    if not attached or not str or str == "" then return false end
+    local fields = {}
+    for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
+    if fields[1] ~= "1" then return false end
+    local loaded = 0
+    for lane = 0, Loop.MAX_LANES - 1 do
+        local blk = fields[lane + 2]
+        if blk then
+            local t = {}
+            for f in blk:gmatch("[^|]+") do t[#t + 1] = f end
+            local bars  = tonumber(t[1]) or 1
+            local muted = t[2] == "1"
+            local n     = math.floor(tonumber(t[3]) or 0)
+            if n > Loop.MAX_NOTES then n = Loop.MAX_NOTES end
+            local written = 0
+            for i = 1, n do
+                local rec = t[3 + i]
+                if rec then
+                    local s, l, p, v = rec:match("^([^,]*),([^,]*),([^,]*),([^,]*)$")
+                    if s then
+                        Loop.PutNote(lane, written, tonumber(s) or 0, tonumber(l) or 0.25,
+                                     tonumber(p) or 60, tonumber(v) or 100)
+                        written = written + 1
+                    end
+                end
+            end
+            Loop.SetLengthBars(lane, bars)
+            Loop.SetMute(lane, muted)
+            Loop.SetNoteCount(lane, written)
+            Loop.BumpVer(lane)
+            loaded = loaded + written
+        end
+    end
+    return true, loaded
+end
+
+function Loop.SaveState()
+    if not valid(Loop.track) then return false end
+    r.GetSetMediaTrackInfo_String(Loop.track, DATA_KEY, Loop.Serialize(), true)
+    return true
+end
+
+function Loop.SavedState()
+    if not valid(Loop.track) then return "" end
+    local _, v = r.GetSetMediaTrackInfo_String(Loop.track, DATA_KEY, "", false)
+    return v or ""
+end
+
+-- Recall into gmem. Refuses when any lane already holds notes unless forced: a
+-- recall must never silently overwrite what is currently playing.
+function Loop.LoadState(force)
+    if not valid(Loop.track) then return false end
+    if not force then
+        for lane = 0, Loop.MAX_LANES - 1 do
+            if Loop.NoteCount(lane) > 0 then return false end
+        end
+    end
+    return Loop.Deserialize(Loop.SavedState())
+end
+
+function Loop.HasSavedState()
+    return Loop.SavedState() ~= ""
+end
+
 return Loop

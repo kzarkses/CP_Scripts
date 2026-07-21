@@ -125,8 +125,14 @@ The toolbar **Clock** toggle decides what drives the loops:
 
 ## Notes
 
-- Loops are **runtime-only** — a live performance tool, not saved with the
-  project (V2 could persist them via track state). Routing *is* saved.
+- **Loops are saved with the project.** They are mirrored into the router
+  track's `P_EXT` state, so they live inside the `.rpp` like any other track
+  data — no side-car file, and they travel with the track if you copy it.
+  Saving is automatic (1.5 s after the last edit, and on close); recall is
+  automatic when the engine comes up empty, which is every fresh REAPER
+  session. **Recall** (toolbar) forces it back over lanes that already hold
+  notes — the automatic one never overwrites what is playing.
+  Routing and lane lengths are saved too.
 - **REC with the clock stopped arms the lane** (status `ARM`) instead of wiping
   it: capture starts by itself on the first running block. Click ARM to cancel.
   A take interrupted by a transport stop is **kept**, not dropped — it is
