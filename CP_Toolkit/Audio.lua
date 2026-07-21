@@ -99,6 +99,13 @@ local cur_loop = false
 
 Audio.volume = 1.0     -- linear, applied to every Play
 
+-- Declick: SWS defaults both fades to 0, so playback starts and ends on a raw
+-- sample edge. That clicks on anything not beginning at zero — which is every
+-- section played from a pad's start/end offsets. Short enough to leave a
+-- transient's attack alone.
+Audio.fade_in  = 0.003
+Audio.fade_out = 0.008
+
 -- opts (all optional): { start_s, end_s, loop, rate, pitch, vol }
 -- Returns true when playback started.
 function Audio.Play(path, opts)
@@ -114,6 +121,8 @@ function Audio.Play(path, opts)
 
     local vol = (opts and opts.vol) or Audio.volume
     r.CF_Preview_SetValue(preview, "D_VOLUME", vol)
+    if Audio.fade_in  > 0 then r.CF_Preview_SetValue(preview, "D_FADEINLEN",  Audio.fade_in)  end
+    if Audio.fade_out > 0 then r.CF_Preview_SetValue(preview, "D_FADEOUTLEN", Audio.fade_out) end
     if opts then
         if opts.pitch and opts.pitch ~= 0 then
             r.CF_Preview_SetValue(preview, "D_PITCH", opts.pitch)

@@ -150,6 +150,25 @@ local function setDestGUID(lane, guid)
     end
 end
 
+-- Some CP tracks are INPUT BUSES that other apps need armed to work at all —
+-- CP_Sampler's "CP Kit MIDI" bus is armed on purpose (its pad clicks go through
+-- StuffMIDIMessage, which only reaches an armed+monitored track). Routing a lane
+-- at one of those used to disarm it and silently break the sampler, so they are
+-- exempt from the disarm below.
+local function isInputBus(tr)
+    if not valid(tr) then return false end
+    local _, v = r.GetSetMediaTrackInfo_String(tr, "P_EXT:CP_KIT_MIDI", "", false)
+    return v ~= nil and v ~= ""
+end
+
+-- Disarm a lane destination so live input only reaches it through the router
+-- (no double-trigger) — unless it is such a bus.
+local function disarmDest(tr)
+    if isInputBus(tr) then return end
+    r.SetMediaTrackInfo_Value(tr, "I_RECARM", 0)
+    r.SetMediaTrackInfo_Value(tr, "I_RECMON", 0)
+end
+
 local function resolveGUID(guid)
     if not guid or guid == "" then return nil end
     local cnt = r.CountTracks(0)
@@ -225,8 +244,7 @@ function Loop.SetLaneDest(lane, track)
     removeLaneSend(router, lane)
     if valid(track) and track ~= router then
         makeLaneSend(router, lane, track)
-        r.SetMediaTrackInfo_Value(track, "I_RECARM", 0)
-        r.SetMediaTrackInfo_Value(track, "I_RECMON", 0)
+        disarmDest(track)
         setDestGUID(lane, r.GetTrackGUID(track))
         Loop.dest[lane] = track
     else
@@ -328,8 +346,7 @@ function Loop.Setup()
             if not valid(Loop.dest[lane]) then
                 removeLaneSend(router, lane)
                 makeLaneSend(router, lane, sel)
-                r.SetMediaTrackInfo_Value(sel, "I_RECARM", 0)
-                r.SetMediaTrackInfo_Value(sel, "I_RECMON", 0)
+                disarmDest(sel)
                 setDestGUID(lane, r.GetTrackGUID(sel))
                 Loop.dest[lane] = sel
             end

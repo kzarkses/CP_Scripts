@@ -61,6 +61,14 @@ selection becomes the region) — sample-design → instrument in two clicks.
   the click goes through the real engine (choke, FX chain, meters glow);
   disarmed it falls back to a direct file preview. MIDI keyboards just
   play — the bus listens to all inputs.
+  Settings → **"Clicking a pad plays it"** turns the click into a pure
+  selection (Enter/Space still triggers) — the mode you want while a loop
+  runs and you only came to tweak a pad's attack.
+- **The bus arm is an intent, not a value.** Armed is the working default,
+  and other scripts disarm tracks behind your back (CP_Looper used to when
+  you routed a lane here; `CP_AutoArmVSTiTrack` does it on selection
+  changes). The kit now re-asserts your choice whenever the project changes,
+  so pad clicks stop silently degrading to raw file preview.
 - **Swap pads**: drag a pad onto another (FX chains travel with their
   pad — it's the note assignment that swaps, plus the choke groups).
 - **Choke groups** (right-click → Choke group, badge on the pad): a pad

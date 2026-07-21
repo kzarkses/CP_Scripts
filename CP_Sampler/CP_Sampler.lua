@@ -52,6 +52,10 @@ local cfg = UI.LoadConfig(CONFIG_ID) or {}
 local opts = {
     velocity = cfg.velocity or 100,
     audition = cfg.audition or "auto",   -- "auto" | "midi" | "preview"
+    -- Pads are an instrument, so a click sounds by default (FL/MPC). Turn this
+    -- off to click a pad purely to SELECT it and edit its knobs — the useful
+    -- mode while a loop is running. Enter/Space still triggers the selection.
+    play_on_select = cfg.play_on_select ~= false,
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -81,6 +85,7 @@ local function persistConfig()
     cfg.page     = state.page
     cfg.velocity = opts.velocity
     cfg.audition = opts.audition
+    cfg.play_on_select = opts.play_on_select
     cfg.vol      = Audio.volume
     UI.SaveConfig(CONFIG_ID, cfg)
 end
@@ -451,6 +456,14 @@ local function openSettings()
             velocityItem(64), velocityItem(80), velocityItem(100),
             velocityItem(112), velocityItem(127),
         } },
+        { label = "Clicking a pad plays it",
+          checked = opts.play_on_select,
+          action = function()
+            opts.play_on_select = not opts.play_on_select
+            markDirty()
+            flash(opts.play_on_select and "Pad click plays"
+                                       or "Pad click selects only (Enter plays)")
+          end },
         { separator = true },
         { label = "Kit bus armed (MIDI input + pad clicks sound)",
           checked = Kit.Armed(),
@@ -582,8 +595,8 @@ local function handleGridPress(note)
         return
     end
     local mx, my = Core_tk.GetMousePos()
-    state.press = { note = note, x = mx, y = my }
-    padOn(note)
+    state.press = { note = note, x = mx, y = my }   -- still needed for pad→pad drag
+    if opts.play_on_select then padOn(note) end
 end
 
 local function drawGrid(theme, grid_h)

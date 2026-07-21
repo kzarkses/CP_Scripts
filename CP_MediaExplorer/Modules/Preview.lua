@@ -134,6 +134,14 @@ Preview.rate        = 1.0
 Preview.loop        = false
 Preview.route_track = false  -- route through the first selected track (its FX)
 
+-- Declick. SWS defaults both fade lengths to 0, so a preview starts and stops on
+-- a raw sample edge — audible as a click on anything that doesn't begin and end
+-- at zero (most loops, and every mid-file section). These are short enough to be
+-- inaudible on a transient: 3 ms in keeps a kick's attack intact, 8 ms out is
+-- enough to swallow the cut. Stop is the worse offender, hence the asymmetry.
+Preview.fade_in     = 0.003
+Preview.fade_out    = 0.008
+
 -- opts (all optional): { position, rate_override }
 -- Returns true when playback started.
 function Preview.Play(path, opts)
@@ -150,6 +158,8 @@ function Preview.Play(path, opts)
     if not preview then return false end
 
     r.CF_Preview_SetValue(preview, "D_VOLUME", Preview.volume)
+    if Preview.fade_in  > 0 then r.CF_Preview_SetValue(preview, "D_FADEINLEN",  Preview.fade_in)  end
+    if Preview.fade_out > 0 then r.CF_Preview_SetValue(preview, "D_FADEOUTLEN", Preview.fade_out) end
     if Preview.pitch ~= 0 then
         r.CF_Preview_SetValue(preview, "D_PITCH", Preview.pitch)
     end

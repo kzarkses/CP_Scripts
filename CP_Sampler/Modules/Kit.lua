@@ -367,6 +367,10 @@ function Kit.Poll()
     if c == last_change then return false end
     last_change = c
     Kit.Scan()
+    -- something changed the project: that is exactly when another script may
+    -- have disarmed our input bus, so re-assert the intent before anything else
+    -- reads Kit.Armed() (the audition path branches on it).
+    Kit.HoldArm()
     -- One-time routing migration/repair per session: kits built before
     -- the MIDI-bus architecture have choke+sends on the folder parent
     -- (feedback-muted) and possibly pads armed as a user workaround.
@@ -914,13 +918,39 @@ function Kit.Armed()
        and r.GetMediaTrackInfo_Value(Kit.bus, "I_RECMON") > 0
 end
 
+-- The arm is an INTENT, not just a track value. Armed is the working default
+-- (pad clicks travel through StuffMIDIMessage, which only reaches an armed +
+-- monitored track), and other scripts disarm tracks behind our back — CP_Looper
+-- used to do it when routing a lane here, and CP_AutoArmVSTiTrack does it on
+-- selection changes. Kit.HoldArm() re-asserts the intent whenever the track
+-- drifted, so the sampler stops silently falling back to raw file preview.
+Kit.arm_intent = true
+
 function Kit.SetArmed(on)
     if not valid(Kit.bus) then
         if not valid(Kit.parent) then return end
         Kit.EnsureBus()
     end
+    Kit.arm_intent = on and true or false
     r.SetMediaTrackInfo_Value(Kit.bus, "I_RECARM", on and 1 or 0)
     r.SetMediaTrackInfo_Value(Kit.bus, "I_RECMON", on and 1 or 0)
+    -- our own write must not look like an external project change, or the next
+    -- Poll rescans the whole kit for nothing
+    last_change = r.GetProjectStateChangeCount(0)
+end
+
+-- Re-assert the intent if something moved it. Cheap: two reads, and it only
+-- writes on an actual mismatch.
+function Kit.HoldArm()
+    if not valid(Kit.bus) then return false end
+    local want = Kit.arm_intent and 1 or 0
+    local arm  = r.GetMediaTrackInfo_Value(Kit.bus, "I_RECARM")
+    local mon  = r.GetMediaTrackInfo_Value(Kit.bus, "I_RECMON")
+    if arm == want and ((want == 0) == (mon == 0)) then return false end
+    r.SetMediaTrackInfo_Value(Kit.bus, "I_RECARM", want)
+    r.SetMediaTrackInfo_Value(Kit.bus, "I_RECMON", want)
+    last_change = r.GetProjectStateChangeCount(0)
+    return true
 end
 
 -- One-shot migration + self-heal: move a legacy choke off the folder
@@ -943,7 +973,11 @@ function Kit.Repair()
         end
         r.TrackFX_Delete(Kit.parent, pc)
     end
-    r.SetMediaTrackInfo_Value(Kit.parent, "I_RECARM", 0)
+    -- never disarm the input bus: an adopted kit can have the parent and the
+    -- bus be the SAME track, and disarming it kills every pad click
+    if Kit.parent ~= bus then
+        r.SetMediaTrackInfo_Value(Kit.parent, "I_RECARM", 0)
+    end
 
     for si = r.GetTrackNumSends(Kit.parent, 0) - 1, 0, -1 do
         local dest = r.GetTrackSendInfo_Value(Kit.parent, 0, si, "P_DESTTRACK")
@@ -962,7 +996,9 @@ function Kit.Repair()
     end
     for _, pad in pairs(Kit.pads) do
         if valid(pad.track) then
-            r.SetMediaTrackInfo_Value(pad.track, "I_RECARM", 0)
+            if pad.track ~= bus then
+                r.SetMediaTrackInfo_Value(pad.track, "I_RECARM", 0)
+            end
             local _, guid = r.GetSetMediaTrackInfo_String(pad.track, "GUID", "", false)
             if not have[guid] then
                 local s = r.CreateTrackSend(bus, pad.track)
