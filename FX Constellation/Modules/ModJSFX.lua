@@ -263,11 +263,25 @@ function ModJSFX.ensureModTrack(r)
 	return track
 end
 
--- FX belonging to the CP ecosystem — mapping flows must never target them.
+-- FX belonging to the CP ecosystem.
 function ModJSFX.isInternalFX(name)
 	return name ~= nil
 	   and (name:find("FX Constellation", 1, true) ~= nil
 	     or name:find("CP_Mod", 1, true) ~= nil)
+end
+
+-- May this FX be a modulation TARGET?
+--
+-- Narrower than isInternalFX on purpose. The CP_Mod banks must stay excluded:
+-- mapping an LFO onto an LFO slot slider is feedback, not a feature. But the
+-- "FX Constellation Bridge" is the opposite case — exposing the pad's X and Y
+-- as real automatable parameters is the entire point of native-links mode, so
+-- driving them with an LFO is a legitimate, desirable mapping (the LFO moves
+-- the pad). isInternalFX matches "FX Constellation", which caught the Bridge
+-- too and made "Map: touch target" refuse to recognise X/Y as parameters.
+function ModJSFX.isModTargetFX(name)
+	if name == nil then return false end
+	return name:find("CP_Mod", 1, true) == nil
 end
 
 -- Last-touched FX parameter, normalized across API generations.
@@ -531,7 +545,7 @@ function ModJSFX.scanSlotTargets(r, kind, track, slot)
 	local function scanTrack(tr)
 		for fx = 0, r.TrackFX_GetCount(tr) - 1 do
 			local _, fxname = r.TrackFX_GetFXName(tr, fx, "")
-			if not ModJSFX.isInternalFX(fxname) then
+			if ModJSFX.isModTargetFX(fxname) then
 				for parm = 0, r.TrackFX_GetNumParams(tr, fx) - 1 do
 					local info = ModJSFX.getParamLink(r, tr, fx, parm)
 					if info and info.kind == kind and info.slot == slot then
@@ -571,7 +585,7 @@ function ModJSFX.scanAllTargets(r, track)
 		local _, tname = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
 		for fx = 0, r.TrackFX_GetCount(tr) - 1 do
 			local _, fxname = r.TrackFX_GetFXName(tr, fx, "")
-			if not ModJSFX.isInternalFX(fxname) then
+			if ModJSFX.isModTargetFX(fxname) then
 				for parm = 0, r.TrackFX_GetNumParams(tr, fx) - 1 do
 					local info = ModJSFX.getParamLink(r, tr, fx, parm)
 					if info then

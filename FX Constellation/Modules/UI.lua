@@ -811,7 +811,7 @@ local function drawLFOSection(theme)
         -- Real last-touched param merged with the click-to-focus hint
         -- (param name clicks) — most recent event wins.
         local tr, fx, parm, name = mj.getFocusParam(UI.r)
-        if not tr or mj.isInternalFX(name) then return nil end
+        if not tr or not mj.isModTargetFX(name) then return nil end
         return tr, fx, parm, name
     end
 

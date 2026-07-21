@@ -368,9 +368,20 @@ local function isSoundGenFX(track, fx_idx)
 end
 
 -- FX this browser must never show, and above all never DELETE: a sampler is an
--- instrument, and clearing a chain used to take a whole CP_Sampler kit with it.
+-- instrument (clearing a chain used to take a whole CP_Sampler kit with it), and
+-- the CP plumbing is ours, not the user's chain.
+--
+-- Hidden here is NOT the same as off limits everywhere: the gesture Bridge is
+-- hidden from this list and protected from deletion, yet the LFO panel may
+-- deliberately target its X/Y (ModJSFX.isModTargetFX) — exposing the pad
+-- position as a real parameter is the whole point of native-links mode.
 local function isHiddenFX(track, fx_idx)
-    return isSoundGenFX(track, fx_idx) or Core.isProtectedFX(track, fx_idx)
+    if isSoundGenFX(track, fx_idx) then return true end
+    if Core.isProtectedFX(track, fx_idx) then return true end
+    local _, name = r.TrackFX_GetFXName(track, fx_idx, "")
+    return name ~= nil
+       and (name:find("FX Constellation", 1, true) ~= nil
+         or name:find("CP_Mod", 1, true) ~= nil)
 end
 
 -- Delete every FX on the track except the protected ones (SoundGenerator

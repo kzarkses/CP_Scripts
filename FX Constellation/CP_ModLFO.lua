@@ -121,7 +121,7 @@ UI_TK.Run(function(theme)
 		-- Real last-touched merged with the click-to-focus hint (clicking
 		-- a param name in FX Constellation) — most recent event wins.
 		local tr, fx, parm, name = ModJSFX.getFocusParam(r)
-		if not tr or ModJSFX.isInternalFX(name) then return nil end
+		if not tr or not ModJSFX.isModTargetFX(name) then return nil end
 		return tr, fx, parm, name
 	end
 	ctx.inspect = function(tr, fx, parm)
