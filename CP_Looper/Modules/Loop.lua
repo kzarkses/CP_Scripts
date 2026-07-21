@@ -690,4 +690,23 @@ function Loop.HasSavedState()
     return Loop.SavedState() ~= ""
 end
 
+-- Clock mode and armed lane are SESSION settings, not lane content, so they are
+-- restored unconditionally — unlike the notes, which decline to overwrite lanes
+-- that already hold something. Reopening the window mid-session used to leave
+-- the clock forced back to Free for exactly that reason: the startup default ran
+-- first and the note recall, which carried the saved clock, then declined.
+function Loop.LoadGlobals()
+    if not attached then return false end
+    local str = Loop.SavedState()
+    if str == "" then return false end
+    local fields = {}
+    for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
+    if fields[1] ~= "2" or not fields[2] then return false end   -- v1 had none
+    local fr, arm = fields[2]:match("^([^|]*)|([^|]*)$")
+    if not fr then return false end
+    Loop.SetFreeRun(fr == "1")
+    Loop.SetArmedLane(math.floor(tonumber(arm) or 0))
+    return true
+end
+
 return Loop

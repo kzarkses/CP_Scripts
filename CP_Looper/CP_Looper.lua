@@ -23,7 +23,10 @@ local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
 local UI   = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/CP_Toolkit.lua")
 local Loop = dofile(script_path .. "Modules/Loop.lua")
 Loop.init(r)
-Loop.SetFreeRun(true)   -- default: clips launch without the transport (Ableton-like)
+-- FIRST-RUN default only: clips launch without the transport (Ableton-like).
+-- Loop.LoadGlobals() runs on attach and overrides this with the project's saved
+-- clock, so this line must never be read as "the clock is always Free".
+Loop.SetFreeRun(true)
 
 local Core = UI.Core
 local Keys = UI.Keys
@@ -109,6 +112,11 @@ local function makeLoopBackend(lane)
 end
 
 local roll_ver = -1     -- last loop version Roll was synced to
+
+-- Set by anything worth persisting that is NOT lane content — the clock toggle,
+-- the armed lane. pollPersist watches note versions and lane modes, which those
+-- do not touch, so without this they were only ever written at close.
+local persist_dirty = false
 
 -- Per-lane visual cache. Tables allocated once and reused every frame (zero
 -- allocation in the frame loop); note bars (bo start / bd length / bn pitch /
@@ -400,6 +408,7 @@ local function drawToolbar(attached)
         local free = Loop.GetFreeRun()
         if UI.Button("clock", free and "Clock: Free" or "Clock: Follow") then
             Loop.SetFreeRun(not free)
+            persist_dirty = true
             flash(free and "Follow host transport" or "Free run (launch without transport)")
         end
         UI.SameLine()
@@ -1092,6 +1101,12 @@ local function pollPersist(attached)
     -- is every fresh REAPER session (the JSFX cold-inits gmem).
     if not recalled then
         recalled = true
+        -- Clock and armed lane first, and UNCONDITIONALLY: they are session
+        -- settings, not lane content, so they must survive even when the note
+        -- recall below declines because the lanes are already full (reopening
+        -- the window mid-session). That decline is why the clock kept snapping
+        -- back to the startup default.
+        Loop.LoadGlobals()
         local ok, n = Loop.LoadState(force_recall)
         force_recall = false
         if ok and n and n > 0 then
@@ -1106,6 +1121,10 @@ local function pollPersist(attached)
     end
 
     local now = r.time_precise()
+    if persist_dirty then
+        persist_dirty = false
+        save_due = now + 0.4
+    end
     for l = 0, LANES - 1 do
         -- mode too, not just note edits: launching or stopping a clip changes
         -- the state to restore but bumps no event version
