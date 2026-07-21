@@ -70,6 +70,9 @@ SoundGenerator.init(r, core)
 -- panel is to appear next to what you're working on).
 local mx, my = r.GetMousePosition()
 UI_TK.Init("CP SoundGen", 720, 460, {
+	-- Same as CP_ModLFO: a saved dock/position/size wins over the mouse
+	-- placement, which only applies on the very first run.
+	persist = "CP_SoundGen",
 	x = mx,
 	y = my,
 	scrollable = true,

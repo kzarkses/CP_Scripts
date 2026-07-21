@@ -36,6 +36,11 @@ end
 -- panel is to appear next to what you're working on).
 local mx, my = r.GetMousePosition()
 UI_TK.Init("CP LFO", 340, 430, {
+	-- Dock state, position and size persist across sessions. The mouse
+	-- coordinates below are only the FIRST-RUN placement: a saved state
+	-- overrides them, so once you have parked or docked this panel it reopens
+	-- where you left it instead of jumping to the cursor.
+	persist = "CP_ModLFO",
 	x = mx,
 	y = my,
 	scrollable = true,
