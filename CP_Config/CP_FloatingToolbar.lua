@@ -31,12 +31,20 @@ return {
         {
           command_id = "_RS7849129836a92a137f75a8deaaca35c9a3700368",
           native_icon = "AI_Function_Edit_Alt1_DF.png"
+        },
+        {
+          command_id = "_RS2946ea733d306871eb35748fb35782dbb0613626",
+          native_icon = "AI_Function_Infinity_Loop_Cycle_Alt_DF.png"
+        },
+        {
+          command_id = "_RSeda384d565421c44d7383c6d80b9df917dfe4110",
+          native_icon = "toolbar_open_track_chain_fx.png"
         }
       },
       anchor = {
         auto_hide_min_width = 1800,
         hide_when_target_hidden = false,
-        offset_x = 309,
+        offset_x = 355,
         offset_y = 4,
         snap = "left",
         target = "transport",

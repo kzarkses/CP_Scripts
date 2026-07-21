@@ -5,7 +5,9 @@ return {
   carry_rate_pitch = false,
   carry_volume = false,
   collections = {
-    {},
+    {
+      "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - KRANE Samples Vol 4/KRANE Samples Vol. 4/01_DRUMS/Kicks/KRANE_OverU_Kick.wav"
+    },
     {},
     {},
     {},
@@ -14,29 +16,37 @@ return {
     {}
   },
   expanded = {
-    "E:/PARA/Resources/Sound Bank/Sound Library/Boom Library/Boom Library Riparian Zones",
-    "E:/PARA/Resources/Sound Bank",
-    "E:/PARA/Resources/Sound Bank/Music Samples",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1/KSHMR Cymbals/Hi Hats Open",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1/KSHMR Cymbals/Hi Hats Closed",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1",
-    "E:/PARA/Resources/Sound Bank/Sound Library/My Library/Chez Arnaud",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1/KSHMR Cymbals",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Antidote Audio - Dubstep",
-    "E:/PARA/Resources/Sound Bank/Music Samples/FatLoud - Drum Hits Collection 2/WAV (24 bit)",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1",
-    "E:/PARA/Resources/Sound Bank/Sound Library/Boom Library/Boom Library Riparian Zones/Riparian Zones Stereo",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Drum n Bass/Rhythm Lab"
+    "E:/PARA/Resources/Sound Bank/Music Samples/Ultrasonic - Slap House Essentials Vol.1",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Bighead Sample Pack/KBH_melodic_loops",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Vengeance - Synthwave Essentials 1/VSW1 Bassdrum/VSW1 Soft Vintage Kicks",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Vengeance - Synthwave Essentials 1/VSW1 Snares/VSW1 Long Snares",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Vengeance - Synthwave Essentials 1/VSW1 Snares",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - KRANE Samples Vol 4/KRANE Samples Vol. 4/01_DRUMS",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Vengeance - Synthwave Essentials 1/VSW1 Snares/VSW1 Short Snares",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - KRANE Samples Vol 4/KRANE Samples Vol. 4/01_DRUMS/Kicks",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Ultrasonic - Slap House Essentials Vol.1/1. Ultrasonic - Kicks"
   },
   favorites = {
     "fx|VST3: MFlanger (MeldaProduction)"
   },
-  list_scroll = 8266,
+  list_scroll = 942,
   loop = false,
   pitch = 0,
   rate = 1,
   recents = {
+    "E:/PARA/Resources/Sound Bank/Music Samples/Ultrasonic - Slap House Essentials Vol.1/1. Ultrasonic - Kicks/Ultrasonic - Slap House Essentials - Kick 09.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Bighead Sample Pack/KBH_melodic_loops/KBH_melodic_loop_arpeggio_chords_130_Dmin.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Sonny D - Drumkit/SONNY_D_fx/SONNY_D_fx_02.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Sonny D - Drumkit/SONNY_D_drums/SONNY_D_drum_loops/SONNY_D_drum_loop_01_133.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Sonny D - Drumkit/SONNY_D_drums/SONNY_D_drum_loops/SONNY_D_drum_loop_08_146.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Sample Magic - House Nation/Wav/drum loops/hn_drm125_base1.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Kick Pack 1/194171__old-waveplay__kick-noisy-kick.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.2/Drums/Cymbals/Hi-Hats Closed/KSHMR Hi Hats Closed 01.wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.2/Drums/Snares/Tight Snares/KSHMR Tight Snare 01 (B).wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.2/Drums/Kicks/Punchy Kicks/KSHMR Punchy Kick 06 (D#).wav",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.2/Drums/Kicks/Punchy Kicks/KSHMR Punchy Kick 01 (A#).wav",
     "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1/KSHMR Cymbals/Hi Hats Open/KSHMR Hi Hats Open 03.aif",
+    "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1/KSHMR Cymbals/Hi Hats Open/KSHMR Hi Hats Open 01.aif",
     "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1/KSHMR Cymbals/Hi Hats Closed/KSHMR Hi Hats Closed 01.aif",
     "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Sounds of KSHMR Vol.1/Splice Sounds of KSHMR Vol 1/KSHMR Snares/Tight Snares/KSHMR Tight Snare 01.aif",
     "E:/PARA/Resources/Sound Bank/Music Samples/ASHRAM - Afro House Downtempo/Oneshots/Kickdrum/AS_AHD3_Kick_1.wav",
@@ -73,19 +83,7 @@ return {
     "E:/PARA/Resources/Sound Bank/Music Samples/Sample Magic - Dream Pop/one-shots/bass_one-shots/dp_bass_jazz_long_E.wav",
     "E:/PARA/Resources/Sound Bank/Music Samples/Splice Sounds - Just Blaze Drumkit/JUST_drums/JUST_kicks/JUST_kick_executive.wav",
     "E:/PARA/Resources/Sound Bank/Sound Library/Boom Library/Boom Library Urban Europe/Urban Europe Stereo/AMBCnst_Downtown Car Park Construction Germany_B00M_3DS05_2.0.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Drum n Bass/Rhythm Lab/cw_165_Harder1.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Drum n Bass/Rhythm Lab/cw_160_Pyramid2.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Drum n Bass/Rhythm Lab/cw_160_Hole3.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Drum n Bass/Rhythm Lab/cw_159_Paranoya.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Origin Sound - VINTAGE VIBES/one_shots/drum_hits/hihats/OS_VV_hihat_softy.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Origin Sound - VINTAGE VIBES/one_shots/drum_hits/hihats/OS_VV_hihat_plate.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Origin Sound - VINTAGE VIBES/one_shots/drum_hits/hihats/OS_VV_hihat_machine.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Origin Sound - VINTAGE VIBES/one_shots/drum_hits/hihats/OS_VV_hihat_live.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Origin Sound - VINTAGE VIBES/one_shots/drum_hits/hihats/OS_VV_hihat_light.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Origin Sound - VINTAGE VIBES/one_shots/drum_hits/hihats/OS_VV_hihat_coils.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Deep Jazz House Vocals/GIA_WAV_LOOPS/GIA_DRUM_LOOPS/GIA_124_Shaft_Of_Light_Fill_2.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Deep Jazz House Vocals/GIA_WAV_LOOPS/GIA_DRUM_LOOPS/GIA_124_Shaft_Of_Light_Top.wav",
-    "E:/PARA/Resources/Sound Bank/Music Samples/Deep Jazz House Vocals/GIA_WAV_LOOPS/GIA_DRUM_LOOPS/GIA_124_Shaft_Of_Light_Kick.wav"
+    "E:/PARA/Resources/Sound Bank/Music Samples/Drum n Bass/Rhythm Lab/cw_165_Harder1.wav"
   },
   roots = {
     "E:/PARA/Resources/Sound Bank/Sound Library/Boom Library",
