@@ -24,15 +24,15 @@ local r = reaper
 local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
 local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 
-local Wave  = dofile(cp_root .. "CP_Engine/Wave.lua")
+local Peaks = dofile(cp_root .. "CP_Engine/Peaks.lua")
 local Ops   = dofile(cp_root .. "CP_Engine/Ops.lua")
 local Roll  = dofile(cp_root .. "CP_Engine/Roll.lua")
 local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 
-Wave.init(r)
-Ops.init(r, Wave)
+Peaks.init(r)
+Ops.init(r, Peaks)
 Roll.init(r)
 Kit.init(r)
 Audio.init(r)
@@ -917,7 +917,7 @@ local function drawWave(theme, area_h)
         return
     end
 
-    local entry = Wave.Read(state.src, state.path, state.t0, state.t1,
+    local entry = Peaks.Read(state.src, state.path, state.t0, state.t1,
                             aw, state.gen)
     if entry then
         renderWave(theme, entry, aw, wave.rh)
@@ -2005,7 +2005,7 @@ local function frame(theme)
     pollTarget()
     Kit.Poll()
     Audio.Poll()
-    if Wave.Step() then UI.RequestRedraw() end
+    if Peaks.Step() then UI.RequestRedraw() end
     handleKeys()
 
     -- deferred audition note-off (piano roll clicks through the kit bus)
@@ -2085,7 +2085,7 @@ UI.OnClose(function()
     if state.aud_note then Kit.StuffNote(state.aud_note, false) end
     persistConfig()
     Audio.Destroy()
-    Wave.Destroy()
+    Peaks.Destroy()
     dropOwnSource()
 end)
 

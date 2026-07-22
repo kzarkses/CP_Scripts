@@ -30,13 +30,13 @@ local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 
 -- Soft dependency: the engine's peaks reader draws the region strip
 -- (falls back to a plain range slider when the package is absent).
-local okW, Wave = pcall(dofile, cp_root .. "CP_Engine/Wave.lua")
-if not okW or type(Wave) ~= "table" then Wave = nil end
+local okW, Peaks = pcall(dofile, cp_root .. "CP_Engine/Peaks.lua")
+if not okW or type(Peaks) ~= "table" then Peaks = nil end
 
 Kit.init(r)
 Audio.init(r)
 DragBus.init(r)
-if Wave then Wave.init(r) end
+if Peaks then Peaks.init(r) end
 
 local Core_tk = UI.Core
 local Keys    = UI.Keys
@@ -813,10 +813,10 @@ local function drawRegionStrip(theme, note, pad)
 
     local len = Audio.Meta(pad.path)
     local entry = nil
-    if Wave and len and len > 0 then
+    if Peaks and len and len > 0 then
         local src = Audio.GetSource(pad.path)
         if src then
-            entry = Wave.Read(src, pad.path, 0, len, aw, 0)
+            entry = Peaks.Read(src, pad.path, 0, len, aw, 0)
         end
     end
 
@@ -975,7 +975,7 @@ local function drawControls(theme)
     -- sample region (RS5K start/end offsets) — waveform strip when the
     -- peaks reader is available, plain range slider otherwise
     UI.Spacing(2)
-    if Wave and pad.path then
+    if Peaks and pad.path then
         drawRegionStrip(theme, note, pad)
     else
         local s = Kit.Param(note, Kit.P.SOFFS) or 0
@@ -1026,9 +1026,9 @@ local function instrWave(theme, x, y, w, h)
     local col_bord = theme.colors.border
     local len = instr.path and Audio.Meta(instr.path) or nil
     local entry = nil
-    if Wave and len and len > 0 then
+    if Peaks and len and len > 0 then
         local src = Audio.GetSource(instr.path)
-        if src then entry = Wave.Read(src, instr.path, 0, len, w, 0) end
+        if src then entry = Peaks.Read(src, instr.path, 0, len, w, 0) end
     end
     if entry and (istrip.path ~= instr.path or istrip.w ~= w or istrip.h ~= h) then
         istrip.path, istrip.w, istrip.h = instr.path, w, h
@@ -1315,7 +1315,7 @@ local function frame(theme)
         UI.RequestRedraw()
     end
     Audio.Poll()
-    if Wave and Wave.Step() then UI.RequestRedraw() end
+    if Peaks and Peaks.Step() then UI.RequestRedraw() end
     busConsume()
     instrumentPoll()
     handleFileDrops()
@@ -1388,7 +1388,7 @@ UI.OnClose(function()
     DragBus.Unregister(BUS_ID)
     persistConfig()
     Audio.Destroy()
-    if Wave then Wave.Destroy() end
+    if Peaks then Peaks.Destroy() end
 end)
 
 r.atexit(function()

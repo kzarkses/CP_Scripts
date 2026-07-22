@@ -14,11 +14,11 @@
 local Ops = {}
 
 local r     -- reaper, injected
-local Wave  -- pooled array provider (Wave.Array)
+local Peaks  -- pooled array provider (Peaks.Array)
 
-function Ops.init(reaper_api, wave_module)
-    r    = reaper_api
-    Wave = wave_module
+function Ops.init(reaper_api, peaks_module)
+    r     = reaper_api
+    Peaks = peaks_module
 end
 
 local ANALYSIS_RATE = 1000      -- peaks/s for scans (1ms resolution)
@@ -37,7 +37,7 @@ function Ops.PeakInRegion(src, a, b)
     local ch = r.GetMediaSourceNumChannels(src) or 1
     if ch < 1 then ch = 1 end
     if ch > 2 then ch = 2 end
-    local buf = Wave.Array(count * ch * 2)
+    local buf = Peaks.Array(count * ch * 2)
     buf.clear()
     local retval = r.PCM_Source_GetPeaks(src, count / dur, a, ch, count, 0, buf)
     local valid = retval and (retval & 0xfffff) or 0
@@ -69,7 +69,7 @@ function Ops.DetectTransients(src, a, b, sens, out)
     local ch = r.GetMediaSourceNumChannels(src) or 1
     if ch < 1 then ch = 1 end
     if ch > 2 then ch = 2 end
-    local buf = Wave.Array(count * ch * 2)
+    local buf = Peaks.Array(count * ch * 2)
     buf.clear()
     local retval = r.PCM_Source_GetPeaks(src, rate, a, ch, count, 0, buf)
     local valid = retval and (retval & 0xfffff) or 0
@@ -124,7 +124,7 @@ function Ops.SnapZero(src, t)
     local count = math.floor((t + W - a) * sr)
     if count < 4 then return t end
     if count > 4096 then count = 4096 end
-    local buf = Wave.Array(count * 2)   -- 1 channel
+    local buf = Peaks.Array(count * 2)   -- 1 channel
     buf.clear()
     local retval = r.PCM_Source_GetPeaks(src, sr, a, 1, count, 0, buf)
     local valid = retval and (retval & 0xfffff) or 0

@@ -384,7 +384,7 @@ Chaque étape est utile seule et ne dépend que des précédentes.
 | # | Chantier | Pourquoi d'abord |
 |---|---|---|
 | 1 | ✅ **FAIT 2026-07-22.** Créer `CP_Engine/`, y **déplacer** Roll, RollUI, Wave, Ops, Kit, Loop, Preview, Peaks, Insert. Aucune réécriture. | Casse le cycle de dépendances. Purement mécanique, donc sûr. |
-| 2 | Fusionner les deux lecteurs de peaks (lecture de Wave + cache de Peaks) | La duplication la plus nette, le gain le plus immédiat. |
+| 2 | ✅ **FAIT 2026-07-22.** Fusionner les deux lecteurs de peaks (lecture de Wave + cache de Peaks) → `CP_Engine/Peaks.lua`, deux surfaces (`Read` vue éditeur, `Get` bandeau navigateur) sur un seul cœur. | La duplication la plus nette, le gain le plus immédiat. |
 | 3 | `Engine/Tempo.lua` + hub JSFX Monitoring FX | Débloque le sync BPM du Sampler et unifie deux protocoles gmem. |
 | 4 | `Engine/Tracks.lua` : dossier CP + marque `P_EXT:CP`, suppression du fallback par nom | Règle l'usine à gaz, visible immédiatement. |
 | 5 | `Engine/Clip.lua` : le descripteur + (dé)sérialisation | Prérequis de tout le reste. |
