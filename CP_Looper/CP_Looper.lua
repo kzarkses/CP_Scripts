@@ -19,9 +19,9 @@ local r = reaper
 -- ---------------------------------------------------------------------------
 -- Toolkit + engine
 -- ---------------------------------------------------------------------------
-local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
-local UI   = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/CP_Toolkit.lua")
-local Loop = dofile(script_path .. "Modules/Loop.lua")
+local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
+local UI   = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
+local Loop = dofile(cp_root .. "CP_Engine/Loop.lua")
 Loop.init(r)
 -- FIRST-RUN default only: clips launch without the transport (Ableton-like).
 -- Loop.LoadGlobals() runs on attach and overrides this with the project's saved
@@ -38,11 +38,11 @@ Core.SetIdleThrottle(false)
 
 -- Shared piano-roll MODEL (same one CP_Editor uses). We drive it with a loop
 -- backend so its edit operations write notes straight into the gmem loop.
-local Roll = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Editor/Modules/Roll.lua")
+local Roll = dofile(cp_root .. "CP_Engine/Roll.lua")
 Roll.init(r)
 -- Shared command layer (keyboard map + transform menu) — same one CP_Editor
 -- uses, so the two editors feel identical.
-local RollUI = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Editor/Modules/RollUI.lua")
+local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
 
 -- ---------------------------------------------------------------------------
 -- Config / state

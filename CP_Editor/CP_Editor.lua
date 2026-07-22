@@ -21,15 +21,14 @@ local r = reaper
 -- ---------------------------------------------------------------------------
 -- Toolkit + modules
 -- ---------------------------------------------------------------------------
-local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
 local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
 local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 
-local Wave  = dofile(script_path .. "Modules/Wave.lua")
-local Ops   = dofile(script_path .. "Modules/Ops.lua")
-local Roll  = dofile(script_path .. "Modules/Roll.lua")
-local RollUI = dofile(script_path .. "Modules/RollUI.lua")
-local Kit   = dofile(cp_root .. "CP_Sampler/Modules/Kit.lua")
+local Wave  = dofile(cp_root .. "CP_Engine/Wave.lua")
+local Ops   = dofile(cp_root .. "CP_Engine/Ops.lua")
+local Roll  = dofile(cp_root .. "CP_Engine/Roll.lua")
+local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
+local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 
 Wave.init(r)

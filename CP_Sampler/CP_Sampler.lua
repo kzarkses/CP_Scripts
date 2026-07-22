@@ -21,17 +21,16 @@ local r = reaper
 -- ---------------------------------------------------------------------------
 -- Toolkit + modules
 -- ---------------------------------------------------------------------------
-local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
-local UI = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/CP_Toolkit.lua")
+local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
+local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 
-local Kit     = dofile(script_path .. "Modules/Kit.lua")
-local Audio   = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/Audio.lua")
-local DragBus = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/DragBus.lua")
+local Kit     = dofile(cp_root .. "CP_Engine/Kit.lua")
+local Audio   = dofile(cp_root .. "CP_Toolkit/Audio.lua")
+local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 
--- Soft dependency: CP_Editor's peaks reader draws the region strip
+-- Soft dependency: the engine's peaks reader draws the region strip
 -- (falls back to a plain range slider when the package is absent).
-local okW, Wave = pcall(dofile,
-    r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Editor/Modules/Wave.lua")
+local okW, Wave = pcall(dofile, cp_root .. "CP_Engine/Wave.lua")
 if not okW or type(Wave) ~= "table" then Wave = nil end
 
 Kit.init(r)

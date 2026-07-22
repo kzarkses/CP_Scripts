@@ -239,6 +239,7 @@ Aujourd'hui il y en a deux (toolkit / apps) et les services de domaine sont
 │    Tempo      tempo/grille/transport          ← NOUVEAU   │
 │    Tracks     propriété + dossier CP          ← NOUVEAU   │
 │    Bus        messages inter-apps             ← DragBus   │
+│    Mod        modulation: LFO et au-delà      ← ModJSFX   │
 │    Clip       le descripteur + (dé)sérialisation ← NOUVEAU│
 └───────────────────────────────────────────────────────────┘
 ┌─ Applications ────────────────────────────────────────────┐
@@ -343,6 +344,17 @@ de `Tempo` et, pour l'audio, de `ClipEngine` plutôt que d'un nouveau moteur.
 **Manque :** persistance. `Clip Launcher/Modules/Persistence.lua` existe et fait
 exactement ça. Aujourd'hui les loops vivent le temps de la session REAPER.
 
+### FX Constellation + CP_ModLFO — le modulateur *(ajout 2026-07-22)*
+Décision utilisateur : **CP_ModLFO doit devenir entièrement standalone.** Il a
+été codé dans le dossier de FX Constellation par accident historique, et
+`ModJSFX` est de fait l'embryon d'un service de modulation généraliste — « il
+pourrait avoir d'autres mods que seulement des LFO » ; la cible ressemble aux
+modulateurs de Bitwig. À terme : `Engine/Mod` (ModJSFX + LinkEngine, sans UI),
+et CP_ModLFO devient une simple vue dessus. FX Constellation aura ensuite sa
+propre refonte d'interface (knobs partout — le grid de 2026-07 est le premier
+pas —, ergonomie « Ableton » où chaque élément a une place pensée) ; pas avant
+le socle.
+
 ### Clip Launcher + Meta Mixer — carrière de pièces, pas socle
 Ils sont sur ReaImGui alors que tout le noyau est passé sur CP_Toolkit, et le
 Clip Launcher repose sur un modèle de stockage à jeter (§2).
@@ -371,7 +383,7 @@ Chaque étape est utile seule et ne dépend que des précédentes.
 
 | # | Chantier | Pourquoi d'abord |
 |---|---|---|
-| 1 | Créer `CP_Engine/`, y **déplacer** Roll, RollUI, Wave, Ops, Kit, Loop, Preview, Peaks, Insert. Aucune réécriture. | Casse le cycle de dépendances. Purement mécanique, donc sûr. |
+| 1 | ✅ **FAIT 2026-07-22.** Créer `CP_Engine/`, y **déplacer** Roll, RollUI, Wave, Ops, Kit, Loop, Preview, Peaks, Insert. Aucune réécriture. | Casse le cycle de dépendances. Purement mécanique, donc sûr. |
 | 2 | Fusionner les deux lecteurs de peaks (lecture de Wave + cache de Peaks) | La duplication la plus nette, le gain le plus immédiat. |
 | 3 | `Engine/Tempo.lua` + hub JSFX Monitoring FX | Débloque le sync BPM du Sampler et unifie deux protocoles gmem. |
 | 4 | `Engine/Tracks.lua` : dossier CP + marque `P_EXT:CP`, suppression du fallback par nom | Règle l'usine à gaz, visible immédiatement. |

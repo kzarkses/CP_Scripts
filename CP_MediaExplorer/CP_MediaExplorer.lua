@@ -22,15 +22,16 @@ local r = reaper
 -- Toolkit + modules
 -- ---------------------------------------------------------------------------
 local script_path = debug.getinfo(1, "S").source:match("@?(.*[/\\])")
-local UI = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/CP_Toolkit.lua")
+local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
+local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 
 local Model   = dofile(script_path .. "Modules/Model.lua")
-local Preview = dofile(script_path .. "Modules/Preview.lua")
-local Insert  = dofile(script_path .. "Modules/Insert.lua")
-local Peaks   = dofile(script_path .. "Modules/Peaks.lua")
+local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
+local Insert  = dofile(cp_root .. "CP_Engine/Insert.lua")
+local Peaks   = dofile(cp_root .. "CP_Engine/Peaks.lua")
 local MediaDB = dofile(script_path .. "Modules/MediaDB.lua")
 local FXList  = dofile(script_path .. "Modules/FXList.lua")
-local DragBus = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/DragBus.lua")
+local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 
 Model.init(r)
 Preview.init(r)
