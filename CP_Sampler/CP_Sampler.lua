@@ -26,6 +26,7 @@ local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 
 local Kit     = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks  = dofile(cp_root .. "CP_Engine/Tracks.lua")
+local Tempo   = dofile(cp_root .. "CP_Engine/Tempo.lua")
 local Audio   = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 
@@ -36,6 +37,7 @@ if not okW or type(Peaks) ~= "table" then Peaks = nil end
 
 Tracks.init(r)
 Kit.init(r, Tracks)
+Tempo.init(r)
 Audio.init(r)
 DragBus.init(r)
 if Peaks then Peaks.init(r) end
@@ -365,6 +367,36 @@ local function openPadMenu(note)
                               action = function() editorOpen(pad.path) end }
         items[#items + 1] = { separator = true }
         items[#items + 1] = { label = "Choke group", children = chokeMenuItems(note) }
+        -- Tempo sync (vinyl-style repitch through TUNE; Engine/Tempo feeds
+        -- the project BPM every frame, Kit re-aims on change).
+        local src = Kit.PadSrcBpm(note)
+        items[#items + 1] = { label = "Sync to project tempo"
+                                  .. (src and ("  (src " .. src .. " BPM)")
+                                           or "  (source BPM unknown)"),
+                              checked = Kit.PadSynced(note),
+                              action = function()
+            local on = not Kit.PadSynced(note)
+            if on and not Kit.PadSrcBpm(note) then
+                local ok, v = r.GetUserInputs("Source tempo", 1,
+                    "Loop BPM:,extrawidth=80", "")
+                local bpm = ok and tonumber(v) or nil
+                if not bpm or bpm <= 0 then return end
+                Kit.SetPadSrcBpm(note, bpm)
+            end
+            Kit.SetPadSynced(note, on)
+            if on then Kit.ApplyTempoSync(Tempo.Get().tempo) end
+        end }
+        items[#items + 1] = { label = "Set source BPM...", action = function()
+            local ok, v = r.GetUserInputs("Source tempo", 1,
+                "Loop BPM:,extrawidth=80", tostring(src or ""))
+            local bpm = ok and tonumber(v) or nil
+            if bpm and bpm > 0 then
+                Kit.SetPadSrcBpm(note, bpm)
+                if Kit.PadSynced(note) then
+                    Kit.ApplyTempoSync(Tempo.Get().tempo)
+                end
+            end
+        end }
         items[#items + 1] = { separator = true }
         items[#items + 1] = { label = "Rename pad...", action = function()
             local ok, name = r.GetUserInputs("Rename pad", 1,
@@ -1317,6 +1349,15 @@ local function frame(theme)
         UI.RequestRedraw()
     end
     Audio.Poll()
+    -- Project tempo → synced pads (chantier 8). One poll per frame; the
+    -- re-aim runs only when the tempo moved or the kit changed (scan,
+    -- load, swap — Kit.version covers them all), and Kit itself writes
+    -- RS5K only on a real delta.
+    local tp = Tempo.Poll()
+    if tp.tempo ~= state.last_tempo or Kit.version ~= state.last_sync_ver then
+        state.last_tempo, state.last_sync_ver = tp.tempo, Kit.version
+        Kit.ApplyTempoSync(tp.tempo)
+    end
     if Peaks and Peaks.Step() then UI.RequestRedraw() end
     busConsume()
     instrumentPoll()

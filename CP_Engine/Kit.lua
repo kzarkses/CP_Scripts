@@ -645,6 +645,86 @@ function Kit.SwapPads(a, b)
 end
 
 -- ---------------------------------------------------------------------------
+-- Tempo sync (refonte chantier 8): repitch a pad's loop to the project
+-- tempo through the TUNE offset — rate follows pitch, the vinyl trade-off
+-- the analysis accepted (true time-stretch is the bake's job). Source BPM
+-- and the sync flag persist on the pad track (P_EXT), so they travel with
+-- the project like everything else about a pad.
+-- ---------------------------------------------------------------------------
+local function bpmFromName(path)
+    if not path then return nil end
+    local name = path:match("([^/\\]+)%.%w+$") or path
+    local bpm = name:match("[%s_%-](%d%d%d?)%s*[bB][pP][mM]")
+              or name:match("^(%d%d%d?)%s*[bB][pP][mM]")
+    if not bpm then
+        -- bare number between separators, in a plausible loop-tempo range
+        for n in name:gmatch("[%s_%-](%d%d%d?)[%s_%-%.]") do
+            local v = tonumber(n)
+            if v and v >= 60 and v <= 200 then bpm = n break end
+        end
+    end
+    return tonumber(bpm)
+end
+
+-- Stored BPM wins; the filename guess is only a default, never written.
+function Kit.PadSrcBpm(note)
+    local pad = Kit.Pad(note)
+    if not pad then return nil end
+    return tonumber(getExt(pad.track, "CP_KIT_BPM") or "")
+        or bpmFromName(pad.path)
+end
+
+function Kit.SetPadSrcBpm(note, bpm)
+    local pad = Kit.Pad(note)
+    if not pad then return end
+    setExt(pad.track, "CP_KIT_BPM", bpm and tostring(bpm) or "")
+end
+
+function Kit.PadSynced(note)
+    local pad = Kit.Pad(note)
+    return pad ~= nil and getExt(pad.track, "CP_KIT_SYNC") == "1"
+end
+
+-- Turning sync ON parks the user's manual tune in P_EXT; OFF restores it
+-- — the sync must never eat a tuning gesture.
+function Kit.SetPadSynced(note, on)
+    local pad = Kit.Pad(note)
+    if not pad or not pad.fx then return end
+    if on then
+        local cur = r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.TUNE)
+        setExt(pad.track, "CP_KIT_TUNE0", string.format("%.6f", cur))
+        setExt(pad.track, "CP_KIT_SYNC", "1")
+    else
+        setExt(pad.track, "CP_KIT_SYNC", "")
+        local t0 = tonumber(getExt(pad.track, "CP_KIT_TUNE0") or "")
+        r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.TUNE, t0 or 0.5)
+        setExt(pad.track, "CP_KIT_TUNE0", "")
+    end
+end
+
+-- Re-aim every synced pad at the given tempo. Cheap enough for the host
+-- to call whenever Tempo reports a change (writes only on a real delta).
+function Kit.ApplyTempoSync(project_bpm)
+    if not project_bpm or project_bpm <= 0 then return end
+    for note, pad in pairs(Kit.pads) do
+        if pad.fx and getExt(pad.track, "CP_KIT_SYNC") == "1" then
+            local src = Kit.PadSrcBpm(note)
+            if src and src > 0 then
+                local st = 12 * math.log(project_bpm / src, 2)
+                if st > 80 then st = 80 elseif st < -80 then st = -80 end
+                local want = pitchNorm(st)
+                local cur = r.TrackFX_GetParamNormalized(pad.track, pad.fx,
+                    Kit.P.TUNE)
+                if math.abs((cur or 0) - want) > 1e-4 then
+                    r.TrackFX_SetParamNormalized(pad.track, pad.fx,
+                        Kit.P.TUNE, want)
+                end
+            end
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- Instrument (chromatic) mode: one sample spread across the whole keyboard,
 -- pitched per semitone from a root note — Ableton Simpler-style.
 -- ---------------------------------------------------------------------------
