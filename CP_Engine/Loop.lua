@@ -568,6 +568,48 @@ function Loop.ReadNotes(lane, out_start, out_len, out_pitch, out_vel)
 end
 
 -- ---------------------------------------------------------------------------
+-- Clip adapters (refonte chantier 6 — the Engine/Clip descriptor): a lane
+-- IS a MIDI clip. These translate both ways without owning any
+-- serialization — a Clip is a plain table; Engine/Clip.serialize turns it
+-- into a string only when it has to travel. Note times are beats/QN on
+-- both sides, no conversion. The P_EXT v2 recall blob is untouched: it
+-- predates the descriptor, it is tested, and it stays the storage format.
+-- ---------------------------------------------------------------------------
+function Loop.LaneToClip(lane)
+    if not attached then return nil end
+    local n = Loop.NoteCount(lane)
+    if n <= 0 then return nil end
+    local s, l, p, v = {}, {}, {}, {}
+    Loop.ReadNotes(lane, s, l, p, v)
+    return {
+        kind  = "midi",
+        name  = "Lane " .. (lane + 1),
+        notes = { s = s, l = l, p = p, v = v },
+        bars  = Loop.GetLengthBars(lane),
+        q     = "bar",
+        lmode = "loop",
+    }
+end
+
+-- Load a MIDI clip into a lane: replaces its content, leaves it STOPPED
+-- and ready to launch (never yanks a playing set). False when the clip
+-- overflows the engine's note cap.
+function Loop.ClipToLane(lane, clip)
+    if not attached or not clip or clip.kind ~= "midi" then return false end
+    local nt = clip.notes
+    local n = (nt and nt.s and #nt.s) or 0
+    if n > Loop.MAX_NOTES then return false end
+    for i = 1, n do
+        Loop.PutNote(lane, i - 1, nt.s[i], nt.l[i], nt.p[i], nt.v[i])
+    end
+    Loop.SetNoteCount(lane, n)
+    if clip.bars and clip.bars > 0 then Loop.SetLengthBars(lane, clip.bars) end
+    Loop.SetMode(lane, n > 0 and 2 or 0)
+    Loop.BumpVer(lane)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- Session recall
 --
 -- The loops live in gmem, which belongs to the REAPER session, not the project.
