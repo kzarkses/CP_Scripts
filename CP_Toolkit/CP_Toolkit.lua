@@ -671,6 +671,13 @@ end
 
 UI.EndChild = Layout.EndChild
 
+-- Width a scrollable child reserves for its scrollbar once content
+-- overflows. Exported so callers whose content HEIGHT depends on the inner
+-- width (square grids…) can reserve it up front — sizing from the
+-- gutterless width feeds the content height back into the gutter decision
+-- and oscillates.
+UI.SCROLLBAR_GUTTER = Layout.SCROLLBAR_GUTTER
+
 -- Wrap (auto-flow like CSS flex-wrap)
 UI.BeginWrap = Layout.BeginWrap
 UI.WrapItem = Layout.WrapItem

@@ -104,6 +104,10 @@ function FXManager.scanTrackFX()
 						name = param_name,
 						current_value = normalized_value,
 						base_value = normalized_value,
+						-- Frozen at scan: base_value drifts with the poll loop
+						-- and the randomizers, and the double-click reset
+						-- wants "the value the chain was scanned with".
+						scan_value = normalized_value,
 						min_val = min_val,
 						max_val = max_val,
 						selected = state.exclusive_xy and true or false,

@@ -144,11 +144,6 @@ local function RngSlid(id, label, vmin, vmax, mn, mx, opts)
         _commonOpts(opts, UI.tk.GetTheme()))
 end
 
-local function ValRngSlid(id, label, value, vmin, vmax, mn, mx, opts)
-    return UI.tk.ValueRangeSlider(id, label, value, vmin, vmax, mn, mx,
-        _commonOpts(opts, UI.tk.GetTheme()))
-end
-
 local function Chk(id, label, checked, opts)
     local theme = UI.tk.GetTheme()
     -- Match button height by sizing the checkbox box to button_height.
@@ -1369,130 +1364,112 @@ local function openParamModMenu(fx_id, param_id, param_data)
 end
 
 -- ---------------------------------------------------------------------------
--- PARAM ROW (one row per FX parameter inside an FX card)
+-- PARAM KNOB (one knob per FX parameter inside an FX card)
 -- ---------------------------------------------------------------------------
-local function drawParamRow(theme, fx_id, param_id, param_data)
-    local UItk = UI.tk
+-- Widgets.ModKnob reserves this much height under the knob for its label.
+-- The grid needs the cell height up front (the list clipper virtualizes on
+-- it), so the constant is mirrored here rather than measured.
+local KNOB_LABEL_H = 14
 
-    -- Widget ids are hit every frame for every visible row: cache the
-    -- concatenations on the param table (fx_data is rebuilt on scan, so the
+-- Modulation-source captions ("·", L1..L8, G1..G8). A visible card holds
+-- dozens of knobs and the concatenation would otherwise be redone for every
+-- one of them on every frame.
+local SRC_LABEL = { [0] = "·" }
+local function srcLabel(le, slot)
+    local lbl = SRC_LABEL[slot]
+    if lbl then return lbl end
+    if le and slot > le.GLOBAL_SLOT_BASE then
+        lbl = "G" .. (slot - le.GLOBAL_SLOT_BASE)
+    else
+        lbl = "L" .. slot
+    end
+    SRC_LABEL[slot] = lbl
+    return lbl
+end
+
+-- Hoisted opts (CP_Toolkit/PERFORMANCE.md rule 1). ModKnob reads the fields
+-- synchronously and never retains the table, so one shared instance covers
+-- every knob in the window.
+local KNOB_OPTS = { size = 40, default = 0.5 }
+local GRID_ROW_OPTS = { gap = 0 }
+
+-- One hand-drawn micro-toggle of a knob cell's badge strip. Real widgets
+-- would need a nested column container per cell to sit side by side — a
+-- container per knob per frame; this is the same direct-draw idiom as the
+-- LFO slot grid. Caller sets the caption font once for the whole strip.
+local function drawBadge(C, theme, x, y, w, h, label, on)
+    local bg = on and theme.colors.accent or theme.colors.frame_bg
+    C.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], on and 0.9 or 0.5)
+    local tc = on and theme.colors.text or theme.colors.text_disabled
+    local lw, lh = C.MeasureText(label)
+    C.DrawText(label, x + math.floor((w - lw) / 2), y + math.floor((h - lh) / 2),
+        tc[1], tc[2], tc[3], 1)
+end
+
+-- Clicking X or Y while an LFO drives the param takes it back for the pad
+-- (release the link, reset the source). Module-level so the click path
+-- doesn't build a closure on every frame.
+local function reclaimForPad(le, fx_id, param_id, src_slot)
+    if src_slot > 0 and le then
+        le.releaseParamLink(fx_id, param_id)
+        le.setParamModSource(fx_id, param_id, 0)
+    end
+end
+
+-- One parameter, one knob cell:
+--
+--     [L3]  ,-.       top-left badge = modulation source (click → menu)
+--          ( ● )      outer arc = base value, inner arc = the randomization
+--           `-'       window (base ± range/2), dot = live modulated value
+--          Cutoff     name, replaced by the live value under the pointer
+--        [S][N][X][Y] select / invert / pad X / pad Y
+--
+-- Drag = base value, Alt+drag = the randomization window, double-click =
+-- back to the value the parameter held when the chain was scanned,
+-- Alt+double-click = zero window. Right-click anywhere = source menu.
+local function drawParamKnob(theme, fx_id, param_id, param_data, cell_w, band_h)
+    local UItk = UI.tk
+    local C = UItk.Core
+
+    -- Ids are hit every frame for every visible knob: cache the
+    -- concatenation on the param table (fx_data is rebuilt on scan, so the
     -- cache can never go stale).
     local id = param_data._uid
     if not id then
         id = "p_" .. fx_id .. "_" .. param_id
         param_data._uid = id
-        param_data._uid_sel = id .. "_sel"
-        param_data._uid_n = id .. "_n"
-        param_data._uid_x = id .. "_x"
-        param_data._uid_y = id .. "_y"
-        param_data._uid_src = id .. "_src"
         param_data._uid_vr = id .. "_vrng"
+        -- Double-click target. REAPER exposes no factory default per
+        -- parameter, so "the value it had when we scanned the chain" is the
+        -- most useful reset available. scan_value, not base_value: a param
+        -- first rendered late (collapsed card, scrolled away) may have had
+        -- its base moved by the poll loop or a randomizer by then.
+        param_data._def = param_data.scan_value
+            or param_data.base_value or param_data.current_value or 0.5
     end
 
-    -- Row screen rect, captured before layout for the right-click hit test.
-    local row_x, row_y = UItk.GetCursorPos()
-    local row_w = UItk.GetAvailableWidth()
+    local cx, cy = UItk.GetCursorPos()
+    local ksize = cell_w                       -- knob fills its cell: centered for free
+    local cell_h = ksize + KNOB_LABEL_H + band_h
+    local strip_y = cy + ksize + KNOB_LABEL_H
+    local hovered = C.MouseInClippedRect(cx, cy, cell_w, cell_h)
+                    and not C.HasPopup()
+    local active = C.IsActive(param_data._uid_vr)
+    -- ModKnob paints nothing unless its whole rect is visible (gfx.arc and
+    -- gfx.blit bypass the software clip). Mirror the exact same guard for
+    -- the cell's own paint and clicks, or a row straddling the child edge
+    -- would show tint and badges around a hole where the knob should be —
+    -- and take clicks on controls that aren't on screen.
+    local visible = C.IsFullyVisible(cx, cy, ksize, ksize + KNOB_LABEL_H)
 
+    -- ---- model -------------------------------------------------------------
     -- Current modulation source: 0 = pad, 1..8 = track LFO, 101..108 = global.
     local le = UI.linkengine
     local src_slot = (le and le.getParamModSource(fx_id, param_id)) or 0
-
-    -- All toggle/checkbox cells use 1 unit (button_height) — tight row.
-    -- The select cell must be button_height wide: the Chk helper sizes the
-    -- box to button_height, so a checkbox_size column truncated it.
-    UItk.BeginColumns(id,
-        { theme.button_height, 0,
-          theme.button_height, theme.button_height, theme.button_height,
-          theme.button_height,
-          0.5 },  -- last column = remaining ~half of row for the slider
-        { gap = theme.item_spacing })
-
-    local cc, cv = Chk(param_data._uid_sel, "", param_data.selected)
-    if cc then
-        param_data.selected = cv
-        UI.fxmanager.updateSelectedCount()
-        if cv then param_data.base_value = param_data.current_value end
-        UI.fxmanager.saveTrackSelection()
-    end
-    UItk.NextColumn()
-
-    -- Param name: clicking it FOCUSES the param (cross-script touch hint)
-    -- so the CP LFO inspector locks onto it without wiggling its value —
-    -- and while Map is armed, a name click maps it directly.
-    local name = param_data.name or "?"
-    UItk.Text(name)
-    if UItk.IsItemHovered() then
-        UItk.SetCursor("hand")
-        UItk.Tooltip(name .. "\nClick: focus as modulation target")
-        if UItk.IsItemClicked() and le then
-            le.modjsfx.pokeTouch(UI.r, UI.core.state.track,
-                param_data.actual_fx_id, param_id)
-        end
-    end
-    UItk.NextColumn()
-
-    local invert = UI.fxmanager.getParamInvert(fx_id, param_id)
-    local tn, on = Tgl(param_data._uid_n, "N", invert)
-    if tn then UI.fxmanager.setParamInvert(fx_id, param_id, on) end
-    UItk.NextColumn()
-
-    -- X/Y show the PAD routing: they light up only while the pad is the
-    -- source. Clicking one while an LFO drives the param reclaims it for
-    -- the pad (release the LFO link, back to pad assignment).
-    local function reclaimForPad()
-        if src_slot > 0 and le then
-            le.releaseParamLink(fx_id, param_id)
-            le.setParamModSource(fx_id, param_id, 0)
-            src_slot = 0
-        end
-    end
-
     local pad_src = src_slot == 0
+    local invert = UI.fxmanager.getParamInvert(fx_id, param_id)
     local x_ass, y_ass = UI.fxmanager.getParamXYAssign(fx_id, param_id)
-    local tx, ox = Tgl(param_data._uid_x, "X", x_ass and pad_src)
-    if tx then
-        reclaimForPad()
-        UI.fxmanager.setParamXYAssign(fx_id, param_id, "x", pad_src and ox or true)
-    end
-    UItk.NextColumn()
 
-    local ty, oy = Tgl(param_data._uid_y, "Y", y_ass and pad_src)
-    if ty then
-        reclaimForPad()
-        UI.fxmanager.setParamXYAssign(fx_id, param_id, "y", pad_src and oy or true)
-    end
-    UItk.NextColumn()
-
-    -- Modulation-source badge: L1..L8 = track LFO, G1..G8 = global. Click
-    -- opens the assignment menu (same as right-clicking the row).
-    local src_label
-    if le and src_slot > le.GLOBAL_SLOT_BASE then
-        src_label = "G" .. (src_slot - le.GLOBAL_SLOT_BASE)
-    elseif src_slot > 0 then
-        src_label = "L" .. src_slot
-    else
-        src_label = "·"
-    end
-    if src_slot > 0 then
-        UItk.PushStyleColor("button", theme.colors.accent[1],
-            theme.colors.accent[2], theme.colors.accent[3])
-    end
-    if Btn(param_data._uid_src, src_label) then
-        openParamModMenu(fx_id, param_id, param_data)
-    end
-    if src_slot > 0 then UItk.PopStyleColor() end
-    if UItk.IsItemHovered() then
-        UItk.Tooltip(src_slot > 0
-            and ("Modulation source (click to change)")
-            or "Assign a modulation source (LFO)")
-    end
-    UItk.NextColumn()
-
-    -- Value-range slider — three handles in one widget:
-    --   • value dot: shows the LIVE plugin value (LFO/link modulation makes
-    --     it move); dragging it writes the BASE value
-    --   • min / max bars (drag to resize the randomization window)
-    --   • middle-drag → translate range + value together
     -- The window is centered on the gesture ANCHOR (param_base_values), NOT
     -- on param_data.base_value: in script mode the gesture overwrites
     -- base_value every frame with the applied value, which made the whole
@@ -1504,68 +1481,171 @@ local function drawParamRow(theme, fx_id, param_id, param_data)
         or param_data.base_value or param_data.current_value or 0.5
     -- The API only reports the base value under parameter modulation; the
     -- link engine recomputes the modulated value from the link source.
-    local live_value = (UI.linkengine
-        and UI.linkengine.getLiveValue(fx_id, param_id, param_data))
+    local live_value = (le and le.getLiveValue(fx_id, param_id, param_data))
         or param_data.current_value or base_value
     local range = UI.fxmanager.getParamRange(fx_id, param_id) or 1.0
-    local v_min = clamp(base_value - range * 0.5, 0, 1)
-    local v_max = clamp(base_value + range * 0.5, 0, 1)
-    local shown_value = clamp(live_value, v_min, v_max)
+    local shown_value = clamp(live_value,
+        clamp(base_value - range * 0.5, 0, 1),
+        clamp(base_value + range * 0.5, 0, 1))
 
-    -- Show the live value in the param's real units (Hz, dB, %, …).
-    local real_min = param_data.min_val or 0
-    local real_max = param_data.max_val or 1
-    local real_cur = UI.core.denormalizeParamValue(live_value, real_min, real_max)
-    local readout
-    if param_data.step_count and param_data.step_count == 2 then
-        readout = live_value > 0.5 and "ON" or "OFF"
-    elseif param_data.step_count and param_data.step_count > 2
-           and param_data.step_count <= 5 then
-        local idx = math.floor(live_value * (param_data.step_count - 1) + 0.5)
-        readout = tostring(idx + 1) .. "/" .. param_data.step_count
-    else
-        readout = string.format("%.2f", real_cur)
+    -- Selected params are the ones the randomizers touch — tint the whole
+    -- cell so a card's selection reads at a glance.
+    if param_data.selected and visible then
+        local a = theme.colors.accent
+        C.DrawRect(cx, cy, cell_w, cell_h, a[1], a[2], a[3], 0.12)
     end
 
-    local vc, new_v, rc, new_min, new_max = ValRngSlid(param_data._uid_vr, "",
-        shown_value, v_min, v_max, 0, 1, { format = readout })
+    -- ---- label: name at rest, live value in real units under the pointer ---
+    -- Only one cell can be hovered, so this formats at most once per frame —
+    -- the old row built a readout string for every visible row. `or active`:
+    -- a drag keeps the readout even once the pointer leaves the cell.
+    local real_min = param_data.min_val or 0
+    local real_max = param_data.max_val or 1
+    local real_cur
+    local text
+    if hovered or active then
+        -- Bounded formats, and NO TruncateText here on purpose: a modulated
+        -- readout is a brand-new string every frame, and the measure/trunc
+        -- memos evict by clearing WHOLESALE when full — truncating these
+        -- would cycle the caches and re-measure every stable label in the
+        -- window. %.4g caps at ~9 chars, which always fits the cell.
+        local sc = param_data.step_count
+        real_cur = UI.core.denormalizeParamValue(live_value, real_min, real_max)
+        if sc == 2 then
+            text = live_value > 0.5 and "ON" or "OFF"
+        elseif sc and sc > 2 and sc <= 5 then
+            text = tostring(math.floor(live_value * (sc - 1) + 0.5) + 1)
+                   .. "/" .. sc
+        else
+            text = string.format("%.4g", real_cur)
+        end
+    else
+        C.SetFontCaption()
+        text = C.TruncateText(param_data.name or "?", cell_w - 2)
+        C.SetFontBody()
+    end
 
-    if vc then
-        local v = new_v
+    -- ---- the knob ----------------------------------------------------------
+    -- Discrete params: ModKnob is a relative-delta control that accumulates
+    -- from the base it is HANDED, so feeding the snapped value back would
+    -- re-quantize the accumulator every frame and a slow drag could never
+    -- cross half a step. Keep the raw gesture value on the param while the
+    -- knob is active; only what leaves for the FX gets snapped.
+    local knob_base = base_value
+    if active and param_data._drag_raw then
+        knob_base = param_data._drag_raw
+    elseif not active then
+        param_data._drag_raw = nil
+    end
+    KNOB_OPTS.size = ksize
+    KNOB_OPTS.default = param_data._def
+    local bc, bv, rc, rv = UItk.ModKnob(param_data._uid_vr, text,
+        knob_base, range, shown_value, theme, KNOB_OPTS)
+    if bc then
+        local v = bv
         if param_data.step_count and param_data.step_count > 0 then
+            param_data._drag_raw = bv
             v = UI.core.snapToDiscreteValue(v, param_data.step_count)
         end
         UI.fxmanager.updateParamBaseValue(fx_id, param_id, v)
     end
     if rc then
-        local span = clamp(new_max - new_min, 0, 1)
-        UI.fxmanager.setParamRange(fx_id, param_id, span)
+        -- ModKnob's depth is signed; the randomization window is a span, so
+        -- a drag past zero stops there instead of reopening inverted.
+        UI.fxmanager.setParamRange(fx_id, param_id, clamp(rv, 0, 1))
     end
+    UItk.Spacing(band_h)   -- the knob only advanced past its label band
 
-    -- Tooltip with real-units values — built only while hovered (string
-    -- building per row per frame is pure GC churn otherwise).
-    if UItk.IsItemHovered() then
-        local real_base = UI.core.denormalizeParamValue(param_data.base_value or 0,
-                                                        real_min, real_max)
-        local tip = string.format("%s\nCurrent: %.3f, Base: %.3f\nRange: %.2f",
-            name, real_cur, real_base, range)
-        if real_min ~= 0 or real_max ~= 1 then
-            tip = tip .. string.format("\n(%.2f to %.2f)", real_min, real_max)
+    -- ---- badges (drawn after the knob so they sit on top) ------------------
+    local zw = math.floor((cell_w - 3) / 4)
+    local zx1 = cx + zw + 1
+    local zx2 = cx + (zw + 1) * 2
+    local zx3 = cx + (zw + 1) * 3
+    if visible then
+        C.SetFontCaption()
+        -- Modulation source in the middle of the knob — the one place inside
+        -- the cell that is empty (ModKnob draws arcs only, no centre
+        -- indicator) and the one place a badge cannot occlude the value arc.
+        -- Nothing is drawn for the pad: that is the default, and the X/Y
+        -- badges already say so.
+        if src_slot > 0 then
+            local lbl = srcLabel(le, src_slot)
+            local lw, lh = C.MeasureText(lbl)
+            local ac = theme.colors.accent
+            C.DrawText(lbl, cx + math.floor((ksize - lw) / 2),
+                cy + math.floor((ksize - lh) / 2), ac[1], ac[2], ac[3], 1)
         end
-        if x_ass and y_ass then tip = tip .. " [XY]"
-        elseif x_ass then tip = tip .. " [X]"
-        elseif y_ass then tip = tip .. " [Y]" end
-        if invert then tip = tip .. " [INVERTED]" end
-        UItk.Tooltip(tip)
+        drawBadge(C, theme, cx, strip_y, zw, band_h, "S", param_data.selected)
+        drawBadge(C, theme, zx1, strip_y, zw, band_h, "N", invert)
+        drawBadge(C, theme, zx2, strip_y, zw, band_h, "X", x_ass and pad_src)
+        drawBadge(C, theme, zx3, strip_y, zw, band_h, "Y", y_ass and pad_src)
+        C.SetFontBody()
     end
 
-    UItk.EndColumns()
+    -- ---- interaction -------------------------------------------------------
+    if hovered and visible then
+        if C.MouseClicked(2) then
+            -- Right-click anywhere on the cell → modulation assignment menu
+            -- (NativeMenu: blocking while open, zero cost otherwise).
+            -- The knob grabbed itself on the press; drop it, or the mouse
+            -- travel accumulated across the blocking menu would land on the
+            -- base value the moment the menu closes.
+            C.ClearActive()
+            openParamModMenu(fx_id, param_id, param_data)
+        elseif C.MouseClicked(1) then
+            if C.MouseInRect(cx, strip_y, zw, band_h) then
+                param_data.selected = not param_data.selected
+                UI.fxmanager.updateSelectedCount()
+                if param_data.selected then
+                    param_data.base_value = param_data.current_value
+                end
+                UI.fxmanager.saveTrackSelection()
+            elseif C.MouseInRect(zx1, strip_y, zw, band_h) then
+                UI.fxmanager.setParamInvert(fx_id, param_id, not invert)
+            elseif C.MouseInRect(zx2, strip_y, zw, band_h) then
+                -- While an LFO owns the param the axis reads off, so the
+                -- first click always claims it back for the pad; afterwards
+                -- it is a plain toggle. (The old row wrote `pad_src and on or
+                -- true`, which can never store false — X/Y could be switched
+                -- on but never off.)
+                reclaimForPad(le, fx_id, param_id, src_slot)
+                UI.fxmanager.setParamXYAssign(fx_id, param_id, "x",
+                    not (pad_src and x_ass))
+            elseif C.MouseInRect(zx3, strip_y, zw, band_h) then
+                reclaimForPad(le, fx_id, param_id, src_slot)
+                UI.fxmanager.setParamXYAssign(fx_id, param_id, "y",
+                    not (pad_src and y_ass))
+            elseif le then
+                -- Pressing the knob itself FOCUSES the param as the "last
+                -- touched" one, so the CP LFO inspector and the Map flow lock
+                -- onto it. The old row needed a separate click target on the
+                -- name for this because grabbing a slider moves its value —
+                -- a knob press that never drags leaves the value alone.
+                le.modjsfx.pokeTouch(UI.r, UI.core.state.track,
+                    param_data.actual_fx_id, param_id)
+            end
+        end
 
-    -- Right-click anywhere on the row → modulation assignment menu
-    -- (NativeMenu: blocking while open, zero cost otherwise).
-    if UItk.Core.MouseClicked(2) and not UItk.Core.HasPopup()
-       and UItk.Core.MouseInRect(row_x, row_y, row_w, theme.button_height) then
-        openParamModMenu(fx_id, param_id, param_data)
+        -- Names are truncated in a cell this narrow — the tooltip carries the
+        -- full one plus the real-units figures. Not while dragging: the label
+        -- band already reads out the live value there.
+        if not C.IsActive(param_data._uid_vr) then
+            local real_base = UI.core.denormalizeParamValue(
+                param_data.base_value or 0, real_min, real_max)
+            local tip = string.format(
+                "%s\nCurrent: %.3f, Base: %.3f\nRange: %.2f",
+                param_data.name or "?", real_cur, real_base, range)
+            if real_min ~= 0 or real_max ~= 1 then
+                tip = tip .. string.format("\n(%.2f to %.2f)", real_min, real_max)
+            end
+            if x_ass and y_ass then tip = tip .. " [XY]"
+            elseif x_ass then tip = tip .. " [X]"
+            elseif y_ass then tip = tip .. " [Y]" end
+            if invert then tip = tip .. " [INVERTED]" end
+            tip = tip .. "\nDrag: base · Alt+drag: range · Double-click: reset"
+                      .. "\nRight-click: modulation source"
+            UItk.Tooltip(tip)
+        end
     end
 end
 
@@ -1674,24 +1754,73 @@ local function drawFXCard(theme, fx_id, fx_data, card_w)
         fx_data._sorted_pids = pids
     end
 
-    -- The rows live in their own vertical-scrolling child, virtualized with
-    -- the list clipper: only the rows inside the viewport are laid out and
-    -- drawn. A big synth (hundreds of params) costs the same as a small FX,
-    -- and long lists finally get a scrollbar instead of being cut off.
-    local row_h = theme.button_height
-    local step = row_h + theme.item_spacing
-    local needed_h = #pids * step + theme.frame_padding_y * 2
+    -- Knob grid. The column count comes from the width available so the cells
+    -- always fill it exactly, and each knob is as wide as its cell — which
+    -- centers it for free (the toolkit has no SetCursorPos, and a nested
+    -- column per cell would cost a container per knob per frame).
+    local gap = theme.item_spacing
+    local target_w = math.floor(theme.button_height * 2.2)
+    local band_h = math.max(12, math.floor(theme.button_height * 0.55))
+
+    -- The child reserves a scrollbar gutter as soon as its content
+    -- overflows, and these cells are square: sized from the gutterless
+    -- width, a wider cell is also a TALLER cell, so the content height would
+    -- feed back into the gutter decision and oscillate frame to frame.
+    -- Reserve the gutter unconditionally — 13 px of slack under a short
+    -- list buys stable geometry on every list.
+    local grid_w = UItk.GetAvailableWidth() - UItk.SCROLLBAR_GUTTER
+    local cols = math.max(1, math.floor((grid_w + gap) / (target_w + gap)))
+    local cell_w = math.floor((grid_w - (cols - 1) * gap) / cols)
+    local cell_h = cell_w + KNOB_LABEL_H + band_h
+    local step = cell_h + theme.item_spacing
+    local nrows = math.ceil(#pids / cols)
+    local needed_h = nrows * step + theme.frame_padding_y * 2
     local avail_h = UItk.GetAvailableHeight() - theme.frame_padding_y
-    local min_h = math.min(needed_h, step * 2)
-    local child_h = math.max(min_h, math.min(needed_h, avail_h))
+    local child_h = math.max(step, math.min(needed_h, avail_h))
+
+    -- The grid lives in its own vertical-scrolling child, virtualized with
+    -- the list clipper on grid ROWS: only the rows inside the viewport are
+    -- laid out and drawn. A big synth (hundreds of params) costs the same as
+    -- a small FX, and long lists get a scrollbar instead of being cut off.
     UItk.BeginChild("fxparams_" .. fx_id, 0, child_h,
         { scrollable = true, border = false, padding = 0 })
-    local first, last = UItk.ListClipper(#pids, row_h)
-    for i = first, last do
-        local pid = pids[i]
-        drawParamRow(theme, fx_id, pid, fx_data.params[pid])
+
+    -- Column widths and row ids are cached on the fx entry: BeginColumns
+    -- reads any ratio > 1 as a fixed pixel width, and both tables would
+    -- otherwise be rebuilt — and the ids re-concatenated — every frame.
+    local widths = fx_data._grid_widths
+    if not widths or fx_data._grid_cols ~= cols
+       or fx_data._grid_cell_w ~= cell_w then
+        widths = {}
+        for i = 1, cols do widths[i] = cell_w end
+        fx_data._grid_widths = widths
+        fx_data._grid_cols = cols
+        fx_data._grid_cell_w = cell_w
+        fx_data._grid_row_ids = {}
     end
-    UItk.EndListClipper(#pids, row_h)
+    local row_ids = fx_data._grid_row_ids
+
+    GRID_ROW_OPTS.gap = gap
+    local first, last = UItk.ListClipper(nrows, cell_h)
+    for gr = first, last do
+        local rid = row_ids[gr]
+        if not rid then
+            rid = "pg_" .. fx_id .. "_" .. gr
+            row_ids[gr] = rid
+        end
+        local base_i = (gr - 1) * cols
+        UItk.BeginColumns(rid, widths, GRID_ROW_OPTS)
+        for c = 1, cols do
+            if c > 1 then UItk.NextColumn() end
+            local pid = pids[base_i + c]
+            if pid then
+                drawParamKnob(theme, fx_id, pid, fx_data.params[pid],
+                    cell_w, band_h)
+            end
+        end
+        UItk.EndColumns()
+    end
+    UItk.EndListClipper(nrows, cell_h)
     UItk.EndChild()
 
     UItk.EndPanel()
