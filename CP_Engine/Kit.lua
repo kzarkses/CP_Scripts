@@ -66,8 +66,11 @@ local choke_tr = nil   -- …and the track carrying it (bus; parent = legacy)
 local last_change = -1 -- GetProjectStateChangeCount snapshot
 local repaired = false -- one routing migration/repair pass per session
 
-function Kit.init(reaper_api)
+local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
+
+function Kit.init(reaper_api, tracks_module)
     r = reaper_api
+    Tracks = tracks_module
 end
 
 local function valid(tr)
@@ -404,10 +407,16 @@ function Kit.Ensure()
     if valid(Kit.parent) then return Kit.parent end
 
     ubegin()
-    local idx = r.CountTracks(0)
-    r.InsertTrackAtIndex(idx, false)
-    local tr = r.GetTrack(0, idx)
-    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Kit", true)
+    local tr
+    if Tracks then
+        -- Born inside the shared CP folder, with the common ownership mark.
+        tr = Tracks.NewChild("sampler", "kit", "CP Kit")
+    else
+        local idx = r.CountTracks(0)
+        r.InsertTrackAtIndex(idx, false)
+        tr = r.GetTrack(0, idx)
+        r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Kit", true)
+    end
     setExt(tr, "CP_KIT", "1")
     Kit.parent = tr
     Kit.version = Kit.version + 1
@@ -430,8 +439,13 @@ local function insertChildTrack(parent)
     if has_children then
         r.SetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH", 0)
     else
+        -- The parent may itself be the LAST child of an outer folder (the
+        -- shared CP folder): whatever levels it was closing move onto the
+        -- new last child, on top of closing the kit itself.
+        local pd = r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH")
+        if pd > 0 then pd = 0 end
         r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", 1)
-        r.SetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH", -1)
+        r.SetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH", pd - 1)
     end
     return tr
 end
@@ -580,17 +594,20 @@ function Kit.DeletePad(note)
     if not pad then return end
     ubegin()
     local parent = Kit.parent
-    local was_closer = r.GetMediaTrackInfo_Value(pad.track, "I_FOLDERDEPTH") < 0
-    if was_closer and valid(parent) then
-        -- Hand the folder-closing depth to the previous track if it is
-        -- still inside the folder; otherwise the parent stops being one.
+    local pad_d = r.GetMediaTrackInfo_Value(pad.track, "I_FOLDERDEPTH")
+    if pad_d < 0 and valid(parent) then
+        -- Hand the WHOLE closing depth to the previous track if it is
+        -- still inside the folder (the pad may close outer folders too —
+        -- the shared CP folder — hence += pad_d, not -1); when the last
+        -- pad goes, the parent stops being a folder and takes over the
+        -- outer closures itself.
         local idx = trackIdx(pad.track)
         local prev = idx > 0 and r.GetTrack(0, idx - 1) or nil
         if prev and prev ~= parent then
             r.SetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH",
-                r.GetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH") - 1)
+                r.GetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH") + pad_d)
         elseif prev == parent then
-            r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", 0)
+            r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", pad_d + 1)
         end
     end
     r.DeleteTrack(pad.track)

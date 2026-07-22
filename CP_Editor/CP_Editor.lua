@@ -29,12 +29,14 @@ local Ops   = dofile(cp_root .. "CP_Engine/Ops.lua")
 local Roll  = dofile(cp_root .. "CP_Engine/Roll.lua")
 local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
+local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 
 Peaks.init(r)
 Ops.init(r, Peaks)
 Roll.init(r)
-Kit.init(r)
+Tracks.init(r)
+Kit.init(r, Tracks)
 Audio.init(r)
 
 local Core_tk = UI.Core

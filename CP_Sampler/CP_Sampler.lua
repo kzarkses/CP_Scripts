@@ -25,6 +25,7 @@ local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
 local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 
 local Kit     = dofile(cp_root .. "CP_Engine/Kit.lua")
+local Tracks  = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Audio   = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 
@@ -33,7 +34,8 @@ local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local okW, Peaks = pcall(dofile, cp_root .. "CP_Engine/Peaks.lua")
 if not okW or type(Peaks) ~= "table" then Peaks = nil end
 
-Kit.init(r)
+Tracks.init(r)
+Kit.init(r, Tracks)
 Audio.init(r)
 DragBus.init(r)
 if Peaks then Peaks.init(r) end

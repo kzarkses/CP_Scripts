@@ -36,12 +36,14 @@ local gread, gwrite
 
 local seq = 0
 local attached = false        -- did gmem_attach succeed
+local Tracks                  -- optional Engine/Tracks (CP folder + mark)
 
 -- ---------------------------------------------------------------------------
 -- Init
 -- ---------------------------------------------------------------------------
-function Loop.init(reaper_api)
+function Loop.init(reaper_api, tracks_module)
     r = reaper_api
+    Tracks = tracks_module
     -- gmem_attach connects this script to the JSFX's named shared block.
     -- Safe to call every run; only one block is used.
     if r.gmem_attach then
@@ -304,10 +306,16 @@ local function ensureRouterTrack()
         end
         return Loop.track
     end
-    local idx = r.CountTracks(0)
-    r.InsertTrackAtIndex(idx, false)
-    local tr = r.GetTrack(0, idx)
-    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Looper", true)
+    local tr
+    if Tracks then
+        -- Born inside the shared CP folder, with the common ownership mark.
+        tr = Tracks.NewChild("looper", "router", "CP Looper")
+    else
+        local idx = r.CountTracks(0)
+        r.InsertTrackAtIndex(idx, false)
+        tr = r.GetTrack(0, idx)
+        r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Looper", true)
+    end
     r.GetSetMediaTrackInfo_String(tr, "P_EXT:" .. EXT_TAG, "router", true)
     local fx = r.TrackFX_AddByName(tr, ADD_NAME, false, -1)
     if fx > 0 then r.TrackFX_CopyToTrack(tr, fx, tr, 0, true); fx = 0 end

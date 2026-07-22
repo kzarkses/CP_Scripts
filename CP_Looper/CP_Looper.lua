@@ -21,8 +21,10 @@ local r = reaper
 -- ---------------------------------------------------------------------------
 local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
 local UI   = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
+local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Loop = dofile(cp_root .. "CP_Engine/Loop.lua")
-Loop.init(r)
+Tracks.init(r)
+Loop.init(r, Tracks)
 -- FIRST-RUN default only: clips launch without the transport (Ableton-like).
 -- Loop.LoadGlobals() runs on attach and overrides this with the project's saved
 -- clock, so this line must never be read as "the clock is always Free".
