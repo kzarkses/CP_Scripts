@@ -1,0 +1,89 @@
+desc:CP Tempo Hub (Monitoring FX)
+options:gmem=CP_Tempo
+
+// ---------------------------------------------------------------------------
+// The suite's single clock (refonte chantier 3, ANALYSE_Ecosysteme.md §6).
+// Lives in the Monitoring FX chain so it runs whenever the audio device
+// does — transport playing or not — and publishes host transport/tempo
+// (and, when one arrives, external MIDI clock) into the shared gmem block
+// "CP_Tempo". Every CP script reads these cells through CP_Engine/Tempo.lua
+// instead of asking REAPER each on its own.
+//
+// gmem layout — SINGLE WRITER (this file) for every cell:
+//   [0]  layout version (bump on ANY change here AND in Tempo.lua)
+//   [1]  heartbeat: +1 per @block, never reset (liveness probe for Lua)
+//   [2]  srate
+//   [3]  host tempo (BPM)
+//   [4]  ts_num          [5]  ts_denom
+//   [6]  play_state (JSFX encoding: 0 stop, 1 play, 2 pause, 5 rec, 6 rec-pause)
+//   [7]  beat_position (quarter notes)
+//   [8]  play_position (seconds)
+//   [9]  sample counter since attach (monotonic wall clock in samples)
+//   [10] external MIDI clock tempo estimate, BPM (0 = no clock seen)
+//   [11] external clock running (0xFA/0xFB seen = 1, 0xFC = 0)
+//
+// ⚠ Whether hardware MIDI reaches Monitoring FX without an armed track is
+// UNVERIFIED (the open question of the analysis). If cells 10/11 stay at 0
+// with a clock source connected, the fallback design is this same file on
+// a dedicated armed track instead of the monitoring chain.
+//
+// No @sample section: audio passes through untouched. MIDI is passed
+// through explicitly — the monitoring chain must never eat events.
+// ---------------------------------------------------------------------------
+
+@init
+LAYOUT_VER = 1;
+gmem[0] = LAYOUT_VER;
+// WARM rule (the CP_MidiLooper loop-loss lesson): @init re-runs on every
+// plugin reset, so nothing stateful that Lua relies on may be zeroed here.
+// The heartbeat keeps counting across resets; only the clock estimator
+// re-locks (it recovers within one beat of ticks).
+tick_prev = -1;
+tick_acc  = 0;
+clock_bpm = 0;
+clock_run = 0;
+spos      = 0;
+
+@block
+spos += samplesblock;
+
+// --- external MIDI clock (24 ppqn) -----------------------------------------
+while (midirecv(ofs, m1, m2, m3)) (
+  st = m1 & 0xFF;
+  st == 0xF8 ? (
+    tnow = spos + ofs;
+    tick_prev >= 0 ? (
+      dt = tnow - tick_prev;
+      // Plausible tick spacing only (20..300 BPM): outliers re-seed.
+      (dt > srate * 60 / (300 * 24) && dt < srate * 60 / (20 * 24)) ? (
+        // EMA over ~one beat of ticks; re-seed on a 2x jump (tempo change,
+        // stream resume) so the estimate converges fast instead of gliding.
+        (tick_acc <= 0 || dt > tick_acc * 2 || dt < tick_acc * 0.5) ?
+          tick_acc = dt
+        : tick_acc += (dt - tick_acc) / 24;
+        clock_bpm = 60 * srate / (tick_acc * 24);
+      ) : tick_acc = 0;
+    );
+    tick_prev = tnow;
+  ) :
+  st == 0xFA || st == 0xFB ? ( clock_run = 1; st == 0xFA ? tick_prev = -1; ) :
+  st == 0xFC ? clock_run = 0;
+  midisend(ofs, m1, m2, m3);
+);
+// No tick for a second: the clock source is gone.
+(tick_prev >= 0 && spos - tick_prev > srate) ? (
+  clock_bpm = 0; clock_run = 0; tick_prev = -1; tick_acc = 0;
+);
+
+// --- publish ---------------------------------------------------------------
+gmem[1] += 1;
+gmem[2] = srate;
+gmem[3] = tempo;
+gmem[4] = ts_num;
+gmem[5] = ts_denom;
+gmem[6] = play_state;
+gmem[7] = beat_position;
+gmem[8] = play_position;
+gmem[9] = spos;
+gmem[10] = clock_bpm;
+gmem[11] = clock_run;

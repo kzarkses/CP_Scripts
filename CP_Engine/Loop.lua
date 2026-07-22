@@ -118,6 +118,15 @@ function Loop.IsAttached()
     return valid(Loop.track) and findLooperFX(Loop.track) >= 0
 end
 
+-- Re-select this module's gmem block. gmem_attach is GLOBAL to the script
+-- — it switches the segment for every gmem_read in the process — and
+-- Engine/Tempo re-attaches to its own block on every Tempo.Poll(). A host
+-- that polls both must call this before its Loop reads each frame; a host
+-- that only uses Loop never needs it (init attached once).
+function Loop.Reattach()
+    if attached then r.gmem_attach(GMEM_NAME) end
+end
+
 function Loop.TrackName()
     if not valid(Loop.track) then return nil end
     local _, nm = r.GetTrackName(Loop.track)
