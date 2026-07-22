@@ -5,7 +5,9 @@
 > pas des intentions), nomme les duplications, et propose une architecture cible.
 >
 > Rédigé le 2026-07-21. À relire avant toute grosse refonte.
-> Voir aussi : [ROADMAP_CPStudio.md](ROADMAP_CPStudio.md) (vision CP Studio,
+> Voir aussi : [ANALYSE_Interactions.md](ANALYSE_Interactions.md) (ponts
+> inter-apps + manques face aux ténors, 2026-07-22),
+> [ROADMAP_CPStudio.md](ROADMAP_CPStudio.md) (vision CP Studio,
 > 2026-02) et [CP_Editor/docs/midi-editor-benchmark.md](CP_Editor/docs/midi-editor-benchmark.md).
 
 ---
