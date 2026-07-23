@@ -69,7 +69,12 @@ Four independent lanes. Each:
   finish the take — the clip locks and **starts playing** (loops on the grid).
   Held notes get a clean note-off at the loop point.
 - **Play / Stop** — launch a stopped clip or halt a playing one (Ableton-style
-  clip launch). A freshly recorded clip auto-plays.
+  clip launch). A freshly recorded clip auto-plays. With the toolbar **Q**
+  (launch quantize: Off / beat / bar / 2 bars / 4 bars) set, Play, Stop and
+  REC wait for the next boundary instead of acting immediately — the lane's
+  status blinks **> PLAY / > STOP / > REC** until it fires, and clicking the
+  same button again cancels the queued action. A command landing right after
+  a boundary (≤ 0.05 beat) counts as meant for it and acts at once.
 - **Clear** — empties the lane (and sends note-offs, so nothing hangs).
 - **Mute** — silences the lane's playback (its held notes are released).
 - **Length** — cycles the loop length in bars (1 / 2 / 4 / 8). Lanes of

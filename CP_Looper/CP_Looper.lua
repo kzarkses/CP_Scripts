@@ -414,6 +414,31 @@ local function drawToolbar(attached)
             flash(free and "Follow host transport" or "Free run (launch without transport)")
         end
         UI.SameLine()
+        -- Launch quantize (Ableton-style): commands wait for the next boundary.
+        -- Cycles Off -> beat -> bar -> 2 bars -> 4 bars; stored in beats so the
+        -- engine never needs to know about bars.
+        local q   = Loop.GetLaunchQ()
+        local tsn = Loop.TsNum()
+        local qlbl
+        if q <= 0 then                            qlbl = "Q: Off"
+        elseif math.abs(q - 1) < 0.01 then        qlbl = "Q: Beat"
+        elseif math.abs(q - tsn) < 0.01 then      qlbl = "Q: Bar"
+        elseif math.abs(q - 2 * tsn) < 0.01 then  qlbl = "Q: 2 bars"
+        elseif math.abs(q - 4 * tsn) < 0.01 then  qlbl = "Q: 4 bars"
+        else                                      qlbl = string.format("Q: %g bt", q) end
+        if UI.Button("launchq", qlbl) then
+            local nq
+            if q <= 0 then                            nq = 1
+            elseif math.abs(q - 1) < 0.01 then        nq = tsn
+            elseif math.abs(q - tsn) < 0.01 then      nq = 2 * tsn
+            elseif math.abs(q - 2 * tsn) < 0.01 then  nq = 4 * tsn
+            else                                      nq = 0 end
+            Loop.SetLaunchQ(nq)
+            persist_dirty = true
+            flash(nq <= 0 and "Launch quantize off" or
+                  string.format("Launch quantize: %g beat%s", nq, nq > 1 and "s" or ""))
+        end
+        UI.SameLine()
         -- The router is armed on ALL MIDI inputs and fans your playing to each
         -- lane's instrument through sends — and a send ignores the destination's
         -- arm state, so those tracks sound even unarmed. This is the off switch:
@@ -552,6 +577,7 @@ local function drawLane(theme, l, x, y, w, h)
     local mode  = math.floor(Loop.Mode(l) + 0.5)   -- 0 empty,1 rec,2 stopped,3 playing,4 armed
     local muted = Loop.GetMute(l)
     local nev   = math.floor(Loop.NEv(l) + 0.5)
+    local pend  = Loop.Pending(l)                  -- 0 none,1 play,2 stop,3 rec,4 stop-rec
 
     -- panel
     Core.DrawRect(x, y, w, h, C.surface[1], C.surface[2], C.surface[3], 1)
@@ -584,9 +610,19 @@ local function drawLane(theme, l, x, y, w, h)
     elseif mode == 2 then sw, scr, scg, scb = "STOP", C.text_mute[1], C.text_mute[2], C.text_mute[3]
     else sw, scr, scg, scb = "", C.text_mute[1], C.text_mute[2], C.text_mute[3] end
     if muted and mode ~= 1 and mode ~= 4 then sw = "MUTE"; scr, scg, scb = 0.85, 0.65, 0.25 end
+    -- a queued launch outranks the mode word, and blinks until it fires
+    local sa = 1
+    if pend > 0 then
+        if pend == 1 then sw = "> PLAY"
+        elseif pend == 2 then sw = "> STOP"
+        elseif pend == 3 then sw = "> REC"
+        else sw = "> END" end
+        scr, scg, scb = 0.85, 0.65, 0.25
+        sa = 0.45 + 0.55 * math.abs(math.sin(r.time_precise() * 5))
+    end
     if sw ~= "" then
         local tw = gfx.measurestr(sw)
-        Core.DrawText(sw, x + w - pad - tw, y + 5, scr, scg, scb, 1)
+        Core.DrawText(sw, x + w - pad - tw, y + 5, scr, scg, scb, sa)
     end
 
     -- controls row
@@ -594,8 +630,13 @@ local function drawLane(theme, l, x, y, w, h)
     local bh = 20
     local bx = x + pad
 
-    -- REC (click while recording/armed = finish the take / cancel the arm)
-    if mode == 1 then
+    -- REC (click while recording/armed = finish the take / cancel the arm;
+    -- click while a rec is queued = cancel the queue)
+    if pend == 3 then
+        if tinyBtn(bx, cy, 46, bh, "REC", 0.85, 0.65, 0.25, theme) then
+            Loop.Rec(l); flash("Lane " .. (l + 1) .. ": queued rec cancelled")
+        end
+    elseif mode == 1 then
         if tinyBtn(bx, cy, 46, bh, "REC", C.danger[1], C.danger[2], C.danger[3], theme) then
             Loop.Stop(l)
         end
@@ -608,7 +649,8 @@ local function drawLane(theme, l, x, y, w, h)
             Loop.SetArmedLane(l); Loop.Rec(l)
             -- with the clock stopped the engine arms instead of wiping the lane
             if Loop.GetFreeRun() or Loop.Playing() then
-                flash("Lane " .. (l + 1) .. ": recording")
+                flash("Lane " .. (l + 1)
+                      .. (Loop.GetLaunchQ() > 0 and ": rec queued" or ": recording"))
             else
                 flash("Lane " .. (l + 1) .. ": armed - starts on play")
             end
@@ -616,12 +658,24 @@ local function drawLane(theme, l, x, y, w, h)
     end
     bx = bx + 50
 
-    -- PLAY / STOP clip (only meaningful with content)
-    if mode == 3 then
+    -- PLAY / STOP clip (only meaningful with content). While queued, the same
+    -- button cancels: the engine treats the opposite command as the cancel.
+    if pend == 1 then
+        if tinyBtn(bx, cy, 46, bh, "Play", 0.85, 0.65, 0.25, theme) then
+            Loop.StopClip(l); flash("Lane " .. (l + 1) .. ": launch cancelled")
+        end
+    elseif pend == 2 then
+        if tinyBtn(bx, cy, 46, bh, "Stop", 0.85, 0.65, 0.25, theme) then
+            Loop.Play(l); flash("Lane " .. (l + 1) .. ": stop cancelled")
+        end
+    elseif mode == 3 then
         if tinyBtn(bx, cy, 46, bh, "Stop", 0.28, 0.66, 0.38, theme) then Loop.StopClip(l) end
     elseif mode == 2 then
         if tinyBtn(bx, cy, 46, bh, "Play", 0.22, 0.30, 0.24, theme) then
-            Loop.Play(l); flash("Lane " .. (l + 1) .. ": play")
+            Loop.Play(l)
+            flash("Lane " .. (l + 1)
+                  .. ((Loop.GetLaunchQ() > 0 and (Loop.GetFreeRun() or Loop.Playing()))
+                      and ": launch queued" or ": play"))
         end
     else
         Core.DrawRect(bx, cy, 46, bh, 0.15, 0.15, 0.16, 1)   -- inert (empty / recording)

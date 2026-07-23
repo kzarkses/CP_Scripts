@@ -1,6 +1,6 @@
 desc: CP_MidiLooper
 author: Cedric Pamalio
-version: 0.6
+version: 0.7
 
 // MIDI looper engine for CP_Looper. The CP_Toolkit UI drives it over gmem.
 //
@@ -32,6 +32,16 @@ version: 0.6
 // only rebuilds per-instance state — because REAPER re-runs @init on every
 // plugin reset (transport start among them) and that used to wipe every lane.
 // Loops end in exactly two ways: the user clears them, or REAPER quits.
+//
+// LAUNCH QUANTIZE (Ableton-style): gmem[6] holds a quantize unit in beats
+// (Lua-owned, 0 = act now). When set and the clock runs, PLAY/STOP/REC/
+// STOP-REC don't act on their own block: they queue on the lane
+// (LANE_STATE +6 = pending action, +7 = its target beat) and fire on the
+// first block at/past the target — the same block granularity as the gate.
+// A command landing within 0.05 beat AFTER a boundary counts as meant for
+// it and acts now. Re-sending the queued command cancels it (toggle);
+// CLEAR / PANIC / transport stop drop the queue. Pending state lives in
+// gmem so the UI can show it and a warm reset keeps it.
 
 options:gmem=CP_MidiLooper
 
@@ -59,8 +69,9 @@ GMEM_CMD_ARG    = 2;
 GMEM_FREERUN    = 3;    // 0 = follow host transport, 1 = free internal clock
 GMEM_ARMED      = 4;    // lane index that live input is monitored on (0..MAX_LANES-1)
 GMEM_CMD_SEQ    = 5;
+GMEM_LAUNCH_Q   = 6;    // launch quantize in beats (0 = immediate) — Lua-owned
 GMEM_LANE_CTRL  = 100;  // stride 8: +0 length_bars, +1 muted   (Lua -> JSFX)
-GMEM_LANE_STATE = 200;  // stride 8: +0 mode,+1 nev(SHARED),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent
+GMEM_LANE_STATE = 200;  // stride 8: +0 mode,+1 nev(SHARED),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 GMEM_TRANSPORT  = 3000;
 GMEM_INIT_COUNT = 3095;
 GMEM_FREEBEAT   = 3096; // free clock position, mirrored so a reset doesn't warp it
@@ -70,7 +81,7 @@ GMEM_NOTE_BASE  = 10000; // per lane: MAX_NOTES * NOTE_STRIDE floats
 
 // Bump LAYOUT_VER on ANY change to the gmem layout above: it forces the next
 // @init to treat the block as cold, so a stale layout is never reinterpreted.
-LAYOUT_VER = 5;
+LAYOUT_VER = 6;
 MAGIC      = 8451000 + LAYOUT_VER;
 
 // Finalize the pending note of (cl, p): append a note object ending at endphase.
@@ -120,6 +131,8 @@ loop(MAX_LANES,
     gmem[GMEM_LANE_STATE + li*8 + 0] = 0;   // mode idle
     gmem[GMEM_LANE_STATE + li*8 + 1] = 0;   // nev
     gmem[GMEM_LANE_STATE + li*8 + 5] = 0;   // hascontent
+    gmem[GMEM_LANE_STATE + li*8 + 6] = 0;   // pending launch
+    gmem[GMEM_LANE_STATE + li*8 + 7] = 0;
   ) : (
     // warm reset: the notes stay. Only a take still being CAPTURED is lost (its
     // held-note state lived in the heap), so don't strand the lane in "recording"
@@ -157,19 +170,28 @@ block_beats = samplesblock / spb;
 // or a free-running internal clock so clips can launch with the transport
 // stopped. `active` = the looper is advancing; `pb` = its beat position.
 freerun = gmem[GMEM_FREERUN] >= 0.5;
+launch_q = gmem[GMEM_LAUNCH_Q];
 free_beat += block_beats;
 gmem[GMEM_FREEBEAT] = free_beat;   // mirrored so a plugin reset resumes in place
 pb = freerun ? free_beat : beat_position;
 active = freerun || playing;
 
 // Clock-source switch: pb jumps to a different timebase. Re-anchor every lane's
-// record start by the SAME jump so an in-flight recording keeps its elapsed
-// length — otherwise (pb - REC_START) goes wildly negative, the one-loop
-// auto-stop never fires, the take is never finalized and the recording is lost.
+// record start — and any pending-launch target — by the SAME jump so an
+// in-flight recording keeps its elapsed length and a queued launch keeps its
+// distance to the boundary. Otherwise (pb - REC_START) goes wildly negative,
+// the one-loop auto-stop never fires, the take is never finalized and the
+// recording is lost.
 (prev_freerun >= 0 && freerun != prev_freerun) ? (
   pbd = pb - last_pb;
   li = 0;
-  loop(MAX_LANES, REC_START[li] = REC_START[li] + pbd; li += 1;);
+  loop(MAX_LANES,
+    REC_START[li] = REC_START[li] + pbd;
+    gmem[GMEM_LANE_STATE + li*8 + 6] > 0 ? (
+      gmem[GMEM_LANE_STATE + li*8 + 7] = gmem[GMEM_LANE_STATE + li*8 + 7] + pbd;
+    );
+    li += 1;
+  );
 );
 prev_freerun = freerun;
 last_pb = pb;
@@ -184,6 +206,7 @@ last_pb = pb;
 (active < 0.5 && prev_active >= 0.5) ? (
   li = 0;
   loop(MAX_LANES,
+    gmem[GMEM_LANE_STATE + li*8 + 6] = 0;   // a queued launch dies with the clock
     gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
       Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
       cph = pb - floor(pb / Lb) * Lb;
@@ -226,28 +249,56 @@ seq != last_seq ? (
       // captured, so clearing here would destroy the existing loop for nothing.
       // ARM instead: keep the notes, and start capturing the instant the clock
       // runs. Armed is mode 4.
+      gmem[GMEM_LANE_STATE + cl*8 + 6] == 3 ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // queued rec -> cancel (toggle)
+      ) : (
       active ? (
-        ni = 0;
-        loop(128,
-          ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
-          PEND_ST[cl*128+ni] = -1;
-          ni += 1;
+        tq = pb;
+        launch_q > 0.001 ? (
+          qph = pb - floor(pb / launch_q) * launch_q;
+          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
         );
-        gmem[GMEM_LANE_STATE + cl*8 + 1] = 0;
-        gmem[GMEM_LANE_STATE + cl*8 + 0] = 1;
-        REC_START[cl] = pb;
-        gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
+        tq > pb + 0.0005 ? (
+          // the lane keeps playing (or stays idle) until the boundary
+          gmem[GMEM_LANE_STATE + cl*8 + 6] = 3;
+          gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
+        ) : (
+          ni = 0;
+          loop(128,
+            ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+            PEND_ST[cl*128+ni] = -1;
+            ni += 1;
+          );
+          gmem[GMEM_LANE_STATE + cl*8 + 1] = 0;
+          gmem[GMEM_LANE_STATE + cl*8 + 0] = 1;
+          REC_START[cl] = tq;   // snapped to the just-passed boundary when quantized
+          gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
+        );
       ) : (
         gmem[GMEM_LANE_STATE + cl*8 + 0] = 4;
+      );
       );
     );
 
     cmd == 2 ? (                              // STOP-REC: finalize held -> playing
+      gmem[GMEM_LANE_STATE + cl*8 + 6] == 3 ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // a rec still queued: just drop it
+      );
       gmem[GMEM_LANE_STATE + cl*8 + 0] == 1 ? (
-        cph = pb - floor(pb / Lbc) * Lbc;
-        ni = 0;
-        loop(128, finalize_note(cl, ni, cph, Lbc, 1); ni += 1;);
-        gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+        tq = pb;
+        (active && launch_q > 0.001) ? (
+          qph = pb - floor(pb / launch_q) * launch_q;
+          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
+        );
+        tq > pb + 0.0005 ? (
+          gmem[GMEM_LANE_STATE + cl*8 + 6] = 4;   // keep capturing till the boundary
+          gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
+        ) : (
+          cph = tq - floor(tq / Lbc) * Lbc;
+          ni = 0;
+          loop(128, finalize_note(cl, ni, cph, Lbc, 1); ni += 1;);
+          gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+        );
       );
       // cancel an arm: fall back to whatever the lane already holds
       gmem[GMEM_LANE_STATE + cl*8 + 0] == 4 ? (
@@ -260,23 +311,55 @@ seq != last_seq ? (
     );
 
     cmd == 5 ? (                              // PLAY: launch a stopped clip
-      gmem[GMEM_LANE_STATE + cl*8 + 0] == 2 ? gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+      gmem[GMEM_LANE_STATE + cl*8 + 6] == 2 ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // cancel a queued stop: keep playing
+      ) : (
+      gmem[GMEM_LANE_STATE + cl*8 + 0] == 2 ? (
+        tq = pb;
+        (active && launch_q > 0.001) ? (
+          qph = pb - floor(pb / launch_q) * launch_q;
+          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
+        );
+        tq > pb + 0.0005 ? (
+          gmem[GMEM_LANE_STATE + cl*8 + 6] = 1;
+          gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
+        ) : (
+          gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+        );
+      );
+      );
     );
 
     cmd == 6 ? (                              // STOP: halt a playing clip
+      pnd = gmem[GMEM_LANE_STATE + cl*8 + 6];
+      (pnd == 1 || pnd == 3) ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // cancel a queued play / rec
+      ) : (
       gmem[GMEM_LANE_STATE + cl*8 + 0] == 3 ? (
-        gmem[GMEM_LANE_STATE + cl*8 + 0] = 2;
-        ni = 0;
-        loop(128,
-          ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
-          ni += 1;
+        tq = pb;
+        (active && launch_q > 0.001) ? (
+          qph = pb - floor(pb / launch_q) * launch_q;
+          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
         );
+        tq > pb + 0.0005 ? (
+          gmem[GMEM_LANE_STATE + cl*8 + 6] = 2;
+          gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
+        ) : (
+          gmem[GMEM_LANE_STATE + cl*8 + 0] = 2;
+          ni = 0;
+          loop(128,
+            ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+            ni += 1;
+          );
+        );
+      );
       );
     );
 
     cmd == 3 ? (                              // CLEAR: idle, notes off
       gmem[GMEM_LANE_STATE + cl*8 + 0] = 0;
       gmem[GMEM_LANE_STATE + cl*8 + 1] = 0;
+      gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;
       ni = 0;
       loop(128,
         ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
@@ -290,6 +373,7 @@ seq != last_seq ? (
       li = 0;
       loop(MAX_LANES,
         gmem[GMEM_LANE_STATE + li*8 + 0] == 3 ? (gmem[GMEM_LANE_STATE + li*8 + 0] = 2);
+        gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
         ni = 0;
         loop(128,
           ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
@@ -304,6 +388,7 @@ seq != last_seq ? (
       loop(MAX_LANES,                         // so this is the ONLY way to lose one.
         gmem[GMEM_LANE_STATE + li*8 + 0] = 0;
         gmem[GMEM_LANE_STATE + li*8 + 1] = 0;
+        gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
         ni = 0;
         loop(128,
           ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
@@ -318,30 +403,89 @@ seq != last_seq ? (
   gmem[GMEM_CMD] = 0;
 );
 
-// ---- armed lanes start capturing as soon as the clock runs, then auto-stop
-//      after one full loop (one-click REC). Both live here, before the capture
-//      loop below, so an armed lane records this very block. ----
+// ---- armed lanes start capturing as soon as the clock runs (quantized to the
+//      launch boundary when one is set), queued launches fire at their target
+//      beat, and a recording auto-stops after one full loop (one-click REC).
+//      All live here, before the capture loop below, so a lane that starts
+//      recording records this very block. ----
 active ? (
   li = 0;
   loop(MAX_LANES,
-    gmem[GMEM_LANE_STATE + li*8 + 0] == 4 ? (   // armed -> recording
-      ni = 0;
-      loop(128,
-        ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
-        PEND_ST[li*128+ni] = -1;
-        ni += 1;
+    // armed -> recording. With a launch quantize the arm converts into a
+    // queued rec at the next boundary instead of firing on the first block.
+    (gmem[GMEM_LANE_STATE + li*8 + 0] == 4 && gmem[GMEM_LANE_STATE + li*8 + 6] == 0) ? (
+      tq = pb;
+      launch_q > 0.001 ? (
+        qph = pb - floor(pb / launch_q) * launch_q;
+        tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
       );
-      gmem[GMEM_LANE_STATE + li*8 + 1] = 0;
-      gmem[GMEM_LANE_STATE + li*8 + 0] = 1;
-      REC_START[li] = pb;
-      gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;
+      tq > pb + 0.0005 ? (
+        gmem[GMEM_LANE_STATE + li*8 + 6] = 3;
+        gmem[GMEM_LANE_STATE + li*8 + 7] = tq;
+      ) : (
+        ni = 0;
+        loop(128,
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          PEND_ST[li*128+ni] = -1;
+          ni += 1;
+        );
+        gmem[GMEM_LANE_STATE + li*8 + 1] = 0;
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 1;
+        REC_START[li] = tq;
+        gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;
+      );
     );
+
+    // queued launch fires on the first block at/past its target — the same
+    // granularity as the gate. Phase math uses the TARGET, not pb, so a
+    // block-late fire still lands exactly on the grid.
+    pnd = gmem[GMEM_LANE_STATE + li*8 + 6];
+    (pnd > 0 && pb >= gmem[GMEM_LANE_STATE + li*8 + 7] - 0.0005) ? (
+      tgt = gmem[GMEM_LANE_STATE + li*8 + 7];
+      pnd == 1 ? (
+        gmem[GMEM_LANE_STATE + li*8 + 0] == 2 ? gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
+      );
+      pnd == 2 ? (
+        gmem[GMEM_LANE_STATE + li*8 + 0] == 3 ? (
+          gmem[GMEM_LANE_STATE + li*8 + 0] = 2;
+          ni = 0;
+          loop(128,
+            ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+            ni += 1;
+          );
+        );
+      );
+      pnd == 3 ? (
+        ni = 0;
+        loop(128,
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          PEND_ST[li*128+ni] = -1;
+          ni += 1;
+        );
+        gmem[GMEM_LANE_STATE + li*8 + 1] = 0;
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 1;
+        REC_START[li] = tgt;
+        gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;
+      );
+      pnd == 4 ? (
+        gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+          Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+          cph = tgt - floor(tgt / Lb) * Lb;
+          ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
+          gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
+        );
+      );
+      gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
+    );
+
     gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
       Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
       (pb - REC_START[li]) >= Lb ? (
         cph = pb - floor(pb / Lb) * Lb;
         ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
         gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
+        // a queued stop-rec is moot once the take closed itself
+        gmem[GMEM_LANE_STATE + li*8 + 6] == 4 ? gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
       );
     );
     li += 1;

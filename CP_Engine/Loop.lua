@@ -20,8 +20,9 @@ Loop.NOTE_STRIDE = 4       -- start, length, pitch, vel (all in beats/0..127)
 local G_CMD, G_CMD_LANE, G_CMD_ARG, G_CMD_SEQ = 0, 1, 2, 5
 local G_FREERUN    = 3     -- 0 = follow host transport, 1 = free internal clock
 local G_ARMED      = 4     -- lane index that live input is monitored on
+local G_LAUNCH_Q   = 6     -- launch quantize in beats (0 = immediate)
 local G_LANE_CTRL  = 100   -- stride 8: +0 length_bars, +1 muted
-local G_LANE_STATE = 200   -- stride 8: +0 mode,+1 nev(shared),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent
+local G_LANE_STATE = 200   -- stride 8: +0 mode,+1 nev(shared),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 local G_TRANSPORT  = 3000  -- +0 tempo,+1 play_state,+2 beat,+3 spb,+4 ts_num,+5 ts_denom,+6 srate
 local G_INIT_COUNT = 3095  -- incremented by the JSFX @init: counts engine resets
 local G_VERSION    = 3099
@@ -417,15 +418,33 @@ function Loop.StopClip(lane) sendCmd(6, lane) end  -- halt a playing clip
 function Loop.ClearAll()     sendCmd(7, 0)    end  -- wipe every lane (explicit only)
 
 -- REC button behaviour: recording or armed -> stop/cancel, otherwise (re)record.
+-- A queued rec cancels on the second press (the JSFX treats REC as a toggle
+-- while pending), so this maps straight to Rec.
 function Loop.ToggleRec(lane)
+    if Loop.Pending(lane) == 3 then Loop.Rec(lane) return end
     local m = Loop.Mode(lane)
     if m == 1 or m == 4 then Loop.Stop(lane) else Loop.Rec(lane) end
 end
 
--- Play/Stop button: launch a stopped clip / halt a playing one.
+-- Play/Stop button: launch a stopped clip / halt a playing one. While a launch
+-- or a stop is queued, the same button cancels it (the JSFX cancels a pending
+-- play on STOP and a pending stop on PLAY).
 function Loop.ToggleClip(lane)
+    local p = Loop.Pending(lane)
+    if p == 1 then Loop.StopClip(lane) return end
+    if p == 2 then Loop.Play(lane) return end
     local m = Loop.Mode(lane)
     if m == 3 then Loop.StopClip(lane) elseif m == 2 then Loop.Play(lane) end
+end
+
+-- Launch quantize, in beats (0 = act immediately). The UI cycles Off / beat /
+-- bar / 2 bars / 4 bars; the JSFX only sees beats so any grid works.
+function Loop.SetLaunchQ(beats)
+    if attached then gwrite(G_LAUNCH_Q, beats or 0) end
+end
+function Loop.GetLaunchQ()
+    if not attached then return 0 end
+    return gread(G_LAUNCH_Q) or 0
 end
 
 -- Global clock: follow the host transport (synced to an external clock when
@@ -485,6 +504,12 @@ function Loop.Phase(lane)      return attached and gread(G_LANE_STATE + lane * 8
 function Loop.LenBeats(lane)   local v = attached and gread(G_LANE_STATE + lane * 8 + 3) or 0; return v > 0 and v or 4 end
 function Loop.EvtVersion(lane) return attached and gread(G_LANE_STATE + lane * 8 + 4) or 0 end
 function Loop.HasContent(lane) return attached and gread(G_LANE_STATE + lane * 8 + 5) >= 0.5 end
+-- queued launch: 0 none · 1 play · 2 stop · 3 rec · 4 stop-rec (fires at PendingTarget)
+function Loop.Pending(lane)
+    if not attached then return 0 end
+    return math.floor((gread(G_LANE_STATE + lane * 8 + 6) or 0) + 0.5)
+end
+function Loop.PendingTarget(lane) return attached and gread(G_LANE_STATE + lane * 8 + 7) or 0 end
 
 -- ---------------------------------------------------------------------------
 -- Transport (read)
@@ -619,12 +644,13 @@ end
 --
 -- Wire format, one string, printable separators only (P_EXT is one line of the
 -- track chunk, so no newlines):
---   "2;<global>;<lane>;<lane>;<lane>;<lane>"        2 = format version
---   global = "freerun|armedlane"
+--   "3;<global>;<lane>;<lane>;<lane>;<lane>"        3 = format version
+--   global = "freerun|armedlane|launchq"            launchq in beats, 0 = off
 --   lane   = "bars|muted|mode|n|s,l,p,v|s,l,p,v|…"  starts/lengths in beats
 --
--- v1 (no global block, no per-lane mode) is still read: loops saved before the
--- format grew come back stopped, which is the safe interpretation.
+-- v2 (no launchq) and v1 (no global block, no per-lane mode) are still read:
+-- loops saved before the format grew come back stopped, which is the safe
+-- interpretation, and the quantize simply stays where it was.
 -- ---------------------------------------------------------------------------
 local DATA_KEY = "P_EXT:" .. EXT_TAG .. "_DATA"
 
@@ -634,8 +660,9 @@ end
 
 function Loop.Serialize()
     if not attached then return "" end
-    local out = { "2",
-                  (Loop.GetFreeRun() and "1" or "0") .. "|" .. Loop.GetArmedLane() }
+    local out = { "3",
+                  (Loop.GetFreeRun() and "1" or "0") .. "|" .. Loop.GetArmedLane()
+                  .. "|" .. num(Loop.GetLaunchQ()) }
     for lane = 0, Loop.MAX_LANES - 1 do
         local n = Loop.NoteCount(lane)
         local m = math.floor(Loop.Mode(lane) + 0.5)
@@ -664,16 +691,18 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if ver ~= "1" and ver ~= "2" then return false end
-    local v2 = (ver == "2")
+    if ver ~= "1" and ver ~= "2" and ver ~= "3" then return false end
+    local v2 = (ver ~= "1")
 
-    -- lane blocks start after the version, and after the global block in v2
+    -- lane blocks start after the version, and after the global block in v2+
     local base = v2 and 2 or 1
     if v2 and fields[2] then
-        local fr, arm = fields[2]:match("^([^|]*)|([^|]*)$")
+        local fr, arm, lq = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)$")
+        if not fr then fr, arm = fields[2]:match("^([^|]*)|([^|]*)$") end
         if fr then
             Loop.SetFreeRun(fr == "1")
             Loop.SetArmedLane(math.floor(tonumber(arm) or 0))
+            if lq then Loop.SetLaunchQ(tonumber(lq) or 0) end
         end
     end
 
@@ -760,11 +789,13 @@ function Loop.LoadGlobals()
     if str == "" then return false end
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
-    if fields[1] ~= "2" or not fields[2] then return false end   -- v1 had none
-    local fr, arm = fields[2]:match("^([^|]*)|([^|]*)$")
+    if fields[1] == "1" or not fields[2] then return false end   -- v1 had none
+    local fr, arm, lq = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)$")
+    if not fr then fr, arm = fields[2]:match("^([^|]*)|([^|]*)$") end
     if not fr then return false end
     Loop.SetFreeRun(fr == "1")
     Loop.SetArmedLane(math.floor(tonumber(arm) or 0))
+    if lq then Loop.SetLaunchQ(tonumber(lq) or 0) end
     return true
 end
 
