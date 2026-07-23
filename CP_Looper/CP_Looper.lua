@@ -686,15 +686,15 @@ local function drawViz(theme, l, x, y, w, h, mode)
         Core.DrawRect(nx, ny, nw, 3, acc[1], acc[2], acc[3], a)
     end
 
-    -- playhead (only while the clip is actually playing)
-    if mode == 3 then
+    -- playhead (while the clip is playing — overdub plays too)
+    if mode == 3 or mode == 5 then
         local ph = Loop.Phase(l)
         local px = x + (ph / lenB) * w
         Core.DrawLine(px, y, px, y + h, 1, 1, 1, 0.65)
     end
 
-    -- recording tint (dimmer while merely armed)
-    if mode == 1 then
+    -- recording tint (dimmer while merely armed; overdub = capture too)
+    if mode == 1 or mode == 5 then
         Core.DrawRect(x, y, w, h, C.danger[1], C.danger[2], C.danger[3], 0.07)
     elseif mode == 4 then
         Core.DrawRect(x, y, w, h, 0.85, 0.65, 0.25, 0.05)
@@ -742,6 +742,7 @@ local function drawLane(theme, l, x, y, w, h)
     -- status word (right)
     local sw, scr, scg, scb
     if mode == 1 then sw, scr, scg, scb = "REC", C.danger[1], C.danger[2], C.danger[3]
+    elseif mode == 5 then sw, scr, scg, scb = "OVER", C.danger[1], C.danger[2], C.danger[3]
     elseif mode == 4 then sw, scr, scg, scb = "ARM", 0.85, 0.65, 0.25
     elseif mode == 3 then sw, scr, scg, scb = "PLAY", 0.30, 0.75, 0.40
     elseif mode == 2 then sw, scr, scg, scb = "STOP", C.text_mute[1], C.text_mute[2], C.text_mute[3]
@@ -753,6 +754,7 @@ local function drawLane(theme, l, x, y, w, h)
         if pend == 1 then sw = "> PLAY"
         elseif pend == 2 then sw = "> STOP"
         elseif pend == 3 then sw = "> REC"
+        elseif pend == 5 then sw = "> OVR"
         else sw = "> END" end
         scr, scg, scb = 0.85, 0.65, 0.25
         sa = 0.45 + 0.55 * math.abs(math.sin(r.time_precise() * 5))
@@ -773,23 +775,39 @@ local function drawLane(theme, l, x, y, w, h)
         if tinyBtn(bx, cy, 46, bh, "REC", 0.85, 0.65, 0.25, theme) then
             Loop.Rec(l); flash("Lane " .. (l + 1) .. ": queued rec cancelled")
         end
+    elseif pend == 5 then
+        if tinyBtn(bx, cy, 46, bh, "OVR", 0.85, 0.65, 0.25, theme) then
+            Loop.Overdub(l); flash("Lane " .. (l + 1) .. ": queued overdub cancelled")
+        end
     elseif mode == 1 then
         if tinyBtn(bx, cy, 46, bh, "REC", C.danger[1], C.danger[2], C.danger[3], theme) then
             Loop.Stop(l)
+        end
+    elseif mode == 5 then
+        -- overdubbing: click punches out (finalize, keep playing)
+        if tinyBtn(bx, cy, 46, bh, "OVR", C.danger[1], C.danger[2], C.danger[3], theme) then
+            Loop.Overdub(l); flash("Lane " .. (l + 1) .. ": overdub off")
         end
     elseif mode == 4 then
         if tinyBtn(bx, cy, 46, bh, "ARM", 0.72, 0.55, 0.20, theme) then
             Loop.Stop(l); flash("Lane " .. (l + 1) .. ": arm cancelled")
         end
     else
+        -- Shift+click on a lane with content = OVERDUB (layer into the loop);
+        -- plain click = the destructive re-record
         if tinyBtn(bx, cy, 46, bh, "REC", 0.30, 0.30, 0.32, theme) then
-            Loop.SetArmedLane(l); Loop.Rec(l)
-            -- with the clock stopped the engine arms instead of wiping the lane
-            if Loop.GetFreeRun() or Loop.Playing() then
-                flash("Lane " .. (l + 1)
-                      .. (Loop.GetLaunchQ() > 0 and ": rec queued" or ": recording"))
+            if Core.ModShift() and nev > 0 and (Loop.GetFreeRun() or Loop.Playing()) then
+                Loop.SetArmedLane(l); Loop.Overdub(l)
+                flash("Lane " .. (l + 1) .. ": overdub - play over the loop")
             else
-                flash("Lane " .. (l + 1) .. ": armed - starts on play")
+                Loop.SetArmedLane(l); Loop.Rec(l)
+                -- with the clock stopped the engine arms instead of wiping the lane
+                if Loop.GetFreeRun() or Loop.Playing() then
+                    flash("Lane " .. (l + 1)
+                          .. (Loop.GetLaunchQ() > 0 and ": rec queued" or ": recording"))
+                else
+                    flash("Lane " .. (l + 1) .. ": armed - starts on play")
+                end
             end
         end
     end
@@ -805,7 +823,7 @@ local function drawLane(theme, l, x, y, w, h)
         if tinyBtn(bx, cy, 46, bh, "Stop", 0.85, 0.65, 0.25, theme) then
             Loop.Play(l); flash("Lane " .. (l + 1) .. ": stop cancelled")
         end
-    elseif mode == 3 then
+    elseif mode == 3 or mode == 5 then
         if tinyBtn(bx, cy, 46, bh, "Stop", 0.28, 0.66, 0.38, theme) then Loop.StopClip(l) end
     elseif mode == 2 then
         if tinyBtn(bx, cy, 46, bh, "Play", 0.22, 0.30, 0.24, theme) then

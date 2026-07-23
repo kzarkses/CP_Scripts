@@ -416,14 +416,18 @@ function Loop.Panic()        sendCmd(4, 0)    end  -- all playback notes off
 function Loop.Play(lane)     sendCmd(5, lane) end  -- launch a stopped clip
 function Loop.StopClip(lane) sendCmd(6, lane) end  -- halt a playing clip
 function Loop.ClearAll()     sendCmd(7, 0)    end  -- wipe every lane (explicit only)
+-- OVERDUB: capture INTO the playing loop — nothing cleared, no auto-stop,
+-- layers stack until the next Overdub (or Stop) finalizes back to playing.
+-- A second call while queued cancels; while overdubbing it punches out.
+function Loop.Overdub(lane)  sendCmd(8, lane) end
 
--- REC button behaviour: recording or armed -> stop/cancel, otherwise (re)record.
--- A queued rec cancels on the second press (the JSFX treats REC as a toggle
--- while pending), so this maps straight to Rec.
+-- REC button behaviour: recording/armed/overdubbing -> stop/cancel,
+-- otherwise (re)record. A queued rec cancels on the second press (the JSFX
+-- treats REC as a toggle while pending), so this maps straight to Rec.
 function Loop.ToggleRec(lane)
     if Loop.Pending(lane) == 3 then Loop.Rec(lane) return end
     local m = Loop.Mode(lane)
-    if m == 1 or m == 4 then Loop.Stop(lane) else Loop.Rec(lane) end
+    if m == 1 or m == 4 or m == 5 then Loop.Stop(lane) else Loop.Rec(lane) end
 end
 
 -- Play/Stop button: launch a stopped clip / halt a playing one. While a launch
@@ -497,14 +501,16 @@ end
 -- ---------------------------------------------------------------------------
 -- Per-lane state (read)
 -- ---------------------------------------------------------------------------
--- 0 empty · 1 recording · 2 stopped (has content) · 3 playing · 4 armed
+-- 0 empty · 1 recording · 2 stopped (has content) · 3 playing · 4 armed ·
+-- 5 overdubbing (plays AND captures)
 function Loop.Mode(lane)       return attached and gread(G_LANE_STATE + lane * 8 + 0) or 0 end
 function Loop.NEv(lane)        return attached and gread(G_LANE_STATE + lane * 8 + 1) or 0 end
 function Loop.Phase(lane)      return attached and gread(G_LANE_STATE + lane * 8 + 2) or 0 end
 function Loop.LenBeats(lane)   local v = attached and gread(G_LANE_STATE + lane * 8 + 3) or 0; return v > 0 and v or 4 end
 function Loop.EvtVersion(lane) return attached and gread(G_LANE_STATE + lane * 8 + 4) or 0 end
 function Loop.HasContent(lane) return attached and gread(G_LANE_STATE + lane * 8 + 5) >= 0.5 end
--- queued launch: 0 none · 1 play · 2 stop · 3 rec · 4 stop-rec (fires at PendingTarget)
+-- queued launch: 0 none · 1 play · 2 stop · 3 rec · 4 stop-rec · 5 overdub
+-- (fires at PendingTarget)
 function Loop.Pending(lane)
     if not attached then return 0 end
     return math.floor((gread(G_LANE_STATE + lane * 8 + 6) or 0) + 0.5)
@@ -666,9 +672,9 @@ function Loop.Serialize()
     for lane = 0, Loop.MAX_LANES - 1 do
         local n = Loop.NoteCount(lane)
         local m = math.floor(Loop.Mode(lane) + 0.5)
-        -- an in-flight recording (1) or an arm (4) is not a state to restore:
-        -- store what the lane actually holds
-        if m == 1 or m == 4 then m = (n > 0) and 3 or 0 end
+        -- an in-flight recording (1), arm (4) or overdub (5) is not a state
+        -- to restore: store what the lane actually holds
+        if m == 1 or m == 4 or m == 5 then m = (n > 0) and 3 or 0 end
         local parts = { num(Loop.GetLengthBars(lane)),
                         Loop.GetMute(lane) and "1" or "0",
                         tostring(m),

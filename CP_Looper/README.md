@@ -68,6 +68,11 @@ Four independent lanes. Each:
 - **REC** — clears the lane and captures. Click again while it's recording to
   finish the take — the clip locks and **starts playing** (loops on the grid).
   Held notes get a clean note-off at the loop point.
+- **Overdub** — **Shift+click REC** on a lane that has content: the loop keeps
+  playing and everything you play **layers into it**, pass after pass, with no
+  auto-stop. The status shows **OVER**; click the (now red) **OVR** button to
+  punch out — the take finalizes and the loop keeps playing. Launch quantize
+  applies to punching in and out like to everything else.
 - **Play / Stop** — launch a stopped clip or halt a playing one (Ableton-style
   clip launch). A freshly recorded clip auto-plays. With the toolbar **Q**
   (launch quantize: Off / beat / bar / 2 bars / 4 bars) set, Play, Stop and

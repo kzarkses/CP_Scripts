@@ -1,6 +1,6 @@
 desc: CP_MidiLooper
 author: Cedric Pamalio
-version: 0.7
+version: 0.8
 
 // MIDI looper engine for CP_Looper. The CP_Toolkit UI drives it over gmem.
 //
@@ -42,6 +42,16 @@ version: 0.7
 // it and acts now. Re-sending the queued command cancels it (toggle);
 // CLEAR / PANIC / transport stop drop the queue. Pending state lives in
 // gmem so the UI can show it and a warm reset keeps it.
+//
+// OVERDUB (cmd 8, mode 5): capture INTO the playing loop — gate playback
+// and MIDI capture run together, nothing is cleared on entry and the
+// gate's sounding notes are not flushed, so a playing lane slides into
+// overdub without retriggering. No one-loop auto-stop: layers stack until
+// cmd 8 again (or STOP-REC) finalizes back to playing. Launch quantize
+// applies on the way in (pending 5) and out (pending 4).
+//
+// Lane modes: 0 empty · 1 recording · 2 stopped · 3 playing · 4 armed ·
+// 5 overdubbing. Pending: 1 play · 2 stop · 3 rec · 4 stop-rec · 5 overdub.
 
 options:gmem=CP_MidiLooper
 
@@ -63,7 +73,7 @@ heap_top  = REC_START + MAX_LANES;
 freembuf(heap_top);
 
 // ---- gmem layout (shared with Lua) ----
-GMEM_CMD        = 0;    // edge command (1 rec, 2 stop-rec, 3 clear, 4 panic, 5 play, 6 stop, 7 clear-all)
+GMEM_CMD        = 0;    // edge command (1 rec, 2 stop-rec, 3 clear, 4 panic, 5 play, 6 stop, 7 clear-all, 8 overdub)
 GMEM_CMD_LANE   = 1;
 GMEM_CMD_ARG    = 2;
 GMEM_FREERUN    = 3;    // 0 = follow host transport, 1 = free internal clock
@@ -135,9 +145,10 @@ loop(MAX_LANES,
     gmem[GMEM_LANE_STATE + li*8 + 7] = 0;
   ) : (
     // warm reset: the notes stay. Only a take still being CAPTURED is lost (its
-    // held-note state lived in the heap), so don't strand the lane in "recording"
-    // or "armed" — settle it on what it actually holds.
-    (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 4) ? (
+    // held-note state lived in the heap), so don't strand the lane in
+    // "recording", "armed" or "overdubbing" — settle it on what it holds.
+    (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 4
+     || gmem[GMEM_LANE_STATE + li*8 + 0] == 5) ? (
       gmem[GMEM_LANE_STATE + li*8 + 1] > 0 ? (
         gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
       ) : (
@@ -207,7 +218,7 @@ last_pb = pb;
   li = 0;
   loop(MAX_LANES,
     gmem[GMEM_LANE_STATE + li*8 + 6] = 0;   // a queued launch dies with the clock
-    gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+    (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 5) ? (
       Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
       cph = pb - floor(pb / Lb) * Lb;
       ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
@@ -281,10 +292,10 @@ seq != last_seq ? (
     );
 
     cmd == 2 ? (                              // STOP-REC: finalize held -> playing
-      gmem[GMEM_LANE_STATE + cl*8 + 6] == 3 ? (
-        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // a rec still queued: just drop it
+      (gmem[GMEM_LANE_STATE + cl*8 + 6] == 3 || gmem[GMEM_LANE_STATE + cl*8 + 6] == 5) ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // a queued rec/overdub: just drop it
       );
-      gmem[GMEM_LANE_STATE + cl*8 + 0] == 1 ? (
+      (gmem[GMEM_LANE_STATE + cl*8 + 0] == 1 || gmem[GMEM_LANE_STATE + cl*8 + 0] == 5) ? (
         tq = pb;
         (active && launch_q > 0.001) ? (
           qph = pb - floor(pb / launch_q) * launch_q;
@@ -332,10 +343,10 @@ seq != last_seq ? (
 
     cmd == 6 ? (                              // STOP: halt a playing clip
       pnd = gmem[GMEM_LANE_STATE + cl*8 + 6];
-      (pnd == 1 || pnd == 3) ? (
-        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // cancel a queued play / rec
+      (pnd == 1 || pnd == 3 || pnd == 5) ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // cancel a queued play/rec/overdub
       ) : (
-      gmem[GMEM_LANE_STATE + cl*8 + 0] == 3 ? (
+      (gmem[GMEM_LANE_STATE + cl*8 + 0] == 3 || gmem[GMEM_LANE_STATE + cl*8 + 0] == 5) ? (
         tq = pb;
         (active && launch_q > 0.001) ? (
           qph = pb - floor(pb / launch_q) * launch_q;
@@ -345,11 +356,61 @@ seq != last_seq ? (
           gmem[GMEM_LANE_STATE + cl*8 + 6] = 2;
           gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
         ) : (
+          // an overdub stopping mid-flight keeps what was played so far
+          gmem[GMEM_LANE_STATE + cl*8 + 0] == 5 ? (
+            cph = tq - floor(tq / Lbc) * Lbc;
+            ni = 0; loop(128, finalize_note(cl, ni, cph, Lbc, 1); ni += 1;);
+          );
           gmem[GMEM_LANE_STATE + cl*8 + 0] = 2;
           ni = 0;
           loop(128,
             ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
             ni += 1;
+          );
+        );
+      );
+      );
+    );
+
+    cmd == 8 ? (                              // OVERDUB: capture INTO the playing loop
+      pnd = gmem[GMEM_LANE_STATE + cl*8 + 6];
+      pnd == 5 ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // queued overdub -> cancel (toggle)
+      ) : (
+      active ? (
+        gmem[GMEM_LANE_STATE + cl*8 + 0] == 5 ? (
+          // toggle off: finalize held notes, keep the loop playing —
+          // same quantize discipline as STOP-REC
+          tq = pb;
+          launch_q > 0.001 ? (
+            qph = pb - floor(pb / launch_q) * launch_q;
+            tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
+          );
+          tq > pb + 0.0005 ? (
+            gmem[GMEM_LANE_STATE + cl*8 + 6] = 4;
+            gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
+          ) : (
+            cph = tq - floor(tq / Lbc) * Lbc;
+            ni = 0; loop(128, finalize_note(cl, ni, cph, Lbc, 1); ni += 1;);
+            gmem[GMEM_LANE_STATE + cl*8 + 0] = 3;
+          );
+        ) : (
+          // enter: NO clearing and NO flush of the gate's sounding notes —
+          // a playing lane slides into overdub without retriggering; a
+          // stopped/empty lane starts playing and capturing at once.
+          tq = pb;
+          launch_q > 0.001 ? (
+            qph = pb - floor(pb / launch_q) * launch_q;
+            tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
+          );
+          tq > pb + 0.0005 ? (
+            gmem[GMEM_LANE_STATE + cl*8 + 6] = 5;
+            gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
+          ) : (
+            ni = 0;
+            loop(128, PEND_ST[cl*128+ni] = -1; ni += 1;);
+            gmem[GMEM_LANE_STATE + cl*8 + 0] = 5;
+            gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
           );
         );
       );
@@ -372,6 +433,12 @@ seq != last_seq ? (
     cmd == 4 ? (                              // PANIC: stop all clips + flush notes
       li = 0;
       loop(MAX_LANES,
+        gmem[GMEM_LANE_STATE + li*8 + 0] == 5 ? (   // overdub keeps its take
+          Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+          cph = pb - floor(pb / Lb) * Lb;
+          ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
+          gmem[GMEM_LANE_STATE + li*8 + 0] = 2;
+        );
         gmem[GMEM_LANE_STATE + li*8 + 0] == 3 ? (gmem[GMEM_LANE_STATE + li*8 + 0] = 2);
         gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
         ni = 0;
@@ -446,7 +513,12 @@ active ? (
         gmem[GMEM_LANE_STATE + li*8 + 0] == 2 ? gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
       );
       pnd == 2 ? (
-        gmem[GMEM_LANE_STATE + li*8 + 0] == 3 ? (
+        (gmem[GMEM_LANE_STATE + li*8 + 0] == 3 || gmem[GMEM_LANE_STATE + li*8 + 0] == 5) ? (
+          gmem[GMEM_LANE_STATE + li*8 + 0] == 5 ? (   // keep the overdubbed take
+            Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+            cph = tgt - floor(tgt / Lb) * Lb;
+            ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
+          );
           gmem[GMEM_LANE_STATE + li*8 + 0] = 2;
           ni = 0;
           loop(128,
@@ -468,12 +540,18 @@ active ? (
         gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;
       );
       pnd == 4 ? (
-        gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+        (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 5) ? (
           Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
           cph = tgt - floor(tgt / Lb) * Lb;
           ni = 0; loop(128, finalize_note(li, ni, cph, Lb, 1); ni += 1;);
           gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
         );
+      );
+      pnd == 5 ? (                            // overdub-in: no clear, no flush
+        ni = 0;
+        loop(128, PEND_ST[li*128+ni] = -1; ni += 1;);
+        gmem[GMEM_LANE_STATE + li*8 + 0] = 5;
+        gmem[GMEM_LANE_STATE + li*8 + 4] = gmem[GMEM_LANE_STATE + li*8 + 4] + 1;
       );
       gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
     );
@@ -524,7 +602,7 @@ while (midirecv(mofs, m1, m2, m3)) (
     beat_o = pb + mofs / spb;
     li = 0;
     loop(MAX_LANES,
-      gmem[GMEM_LANE_STATE + li*8 + 0] == 1 ? (
+      (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 5) ? (
         Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
         ph = beat_o - floor(beat_o / Lb) * Lb;
         ison ? (
@@ -546,7 +624,8 @@ active ? (
   li = 0;
   loop(MAX_LANES,
     muted = gmem[GMEM_LANE_CTRL + li*8 + 1] >= 0.5;
-    (gmem[GMEM_LANE_STATE + li*8 + 0] == 3 && !muted) ? (
+    ((gmem[GMEM_LANE_STATE + li*8 + 0] == 3 || gmem[GMEM_LANE_STATE + li*8 + 0] == 5)
+     && !muted) ? (
       Lb  = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
       p0  = pb - floor(pb / Lb) * Lb;
       nev = gmem[GMEM_LANE_STATE + li*8 + 1];
