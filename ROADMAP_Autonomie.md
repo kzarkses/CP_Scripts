@@ -185,3 +185,72 @@ Chantiers choisis, exécutés :
   le Media Explorer émet la section active du strip — le trou "l'Editor
   s'ouvre sur le fichier entier" d'ANALYSE_Interactions est fermé.
   Clips MIDI : nécessitent le backend Roll sans take (suite du chantier).
+
+---
+
+## Session 3 (2026-07-23 soir) — la discussion, puis le grand programme
+
+### Points discutés (ses retours, mes réponses)
+
+- **Multi-kit, usage** : un seul kit ACTIF à la fois = celui du sélecteur
+  de la barre d'outils ; pads/VKB/MIDI ne sonnent que lui ; les autres ne
+  sonnent que via les lanes du Looper (voulu). Le "tout sonne en même
+  temps" = la version d'avant le fix continu `d2f9fbb` (effectif au
+  relancement du script). S'il reste du bleed après ça : câblage du
+  projet (kits dupliqués, sends croisés) → passe "isolation" à ajouter
+  au Repair si besoin.
+- **"?" d'aide** (son idée du matin) : un bouton "?" dans le header de
+  chaque app → panneau d'aide (modèle mental en 3 lignes + gestes +
+  raccourcis), standardisé dans le toolkit. La version "info au survol"
+  à la Ableton viendra par-dessus les tooltips. À FAIRE.
+- **Éditeur universel confirmé** : cliquer une lane / un clip de session
+  → CP_Editor avec le bon visage. Fondations posées (`fa9fb91`) ; il
+  manque le backend Roll sans take. C'est le chantier A ci-dessous.
+- **Refonte graphique, sa vision** : knobs partout, flat plus arrondi,
+  anticrénelage généralisé (via buffers bakés — gratuit par frame),
+  condenser (densité par tokens de thème), améliorer l'API du toolkit,
+  itérer via maquettes HTML ("claude design"), et une étude des
+  références (Ableton : couleurs qui signifient, boutons arrondis,
+  dropdowns carrés, knobs minimalistes, bold + AA). Chantier B.
+- **Mods** : oui, une SÉRIE de modulateurs à terme (env follower — le
+  bank voit l'audio de la piste ; step sequencer ; macros ; sources
+  MIDI) sur le même moule bank+plink. **Map: touch target reste le
+  geste central.** DnD de modulation : verdict re-confirmé — fenêtre
+  identifiable au drop, knob étranger impossible ; UX = drop sur la
+  fenêtre → capture → premier param touché lié. À FAIRE (S-M).
+- **Session view ré-expliquée** en détail (colonnes=pistes,
+  cellules=clips, lancement quantisé, scènes=lignes, double-clic →
+  CP_Editor, ponts arrangeur). Les 5 questions : il me laisse juge.
+
+### Décisions (Cédric, verbatim résumé)
+
+« Il faudra de toute façon tout faire. Dans l'ordre : 1. finir
+l'unification de CP_Editor ; 2. refonte graphique (pour éviter les
+dettes techniques sur les changements futurs) ; 3. session view (je te
+laisse juge). Les autres chantiers dans l'ordre que tu veux, après.
+Full autonomie, code propre, pérenne, performance maître mot. »
+
+### Mes arbitrages sur les 5 questions session view (délégués)
+
+1. P1 tel quel : OUI (grille sur les 4 lanes, zéro moteur neuf).
+2. Multi-pistes MIDI : PLUSIEURS instances JSFX (un gmem par piste) —
+   le pattern éprouvé, pas de chirurgie du moteur.
+3. Scènes : APRÈS P2 (une scène sur 4 lanes n'apporte rien).
+4. Fenêtre : APP SÉPARÉE `CP_Session` (le Looper reste l'outil de jam).
+5. Audio : INTERIM CF_Preview quantisé d'abord (P3), moteur JSFX (P4)
+   ensuite.
+
+### Le programme (ordre imposé)
+
+- [ ] **A — Unification CP_Editor** : backend Roll sans take (mode
+  "clip"), aller-retour Looper↔Editor (editor:open avec origine +
+  editor:apply), preview via piste (track FX).
+- [ ] **B — Refonte graphique** : étude design + tokens (doc), toolkit
+  v2 (primitives AA bakées, thème étendu, densité), restyle global par
+  le toolkit (pas app par app — c'est ça qui évite la dette), maquettes
+  HTML pour itérer avec lui.
+- [ ] **C — Session view P1** : `CP_Session`, grille sur les lanes du
+  Looper (launch/stop quantisés, pending visible, double-clic →
+  CP_Editor).
+- [ ] Ensuite, ordre libre : "?" d'aide partout, DnD-capture de
+  modulation, overflow (§3.5).
