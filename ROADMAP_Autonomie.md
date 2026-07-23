@@ -8,28 +8,36 @@ cochent au fil des commits.
 Règles du jour : finir l'engine d'abord (8b, 9), n'exécuter que ce qui est
 sûr, Meta Mixer interdit, l'utilisateur teste tout lui-même.
 
+**BILAN DU SOIR : les 13 points du plan du jour sont livrés (14 commits,
+`31376ca`..`06f0dfb`). Le plan moteur §9 est COMPLET (chantiers 1-9 faits,
+10 acté). Reste en attente de décision : go session view (lire
+`ANALYSE_SessionView.md`), move ModJSFX→Engine, format Inst standalone,
+refonte UI. Overflow non entamé : overdub, demi-ponts DragBus, velocity
+layers, MediaDB DATA, contrôle MIDI du Looper, blocs undo randomizers.**
+
 ---
 
 ## 1. LOOPER / EDITOR
 
-- [ ] **Parité éditeur Looper ↔ CP_Editor.** Roll/RollUI sont déjà partagés :
-  la parité = câblage côté hôte Looper + ergonomie. Base : entendre la note
-  touchée, drum mode (via `CP_Engine/Rows.lua` partagé, avec le fix du
-  group-move en delta de ligne — le bug existe aussi dans CP_Editor.lua:1661).
-- [ ] **Passe raccourcis.** Inventaire des raccourcis/workflows de l'éditeur
-  MIDI natif REAPER + comparatif ténors (Ableton/FL/Bitwig), intégration du
-  socle dans RollUI → les deux hôtes en profitent d'un coup.
+- [x] **Parité éditeur Looper ↔ CP_Editor** (`1232c89`) : `Engine/Rows.lua`
+  partagé (fenêtre mélodique / liste drum triée), drum mode dans le Looper
+  (bouton Keys/Drum, labels, molette mélodique-only), édition audible
+  (dessin, drag de pitch, clic droit sur label → l'instrument routé de la
+  lane), et le fix du group-move en delta de LIGNE dans les deux hôtes.
+- [x] **Passe raccourcis** (`23befe7`) : le benchmark 7-DAW du repo faisait
+  foi (Tiers 0-2 déjà livrés) ; le manque réel était la navigation clavier
+  de note en note — Alt+←/→ marche la ligne de pitch, Alt+↑/↓ le temps,
+  Shift+Alt étend, wrap + audition. Dans RollUI → les deux hôtes.
 - [ ] **Session view à la Ableton** — GRAND CHANTIER. **DÉCISIONS DU
   2026-07-23** : (a) chantier 10 ACTÉ — CP_Editor devient l'éditeur universel
   qui change de focus selon ce qu'on ouvre (media item / loop MIDI / loop
   audio) ; les fondations du focus-switching peuvent se poser dès aujourd'hui
   (`Bus.Send("editor:open", clip)` existe, Clip porte audio et MIDI).
-  (b) Une **spec design** est rédigée aujourd'hui (`ANALYSE_SessionView.md`,
-  zéro code) : grille de clips CPC1 vs paradigme profondeur/subprojects de
-  `ROADMAP_CPStudio.md` (la lignée ancienne avait DÉJÀ une session view V0.7 —
-  à miner au niveau design, sans lire le code Meta Mixer), mapping pistes
-  looper↔REAPER, plan par étapes. On décide dessus au retour de Cédric.
-  Le code de la session view elle-même attend cette décision.
+  (b) ✅ La **spec design** est écrite (`ANALYSE_SessionView.md`, `525d528`,
+  zéro code) : grille de clips CPC1 recommandée comme base, profondeur
+  subproject en option par cellule plus tard ; inventaire des briques Engine
+  (seul trou : le moteur audio) ; 5 phases ; 5 questions ouvertes à trancher.
+  Le code de la session view attend ta lecture.
 
 ## 2. MOD
 
@@ -52,13 +60,14 @@ fonctionne sans script ouvert ; le panneau Lua n'est qu'une télécommande.
   propre GUI). UX atteignable : drag depuis un slot → drop sur la fenêtre du
   plugin → ce FX passe en "capture" → premier paramètre touché = lié.
 - [x] **Clic sur le nom du paramètre dans le panneau pour le sélectionner**
-  (fait aujourd'hui si tout va bien — coût S).
+  (`d482a9a`) : clic dans la liste TARGETS → épinglé dans l'inspecteur, le
+  "last touched" ne le reprend qu'à un VRAI nouveau touch.
 
 ## 3. MEDIA EXPLORER
 
-- [ ] **Préécoute via une piste spécifique** : `CF_Preview_SetOutputTrack`
-  (SWS, vérifié dispo) → la préécoute traverse la chaîne FX de la piste
-  choisie. Coût S. Aujourd'hui.
+- [x] **Préécoute via une piste spécifique** (`d62e844`) : sous-menu
+  "Preview output" — Master / Follow selected / **Pin selected track**
+  (épinglé par GUID, persiste, la piste morte se détache toute seule).
 
 ## 4. UI (chantier transverse, ATTEND une session de design)
 
@@ -70,30 +79,37 @@ fonctionne sans script ouvert ; le panneau Lua n'est qu'une télécommande.
 
 ## 5. SAMPLER
 
-- [ ] **Plusieurs bus kit** : généraliser les marques Tracks (id de kit dans
-  la marque / P_EXT) + sélecteur UI. Aujourd'hui.
+- [x] **Plusieurs bus kit** (`94e8857`) : `Kit.kits` + `SetActive` (GUID) +
+  `NewKit` ; sélecteur dans la barre d'outils ; les filets de sécurité du
+  scan sont gardés mono-kit ; les bus des kits INACTIFS se désarment (un
+  seul kit écoute les clics, les sends du Looper continuent de jouer).
 - [ ] **Inst indépendant du drum, multi-instances ?** Recommandation : script
   léger séparé partageant `Kit` plutôt que multi-instance du même script gfx
   (collisions d'état persisté). Format à trancher ensemble.
-- [ ] **Tune sans changer la longueur** : RS5K est resample-only. Deux voies :
-  ReaPitch inséré sur la piste du pad (temps réel, élastique) + le bake du
-  chantier 9 pour la version rendue. ReaPitch aujourd'hui.
-- [ ] **Handles fade-in/fade-out + visu ADSR sur la preview**, manipulation
-  de l'enveloppe directement sur la forme d'onde. Aujourd'hui.
-- [ ] **BUG : premier hit avec ADSR, itérations de loop brutes.** Cohérent
-  avec l'enveloppe RS5K appliquée au note-on et pas à chaque bouclage, mais
-  vérifier ce que NOUS écrivons (LOOP/OBEY/retrigger) avant de conclure.
-  Investigation en priorité.
+- [x] **Tune sans changer la longueur** (`d28b845`) : knob "Pitch" par pad →
+  ReaPitch inséré/masqué sur la piste du pad, ±12 st élastique, paramètre
+  trouvé PAR NOM (les indices bougent entre versions REAPER). Le bake
+  (`2e354d6`) couvre la version rendue.
+- [x] **Handles fades + visu ADSR sur la preview** (`2f9942a`) : l'enveloppe
+  dessinée sur la région (attack = fade-in depuis le début, release =
+  fade-out dans la fin, genou decay portant le sustain en Y), trois handles
+  draggables en place, temps lus/écrits en ms réels (ParamPlain).
+- [x] **BUG ADSR/loop** (`ef8c364`) : cause = la case Loop mettait LOOP=1
+  sans OBEY → voix infinie, enveloppe une seule fois, release jamais. Fix :
+  résolveur OBEY unique (choke OU loop → obey ON), `Kit.SetLoop` — un pad
+  loopé GATE désormais (maintien = boucle sous sustain, relâché = release).
+  Les pads loopés d'avant guérissent au premier toucher de Loop/choke.
 
 ## 6. MISC
 
-- [ ] **DnD arrangeur → Looper/Sampler** : par capture au relâchement — on
-  surveille la souris (JS API) pendant le drag natif ; relâchement au-dessus
-  de notre fenêtre → lire la sélection d'items → Clip (audio : path/offs/len ;
-  MIDI : notes via MIDI_GetNote). Le scroll de bord d'arrangeur est cosmétique,
-  l'item ne quitte jamais REAPER. Coût M.
-- [ ] **Looper → item MIDI dans l'arrangeur** (quick-win n°1 de l'analyse,
-  coût S) : la jam ne meurt plus dans le looper.
+- [x] **DnD arrangeur → Looper/Sampler** (`06f0dfb`) : capture au
+  relâchement (pattern busHover, JS_Mouse + classe de fenêtre arrange).
+  Sampler : l'audio de l'item → le pad sous le curseur (SECTION déballée).
+  Looper : le MIDI de l'item → la lane visée (PPQ→QN→beats, arrondi bars,
+  cap MAX_NOTES). L'item ne bouge jamais — non-destructif par construction.
+- [x] **Looper → item MIDI dans l'arrangeur** (`c94c1bd`) : bouton
+  "To item" dans l'éditeur — piste routée de la lane (ou sélection), au
+  curseur d'édition, un loop de long, mapping QN. La jam ne meurt plus.
 
 ## Le plan du jour (2026-07-23), dans l'ordre
 
