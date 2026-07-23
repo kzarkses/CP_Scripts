@@ -32,6 +32,9 @@ local Rows  = dofile(cp_root .. "CP_Engine/Rows.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
+local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
+local Clip  = dofile(cp_root .. "CP_Engine/Clip.lua")
+local Bus   = dofile(cp_root .. "CP_Engine/Bus.lua")
 
 Peaks.init(r)
 Ops.init(r, Peaks)
@@ -39,6 +42,8 @@ Roll.init(r)
 Tracks.init(r)
 Kit.init(r, Tracks)
 Audio.init(r)
+DragBus.init(r)
+Bus.init(r, DragBus, Clip)
 
 local Core_tk = UI.Core
 local Keys    = UI.Keys
@@ -296,11 +301,36 @@ local function metaLine()
     return state.meta_line
 end
 
+-- Focus-switch on a Clip (chantier 10, the universal-editor foundation):
+-- the editor opens whatever the suite hands it over the Bus. Audio clips
+-- open the referenced file with the clip's region as the selection —
+-- the Sampler's trim lands selected, not just the whole file. MIDI
+-- clips need the take-less Roll backend; that lands with the full
+-- universal editor.
+local function openClip(c)
+    if c.kind == "audio" and c.path and c.path ~= "" then
+        if not setFile(c.path) then return end
+        if c.name and c.name ~= "" then state.name = c.name end
+        if c.offs and c.len and c.len > 0 and state.len > 0 then
+            state.sel_a = math.max(0, c.offs)
+            state.sel_b = math.min(state.len, c.offs + c.len)
+            if state.sel_b > state.sel_a then
+                state.cursor = state.sel_a
+                zoomSelection()
+            else
+                state.sel_a, state.sel_b = nil, nil
+            end
+        end
+    elseif c.kind == "midi" then
+        flash("MIDI clips open in the Looper editor for now")
+    end
+end
+
 -- ---------------------------------------------------------------------------
 -- Target polling (arrange selection follow + cross-script open + validity)
 -- ---------------------------------------------------------------------------
 local function pollTarget()
-    -- "Open in Editor" from ME / Sampler (5s freshness window)
+    -- legacy "Open in Editor" channel (bare path, old publishers)
     local v = r.GetExtState("CP_Editor", "open")
     if v ~= "" and v ~= state.last_open then
         state.last_open = v
@@ -310,6 +340,11 @@ local function pollTarget()
             setFile(path)
         end
     end
+
+    -- "editor:open" Clips over the Engine Bus (region-aware; this is the
+    -- one channel every publisher migrates to)
+    local clip = Bus.Recv("editor:open")
+    if clip then openClip(clip) end
 
     -- follow the arrange selection
     if not state.lock then

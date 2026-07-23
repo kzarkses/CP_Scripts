@@ -32,6 +32,8 @@ local Peaks   = dofile(cp_root .. "CP_Engine/Peaks.lua")
 local MediaDB = dofile(script_path .. "Modules/MediaDB.lua")
 local FXList  = dofile(script_path .. "Modules/FXList.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
+local Clip    = dofile(cp_root .. "CP_Engine/Clip.lua")
+local Bus     = dofile(cp_root .. "CP_Engine/Bus.lua")
 
 Model.init(r)
 Preview.init(r)
@@ -40,6 +42,7 @@ Peaks.init(r)
 MediaDB.init(r)
 FXList.init(r)
 DragBus.init(r)
+Bus.init(r, DragBus, Clip)
 
 -- MediaDB streams file paths into the model (hoisted: one closure, not one
 -- per frame).
@@ -1013,10 +1016,21 @@ local function openRowMenu(node)
             end }
         items[#items + 1] = { label = "Open in Editor",
             action = function()
-                -- Picked up by CP_Editor when it runs (5s window).
-                r.SetExtState("CP_Editor", "open",
-                              string.format("%.3f\n%s", r.time_precise(),
-                                            node.path), false)
+                -- A Clip over the Engine Bus — picked up by CP_Editor
+                -- when it runs (5s window). The strip's active section
+                -- rides along, so the editor lands selected on what you
+                -- were auditioning instead of the bare file.
+                local c = Clip.new("audio")
+                c.path = node.path
+                c.name = node.name
+                if state.wsel and state.wsel.path == node.path then
+                    loadMeta(node)
+                    if node.len and node.len > 0 then
+                        c.offs = state.wsel.a * node.len
+                        c.len  = (state.wsel.b - state.wsel.a) * node.len
+                    end
+                end
+                Bus.Send("editor:open", c)
             end }
         items[#items + 1] = { separator = true }
         items[#items + 1] = { label = Model.IsFavorite(node.path)

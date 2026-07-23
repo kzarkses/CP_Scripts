@@ -30,6 +30,8 @@ local Tempo   = dofile(cp_root .. "CP_Engine/Tempo.lua")
 local Bake    = dofile(cp_root .. "CP_Engine/Bake.lua")
 local Audio   = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
+local Clip    = dofile(cp_root .. "CP_Engine/Clip.lua")
+local Bus     = dofile(cp_root .. "CP_Engine/Bus.lua")
 
 -- Soft dependency: the engine's peaks reader draws the region strip
 -- (falls back to a plain range slider when the package is absent).
@@ -42,6 +44,7 @@ Tempo.init(r)
 Bake.init(r)
 Audio.init(r)
 DragBus.init(r)
+Bus.init(r, DragBus, Clip)
 if Peaks then Peaks.init(r) end
 
 local Core_tk = UI.Core
@@ -165,11 +168,24 @@ local function firstEmpty()
     return nil
 end
 
--- Publish "open this file in CP_Editor" (picked up if it runs).
-local function editorOpen(path)
-    if not path then return end
-    r.SetExtState("CP_Editor", "open",
-                  string.format("%.3f\n%s", r.time_precise(), path), false)
+-- Publish "open this pad's sample in CP_Editor" (picked up if it runs):
+-- a Clip over the Engine Bus, carrying the pad's trim as the region so
+-- the editor lands selected on exactly what the pad plays.
+local function editorOpen(note)
+    local pad = Kit.pads[note]
+    if not (pad and pad.path) then return end
+    local c = Clip.new("audio")
+    c.path = pad.path
+    c.name = pad.name
+    local s = Kit.Param(note, Kit.P.SOFFS) or 0
+    local e = Kit.Param(note, Kit.P.EOFFS) or 1
+    if e > s and (s > 0 or e < 1) then
+        local len = Audio.Meta(pad.path)
+        if len and len > 0 then
+            c.offs, c.len = s * len, (e - s) * len
+        end
+    end
+    Bus.Send("editor:open", c)
 end
 
 -- ---------------------------------------------------------------------------
@@ -433,7 +449,7 @@ local function openPadMenu(note)
     }
     if has then
         items[#items + 1] = { label = "Open in Editor",
-                              action = function() editorOpen(pad.path) end }
+                              action = function() editorOpen(note) end }
         items[#items + 1] = { separator = true }
         items[#items + 1] = { label = "Choke group", children = chokeMenuItems(note) }
         -- Tempo sync (vinyl-style repitch through TUNE; Engine/Tempo feeds
