@@ -8,12 +8,16 @@ cochent au fil des commits.
 Règles du jour : finir l'engine d'abord (8b, 9), n'exécuter que ce qui est
 sûr, Meta Mixer interdit, l'utilisateur teste tout lui-même.
 
-**BILAN DU SOIR : les 13 points du plan du jour sont livrés (14 commits,
-`31376ca`..`06f0dfb`). Le plan moteur §9 est COMPLET (chantiers 1-9 faits,
-10 acté). Reste en attente de décision : go session view (lire
-`ANALYSE_SessionView.md`), move ModJSFX→Engine, format Inst standalone,
-refonte UI. Overflow non entamé : overdub, demi-ponts DragBus, velocity
-layers, MediaDB DATA, contrôle MIDI du Looper, blocs undo randomizers.**
+**BILAN DU SOIR : les 13 points du plan du jour sont livrés, PLUS
+l'overdub pris sur l'overflow (16 commits, `31376ca`..`d12c2ea`). Le plan
+moteur §9 est COMPLET (chantiers 1-9 faits, 10 acté). L'**overdub**
+(`d12c2ea`) : mode 5 du JSFX — le gate joue pendant que la capture
+empile dans la même loop, entrée sans retrigger, pas d'auto-stop,
+punch in/out quantisés, Shift+clic REC côté UI. Reste en attente de
+décision : go session view (lire `ANALYSE_SessionView.md`), move
+ModJSFX→Engine, format Inst standalone, refonte UI. Overflow restant :
+demi-ponts DragBus, velocity layers, MediaDB DATA, contrôle MIDI du
+Looper, blocs undo randomizers.**
 
 ---
 
