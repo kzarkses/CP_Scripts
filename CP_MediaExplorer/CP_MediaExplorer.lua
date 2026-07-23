@@ -98,6 +98,7 @@ local opts = {
     sync_mult        = cfg.sync_mult or 1.0,           -- tempo-match ×0.5/×1/×2
     wave_rows        = cfg.wave_rows == true,          -- FL "Samples view"
     swap_resize      = cfg.swap_resize == true,        -- hot-swap takes new length
+    preview_track_guid = cfg.preview_track_guid or "", -- pinned preview track
 }
 
 Preview.volume      = cfg.volume or 1.0
@@ -105,6 +106,25 @@ Preview.pitch       = cfg.pitch or 0
 Preview.rate        = cfg.rate or 1.0
 Preview.loop        = cfg.loop == true
 Preview.route_track = opts.route_track
+
+-- Pin the preview to a dedicated track (or clear it). The GUID travels in
+-- the config so the pin survives restarts of the same project.
+local function setPreviewTrack(tr)
+    Preview.SetOutputTrack(tr)
+    opts.preview_track_guid = tr and r.GetTrackGUID(tr) or ""
+end
+
+-- Startup: resolve the saved GUID back to a live track (silently nothing
+-- when the project doesn't have it).
+if opts.preview_track_guid ~= "" then
+    for i = 0, r.CountTracks(0) - 1 do
+        local tr = r.GetTrack(0, i)
+        if r.GetTrackGUID(tr) == opts.preview_track_guid then
+            Preview.SetOutputTrack(tr)
+            break
+        end
+    end
+end
 Insert.carry_volume     = opts.carry_volume
 Insert.carry_rate_pitch = opts.carry_rate_pitch
 Insert.swap_resize      = opts.swap_resize
@@ -179,6 +199,7 @@ local function persistConfig()
         sync_mult        = opts.sync_mult,
         wave_rows        = opts.wave_rows,
         swap_resize      = opts.swap_resize,
+        preview_track_guid = opts.preview_track_guid,
         list_scroll      = list_scroll,
         volume = Preview.volume,
         pitch  = Preview.pitch,
@@ -862,12 +883,44 @@ local function openSettings()
               Insert.swap_resize = opts.swap_resize
               markDirty()
           end },
-        { label = "Route preview through selected track", checked = opts.route_track,
-          action = function()
-              opts.route_track = not opts.route_track
-              Preview.route_track = opts.route_track
-              markDirty()
-          end },
+        { label = "Preview output", children = (function()
+              local pinned = Preview.out_track
+              if pinned and not r.ValidatePtr2(0, pinned, "MediaTrack*") then
+                  pinned = nil
+              end
+              local pin_label = "Pin selected track"
+              if pinned then
+                  local _, nm = r.GetTrackName(pinned)
+                  pin_label = "Pinned: " .. (nm ~= "" and nm or "track")
+                            .. "  (re-pin selected)"
+              end
+              return {
+                  { label = "Master / hardware (default)",
+                    checked = not pinned and not opts.route_track,
+                    action = function()
+                        setPreviewTrack(nil)
+                        opts.route_track = false
+                        Preview.route_track = false
+                        markDirty()
+                    end },
+                  { label = "Follow selected track",
+                    checked = not pinned and opts.route_track,
+                    action = function()
+                        setPreviewTrack(nil)
+                        opts.route_track = true
+                        Preview.route_track = true
+                        markDirty()
+                    end },
+                  { label = pin_label, checked = pinned ~= nil,
+                    action = function()
+                        local tr = r.GetSelectedTrack(0, 0)
+                        if tr then
+                            setPreviewTrack(tr)
+                            markDirty()
+                        end
+                    end },
+              }
+          end)() },
         { separator = true },
         { label = "Apply preview volume on insert", checked = opts.carry_volume,
           action = function()

@@ -133,6 +133,7 @@ Preview.pitch       = 0      -- semitones
 Preview.rate        = 1.0
 Preview.loop        = false
 Preview.route_track = false  -- route through the first selected track (its FX)
+Preview.out_track   = nil    -- DEDICATED preview track — outranks route_track
 
 -- Declick. SWS defaults both fade lengths to 0, so a preview starts and stops on
 -- a raw sample edge — audible as a click on anything that doesn't begin and end
@@ -173,12 +174,18 @@ function Preview.Play(path, opts)
         r.CF_Preview_SetValue(preview, "D_POSITION", opts.position)
     end
 
-    -- Optional: audition through the first selected track (session FX chain).
-    if Preview.route_track then
-        local track = r.GetSelectedTrack(0, 0)
-        if track then
-            r.CF_Preview_SetOutputTrack(preview, 0, track)
-        end
+    -- Optional routing: a dedicated preview track wins; otherwise the first
+    -- selected track when route_track is on. Either way the preview plays
+    -- through that track's FX chain. No route = hardware default.
+    local out = Preview.out_track
+    if out and not r.ValidatePtr2(0, out, "MediaTrack*") then
+        out, Preview.out_track = nil, nil          -- track died: fall back
+    end
+    if not out and Preview.route_track then
+        out = r.GetSelectedTrack(0, 0)
+    end
+    if out then
+        r.CF_Preview_SetOutputTrack(preview, 0, out)
     end
 
     r.CF_Preview_Play(preview)
@@ -262,6 +269,12 @@ function Preview.SetLoop(loop)
     if cur_preview then
         pcall(r.CF_Preview_SetValue, cur_preview, "B_LOOP", loop and 1 or 0)
     end
+end
+
+-- Dedicated preview track (nil clears it). Takes effect on the next Play —
+-- SWS has no output re-route on a live preview handle.
+function Preview.SetOutputTrack(track)
+    Preview.out_track = track
 end
 
 -- ---------------------------------------------------------------------------
