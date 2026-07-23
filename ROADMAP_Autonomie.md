@@ -240,17 +240,40 @@ Full autonomie, code propre, pérenne, performance maître mot. »
 5. Audio : INTERIM CF_Preview quantisé d'abord (P3), moteur JSFX (P4)
    ensuite.
 
-### Le programme (ordre imposé)
+### Le programme (ordre imposé) — BILAN : les trois chantiers + le "?"
+### livrés le soir même (`8a7b2ee`..`90cdfb0`)
 
-- [ ] **A — Unification CP_Editor** : backend Roll sans take (mode
-  "clip"), aller-retour Looper↔Editor (editor:open avec origine +
-  editor:apply), preview via piste (track FX).
-- [ ] **B — Refonte graphique** : étude design + tokens (doc), toolkit
-  v2 (primitives AA bakées, thème étendu, densité), restyle global par
-  le toolkit (pas app par app — c'est ça qui évite la dette), maquettes
-  HTML pour itérer avec lui.
-- [ ] **C — Session view P1** : `CP_Session`, grille sur les lanes du
-  Looper (launch/stop quantisés, pending visible, double-clic →
-  CP_Editor).
-- [ ] Ensuite, ordre libre : "?" d'aide partout, DnD-capture de
-  modulation, overflow (§3.5).
+- [x] **A — Unification CP_Editor** (`8a7b2ee`, `f8b34d5`, `f3e8369`) :
+  le **mode clip** — un piano roll SANS take, backend Roll sur les
+  tableaux du Clip (unité beats), mappage temps par paire
+  rollToQN/qnToRoll (identité en clip, TimeMap en item — tout le reste
+  marche à l'identique : snap, grille, transform, drum rows, clavier).
+  Chaque geste committé publie `editor:apply` (debounce 250 ms, flush à
+  la fermeture) ; le Looper l'applique par `Loop.ApplyClip` — notes +
+  longueur SANS toucher au mode : une loop qui joue continue de jouer à
+  travers l'édit. Bouton "Editor" dans l'éditeur de lane (origin
+  looper:N). Preview via la piste de l'item (`opts.out_track` →
+  CF_Preview_SetOutputTrack ; option Settings ON par défaut) — track FX
+  + fader dans la préécoute ; les take FX restent le manque CF_Preview.
+- [x] **B — Refonte graphique, tranche 1** (`7aa2fbe`) :
+  `ANALYSE_DesignSystem.md` (références Ableton/Bitwig/FL/Vital →
+  tokens, technique, tranches suivantes) ; `Core.DrawRoundRectFilled`
+  (composition slabs + disques AA, fallback rect si rayon<2 ou alpha<1 —
+  thème legacy = rendu identique) ; tokens `rounding/rounding_small/
+  rounding_large` (4/3/6, scalés DPI, persistés, hérités par les thèmes
+  sauvegardés anciens) ; **restyle global via Widgets.lua seul** :
+  Button, Toggle, Checkbox, Sliders (piste/fill/poignée), Combo (plus
+  carré, à la Ableton), Tabs, Tooltip, inputs, ProgressBar. Restent :
+  palette sémantique (play/record/mod), knob v2, preset compact,
+  maquettes HTML avec lui, headers borderless.
+- [x] **C — Session view P1** (`c24a2a5`) : **`CP_Session/`** — la
+  grille sur le moteur du Looper : cellule = lane (nom de piste routée,
+  bars, état, blink pending, balayage de phase), clic = launch/stop
+  quantisé, clic droit = Edit in CP_Editor / Mute / Clear, triangle de
+  scène, Stop all, Panic, Clock, Q. Zéro moteur neuf ; rappel one-shot
+  du set sauvé si la fenêtre arrive la première.
+- [x] **"?" d'aide** (`90cdfb0`) : `UI.HelpButton` (overlay centré,
+  titres "## ", clic/Esc ferme) + contenus dans Sampler, Looper,
+  Editor, Session. Restent : Media Explorer, CP_ModLFO, FXC.
+- [ ] Encore ouvert (ordre libre) : DnD-capture de modulation, "?"
+  dans ME/ModLFO/FXC, overflow (§3.5), maquettes HTML design.
