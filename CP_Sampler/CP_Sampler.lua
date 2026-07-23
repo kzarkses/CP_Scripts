@@ -331,6 +331,50 @@ local function instrumentPoll()
     end
 end
 
+-- Native item drag from the ARRANGE onto a pad: REAPER holds the mouse
+-- capture during an item drag, so we poll the OS cursor (the same trick
+-- as busHover below). Arm on a press that starts over the arrange with a
+-- selected item; on release over one of our pads, load that item's audio
+-- into it. The item itself never moves — releasing outside the arrange
+-- cancels REAPER's own drag, so this is non-destructive by construction.
+local arr = { armed = false, was_down = false }
+
+local function arrangeDropPoll()
+    if not (r.JS_Mouse_GetState and r.JS_Window_FromPoint) then return end
+    local down = (r.JS_Mouse_GetState(1) & 1) == 1
+    local sx, sy = r.GetMousePosition()
+    local cx, cy = Core_tk.ScreenToClient(sx, sy)
+    local over_us = cx >= 0 and cy >= 0 and cx < gfx.w and cy < gfx.h
+    if down and not arr.was_down then
+        arr.armed = false
+        if not over_us and r.CountSelectedMediaItems(0) > 0 then
+            local w = r.JS_Window_FromPoint(sx, sy)
+            if w and r.JS_Window_GetClassName(w) == "REAPERTrackListWindow" then
+                arr.armed = true
+            end
+        end
+    elseif not down and arr.was_down then
+        if arr.armed and over_us then
+            local item = r.GetSelectedMediaItem(0, 0)
+            local take = item and r.GetActiveTake(item)
+            local src = take and not r.TakeIsMIDI(take)
+                        and r.GetMediaItemTake_Source(take)
+            if src then
+                local par = r.GetMediaSourceParent(src)   -- unwrap SECTION
+                if par then src = par end
+                local path = r.GetMediaSourceFileName(src)
+                local note = padAt(cx, cy)
+                if path and path ~= "" and note then
+                    loadInto(note, path)
+                end
+            end
+        end
+        arr.armed = false
+    end
+    if arr.armed and down and over_us then UI.RequestRedraw() end
+    arr.was_down = down
+end
+
 -- Highlight target pad while another CP window drags over us. Our window
 -- doesn't get mouse events during a foreign drag (the source window holds
 -- capture) — track the OS cursor instead, and keep redrawing.
@@ -1494,6 +1538,7 @@ local function frame(theme)
     end
     if Peaks and Peaks.Step() then UI.RequestRedraw() end
     busConsume()
+    arrangeDropPoll()
     instrumentPoll()
     handleFileDrops()
     handleKeys()

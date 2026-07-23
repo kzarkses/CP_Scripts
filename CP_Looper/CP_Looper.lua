@@ -338,6 +338,92 @@ local function exportLaneToItem(lane)
     flash("Lane " .. (lane + 1) .. " -> MIDI item")
 end
 
+-- Native item drag from the ARRANGE onto a lane: REAPER holds the mouse
+-- capture during an item drag, so we poll the OS cursor. Arm on a press
+-- that starts over the arrange with a selected item; on release over a
+-- lane, the item's MIDI becomes that lane's clip. Non-destructive: the
+-- item never moves (REAPER cancels its own drag outside the arrange).
+local lane_geom = { x = 0, y0 = 0, w = 0, h = 0, gap = 3, valid = false }
+local arr = { armed = false, was_down = false }
+
+local function laneAt(cx, cy)
+    if not lane_geom.valid then return nil end
+    local step = lane_geom.h + lane_geom.gap
+    local i = math.floor((cy - lane_geom.y0) / step)
+    if i < 0 or i >= LANES then return nil end
+    if (cy - lane_geom.y0) - i * step > lane_geom.h then return nil end
+    if cx < lane_geom.x or cx >= lane_geom.x + lane_geom.w then return nil end
+    return i
+end
+
+-- The take's MIDI, loaded into a lane (event-driven; allocations fine).
+-- Note times become beats relative to the item start; notes at/after the
+-- loop end are dropped rather than silently never playing.
+local function takeToLane(take, lane)
+    local item = r.GetMediaItemTake_Item(take)
+    local pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
+    local qn0 = r.TimeMap2_timeToQN(0, pos)
+    local _, ncnt = r.MIDI_CountEvts(take)
+    if not ncnt or ncnt == 0 then return false end
+    local len_qn = r.TimeMap2_timeToQN(0,
+        pos + r.GetMediaItemInfo_Value(item, "D_LENGTH")) - qn0
+    local tsn = Loop.TsNum()
+    local bars = math.max(1, math.floor(len_qn / tsn + 0.5))
+    local lim = bars * tsn
+    local s, l, p, v = {}, {}, {}, {}
+    for i = 0, ncnt - 1 do
+        if #s >= Loop.MAX_NOTES then break end
+        local _, _, _, sppq, eppq, _, pitch, vel = r.MIDI_GetNote(take, i)
+        local sq = r.MIDI_GetProjQNFromPPQPos(take, sppq) - qn0
+        local eq = r.MIDI_GetProjQNFromPPQPos(take, eppq) - qn0
+        if sq >= 0 and sq < lim then
+            s[#s + 1] = sq
+            l[#l + 1] = math.max(0.05, math.min(eq, lim) - sq)
+            p[#p + 1] = pitch
+            v[#v + 1] = vel
+        end
+    end
+    if #s == 0 then return false end
+    return Loop.ClipToLane(lane, {
+        kind = "midi", notes = { s = s, l = l, p = p, v = v }, bars = bars,
+    })
+end
+
+local function arrangeDropPoll()
+    if not (r.JS_Mouse_GetState and r.JS_Window_FromPoint) then return end
+    if state.edit_lane ~= nil then arr.armed = false end
+    local down = (r.JS_Mouse_GetState(1) & 1) == 1
+    local sx, sy = r.GetMousePosition()
+    local cx, cy = Core.ScreenToClient(sx, sy)
+    local over_us = cx >= 0 and cy >= 0 and cx < gfx.w and cy < gfx.h
+    if down and not arr.was_down then
+        arr.armed = false
+        if not over_us and r.CountSelectedMediaItems(0) > 0 then
+            local w = r.JS_Window_FromPoint(sx, sy)
+            if w and r.JS_Window_GetClassName(w) == "REAPERTrackListWindow" then
+                arr.armed = true
+            end
+        end
+    elseif not down and arr.was_down then
+        if arr.armed and over_us then
+            local lane = laneAt(cx, cy)
+            local item = r.GetSelectedMediaItem(0, 0)
+            local take = item and r.GetActiveTake(item)
+            if lane and take and r.TakeIsMIDI(take) then
+                if takeToLane(take, lane) then
+                    ev[lane].ver = -1
+                    flash("Item -> lane " .. (lane + 1))
+                else
+                    flash("Nothing usable in that item")
+                end
+            end
+        end
+        arr.armed = false
+    end
+    if arr.armed and down and over_us then UI.RequestRedraw() end
+    arr.was_down = down
+end
+
 -- Group-drag snapshot: original (start,pitch,len) of every selected note (a
 -- drag-start event, so the per-note table churn is fine — not the frame path).
 local move_snap = {}
@@ -1348,6 +1434,7 @@ local function frame(theme)
     if not attached then
         drawUnattached()
     elseif state.edit_lane ~= nil then
+        lane_geom.valid = false
         editorKeys()
         drawEditor(theme)
     else
@@ -1358,6 +1445,9 @@ local function frame(theme)
         local gap = 3
         local lane_h = math.floor((avail - gap * (LANES - 1)) / LANES)
         if lane_h < 90 then lane_h = 90 end
+        lane_geom.x, lane_geom.y0, lane_geom.w = x, y, w
+        lane_geom.h, lane_geom.gap, lane_geom.valid = lane_h, gap, true
+        arrangeDropPoll()
         for l = 0, LANES - 1 do
             drawLane(theme, l, x, y + l * (lane_h + gap), w, lane_h)
         end
