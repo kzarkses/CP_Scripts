@@ -232,6 +232,22 @@ end
 -- mode: "raised" (buttons) — light top/left, dark bottom/right
 --       "sunken" (inputs)  — dark top/left, light bottom/right
 -- Draws: 1px outer border + 1px inner bevel. Requires the fill to be already drawn.
+-- Rounded surface painters (design system v2). Thin veneers over Core so
+-- every widget rounds the same way; radius nil/0 (legacy themes) renders
+-- the exact old square look. The win32 bevel style stays square — bevel
+-- and rounding are different eras, they never combine.
+local function fillRound(x, y, w, h, rad, r, g, b, a)
+    Core.DrawRoundRectFilled(x, y, w, h, rad, r, g, b, a)
+end
+
+local function strokeRound(x, y, w, h, rad, r, g, b, a)
+    if rad and rad >= 2 then
+        Core.DrawRoundRect(x, y, w - 1, h - 1, rad, r, g, b, a)
+    else
+        Core.DrawRect(x, y, w, h, r, g, b, a, false)
+    end
+end
+
 local function draw_win32_bevel(x, y, w, h, theme, mode)
     if theme.widget_style ~= "windows" then return end
     local border = theme.colors.border
@@ -792,7 +808,8 @@ function Widgets.Button(id, label, theme, opts)
     -- Draw
     if Core.IsVisible(x, y, w, h) then
         local alpha_mul = disabled and 0.5 or 1.0
-        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], (bg[4] or 1) * alpha_mul)
+        local rad = theme.widget_style ~= "windows" and theme.rounding or 0
+        fillRound(x, y, w, h, rad, bg[1], bg[2], bg[3], (bg[4] or 1) * alpha_mul)
 
         -- Windows-style 3D bevel (raised for buttons, sunken when pressed or selected)
         local pressed = (Core.IsActive(id) and hovered) or opts.selected
@@ -864,7 +881,8 @@ function Widgets.Checkbox(id, label, checked, theme, opts)
     if Core.IsVisible(x, y, total_w, h) then
         local box_y = y + floor((h - size) / 2)
         local bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
-        Core.DrawRect(x, box_y, size, size, bg[1], bg[2], bg[3], bg[4])
+        local rad = theme.widget_style ~= "windows" and theme.rounding_small or 0
+        fillRound(x, box_y, size, size, rad, bg[1], bg[2], bg[3], bg[4])
 
         draw_win32_bevel(x, box_y, size, size, theme, "sunken")
 
@@ -1022,13 +1040,14 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
         local ly = y + floor((max(h, th) - th) / 2)
         Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
 
+        local srad = theme.widget_style ~= "windows" and theme.rounding_small or 0
         if sd.editing then
             -- Inline edit box over the track area
             local fb = theme.colors.frame_active or theme.colors.frame_bg
-            Core.DrawRect(sx, sy, slider_w, h, fb[1], fb[2], fb[3], fb[4])
+            fillRound(sx, sy, slider_w, h, srad, fb[1], fb[2], fb[3], fb[4])
             draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
             local ac = theme.colors.accent
-            Core.DrawRect(sx, sy, slider_w, h, ac[1], ac[2], ac[3], ac[4] or 1, false)
+            strokeRound(sx, sy, slider_w, h, srad, ac[1], ac[2], ac[3], ac[4] or 1)
             local bw, bh = Core.MeasureText(sd.edit_buf)
             local bx = sx + floor((slider_w - bw) / 2)
             local by = sy + floor((h - bh) / 2)
@@ -1041,7 +1060,7 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
         else
             -- Track
             local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
-            Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
+            fillRound(sx, sy, slider_w, h, srad, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
             draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
 
             -- Filled portion (inset in windows mode so it doesn't overpaint bevel)
@@ -1055,7 +1074,7 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
             local ac = theme.colors.accent
             local dim = disabled and 0.5 or 1
             if fill_w > 0 then
-                Core.DrawRect(sx + s_top, sy + s_top, fill_w, h - s_top - s_bot,
+                fillRound(sx + s_top, sy + s_top, fill_w, h - s_top - s_bot, srad,
                     ac[1], ac[2], ac[3], (ac[4] or 1) * dim)
             end
 
@@ -1065,7 +1084,7 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
             grab_x = max(sx, min(sx + slider_w - grab_w, grab_x))
             local grab_c = Core.IsActive(id) and theme.colors.accent_active or
                             (hovered and theme.colors.accent_hovered or theme.colors.accent)
-            Core.DrawRect(grab_x, sy, grab_w, h, grab_c[1], grab_c[2], grab_c[3], (grab_c[4] or 1) * dim)
+            fillRound(grab_x, sy, grab_w, h, srad, grab_c[1], grab_c[2], grab_c[3], (grab_c[4] or 1) * dim)
             draw_win32_bevel(grab_x, sy, grab_w, h, theme, Core.IsActive(id) and "sunken" or "raised")
 
             -- Value text (on top of slider) — formatted string is cached in
@@ -1325,9 +1344,11 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
             Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
         end
 
-        -- Button background
+        -- Button background (dropdowns stay squarer than buttons — small radius)
         local bg = (hovered and not Core.HasPopup()) and theme.colors.frame_hovered or theme.colors.frame_bg
-        Core.DrawRect(cx, cy, combo_w, h, bg[1], bg[2], bg[3], bg[4])
+        fillRound(cx, cy, combo_w, h,
+            theme.widget_style ~= "windows" and theme.rounding_small or 0,
+            bg[1], bg[2], bg[3], bg[4])
 
         draw_win32_bevel(cx, cy, combo_w, h, theme, "sunken")
 
@@ -1403,7 +1424,9 @@ function Widgets.TabBar(id, tabs, active_tab, theme, opts)
             else
                 bg = theme.colors.tab
             end
-            Core.DrawRect(tab_x, y, tab_w, h, bg[1], bg[2], bg[3], bg[4])
+            fillRound(tab_x, y, tab_w, h,
+                theme.widget_style ~= "windows" and theme.rounding_small or 0,
+                bg[1], bg[2], bg[3], bg[4])
 
             if theme.widget_style == "windows" then
                 -- Windows-style: active tab = raised, inactive = flat
@@ -1519,11 +1542,12 @@ local function _draw_tooltip_layer()
     if tip_y < 0 then tip_y = _tip_y + 18 end
 
     -- Background with slight shadow effect
+    local trad = theme.rounding_small
     Core.DrawRect(tip_x + 1, tip_y + 1, tip_w, tip_h, 0, 0, 0, 0.3)
     local bg = theme.colors.popup_bg
-    Core.DrawRect(tip_x, tip_y, tip_w, tip_h, bg[1], bg[2], bg[3], 1)
+    fillRound(tip_x, tip_y, tip_w, tip_h, trad, bg[1], bg[2], bg[3], 1)
     local bc = theme.colors.border
-    Core.DrawRect(tip_x, tip_y, tip_w, tip_h, bc[1], bc[2], bc[3], 0.6, false)
+    strokeRound(tip_x, tip_y, tip_w, tip_h, trad, bc[1], bc[2], bc[3], 0.6)
     local tc = theme.colors.text
     local ty = tip_y + pad
     local lines = wrapped.lines
@@ -2721,7 +2745,9 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
 
         local bg = data.editing and theme.colors.frame_active or
                    (hovered and theme.colors.frame_hovered or theme.colors.frame_bg)
-        Core.DrawRect(ix, iy, input_w, h, bg[1], bg[2], bg[3], bg[4])
+        fillRound(ix, iy, input_w, h,
+            theme.widget_style ~= "windows" and theme.rounding_small or 0,
+            bg[1], bg[2], bg[3], bg[4])
 
         draw_win32_bevel(ix, iy, input_w, h, theme, "sunken")
 
@@ -2942,7 +2968,9 @@ function Widgets.TextEdit(id, text, theme, opts)
     -- Draw using offscreen buffer for clipping
     if Core.IsVisible(x, y, w, h) then
         local bg = is_focused and theme.colors.frame_active or theme.colors.frame_bg
-        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+        fillRound(x, y, w, h,
+            theme.widget_style ~= "windows" and theme.rounding_small or 0,
+            bg[1], bg[2], bg[3], bg[4])
         draw_win32_bevel(x, y, w, h, theme, "sunken")
 
         -- Render into buffer — only resize when the SHARED buffer's real
@@ -3131,8 +3159,9 @@ function Widgets.ProgressBar(id, fraction, theme, opts)
 
     if Core.IsVisible(x, y, w, h) then
         -- Background
+        local prad = theme.widget_style ~= "windows" and theme.rounding_small or 0
         local bg = theme.colors.frame_bg
-        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], bg[4])
+        fillRound(x, y, w, h, prad, bg[1], bg[2], bg[3], bg[4])
         draw_win32_bevel(x, y, w, h, theme, "sunken")
 
         -- Filled portion — asymmetric inset: 2px top/left (bevel shadow), 1px bottom/right
@@ -3141,7 +3170,8 @@ function Widgets.ProgressBar(id, fraction, theme, opts)
         local fill_w = floor((w - s_top - s_bot) * fraction)
         if fill_w > 0 then
             local ac = theme.colors.accent
-            Core.DrawRect(x + s_top, y + s_top, fill_w, h - s_top - s_bot, ac[1], ac[2], ac[3], ac[4])
+            fillRound(x + s_top, y + s_top, fill_w, h - s_top - s_bot, prad,
+                ac[1], ac[2], ac[3], ac[4])
         end
 
         -- Text overlay — percentage string is cached so we only re-format
@@ -4224,7 +4254,9 @@ function Widgets.InputText(id, label, text, theme, opts)
         else
             bg = theme.colors.frame_bg
         end
-        Core.DrawRect(ix, iy, input_w, h, bg[1], bg[2], bg[3], bg[4])
+        fillRound(ix, iy, input_w, h,
+            theme.widget_style ~= "windows" and theme.rounding_small or 0,
+            bg[1], bg[2], bg[3], bg[4])
 
         -- Sunken bevel (windows) or nothing (flat)
         draw_win32_bevel(ix, iy, input_w, h, theme, "sunken")
@@ -4420,7 +4452,9 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
             bg = hovered and theme.colors.button_hovered or theme.colors.button
         end
         local dim = disabled and 0.5 or 1
-        Core.DrawRect(x, y, w, h, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
+        fillRound(x, y, w, h,
+            theme.widget_style ~= "windows" and theme.rounding or 0,
+            bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
 
         -- Bevel: ON = sunken (pressed), OFF = raised (like a button)
         if not disabled then
@@ -4614,7 +4648,9 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
 
         -- Track
         local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
-        Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
+        fillRound(sx, sy, slider_w, h,
+            theme.widget_style ~= "windows" and theme.rounding_small or 0,
+            track_bg[1], track_bg[2], track_bg[3], track_bg[4])
 
         -- Filled range between handles
         local ac = theme.colors.accent
@@ -4952,7 +4988,9 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
 
         -- Track
         local track_bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
-        Core.DrawRect(sx, sy, slider_w, h, track_bg[1], track_bg[2], track_bg[3], track_bg[4])
+        fillRound(sx, sy, slider_w, h,
+            theme.widget_style ~= "windows" and theme.rounding_small or 0,
+            track_bg[1], track_bg[2], track_bg[3], track_bg[4])
         draw_win32_bevel(sx, sy, slider_w, h, theme, "sunken")
 
         -- Range fill (translucent accent between handles)

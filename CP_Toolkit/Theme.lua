@@ -116,8 +116,13 @@ function Theme.Default()
         --   "windows" — classic Win32 look: bevel buttons, framed inputs, raised tabs
         widget_style    = "flat",
 
-        -- Rounding
-        rounding = 0,
+        -- Rounding (design system v2): buttons/toggles round with
+        -- `rounding`, inputs/sliders/chips with `rounding_small`,
+        -- panels/popups with `rounding_large`. 0 everywhere = the legacy
+        -- square look, pixel-identical to before.
+        rounding       = 4,
+        rounding_small = 3,
+        rounding_large = 6,
 
         -- Widget sizes (all scaled)
         scrollbar_width = 6,
@@ -196,6 +201,9 @@ function Theme.ApplyScale(t, scale)
     if t.gap_large   then t.gap_large   = s(t.gap_large)   end
     if t.splitter_w  then t.splitter_w  = s(t.splitter_w)  end
     if t.tooltip_max_w then t.tooltip_max_w = s(t.tooltip_max_w) end
+    if t.rounding and t.rounding > 0 then t.rounding = s(t.rounding) end
+    if t.rounding_small and t.rounding_small > 0 then t.rounding_small = s(t.rounding_small) end
+    if t.rounding_large and t.rounding_large > 0 then t.rounding_large = s(t.rounding_large) end
 
     return t
 end
@@ -410,6 +418,9 @@ function Theme.Save(t, name)
         splitter_w = t.splitter_w,
         tooltip_max_w = t.tooltip_max_w,
         tooltip_delay = t.tooltip_delay,
+        rounding = t.rounding,
+        rounding_small = t.rounding_small,
+        rounding_large = t.rounding_large,
     }
 
     for key, c in pairs(t.colors) do
@@ -490,6 +501,11 @@ function Theme.LoadSaved(name)
     t.splitter_w  = data.splitter_w  or t.splitter_w
     t.tooltip_max_w = data.tooltip_max_w or t.tooltip_max_w
     t.tooltip_delay = data.tooltip_delay or t.tooltip_delay
+    -- rounding: 0 is a legitimate saved choice (square legacy look), so
+    -- only nil falls back to the defaults
+    if data.rounding ~= nil then t.rounding = data.rounding end
+    if data.rounding_small ~= nil then t.rounding_small = data.rounding_small end
+    if data.rounding_large ~= nil then t.rounding_large = data.rounding_large end
 
     return t
 end

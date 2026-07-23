@@ -1783,6 +1783,29 @@ function Core.DrawRoundRect(x, y, w, h, radius, r, g, b, a, antialias)
     gfx.roundrect(x, y, w, h, radius, antialias ~= false and 1 or 0)
 end
 
+-- FILLED rounded rect (design system v2 — gfx has no native one): three
+-- clipped slabs + four antialiased corner discs. Rules that keep it honest:
+--   * radius < 2, degenerate sizes → plain rect (a zero-rounding theme
+--     renders EXACTLY as before — the restyle is a theme switch);
+--   * translucent fills → plain rect (the slab/disc overlap double-blends
+--     under alpha and would show as seams);
+--   * discs follow DrawCircle's clip policy (skip only when fully outside).
+function Core.DrawRoundRectFilled(x, y, w, h, radius, r, g, b, a)
+    a = a or 1
+    if not radius or radius < 2 or a < 0.999
+       or w < radius * 2 + 2 or h < radius * 2 + 2 then
+        Core.DrawRect(x, y, w, h, r, g, b, a)
+        return
+    end
+    Core.DrawRect(x + radius, y, w - radius * 2, h, r, g, b, a)
+    Core.DrawRect(x, y + radius, radius, h - radius * 2, r, g, b, a)
+    Core.DrawRect(x + w - radius, y + radius, radius, h - radius * 2, r, g, b, a)
+    Core.DrawCircle(x + radius, y + radius, radius, r, g, b, a, true)
+    Core.DrawCircle(x + w - radius - 1, y + radius, radius, r, g, b, a, true)
+    Core.DrawCircle(x + radius, y + h - radius - 1, radius, r, g, b, a, true)
+    Core.DrawCircle(x + w - radius - 1, y + h - radius - 1, radius, r, g, b, a, true)
+end
+
 function Core.DrawCircle(x, y, radius, r, g, b, a, filled, antialias)
     _stats._draw_count = _stats._draw_count + 1
     -- Skip only when the bounding box is FULLY outside the clip rect. gfx
