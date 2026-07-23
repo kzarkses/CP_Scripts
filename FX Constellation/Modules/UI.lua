@@ -927,6 +927,34 @@ local function drawLFOSection(theme)
                         s.lfo_random_settings or { shape = true, rate = true })
                 end
             end,
+            trig = function(i)
+                local mt, mi = le.findGlobalMIDI()
+                if mt and mi >= 0 then mj.trigSlot(UI.r, mt, mi, i) end
+            end,
+            l2l_get = function(i, field)
+                local mt, mi = le.findGlobalMIDI()
+                if mt and mi >= 0 then
+                    return mj.getSlotFieldLink(UI.r, mt, mi, i, field)
+                end
+            end,
+            l2l_set = function(i, field, src, depth)
+                local mt, mi = le.findGlobalMIDI()
+                if mt and mi >= 0 then
+                    mj.linkSlotToSlot(UI.r, mt, mi, i, field, src, depth)
+                end
+            end,
+            l2l_depth = function(i, field, depth)
+                local mt, mi = le.findGlobalMIDI()
+                if mt and mi >= 0 then
+                    mj.setSlotFieldDepth(UI.r, mt, mi, i, field, depth)
+                end
+            end,
+            l2l_clear = function(i, field)
+                local mt, mi = le.findGlobalMIDI()
+                if mt and mi >= 0 then
+                    mj.releaseSlotFieldLink(UI.r, mt, mi, i, field)
+                end
+            end,
             touched = touchedParam,
             link = function(tr, fx, parm, slot)
                 mj.linkParamToGlobalSlot(UI.r, tr, fx, parm, slot, 0.5)
@@ -970,6 +998,31 @@ local function drawLFOSection(theme)
                 if (s.modlfo_index or -1) >= 0 then
                     le.modjsfx.randomizeSlot(UI.r, s.track, s.modlfo_index, i,
                         s.lfo_random_settings or { shape = true, rate = true })
+                end
+            end,
+            trig = function(i)
+                if (s.modlfo_index or -1) >= 0 then
+                    mj.trigSlot(UI.r, s.track, s.modlfo_index, i)
+                end
+            end,
+            l2l_get = function(i, field)
+                if (s.modlfo_index or -1) >= 0 then
+                    return mj.getSlotFieldLink(UI.r, s.track, s.modlfo_index, i, field)
+                end
+            end,
+            l2l_set = function(i, field, src, depth)
+                if (s.modlfo_index or -1) >= 0 then
+                    mj.linkSlotToSlot(UI.r, s.track, s.modlfo_index, i, field, src, depth)
+                end
+            end,
+            l2l_depth = function(i, field, depth)
+                if (s.modlfo_index or -1) >= 0 then
+                    mj.setSlotFieldDepth(UI.r, s.track, s.modlfo_index, i, field, depth)
+                end
+            end,
+            l2l_clear = function(i, field)
+                if (s.modlfo_index or -1) >= 0 then
+                    mj.releaseSlotFieldLink(UI.r, s.track, s.modlfo_index, i, field)
                 end
             end,
             touched = touchedParam,

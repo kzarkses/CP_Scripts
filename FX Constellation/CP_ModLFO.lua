@@ -118,6 +118,21 @@ UI_TK.Run(function(theme)
 			ModJSFX.randomizeSlot(r, track, bank_idx, i,
 				{ shape = true, rate = true, phase = true })
 		end,
+		trig = function(i) ModJSFX.trigSlot(r, track, bank_idx, i) end,
+		-- LFO → LFO (modulate the modulators): a slot's output driving
+		-- another slot's rate/phase/curve/slew on the same bank.
+		l2l_get = function(i, field)
+			return ModJSFX.getSlotFieldLink(r, track, bank_idx, i, field)
+		end,
+		l2l_set = function(i, field, src, depth)
+			ModJSFX.linkSlotToSlot(r, track, bank_idx, i, field, src, depth)
+		end,
+		l2l_depth = function(i, field, depth)
+			ModJSFX.setSlotFieldDepth(r, track, bank_idx, i, field, depth)
+		end,
+		l2l_clear = function(i, field)
+			ModJSFX.releaseSlotFieldLink(r, track, bank_idx, i, field)
+		end,
 	}
 	-- Target inspector (both tabs) + Bitwig-style mapping (global tab):
 	-- arm "Map" then touch any parameter anywhere in REAPER, or link the

@@ -9,18 +9,30 @@
 -- Used embedded (FX Constellation's LFO section) and standalone
 -- (CP_ModLFO.lua popup). The caller provides a ctx:
 --   ctx.present  bool           bank instance exists
---   ctx.get(i)   -> slot table  {on, shape, rate, sync, phase, out, ph|nil}
+--   ctx.get(i)   -> slot table  {on, shape, rate, sync, phase, out, ph|nil,
+--                                slew|nil, curve|nil, mode|nil}
 --   ctx.set(i, patch)
 --   ctx.add()                   create the bank
 --   ctx.sel      int            selected slot (1..8)
 --   ctx.onSelect(i)
 --   ctx.hint     string|nil     caption shown when the bank is absent
+--   ctx.trig(i)                 optional: restart slot i's cycle now
+--   ctx.l2l_get(i, field)       optional LFO→LFO: link on slot i's field
+--                               ("rate"|"phase"|"curve"|"slew") → {src,
+--                               scale} or nil; with l2l_set(i, field, src,
+--                               depth), l2l_depth(i, field, depth),
+--                               l2l_clear(i, field)
 -- ============================================================================
 
 local LFOPanel = {}
 
 LFOPanel.SHAPES = { "Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Random" }
 LFOPanel.SYNCS = { "Free", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars" }
+LFOPanel.MODES = { "Loop", "One-shot", "Loop resync" }
+LFOPanel.L2L_FIELDS = { "rate", "phase", "curve", "slew" }
+LFOPanel.L2L_LABELS = { "Rate", "Phase", "Curve", "Slew" }
+LFOPanel.L2L_SOURCES = { "Off", "LFO 1", "LFO 2", "LFO 3", "LFO 4",
+	"LFO 5", "LFO 6", "LFO 7", "LFO 8" }
 
 function LFOPanel.init(toolkit)
 	LFOPanel.tk = toolkit
@@ -219,6 +231,84 @@ function LFOPanel.draw(theme, ctx)
 	local pc, pv = UItk.SliderDouble("lfopanel_phase", "Phase", slot.phase, 0, 1,
 		opts(theme, { format = string.format("%.2f", slot.phase) }))
 	if pc then ctx.set(sel, { phase = pv }) end
+
+	-- Extended engine (nil on pre-extension instances — they recompile on
+	-- the next project reload): curve, slew, mode, manual re-sync.
+	if slot.curve ~= nil then
+		local is_sq = slot.shape == 4
+		local cc2, cv2 = UItk.SliderDouble("lfopanel_curve",
+			is_sq and "Width" or "Curve", slot.curve, -1, 1,
+			opts(theme, { format = string.format("%+.2f", slot.curve) }))
+		if cc2 then ctx.set(sel, { curve = cv2 }) end
+		if UItk.IsItemHovered() then
+			UItk.Tooltip(is_sq and "Pulse width of the square"
+				or "Bend the waveform (power curve)")
+		end
+
+		local slc, slv = UItk.SliderDouble("lfopanel_slew", "Slew",
+			slot.slew or 0, 0, 2,
+			opts(theme, { format = (slot.slew or 0) > 0.001
+				and string.format("%.0f ms", slot.slew * 1000) or "Off" }))
+		if slc then ctx.set(sel, { slew = slv }) end
+		if UItk.IsItemHovered() then
+			UItk.Tooltip("Smooth the output (settles in about this time)")
+		end
+
+		UItk.BeginColumns("lfopanel_mode_row", { 0, theme.button_height * 2 },
+			{ gap = theme.item_spacing })
+		local mc2, mi2 = UItk.Combo("lfopanel_mode", "Mode",
+			(slot.mode or 0) + 1, LFOPanel.MODES, opts(theme))
+		if mc2 then ctx.set(sel, { mode = mi2 - 1 }) end
+		UItk.NextColumn()
+		if UItk.Button("lfopanel_trig", "Sync", opts(theme)) and ctx.trig then
+			ctx.trig(sel)
+		end
+		if UItk.IsItemHovered() then
+			UItk.Tooltip("Restart the cycle now (re-arms a one-shot)")
+		end
+		UItk.EndColumns()
+	end
+
+	-- LFO → LFO: another slot's output driving a SETTING of this slot
+	-- (modulate the modulators). Field picker + source; the depth appears
+	-- once a link exists.
+	if ctx.l2l_get and slot.curve ~= nil then
+		UItk.Separator()
+		UItk.SetFontCaption()
+		UItk.Text("LFO → LFO")
+		UItk.SetFontBody()
+		local field = LFOPanel._l2l_field or "rate"
+		local fidx = 1
+		for i2 = 1, #LFOPanel.L2L_FIELDS do
+			if LFOPanel.L2L_FIELDS[i2] == field then fidx = i2 end
+		end
+		UItk.BeginColumns("lfopanel_l2l_row", { 0, 0 },
+			{ gap = theme.item_spacing })
+		local fc, fi = UItk.Combo("lfopanel_l2l_f", "Param", fidx,
+			LFOPanel.L2L_LABELS, opts(theme))
+		if fc then
+			field = LFOPanel.L2L_FIELDS[fi]
+			LFOPanel._l2l_field = field
+		end
+		UItk.NextColumn()
+		local link = ctx.l2l_get(sel, field)
+		local sc2, si2 = UItk.Combo("lfopanel_l2l_s", "From",
+			link and (link.src + 1) or 1, LFOPanel.L2L_SOURCES, opts(theme))
+		if sc2 then
+			if si2 <= 1 then
+				if link then ctx.l2l_clear(sel, field) end
+			elseif si2 - 1 ~= sel then
+				ctx.l2l_set(sel, field, si2 - 1, link and link.scale or 0.5)
+			end
+		end
+		UItk.EndColumns()
+		if link then
+			local dc3, dv3 = UItk.SliderDouble("lfopanel_l2l_d", "Amount",
+				link.scale, -1, 1,
+				opts(theme, { format = string.format("%+.0f%%", link.scale * 100) }))
+			if dc3 and ctx.l2l_depth then ctx.l2l_depth(sel, field, dv3) end
+		end
+	end
 
 	-- Mapping flows (provided by the host for banks that can target any
 	-- param — the global MIDI bank). Bitwig/Ableton pattern:

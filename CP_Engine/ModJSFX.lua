@@ -17,6 +17,20 @@
 --   48..55  -Phase i      (raw cycle phase 0..1, display only — the preview
 --                          dot needs the phase, the out value alone cannot
 --                          be inverted back to a curve position)
+--   56..87  slot i EXTENDED settings (Bitwig-grade), base=56+(i-1)*4 →
+--           slew (s), curve (-1..1), mode (Loop/One-shot/Loop resync),
+--           -trig (momentary; the JSFX consumes and clears it)
+-- APPEND-ONLY: the first 56 params must never move — existing projects
+-- carry plinks pointing at the Out sliders by index.
+--
+-- Extended semantics:
+--   slew    one-pole smoother on the output (~settled after `slew` seconds)
+--   curve   power bend of the waveform; on Square it is the pulse width
+--   mode    One-shot = run ONE cycle then hold the end value; started by
+--           transport play or a manual trigger. Loop resync = free-running
+--           phase restarts at transport play. Beat-synced loops are phase-
+--           locked to the timeline and ignore both (that lock is the point).
+--   trig    restart the cycle now / re-arm a finished one-shot (any mode)
 -- ============================================================================
 
 local ModJSFX = {}
@@ -27,7 +41,10 @@ ModJSFX.MOD_TRACK_NAME = "CP MOD"
 ModJSFX.SLOTS = 8
 ModJSFX.OUT_BASE = 40
 ModJSFX.PHASE_BASE = 48
-ModJSFX.PARAM_COUNT = 56
+ModJSFX.BASE_COUNT = 56   -- pre-extension layout size (feature detection)
+ModJSFX.EXT_BASE = 56
+ModJSFX.EXT_STRIDE = 4
+ModJSFX.PARAM_COUNT = 88
 -- 14-bit CC pairs emitted by the MIDI bank: slot i → CC (MSB_BASE+i-1)
 -- with LSB at +32, MIDI channel 1.
 ModJSFX.CC_MSB_BASE = 16
@@ -59,6 +76,17 @@ local function buildSliders(p)
 		p[#p + 1] = ("slider%d:lfo%d_pho=0<0,1,0.0001>-LFO %d Phase (display)\n")
 			:format(ModJSFX.PHASE_BASE + i, i, i)
 	end
+	for i = 1, ModJSFX.SLOTS do
+		local eb = ModJSFX.EXT_BASE + (i - 1) * ModJSFX.EXT_STRIDE
+		p[#p + 1] = ("slider%d:lfo%d_slew=0<0,2,0.001>LFO %d Slew (s)\n")
+			:format(eb + 1, i, i)
+		p[#p + 1] = ("slider%d:lfo%d_curve=0<-1,1,0.01>LFO %d Curve\n")
+			:format(eb + 2, i, i)
+		p[#p + 1] = ("slider%d:lfo%d_mode=0<0,2,1{Loop,One-shot,Loop resync}>LFO %d Mode\n")
+			:format(eb + 3, i, i)
+		p[#p + 1] = ("slider%d:lfo%d_trig=0<0,1,1>-LFO %d Trig\n")
+			:format(eb + 4, i, i)
+	end
 end
 
 -- Per-slot engine. Sync divisions in LFO cycles per quarter note (4/4):
@@ -66,25 +94,52 @@ end
 -- follow beat_position (freeze when stopped); free slots accumulate
 -- wall-clock phase per block. phI stays the RAW phase (without the phase
 -- offset) and is exported for the UI preview dot.
+--
+-- Extended block: a trigger (manual slider, or transport play in modes
+-- One-shot / Loop resync) restarts the cycle. One-shot clamps the raw
+-- phase at 1 and holds — the epsilon keeps a saw's END value instead of
+-- wrapping to its start. Curve is a power bend (pulse width on Square);
+-- slew is a one-pole smoother, ~settled after `slew` seconds.
 local SLOT_ENGINE = [[
 lfoI_on > 0.5 ? (
+  trg = 0;
+  lfoI_trig > 0.5 ? ( trg = 1; lfoI_trig = 0; );
+  psn = play_state & 1;
+  psn > lpsI && lfoI_mode > 0.5 ? trg = 1;
+  lpsI = psn;
+  trg ? ( phI = 0; strI = beat_position; donI = 0; cycI = -1; );
+  osh = lfoI_mode > 0.5 && lfoI_mode < 1.5;
   lfoI_sync > 0.5 ? (
     cpb = lfoI_sync < 1.5 ? 4 : lfoI_sync < 2.5 ? 2 : lfoI_sync < 3.5 ? 1 : lfoI_sync < 4.5 ? 0.5 : lfoI_sync < 5.5 ? 0.25 : 0.125;
-    phI = beat_position * cpb;
+    osh ? (
+      phI = (beat_position - strI) * cpb;
+      phI < 0 ? phI = 0;
+    ) : (
+      phI = beat_position * cpb;
+    );
   ) : (
-    phI += samplesblock / srate * lfoI_rate;
+    donI < 0.5 ? phI += samplesblock / srate * lfoI_rate;
   );
+  osh && phI >= 1 ? ( phI = 1; donI = 1; );
   pp = phI + lfoI_phase;
   pf = pp - floor(pp);
+  donI > 0.5 && pf < 0.0000001 ? pf = 0.9999999;
   lfoI_shape > 4.5 ? (
     cc = floor(pp);
     cc != cycI ? ( heldI = rand(); cycI = cc; );
     vv = heldI;
-  ) : lfoI_shape > 3.5 ? ( vv = pf < 0.5 ? 1 : 0; )
+  ) : lfoI_shape > 3.5 ? ( vv = pf < 0.5 + lfoI_curve * 0.45 ? 1 : 0; )
   : lfoI_shape > 2.5 ? ( vv = 1 - pf; )
   : lfoI_shape > 1.5 ? ( vv = pf; )
   : lfoI_shape > 0.5 ? ( vv = pf < 0.5 ? 2*pf : 2 - 2*pf; )
   : ( vv = 0.5 + 0.5 * sin(pf * 2 * $pi); );
+  (lfoI_shape < 3.5 || lfoI_shape > 4.5) && lfoI_curve != 0 ? (
+    vv = pow(vv, pow(2, lfoI_curve * 3));
+  );
+  lfoI_slew > 0.001 ? (
+    smI += (vv - smI) * min(1, 3 * samplesblock / (srate * lfoI_slew));
+    vv = smI;
+  ) : ( smI = vv; );
   lfoI_out = vv;
   lfoI_pho = phI - floor(phI);
 ) : ( lfoI_out = 0.5; lfoI_pho = 0; );
@@ -111,7 +166,8 @@ function ModJSFX.buildSource(kind)
 	buildSliders(p)
 	p[#p + 1] = "\n@init\n"
 	for i = 1, ModJSFX.SLOTS do
-		p[#p + 1] = ("ph%d = 0; held%d = 0.5; cyc%d = -1;\n"):format(i, i, i)
+		p[#p + 1] = ("ph%d = 0; held%d = 0.5; cyc%d = -1; sm%d = 0.5; lps%d = 0; str%d = 0; don%d = 0;\n")
+			:format(i, i, i, i, i, i, i)
 		if kind == "midi" then
 			p[#p + 1] = ("last%d = -1;\n"):format(i)
 		end
@@ -180,7 +236,10 @@ function ModJSFX.getSlot(r, track, fx_idx, slot)
 	if not track or fx_idx < 0 then return nil end
 	local b = slotBase(slot)
 	local function g(off) return r.TrackFX_GetParam(track, fx_idx, b + off) end
-	local has_phase = r.TrackFX_GetNumParams(track, fx_idx) >= ModJSFX.PARAM_COUNT
+	local n = r.TrackFX_GetNumParams(track, fx_idx)
+	local has_phase = n >= ModJSFX.BASE_COUNT
+	local has_ext = n >= ModJSFX.PARAM_COUNT
+	local eb = ModJSFX.EXT_BASE + (slot - 1) * ModJSFX.EXT_STRIDE
 	return {
 		on = g(0) > 0.5,
 		shape = math.floor(g(1) + 0.5),
@@ -188,9 +247,14 @@ function ModJSFX.getSlot(r, track, fx_idx, slot)
 		sync = math.floor(g(3) + 0.5),
 		phase = g(4),
 		out = r.TrackFX_GetParam(track, fx_idx, ModJSFX.OUT_BASE + slot - 1),
-		-- nil on pre-phase-display instances (recompiled on project reload)
+		-- nil on pre-layout instances (recompiled on project reload)
 		ph = has_phase
 			and r.TrackFX_GetParam(track, fx_idx, ModJSFX.PHASE_BASE + slot - 1)
+			or nil,
+		slew  = has_ext and r.TrackFX_GetParam(track, fx_idx, eb) or nil,
+		curve = has_ext and r.TrackFX_GetParam(track, fx_idx, eb + 1) or nil,
+		mode  = has_ext
+			and math.floor(r.TrackFX_GetParam(track, fx_idx, eb + 2) + 0.5)
 			or nil,
 	}
 end
@@ -204,6 +268,30 @@ function ModJSFX.setSlot(r, track, fx_idx, slot, patch)
 	if patch.rate then set(2, patch.rate) end
 	if patch.sync then set(3, patch.sync) end
 	if patch.phase then set(4, patch.phase) end
+	-- extended fields (0 is a meaningful value — test nil, not truth)
+	if patch.slew ~= nil or patch.curve ~= nil or patch.mode ~= nil then
+		if r.TrackFX_GetNumParams(track, fx_idx) >= ModJSFX.PARAM_COUNT then
+			local eb = ModJSFX.EXT_BASE + (slot - 1) * ModJSFX.EXT_STRIDE
+			if patch.slew ~= nil then
+				r.TrackFX_SetParam(track, fx_idx, eb, patch.slew)
+			end
+			if patch.curve ~= nil then
+				r.TrackFX_SetParam(track, fx_idx, eb + 1, patch.curve)
+			end
+			if patch.mode ~= nil then
+				r.TrackFX_SetParam(track, fx_idx, eb + 2, patch.mode)
+			end
+		end
+	end
+end
+
+-- Manual re-sync: restart the slot's cycle now (also re-arms a finished
+-- one-shot). The JSFX consumes the trigger slider and clears it.
+function ModJSFX.trigSlot(r, track, fx_idx, slot)
+	if not track or fx_idx < 0 then return end
+	if r.TrackFX_GetNumParams(track, fx_idx) < ModJSFX.PARAM_COUNT then return end
+	local eb = ModJSFX.EXT_BASE + (slot - 1) * ModJSFX.EXT_STRIDE
+	r.TrackFX_SetParam(track, fx_idx, eb + 3, 1)
 end
 
 -- Randomize a slot's engine settings (and enable it). opts flags gate each
@@ -532,6 +620,79 @@ function ModJSFX.releaseParamLink(r, track, fxidx, parmidx)
 	local _, guid = r.GetSetMediaTrackInfo_String(track, "GUID", "", false)
 	r.SetExtState("CP_Mod", "unlink",
 		guid .. "|" .. fxidx .. "|" .. parmidx .. "|" .. r.time_precise(), false)
+end
+
+-- ---------------------------------------------------------------------------
+-- LFO → LFO: drive a slot's own SETTING (rate / phase / curve / slew) from
+-- another slot's output on the SAME bank instance, through the same native
+-- plink as any ordinary target. The banks stay excluded from the generic
+-- target scans (isModTargetFX) — this is the one deliberate, feedback-safe
+-- door in: settings sliders only, never outputs or triggers.
+-- ---------------------------------------------------------------------------
+ModJSFX.SLOT_FIELDS = { "rate", "phase", "curve", "slew" }
+
+local function slotFieldParam(slot, field)
+	if field == "rate" then return slotBase(slot) + 2 end
+	if field == "phase" then return slotBase(slot) + 4 end
+	local eb = ModJSFX.EXT_BASE + (slot - 1) * ModJSFX.EXT_STRIDE
+	if field == "slew" then return eb end
+	if field == "curve" then return eb + 1 end
+	return nil
+end
+
+-- depth = plink scale (0.5 → src sweeps ±25% of the field's range around
+-- its current value, which becomes the baseline).
+function ModJSFX.linkSlotToSlot(r, track, fx_idx, dst_slot, field, src_slot, depth)
+	if not track or fx_idx < 0 then return false end
+	local parm = slotFieldParam(dst_slot, field)
+	if not parm then return false end
+	if field ~= "rate" and field ~= "phase"
+	   and r.TrackFX_GetNumParams(track, fx_idx) < ModJSFX.PARAM_COUNT then
+		return false
+	end
+	local base = r.TrackFX_GetParamNormalized(track, fx_idx, parm)
+	setPlink(r, track, fx_idx, parm, "effect", fx_idx)
+	setPlink(r, track, fx_idx, parm, "param", ModJSFX.OUT_BASE + src_slot - 1)
+	setPlink(r, track, fx_idx, parm, "offset", -0.5)
+	setPlink(r, track, fx_idx, parm, "scale", depth or 0.5)
+	setModParm(r, track, fx_idx, parm, "baseline", base)
+	setModParm(r, track, fx_idx, parm, "active", 1)
+	setPlink(r, track, fx_idx, parm, "active", 1)
+	return true
+end
+
+-- The slot-to-slot link on a field, or nil. { src, scale, baseline }.
+function ModJSFX.getSlotFieldLink(r, track, fx_idx, dst_slot, field)
+	if not track or fx_idx < 0 then return nil end
+	local parm = slotFieldParam(dst_slot, field)
+	if not parm then return nil end
+	local function plink(key)
+		local ok, v = r.TrackFX_GetNamedConfigParm(track, fx_idx,
+			"param." .. parm .. ".plink." .. key)
+		return ok and v or nil
+	end
+	if plink("active") ~= "1" then return nil end
+	if tonumber(plink("effect") or "") ~= fx_idx then return nil end
+	local sp = tonumber(plink("param") or "")
+	local src = sp and (sp - ModJSFX.OUT_BASE + 1) or nil
+	if not src or src < 1 or src > ModJSFX.SLOTS then return nil end
+	local ok_b, bstr = r.TrackFX_GetNamedConfigParm(track, fx_idx,
+		"param." .. parm .. ".mod.baseline")
+	return {
+		src = src,
+		scale = tonumber(plink("scale") or "") or 0,
+		baseline = ok_b and tonumber(bstr) or 0.5,
+	}
+end
+
+function ModJSFX.setSlotFieldDepth(r, track, fx_idx, dst_slot, field, depth)
+	local parm = slotFieldParam(dst_slot, field)
+	if parm then ModJSFX.setParamLinkDepth(r, track, fx_idx, parm, depth) end
+end
+
+function ModJSFX.releaseSlotFieldLink(r, track, fx_idx, dst_slot, field)
+	local parm = slotFieldParam(dst_slot, field)
+	if parm then ModJSFX.releaseParamLink(r, track, fx_idx, parm) end
 end
 
 -- Enumerate every param linked to a bank slot (the per-slot target
