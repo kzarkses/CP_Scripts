@@ -1060,6 +1060,17 @@ local function drawControls(theme)
     knob("k_vol", "Vol", note, Kit.P.VOL, Kit.DEFAULT_VOL)
     knob("k_pan", "Pan", note, Kit.P.PAN, 0.5)
     knob("k_tune", "Tune", note, Kit.P.TUNE, 0.5)
+    do
+        -- Pitch that keeps the length (ReaPitch, élastique) — Tune above is
+        -- RS5K resample, the vinyl move: pitch and duration coupled.
+        local st = Kit.PadPitch(note)
+        local changed, nv = UI.Knob("k_rpitch", "Pitch", 0.5 + st / 24, 0.5, KNOB_OPTS)
+        if changed then Kit.SetPadPitch(note, (nv - 0.5) * 24) end
+        if UI.IsItemHovered() then
+            UI.Tooltip(string.format("%+.1f st — elastique pitch, length unchanged", st))
+        end
+        UI.SameLine()
+    end
     knob("k_att", "A", note, Kit.P.ATTACK, Kit.DEFAULT_ATT)
     knob("k_dec", "D", note, Kit.P.DECAY, Kit.DEFAULT_DEC)
     knob("k_sus", "S", note, Kit.P.SUSTAIN, Kit.DEFAULT_SUS)

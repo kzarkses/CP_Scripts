@@ -1063,6 +1063,70 @@ function Kit.SetLoop(note, on)
 end
 
 -- ---------------------------------------------------------------------------
+-- Pitch that KEEPS the length (ReaPitch, élastique) — the complement of
+-- TUNE, which is RS5K resample (pitch and duration coupled, the vinyl
+-- move). The FX is inserted on the pad's track after RS5K on first use;
+-- the semitone-shift param is found BY NAME and cached on the pad (param
+-- indices have moved across REAPER versions, names haven't).
+-- ---------------------------------------------------------------------------
+local RP_ADD = "ReaPitch (Cockos)"
+
+local function padReaPitch(pad, create)
+    if not (pad and valid(pad.track)) then return nil end
+    if pad.rp_fx and pad.rp_param then
+        local a, b = r.TrackFX_GetFXName(pad.track, pad.rp_fx, "")
+        local nm = type(a) == "string" and a or b
+        if nm and nm:find("ReaPitch", 1, true) then
+            return pad.rp_fx, pad.rp_param
+        end
+        pad.rp_fx, pad.rp_param = nil, nil   -- chain changed under us
+    end
+    local fx = -1
+    for i = 0, r.TrackFX_GetCount(pad.track) - 1 do
+        local a, b = r.TrackFX_GetFXName(pad.track, i, "")
+        local nm = type(a) == "string" and a or b
+        if nm and nm:find("ReaPitch", 1, true) then fx = i break end
+    end
+    if fx < 0 then
+        if not create then return nil end
+        fx = r.TrackFX_AddByName(pad.track, RP_ADD, false, -1)
+        if fx < 0 then return nil end
+        hideFX(pad.track, fx)
+    end
+    for i = 0, r.TrackFX_GetNumParams(pad.track, fx) - 1 do
+        local _, pn = r.TrackFX_GetParamName(pad.track, fx, i, "")
+        if pn and pn:lower():find("semitone", 1, true) then
+            pad.rp_fx, pad.rp_param = fx, i
+            return fx, i
+        end
+    end
+    return nil
+end
+
+-- Current shift in semitones (0 while no ReaPitch exists — nothing is
+-- created by reading).
+function Kit.PadPitch(note)
+    local pad = Kit.Pad(note)
+    if not pad then return 0 end
+    local fx, pi = padReaPitch(pad, false)
+    if not fx then return 0 end
+    return r.TrackFX_GetParam(pad.track, fx, pi) or 0
+end
+
+function Kit.SetPadPitch(note, st)
+    local pad = Kit.Pad(note)
+    if not pad then return end
+    local fx, pi = padReaPitch(pad, true)
+    if not fx then return end
+    local _, mn, mx = r.TrackFX_GetParam(pad.track, fx, pi)
+    if mn and mx and mx > mn then
+        if st < mn then st = mn elseif st > mx then st = mx end
+    end
+    r.TrackFX_SetParam(pad.track, fx, pi, st)
+    last_change = r.GetProjectStateChangeCount(0)
+end
+
+-- ---------------------------------------------------------------------------
 -- Live helpers
 -- ---------------------------------------------------------------------------
 -- Pad output level (for the grid glow). Linear peak, max of both channels.
