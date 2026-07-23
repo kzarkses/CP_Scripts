@@ -303,6 +303,41 @@ local function fitEditRange(lane)
     state.ed_lo, state.ed_hi = lo, hi
 end
 
+-- Export a lane as a real MIDI item in the arrange — the jam no longer
+-- dies in the looper. Lands on the lane's routed instrument track
+-- (fallback: the selected track), at the edit cursor, one loop long;
+-- note times are beats, so QN mapping keeps tempo maps honest.
+local function exportLaneToItem(lane)
+    local n = Loop.NoteCount(lane)
+    if n <= 0 then flash("Nothing to export") return end
+    local tr = Loop.GetLaneDest(lane) or r.GetSelectedTrack(0, 0)
+    if not tr then flash("Route the lane (or select a track) first") return end
+    local pos = r.GetCursorPosition()
+    local qn0 = r.TimeMap2_timeToQN(0, pos)
+    local Lb = Loop.LenBeats(lane)
+    r.Undo_BeginBlock2(0)
+    local item = r.CreateNewMIDIItemInProj(tr, pos, r.TimeMap2_QNToTime(0, qn0 + Lb), false)
+    local take = item and r.GetActiveTake(item)
+    if not take then
+        r.Undo_EndBlock2(0, "CP Looper: lane to MIDI item", -1)
+        flash("Item creation failed")
+        return
+    end
+    for i = 0, n - 1 do
+        local s, l, p, v = Loop.GetNote(lane, i)
+        local e = s + l
+        if e > Lb then e = Lb end               -- the item is one loop long
+        r.MIDI_InsertNote(take, false, false,
+            r.MIDI_GetPPQPosFromProjQN(take, qn0 + s),
+            r.MIDI_GetPPQPosFromProjQN(take, qn0 + e),
+            0, math.floor((p or 60) + 0.5), math.floor((v or 100) + 0.5), true)
+    end
+    r.MIDI_Sort(take)
+    r.Undo_EndBlock2(0, "CP Looper: lane to MIDI item", -1)
+    r.UpdateArrange()
+    flash("Lane " .. (lane + 1) .. " -> MIDI item")
+end
+
 -- Group-drag snapshot: original (start,pitch,len) of every selected note (a
 -- drag-start event, so the per-note table churn is fine — not the frame path).
 local move_snap = {}
@@ -833,7 +868,10 @@ local function drawEditor(theme)
                state.ed_drum and 0.26 or 0.20, state.ed_drum and 0.30 or 0.22, 0.26, theme) then
         state.ed_drum = not state.ed_drum
     end
-    Core.DrawText(selHint(), x + 266, hy2 + 5,
+    if tinyBtn(x + 262, hy2, 56, hbh, "To item", 0.22, 0.26, 0.32, theme) then
+        exportLaneToItem(lane)
+    end
+    Core.DrawText(selHint(), x + 326, hy2 + 5,
                   C.text_mute[1], C.text_mute[2], C.text_mute[3], 0.85)
 
     -- roll area: a note grid above a velocity lane. Rows come from the
