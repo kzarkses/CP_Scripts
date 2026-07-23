@@ -81,4 +81,23 @@ function Bus.Recv(addr, ttl)
     return Clip.deserialize(body)
 end
 
+-- ---------------------------------------------------------------------------
+-- The universal "edit this clip" gesture (Ableton semantics): CP_Editor is
+-- THE editor, wherever the clip comes from. The editor advertises its
+-- registered action (persistent) and a liveness heartbeat over ExtState;
+-- OpenEditor STARTS it when it is not running, then mails the clip — the
+-- 5 s TTL covers the boot.
+-- ---------------------------------------------------------------------------
+function Bus.OpenEditor(clip)
+    local alive = tonumber(r.GetExtState("CP_Editor", "alive"))
+    if not (alive and r.time_precise() - alive < 2.0) then
+        local named = r.GetExtState("CP_Editor", "cmd")
+        if named ~= "" then
+            local id = r.NamedCommandLookup(named)
+            if id and id ~= 0 then r.Main_OnCommand(id, 0) end
+        end
+    end
+    Bus.Send("editor:open", clip)
+end
+
 return Bus

@@ -2259,6 +2259,13 @@ end
 -- Main frame
 -- ---------------------------------------------------------------------------
 local function frame(theme)
+    -- liveness heartbeat (read by Bus.OpenEditor; 0.5 s throttle)
+    local now = r.time_precise()
+    if now >= (state.alive_t or 0) then
+        state.alive_t = now + 0.5
+        r.SetExtState("CP_Editor", "alive", tostring(now), false)
+    end
+
     pollTarget()
     Kit.Poll()
     Audio.Poll()
@@ -2340,6 +2347,17 @@ UI.Init("Editor", 780, 420, {
     persist    = CONFIG_ID,
     scrollable = false,
 })
+
+-- Advertise this script's registered action so any CP app can LAUNCH the
+-- editor when it isn't running (Bus.OpenEditor — the universal "edit this
+-- clip" gesture). Persistent: survives REAPER restarts.
+do
+    local _, _, sectionID, cmdID = r.get_action_context()
+    if cmdID and cmdID ~= 0 and sectionID == 0 then
+        local named = r.ReverseNamedCommandLookup(cmdID)
+        if named then r.SetExtState("CP_Editor", "cmd", "_" .. named, true) end
+    end
+end
 
 UI.OnClose(function()
     -- Core keeps a SINGLE OnClose callback — everything belongs here.

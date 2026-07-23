@@ -926,9 +926,26 @@ local function drawLane(theme, l, x, y, w, h)
         local mx, my = Core.GetMousePos()
         if mx >= vx and mx < vx + vw and my >= vy and my < vy + vh and not Core.HasPopup() then
             UI.SetCursor("hand")
-            if Core.MouseClicked(1) then enterEdit(l) end
+            if Core.MouseClicked(1) then
+                -- THE editor gets the click (Ableton semantics): the lane
+                -- opens in CP_Editor — launched if it isn't running — and
+                -- its edits come back live. Alt+click keeps the embedded
+                -- quick editor.
+                if Core.ModAlt() then
+                    enterEdit(l)
+                else
+                    local c = Loop.LaneToClip(l)
+                    if not c then
+                        c = Clip.new("midi")
+                        c.notes = { s = {}, l = {}, p = {}, v = {} }
+                        c.bars = Loop.GetLengthBars(l)
+                    end
+                    c.origin = "looper:" .. l
+                    Bus.OpenEditor(c)
+                end
+            end
             -- edit hint (bottom-right of the roll)
-            local hint = "click to edit"
+            local hint = "click: CP_Editor · Alt: quick edit"
             Core.DrawText(hint, vx + vw - gfx.measurestr(hint) - 3, vy + vh - 13,
                           C.text_mute[1], C.text_mute[2], C.text_mute[3], 0.9)
         end
