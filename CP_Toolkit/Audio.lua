@@ -106,30 +106,30 @@ Audio.volume = 1.0     -- linear, applied to every Play
 Audio.fade_in  = 0.003
 Audio.fade_out = 0.008
 
--- opts (all optional): { start_s, end_s, loop, rate, pitch, vol }
--- Returns true when playback started.
-function Audio.Play(path, opts)
-    if not Audio.available or not path then return false end
-    Audio.Stop()
-
-    local src = Audio.GetSource(path)
-    if not src then return false end
+-- opts (all optional):
+--   { start_s, end_s, loop, rate, pitch, vol, fade_in, fade_out, ppitch }
+-- fade_in/fade_out override the declick defaults (an item's real fades, so
+-- the preview ramps like the arrange does — lengths only, no fade shapes).
+-- ppitch = 0 plays a rate change in repitch mode (default preserves pitch).
+local function startPreview(src, path, opts)
     if r.GetMediaSourceSampleRate(src) == 0 then return false end
 
     local preview = r.CF_CreatePreview(src)
     if not preview then return false end
 
-    local vol = (opts and opts.vol) or Audio.volume
+    local vol  = (opts and opts.vol) or Audio.volume
+    local fin  = (opts and opts.fade_in)  or Audio.fade_in
+    local fout = (opts and opts.fade_out) or Audio.fade_out
     r.CF_Preview_SetValue(preview, "D_VOLUME", vol)
-    if Audio.fade_in  > 0 then r.CF_Preview_SetValue(preview, "D_FADEINLEN",  Audio.fade_in)  end
-    if Audio.fade_out > 0 then r.CF_Preview_SetValue(preview, "D_FADEOUTLEN", Audio.fade_out) end
+    if fin  > 0 then r.CF_Preview_SetValue(preview, "D_FADEINLEN",  fin)  end
+    if fout > 0 then r.CF_Preview_SetValue(preview, "D_FADEOUTLEN", fout) end
     if opts then
         if opts.pitch and opts.pitch ~= 0 then
             r.CF_Preview_SetValue(preview, "D_PITCH", opts.pitch)
         end
         if opts.rate and opts.rate ~= 1.0 then
             r.CF_Preview_SetValue(preview, "D_PLAYRATE", opts.rate)
-            r.CF_Preview_SetValue(preview, "B_PPITCH", 1)
+            r.CF_Preview_SetValue(preview, "B_PPITCH", opts.ppitch == 0 and 0 or 1)
         end
         if opts.start_s and opts.start_s > 0 then
             r.CF_Preview_SetValue(preview, "D_POSITION", opts.start_s)
@@ -142,8 +142,28 @@ function Audio.Play(path, opts)
     cur_end      = opts and opts.end_s or nil
     cur_loop     = (opts and opts.loop) or false
     playing_path = path
-    last_path    = path
+    last_path    = path or last_path
     return true
+end
+
+-- Returns true when playback started.
+function Audio.Play(path, opts)
+    if not Audio.available or not path then return false end
+    Audio.Stop()
+
+    local src = Audio.GetSource(path)
+    if not src then return false end
+    return startPreview(src, path, opts)
+end
+
+-- Play an EXISTING PCM_source — an item take's real source, SECTION and
+-- reversed sources included, which have no standalone file path. The caller
+-- owns the source and must keep it alive while it plays (Stop before the
+-- source can be swapped or destroyed); Audio never caches or destroys it.
+function Audio.PlaySource(src, opts)
+    if not Audio.available or not src then return false end
+    Audio.Stop()
+    return startPreview(src, nil, opts)
 end
 
 function Audio.Stop()

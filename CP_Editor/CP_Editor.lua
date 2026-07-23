@@ -189,6 +189,9 @@ end
 local function refreshItemFields()
     local src = r.GetMediaItemTake_Source(state.take)
     if src ~= state.src then
+        -- the preview may be playing the OLD source, which the swap (e.g.
+        -- reverse wrapping it in a section) is about to destroy
+        Audio.Stop()
         state.src = src
         state.gen = state.gen + 1
         state.meta_line = nil
@@ -255,6 +258,7 @@ local function setFile(path)
 end
 
 local function clearTarget()
+    Audio.Stop()   -- a dying item takes its source with it; stop first
     dropOwnSource()
     Roll.Detach()
     state.mode, state.item, state.take = nil, nil, nil
@@ -357,23 +361,38 @@ local function togglePlay()
         Audio.Stop()
         return
     end
-    if state.path == "" then
-        flash("No previewable file for this source (section/reversed)")
-        return
-    end
     PLAY_OPTS.start_s = state.sel_a or state.cursor
     PLAY_OPTS.end_s   = state.sel_b
     -- Reflect the take's non-destructive edits so the preview SOUNDS like
-    -- the item (gain/normalize, pitch, rate) — playing the raw file
-    -- otherwise ignores every edit.
+    -- the item (gain/normalize, pitch, rate, fades, repitch mode) — playing
+    -- the raw file otherwise ignores every edit.
     PLAY_OPTS.vol, PLAY_OPTS.pitch, PLAY_OPTS.rate = nil, nil, nil
+    PLAY_OPTS.fade_in, PLAY_OPTS.fade_out, PLAY_OPTS.ppitch = nil, nil, nil
     if state.mode == "item" and state.take then
         local v = r.GetMediaItemTakeInfo_Value(state.take, "D_VOL")
         -- compose take gain WITH the user's preview-volume setting (an OR in
         -- Audio.Play would otherwise let take gain replace the monitor level)
-        PLAY_OPTS.vol   = Audio.volume * math.abs(v)
-        PLAY_OPTS.pitch = r.GetMediaItemTakeInfo_Value(state.take, "D_PITCH")
-        PLAY_OPTS.rate  = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
+        PLAY_OPTS.vol    = Audio.volume * math.abs(v)
+        PLAY_OPTS.pitch  = r.GetMediaItemTakeInfo_Value(state.take, "D_PITCH")
+        PLAY_OPTS.rate   = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
+        PLAY_OPTS.ppitch = r.GetMediaItemTakeInfo_Value(state.take, "B_PPITCH")
+        -- the item's real fades (lengths — CF_Preview has no shapes), so a
+        -- fade-out drawn in the editor is HEARD on the very next play
+        local fin  = r.GetMediaItemInfo_Value(state.item, "D_FADEINLEN")
+        local fout = r.GetMediaItemInfo_Value(state.item, "D_FADEOUTLEN")
+        if fin  and fin  > 0 then PLAY_OPTS.fade_in  = fin  end
+        if fout and fout > 0 then PLAY_OPTS.fade_out = fout end
+        -- the take's ACTUAL source, not its file: a section/reversed source
+        -- previews correctly (same time base as the peaks on screen), and
+        -- was not previewable at all by path
+        if state.src then
+            Audio.PlaySource(state.src, PLAY_OPTS)
+            return
+        end
+    end
+    if state.path == "" then
+        flash("No previewable file for this source")
+        return
     end
     Audio.Play(state.path, PLAY_OPTS)
 end
