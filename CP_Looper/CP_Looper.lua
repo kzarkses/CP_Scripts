@@ -539,8 +539,36 @@ end
 -- ---------------------------------------------------------------------------
 -- Drawing
 -- ---------------------------------------------------------------------------
+-- "?" overlay content (standard help affordance, one per app)
+local HELP_TEXT = [[
+## CP Looper
+4 lanes loop against the beat grid (an external clock follows for
+free). REC captures; click again to lock — the clip plays. Shift+
+click REC = OVERDUB: layer into the playing loop, the red OVR button
+punches out. Q queues launch/stop on the grid (the status blinks
+until the boundary; clicking again cancels).
+
+## Lanes
+Play/Stop launch clips Ableton-style; Length cycles bars; the Lane
+label arms what you hear; each lane routes to its own instrument
+track (-> track). Drag an item from the arrange onto a lane to load
+its MIDI.
+
+## Editor
+Click a mini-roll: draw, drag, marquee, velocity lane — same keys as
+CP_Editor. Keys/Drum switches rows (drum rows = the routed kit's
+pads, named). "To item" exports to the arrange; "Editor" opens the
+lane in CP_Editor and its edits come back live.
+
+## Clock
+Free = internal clock, clips play with the transport stopped.
+Follow = REAPER transport (locks to an external MIDI clock).
+]]
+
 local function drawToolbar(attached)
     UI.SetFontH2(); UI.Text("Looper"); UI.SetFontBody()
+    UI.SameLine(6)
+    UI.HelpButton("help", HELP_TEXT)
     UI.SameLine(12)
     UI.SetFontCaption()
     local bpm = Loop.Tempo()

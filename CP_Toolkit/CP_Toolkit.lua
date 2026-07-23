@@ -608,6 +608,11 @@ function UI.ToggleButton(id, label, is_on, opts)
     return Widgets.ToggleButton(id, label, is_on, UI._theme, opts)
 end
 
+-- Help ("?") button + overlay
+function UI.HelpButton(id, help_text, opts)
+    return Widgets.HelpButton(id, help_text, UI._theme, opts)
+end
+
 -- Range Slider
 function UI.RangeSlider(id, label, val_min, val_max, range_min, range_max, opts)
     return Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, UI._theme, opts)

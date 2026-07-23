@@ -736,6 +736,27 @@ local function openSettings()
     })
 end
 
+-- "?" overlay content (standard help affordance, one per app)
+local HELP_TEXT = [[
+## CP Editor
+One editor for everything: an audio item, a MIDI item, a plain file,
+or a CLIP (a Looper lane / session cell — edits go back live). It
+follows the arrange selection; the lock keeps the current target.
+
+## Audio
+Drag = select, wheel = zoom, middle-drag = pan. Gain, fades, pitch,
+rate and reverse are the item's own, non-destructive — and the
+preview SOUNDS like the item: fades, reverse, repitch, its track's
+FX (Settings). Slice to pads, bake a selection, normalize, warp.
+
+## MIDI / clip
+Click = add note (keep dragging for length), drag = move, edge =
+resize, right-drag = marquee, velocity lane below. Q quantize,
+Ctrl+D duplicate, Ctrl+C/X/V, arrows transpose/nudge, Alt+arrows
+walk the notes, Esc leave. Transform: scale snap, chord, arpeggiate,
+euclidean, humanize... Drum rows show the kit's pads by name.
+]]
+
 local function drawToolbar(theme)
     local btn = theme.button_height
 
@@ -761,8 +782,8 @@ local function drawToolbar(theme)
     UI.Text(metaLine(), { disabled = true })
     UI.SetFontBody()
 
-    -- right: transport + view + settings
-    local right_w = btn * 5 + theme.item_spacing * 4
+    -- right: transport + view + help + settings
+    local right_w = btn * 6 + theme.item_spacing * 5
     local gap = UI.GetAvailableWidth() - right_w
     if gap > 0 then UI.SameLine(gap) else UI.SameLine() end
     local playing = Audio.IsPlaying()
@@ -782,6 +803,8 @@ local function drawToolbar(theme)
     if iconBtn("zout", UI.Icons.Minus, "Zoom out") then
         zoomAt(wave.x + wave.w / 2, 1.5)
     end
+    UI.SameLine()
+    UI.HelpButton("help", HELP_TEXT, ICONBTN_OPTS)
     UI.SameLine()
     if iconBtn("settings", UI.Icons.Settings, "Settings") then
         openSettings()

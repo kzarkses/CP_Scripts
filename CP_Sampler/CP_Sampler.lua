@@ -654,6 +654,26 @@ local function kitMenu()
     UI.NativeMenu(items)
 end
 
+-- "?" overlay content (standard help affordance, one per app)
+local HELP_TEXT = [[
+## CP Sampler
+Pads are an instrument: a click plays through the real engine (one
+RS5K per pad). ONE kit listens at a time — the toolbar kit button
+picks it; the other kits still play from the Looper's lanes. Drop
+files from the Media Explorer or drag an item from the arrange onto
+a pad.
+
+## Pad
+Vol / Pan / Tune (vinyl repitch) / Pitch (elastique, length kept) /
+ADSR. Drag the ADSR handles drawn on the waveform; trim with the
+region edges; Loop gates the sample while the pad is held. Choke
+groups cut each other. Shift = fine drag on every knob.
+
+## Right-click a pad
+Load sample, Open in Editor (the trim lands selected), Bake: crop to
+a new file, Sync to project tempo, choke group.
+]]
+
 local function drawToolbar(theme)
     local btn = theme.button_height
 
@@ -706,6 +726,8 @@ local function drawToolbar(theme)
             kitMenu()
         end
     end
+    UI.SameLine(8)
+    UI.HelpButton("help", HELP_TEXT)
 
     -- Pages (drum mode only)
     if Kit.mode == "drum" then

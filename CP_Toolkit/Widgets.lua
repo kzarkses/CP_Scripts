@@ -1515,6 +1515,97 @@ function Widgets.CollapsingHeader(id, label, is_open, theme)
 end
 
 -- ============================================================================
+-- HELP ("?") — the standard per-app help affordance. A small "?" button;
+-- clicking opens a centered overlay with the app's mental model and
+-- gestures. Text is a plain string: "\n" breaks lines, a line starting
+-- with "## " renders as an accented section header, "" spaces. Parsed
+-- once per text (cached), zero work per frame while closed.
+-- ============================================================================
+local _help_lines = setmetatable({}, { __mode = "k" })
+
+local function helpLines(text)
+    local lines = _help_lines[text]
+    if not lines then
+        lines = {}
+        for line in (text .. "\n"):gmatch("(.-)\n") do
+            lines[#lines + 1] = line
+        end
+        _help_lines[text] = lines
+    end
+    return lines
+end
+
+function Widgets.HelpButton(id, help_text, theme, opts)
+    opts = opts or {}
+    local h = opts.height or theme.button_height
+    local w = opts.width or h
+    if Layout.IsWrapping() then Layout.WrapPreCheck(w) end
+    local x, y = Layout.GetCursorPos()
+    local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local bg = hovered and theme.colors.button_hovered or theme.colors.button
+    fillRound(x, y, w, h,
+        theme.widget_style ~= "windows" and theme.rounding or 0,
+        bg[1], bg[2], bg[3], bg[4] or 1)
+    local tc = theme.colors.text
+    local tw, th = Core.MeasureText("?")
+    Core.DrawText("?", x + floor((w - tw) / 2), y + floor((h - th) / 2),
+        tc[1], tc[2], tc[3], hovered and 1 or 0.8)
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then
+            Core.SetPopup(id, function()
+                local is_new = Core.IsPopupNewThisFrame()
+                local win_w, win_h = Core.GetWindowSize()
+                local lines = helpLines(help_text)
+                local pad = 14
+                local line_h = 16
+                local pw = min(480, win_w - 24)
+                local ph = min(#lines * line_h + pad * 2, win_h - 24)
+                local px = floor((win_w - pw) / 2)
+                local py = floor((win_h - ph) / 2)
+
+                Core.DrawRect(0, 0, win_w, win_h, 0, 0, 0, 0.45)
+                local pbg = theme.colors.popup_bg
+                Core.DrawRoundRectFilled(px, py, pw, ph,
+                    theme.rounding_large or 0, pbg[1], pbg[2], pbg[3], 1)
+                local bc = theme.colors.border
+                Core.DrawRect(px, py, pw, ph, bc[1], bc[2], bc[3], 0.5, false)
+
+                local ac = theme.colors.accent
+                local ly = py + pad
+                for i = 1, #lines do
+                    if ly > py + ph - pad - line_h then break end
+                    local line = lines[i]
+                    local hdr = line:sub(1, 3) == "## "
+                    if hdr then
+                        Core.DrawText(line:sub(4), px + pad, ly,
+                                      ac[1], ac[2], ac[3], 1)
+                    elseif line ~= "" then
+                        Core.DrawText(line, px + pad, ly,
+                                      tc[1], tc[2], tc[3], 0.92)
+                    end
+                    ly = ly + line_h
+                end
+
+                -- any click or Esc closes
+                if Keys then
+                    local char = Core.GetChar()
+                    if char == Keys.ESCAPE then
+                        Core.ClearPopup(id)
+                        Core.ConsumeChar()
+                        return
+                    end
+                end
+                if not is_new and Core.MouseClicked(1) then
+                    Core.ClearPopup(id)
+                end
+            end)
+        end
+    end
+    Layout.AdvanceCursor(w, h)
+end
+
+-- ============================================================================
 -- TOOLTIP
 -- ============================================================================
 -- Call AFTER the widget you want to attach the tooltip to.

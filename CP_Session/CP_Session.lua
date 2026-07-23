@@ -46,6 +46,24 @@ local function flash(msg)
     state.flash_until = r.time_precise() + 2.5
 end
 
+-- "?" overlay content (standard help affordance, one per app)
+local HELP_TEXT = [[
+## CP Session
+The clip grid over the Looper engine: one column per lane, one cell
+each (phase 1). Click a cell to launch or stop it QUANTIZED (the Q
+button sets the boundary; the cell blinks while queued). The
+triangle launches every full cell together — they land on the same
+boundary. Right-click a cell: Edit in CP_Editor (edits come back
+live), Mute, Clear.
+
+## Clock
+Free = clips play without the transport (session style). Follow =
+REAPER transport, locks to an external MIDI clock when slaved.
+
+Record and route lanes in CP_Looper — this window is another face
+on the same loops, both stay in sync through the shared engine.
+]]
+
 -- ---------------------------------------------------------------------------
 -- Per-lane display caches (zero allocation per frame: strings rebuilt only
 -- when the underlying fact changes)
@@ -251,6 +269,8 @@ local function frame(theme)
         if UI.Button("stopall", "Stop all") then sceneStop() end
         UI.SameLine()
         if UI.Button("panic", "Panic") then Loop.Panic() end
+        UI.SameLine()
+        UI.HelpButton("help", HELP_TEXT)
     end
     UI.Spacing(4)
 
