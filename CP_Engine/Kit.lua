@@ -61,6 +61,8 @@ Kit.bus    = nil       -- "CP Kit MIDI" child track — the INPUT bus.
 Kit.pads   = {}        -- [note] = { track, fx, path, name, note, fmt = {} }
 Kit.mode   = "drum"    -- "drum" (4x4 pads) | "instrument" (chromatic)
 Kit.instr  = nil       -- instrument track { track, fx, path, name, root, fmt }
+Kit.kits   = {}        -- every CP_KIT parent in the project (Scan fills it)
+Kit.active_guid = nil  -- which kit this module drives (nil = the first found)
 local choke_fx = nil   -- index of the choke JSFX…
 local choke_tr = nil   -- …and the track carrying it (bus; parent = legacy)
 local last_change = -1 -- GetProjectStateChangeCount snapshot
@@ -287,12 +289,19 @@ end
 function Kit.Scan()
     Kit.parent, Kit.bus, Kit.instr, choke_fx = nil, nil, nil, nil
     local pads = {}
+    local kits = Kit.kits
+    for i = #kits, 1, -1 do kits[i] = nil end
     local count = r.CountTracks(0)
+    -- every kit parent in the project; the ACTIVE one (by GUID) is the kit
+    -- this module drives — first found when no choice was made yet
     for i = 0, count - 1 do
         local tr = r.GetTrack(0, i)
         if getExt(tr, "CP_KIT") then
-            Kit.parent = tr
-            break
+            kits[#kits + 1] = tr
+            if not Kit.parent then Kit.parent = tr end
+            if Kit.active_guid and r.GetTrackGUID(tr) == Kit.active_guid then
+                Kit.parent = tr
+            end
         end
     end
     if Kit.parent then
@@ -307,14 +316,16 @@ function Kit.Scan()
             end
         end)
         -- Safety nets: tagged tracks that escaped the folder (moved
-        -- around, folder depths mangled by hand) are still adopted.
-        if not Kit.bus then
+        -- around, folder depths mangled by hand) are still adopted — but
+        -- ONLY while the project has a single kit: a global search with
+        -- several kits around would swallow another kit's bus or pads.
+        if not Kit.bus and #kits == 1 then
             for i = 0, count - 1 do
                 local tr = r.GetTrack(0, i)
                 if getExt(tr, "CP_KIT_MIDI") then Kit.bus = tr break end
             end
         end
-        if next(pads) == nil then
+        if next(pads) == nil and #kits == 1 then
             for i = 0, count - 1 do
                 local tr = r.GetTrack(0, i)
                 if tr ~= Kit.parent and tr ~= Kit.bus then
@@ -345,21 +356,66 @@ function Kit.Count()
     return pads, loaded
 end
 
--- Adopt an existing kit: mark this folder track as THE kit bus and rescan
--- (children with single-note RS5Ks get pad tags healed). Works on mpl
--- RS5K-manager kits and hand-built track-per-pad setups.
+-- The input bus (CP_KIT_MIDI child) of an arbitrary kit parent.
+local function busOf(parent)
+    local bus
+    folderWalk(parent, function(tr)
+        if not bus and getExt(tr, "CP_KIT_MIDI") then bus = tr end
+    end)
+    return bus
+end
+
+-- Choose which kit this module drives. Pad clicks travel over the VKB
+-- queue, which reaches EVERY armed bus — so exactly one kit may listen:
+-- the inactive kits' input buses disarm here (their content still plays
+-- through channel sends, e.g. from CP_Looper lanes; sends ignore arm).
+function Kit.SetActive(track)
+    if not valid(track) then return false end
+    Kit.active_guid = r.GetTrackGUID(track)
+    Kit.Scan()
+    for _, ktr in ipairs(Kit.kits) do
+        if ktr ~= Kit.parent then
+            local bus = busOf(ktr)
+            if bus then
+                r.SetMediaTrackInfo_Value(bus, "I_RECARM", 0)
+                r.SetMediaTrackInfo_Value(bus, "I_RECMON", 0)
+            end
+        end
+    end
+    Kit.HoldArm()
+    return true
+end
+
+-- A brand-new, empty kit next to the existing ones (multi-kit). Becomes
+-- the active kit; the pads fill it from then on.
+function Kit.NewKit(name)
+    name = (name and name ~= "") and name or "CP Kit"
+    ubegin()
+    local tr
+    if Tracks then
+        tr = Tracks.NewChild("sampler", "kit", name)
+    else
+        local idx = r.CountTracks(0)
+        r.InsertTrackAtIndex(idx, false)
+        tr = r.GetTrack(0, idx)
+        r.GetSetMediaTrackInfo_String(tr, "P_NAME", name, true)
+    end
+    setExt(tr, "CP_KIT", "1")
+    uend("Sampler: new kit " .. name)
+    Kit.SetActive(tr)
+    return tr
+end
+
+-- Adopt an existing kit: mark this folder track as a kit parent, make it
+-- the active one and rescan (children with single-note RS5Ks get pad tags
+-- healed). Works on mpl RS5K-manager kits and hand-built track-per-pad
+-- setups. Other kits keep their tag — multi-kit is the normal state now.
 function Kit.Adopt(track)
     if not valid(track) then return false end
     ubegin()
-    -- drop any previous kit tag (single kit per project)
-    local count = r.CountTracks(0)
-    for i = 0, count - 1 do
-        local tr = r.GetTrack(0, i)
-        if getExt(tr, "CP_KIT") then setExt(tr, "CP_KIT", "") end
-    end
     setExt(track, "CP_KIT", "1")
     uend("Sampler: adopt kit bus")
-    Kit.Scan()
+    Kit.SetActive(track)
     return true
 end
 

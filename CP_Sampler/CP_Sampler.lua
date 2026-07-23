@@ -563,6 +563,35 @@ local function iconBtn(id, icon_fn, tip, size)
     return clicked
 end
 
+-- Multi-kit selector: the label caches on Kit.version (GetTrackName
+-- allocates, and the toolbar runs every frame).
+local kitsel = { ver = -1, label = "" }
+
+local function kitMenu()
+    local items = {}
+    for _, ktr in ipairs(Kit.kits) do
+        local _, nm = r.GetTrackName(ktr)
+        if nm == "" then nm = "Kit" end
+        local tr = ktr
+        items[#items + 1] = { label = nm, checked = tr == Kit.parent,
+                              action = function()
+                                  Kit.SetActive(tr)
+                                  markDirty()
+                                  flash("Kit: " .. nm)
+                              end }
+    end
+    items[#items + 1] = { separator = true }
+    items[#items + 1] = { label = "New kit...", action = function()
+        local ok, name = r.GetUserInputs("New kit", 1, "Name:,extrawidth=140", "")
+        if ok then
+            Kit.NewKit(name)
+            markDirty()
+            flash("New kit created")
+        end
+    end }
+    UI.NativeMenu(items)
+end
+
 local function drawToolbar(theme)
     local btn = theme.button_height
 
@@ -600,6 +629,19 @@ local function drawToolbar(theme)
                 if not on then Kit.SetMode(m.key) end
             end
             if on then UI.PopStyleColor() end
+        end
+
+        -- Kit selector: active kit's name; the menu switches or creates.
+        -- Shown as soon as a kit exists so "New kit..." is always reachable.
+        if kitsel.ver ~= Kit.version then
+            kitsel.ver = Kit.version
+            local _, nm = r.GetTrackName(Kit.parent)
+            kitsel.label = (nm ~= "" and nm or "Kit")
+                         .. (#Kit.kits > 1 and ("  (" .. #Kit.kits .. ")") or "")
+        end
+        UI.SameLine(8)
+        if UI.Button("kit_sel", kitsel.label) then
+            kitMenu()
         end
     end
 
