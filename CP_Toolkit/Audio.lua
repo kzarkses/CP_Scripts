@@ -107,15 +107,21 @@ Audio.fade_in  = 0.003
 Audio.fade_out = 0.008
 
 -- opts (all optional):
---   { start_s, end_s, loop, rate, pitch, vol, fade_in, fade_out, ppitch }
+--   { start_s, end_s, loop, rate, pitch, vol, fade_in, fade_out, ppitch,
+--     out_track }
 -- fade_in/fade_out override the declick defaults (an item's real fades, so
 -- the preview ramps like the arrange does — lengths only, no fade shapes).
 -- ppitch = 0 plays a rate change in repitch mode (default preserves pitch).
+-- out_track routes the preview through that track's FX chain + fader.
 local function startPreview(src, path, opts)
     if r.GetMediaSourceSampleRate(src) == 0 then return false end
 
     local preview = r.CF_CreatePreview(src)
     if not preview then return false end
+
+    if opts and opts.out_track and r.CF_Preview_SetOutputTrack then
+        r.CF_Preview_SetOutputTrack(preview, 0, opts.out_track)
+    end
 
     local vol  = (opts and opts.vol) or Audio.volume
     local fin  = (opts and opts.fade_in)  or Audio.fade_in
