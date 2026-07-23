@@ -105,8 +105,55 @@ function RollUI.HandleKey(char, ctx)
     if not Roll.backend then return false end
     local shift = ctx.Shift and ctx.Shift()
     local ctrl  = ctx.Ctrl and ctx.Ctrl()
+    local alt   = ctx.Alt and ctx.Alt()
     local function flash(m) if ctx.flash then ctx.flash(m) end end
     local ref = (Roll.sel and Roll.starts[Roll.sel]) or 0
+
+    -- Keyboard note-navigation (the "focus walk"): Alt+←/→ walks the notes
+    -- of the anchor's pitch row (drum-row friendly), Alt+↑/↓ walks all notes
+    -- in time order; Shift+Alt extends the selection instead of replacing
+    -- it. One O(n) pass per keypress, no sort, wraps at the ends. The
+    -- focused note auditions, so you can hear a phrase by walking it.
+    if alt and Roll.count > 0
+       and (char == Keys.LEFT or char == Keys.RIGHT
+            or char == Keys.UP or char == Keys.DOWN) then
+        local anchor = Roll.sel
+        local as = anchor and Roll.starts[anchor]
+        local ap = anchor and Roll.pitches[anchor]
+        local fwd = (char == Keys.RIGHT or char == Keys.DOWN)
+        local rowOnly = anchor and (char == Keys.LEFT or char == Keys.RIGHT)
+                        and ap or nil
+        local function lt(s1, p1, s2, p2)          -- (start, pitch) lex order
+            return s1 < s2 or (s1 == s2 and p1 < p2)
+        end
+        local best, ext                            -- next note, and wrap end
+        for i = 1, Roll.count do
+            if i ~= anchor and (not rowOnly or Roll.pitches[i] == rowOnly) then
+                local s, p = Roll.starts[i], Roll.pitches[i]
+                local ok
+                if not anchor then ok = true
+                elseif fwd then ok = lt(as, ap, s, p)
+                else ok = lt(s, p, as, ap) end
+                if ok and (not best
+                           or (fwd and lt(s, p, Roll.starts[best], Roll.pitches[best]))
+                           or (not fwd and lt(Roll.starts[best], Roll.pitches[best], s, p))) then
+                    best = i
+                end
+                if not ext
+                   or (fwd and lt(s, p, Roll.starts[ext], Roll.pitches[ext]))
+                   or (not fwd and lt(Roll.starts[ext], Roll.pitches[ext], s, p)) then
+                    ext = i
+                end
+            end
+        end
+        local tgt = best or ext                    -- ext = wrap around the end
+        if tgt then
+            if shift and anchor then Roll.AddSel(tgt)
+            else Roll.SelectOnly(tgt) end
+            if ctx.audition then ctx.audition(Roll.pitches[tgt], Roll.vels[tgt]) end
+        end
+        return true
+    end
 
     if char == 1 then                                   -- Ctrl+A: select all
         Roll.SelectAll(); return true

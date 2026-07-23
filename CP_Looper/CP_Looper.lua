@@ -350,6 +350,7 @@ local loopCtx = {
     Roll = Roll, Keys = Keys,
     Shift = Core.ModShift, Ctrl = Core.ModCtrl, Alt = Core.ModAlt,
     flash = flash,
+    audition = function(p, v) auditionNote(p, v) end,
     gridStep  = function() return loopGrid() end,
     snap      = function(t) return snapRound(t, snapBeats()) end,
     divToUnit = function(div) return div * 4 end,   -- whole-note division -> beats
