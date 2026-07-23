@@ -1030,7 +1030,12 @@ local function drawControls(theme)
     UI.SameLine()
     local lv = Kit.Param(note, Kit.P.LOOP) or 0
     local ltog, lon = UI.Checkbox("k_loop", "Loop", lv >= 0.5)
-    if ltog then Kit.SetParam(note, Kit.P.LOOP, lon and 1 or 0) end
+    -- SetLoop, not SetParam: loop gates (obey note-offs) so the ADSR applies
+    -- to every hit instead of only the first pass of an endless voice
+    if ltog then Kit.SetLoop(note, lon) end
+    if UI.IsItemHovered() then
+        UI.Tooltip("Loop the sample while the pad is held; release fades out")
+    end
 
     -- sample region (RS5K start/end offsets) — waveform strip when the
     -- peaks reader is available, plain range slider otherwise

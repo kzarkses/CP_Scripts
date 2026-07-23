@@ -957,6 +957,26 @@ function Kit.Choke(note)
     return math.floor(v * 8 + 0.5)
 end
 
+-- OBEY (note-offs) is owned by TWO features and they must not stomp each
+-- other: choke needs the synthesized note-off as its cut, loop needs it as
+-- its gate. One resolver: obey is ON while the pad chokes OR loops, pure
+-- one-shot otherwise. The small release floor keeps the cut from clicking.
+local function refreshObey(note, pad)
+    if not (pad and pad.fx) then return end
+    local looped = (r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.LOOP) or 0) >= 0.5
+    if looped or Kit.Choke(note) > 0 then
+        r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.OBEY, 1)
+        local rel = r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.RELEASE)
+        if rel < 0.008 then
+            r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.RELEASE, 0.008)
+        end
+    else
+        r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.OBEY, 0)
+    end
+    pad.fmt[Kit.P.OBEY] = nil
+    pad.fmt[Kit.P.RELEASE] = nil
+end
+
 function Kit.SetChoke(note, grp)
     if not valid(Kit.parent) then return end
     if not choke_fx or not valid(choke_tr) then
@@ -968,24 +988,21 @@ function Kit.SetChoke(note, grp)
         hideFX(bus, fi)
     end
     r.TrackFX_SetParamNormalized(choke_tr, choke_fx, note - Kit.BASE, grp / 8)
+    refreshObey(note, Kit.Pad(note))
     last_change = r.GetProjectStateChangeCount(0)
-    -- Choke members need obey-note-offs ON (the synthesized note-off is the
-    -- cut) + a small release so the cut doesn't click. Non-members go back
-    -- to pure one-shot.
+end
+
+-- Loop needs obey-note-offs ON: with note-offs ignored a looped voice never
+-- ends — the ADSR fires once at note-on, every later iteration plays as raw
+-- sustain and the release never comes (the "first hit has the envelope, the
+-- loop doesn't" bug). A looped pad therefore GATES: hold it and the loop
+-- runs under the sustain stage, let go and the release fades it out.
+function Kit.SetLoop(note, on)
     local pad = Kit.Pad(note)
-    if pad and pad.fx then
-        if grp > 0 then
-            r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.OBEY, 1)
-            local rel = r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.RELEASE)
-            if rel < 0.008 then
-                r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.RELEASE, 0.008)
-            end
-        else
-            r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.OBEY, 0)
-        end
-        pad.fmt[Kit.P.OBEY] = nil
-        pad.fmt[Kit.P.RELEASE] = nil
-    end
+    if not (pad and pad.fx) then return end
+    r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.LOOP, on and 1 or 0)
+    refreshObey(note, pad)
+    pad.fmt[Kit.P.LOOP] = nil
     last_change = r.GetProjectStateChangeCount(0)
 end
 
