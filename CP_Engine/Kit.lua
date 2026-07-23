@@ -1103,6 +1103,27 @@ local function padReaPitch(pad, create)
     return nil
 end
 
+-- Plain-value access to a pad's RS5K params (ms / dB — what the sliders
+-- show), for surfaces that think in real units: the ADSR overlay on the
+-- waveform maps pixels to milliseconds, not to normalized positions.
+function Kit.ParamPlain(note, pid)
+    local pad = Kit.Pad(note)
+    if not (pad and pad.fx) then return nil end
+    return r.TrackFX_GetParam(pad.track, pad.fx, pid)
+end
+
+function Kit.SetParamPlain(note, pid, v)
+    local pad = Kit.Pad(note)
+    if not (pad and pad.fx) then return end
+    local _, mn, mx = r.TrackFX_GetParam(pad.track, pad.fx, pid)
+    if mn and mx and mx > mn then
+        if v < mn then v = mn elseif v > mx then v = mx end
+    end
+    r.TrackFX_SetParam(pad.track, pad.fx, pid, v)
+    pad.fmt[pid] = nil
+    last_change = r.GetProjectStateChangeCount(0)
+end
+
 -- Current shift in semitones (0 while no ReaPitch exists — nothing is
 -- created by reading).
 function Kit.PadPitch(note)

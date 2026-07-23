@@ -972,12 +972,47 @@ local function drawRegionStrip(theme, note, pad)
                      col_bord[1], col_bord[2], col_bord[3],
                      (col_bord[4] or 1) * 0.6, false)
 
-    -- interaction (RangeSlider grammar on the waveform)
+    -- ADSR overlay: what the envelope does to THIS region, drawn in place
+    -- and manipulated in place. Attack ramps from the region start (the
+    -- fade-in), release ramps into the region end (the fade-out), the
+    -- decay knee carries the sustain level on its y axis. Times are read
+    -- as PLAIN values (ms) so pixels map to real milliseconds.
+    local ax, dx, rxx, sy2, etop, ebot
+    if len and len > 0 and xe - xs > 8 then
+        local region_s = (e - s) * len
+        local att_s = (Kit.ParamPlain(note, Kit.P.ATTACK) or 0) / 1000
+        local dec_s = (Kit.ParamPlain(note, Kit.P.DECAY) or 0) / 1000
+        local rel_s = (Kit.ParamPlain(note, Kit.P.RELEASE) or 0) / 1000
+        local sus_db = Kit.ParamPlain(note, Kit.P.SUSTAIN) or 0
+        local sus_l = 10 ^ (math.min(sus_db, 0) / 20)
+        local pps = (xe - xs) / region_s
+        etop, ebot = y + 2, y + h - 2
+        sy2 = etop + (1 - sus_l) * (ebot - etop)
+        ax  = math.min(xs + att_s * pps, xe)
+        dx  = math.min(ax + dec_s * pps, xe)
+        rxx = math.max(math.min(xe - rel_s * pps, xe), dx)
+        Core_tk.DrawLine(xs, ebot, ax, etop, 0.95, 0.72, 0.25, 0.9)
+        Core_tk.DrawLine(ax, etop, dx, sy2, 0.95, 0.72, 0.25, 0.9)
+        Core_tk.DrawLine(dx, sy2, rxx, sy2, 0.95, 0.72, 0.25, 0.75)
+        Core_tk.DrawLine(rxx, sy2, xe, ebot, 0.95, 0.72, 0.25, 0.9)
+        Core_tk.DrawRect(ax - 3, etop - 1, 6, 6, 0.95, 0.72, 0.25, 1)
+        Core_tk.DrawRect(dx - 3, sy2 - 3, 6, 6, 0.95, 0.72, 0.25, 1)
+        Core_tk.DrawRect(rxx - 3, sy2 - 3, 6, 6, 0.95, 0.72, 0.25, 1)
+    end
+
+    -- interaction (RangeSlider grammar on the waveform; envelope handles
+    -- hit-test first — they live inside the region)
     local mx, my = Core_tk.GetMousePos()
     local inside = mx >= x and mx < x + aw and my >= y and my < y + h
     if not Core_tk.HasPopup() then
         if inside and Core_tk.MouseClicked(1) then
-            if math.abs(mx - xs) <= 6 then
+            if ax and math.abs(mx - ax) <= 5 and my <= etop + 8 then
+                state.rdrag = { mode = "a", note = note }
+            elseif dx and math.abs(mx - dx) <= 5 and math.abs(my - sy2) <= 6 then
+                state.rdrag = { mode = "d", note = note }
+            elseif rxx and math.abs(mx - rxx) <= 5 and math.abs(my - sy2) <= 6 then
+                state.rdrag = { mode = "r", note = note }
+            elseif math.abs(mx - xs) <= 6 then
                 state.rdrag = { mode = "s", note = note }
             elseif math.abs(mx - xe) <= 6 then
                 state.rdrag = { mode = "e", note = note }
@@ -997,7 +1032,22 @@ local function drawRegionStrip(theme, note, pad)
                 local frac = (mx - x) / aw
                 if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
                 local MINW = 0.004
-                if state.rdrag.mode == "s" then
+                if state.rdrag.mode == "a" and len then
+                    local t = ((mx - xs) / (xe - xs)) * ((e - s) * len)
+                    Kit.SetParamPlain(note, Kit.P.ATTACK, math.max(0, t * 1000))
+                    UI.SetCursor("size_we")
+                elseif state.rdrag.mode == "d" and len and ax then
+                    local t = ((mx - ax) / (xe - xs)) * ((e - s) * len)
+                    Kit.SetParamPlain(note, Kit.P.DECAY, math.max(0, t * 1000))
+                    local L = 1 - (my - etop) / (ebot - etop)
+                    if L < 0.001 then L = 0.001 elseif L > 1 then L = 1 end
+                    Kit.SetParamPlain(note, Kit.P.SUSTAIN, 20 * math.log(L, 10))
+                    UI.SetCursor("size_all")
+                elseif state.rdrag.mode == "r" and len then
+                    local t = ((xe - mx) / (xe - xs)) * ((e - s) * len)
+                    Kit.SetParamPlain(note, Kit.P.RELEASE, math.max(0, t * 1000))
+                    UI.SetCursor("size_we")
+                elseif state.rdrag.mode == "s" then
                     Kit.SetOffsets(note, math.min(frac, e - MINW), e)
                 elseif state.rdrag.mode == "e" then
                     Kit.SetOffsets(note, s, math.max(frac, s + MINW))
