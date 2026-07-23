@@ -12,7 +12,8 @@ local r = reaper
 local script_path = r.GetResourcePath() .. "/Scripts/CP_Scripts/FX Constellation/"
 
 local UI_TK = dofile(r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Toolkit/CP_Toolkit.lua")
-local ModJSFX = dofile(script_path .. "Modules/ModJSFX.lua")
+local ModJSFX = dofile(r.GetResourcePath()
+	.. "/Scripts/CP_Scripts/CP_Engine/ModJSFX.lua")
 local LFOPanel = dofile(script_path .. "Modules/LFOPanel.lua")
 LFOPanel.init(UI_TK)
 

@@ -46,9 +46,9 @@ function LinkEngine.init(reaper_api, core, fxmanager, gesture)
 	LinkEngine.fxmanager = fxmanager
 	LinkEngine.gesture = gesture
 	-- Shared CP_Mod plumbing (JSFX builders, banks, MOD track) — pure
-	-- module, also used by the standalone CP_ModLFO panel script.
+	-- CP_Engine module, also used by the standalone CP_ModLFO panel script.
 	LinkEngine.modjsfx = dofile(reaper_api.GetResourcePath()
-		.. "/Scripts/CP_Scripts/FX Constellation/Modules/ModJSFX.lua")
+		.. "/Scripts/CP_Scripts/CP_Engine/ModJSFX.lua")
 	-- Refresh the JSFX sources once per session so layout updates reach
 	-- existing instances on the next project (re)load.
 	LinkEngine.modjsfx.writeBankFile(reaper_api, "lfo")
