@@ -60,6 +60,7 @@ local opts = {
     midi_snap = cfg.midi_snap ~= false,   -- piano roll: snap to the grid
     grid_div  = cfg.grid_div,             -- editor grid (whole notes), nil = project
     note_names = cfg.note_names == true,  -- draw note names inside notes
+    thru_track = cfg.thru_track ~= false, -- preview through the item's track (its FX)
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -114,6 +115,7 @@ local function persistConfig()
     cfg.last_vel  = state.last_vel
     cfg.grid_div  = opts.grid_div
     cfg.note_names = opts.note_names
+    cfg.thru_track = opts.thru_track
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -208,9 +210,82 @@ local function refreshItemFields()
     clampView()
 end
 
+-- ---------------------------------------------------------------------------
+-- Clip focus (take-less MIDI: a Looper lane, a session cell). Roll runs on
+-- a backend over the clip's own note arrays — cache unit BEATS — and every
+-- committed gesture publishes the clip back over the Bus (editor:apply), so
+-- the origin engine hears the edit live.
+-- ---------------------------------------------------------------------------
+-- Beats per bar for the clip grid: the project's time signature (the same
+-- basis the Looper uses for its lanes).
+local function clipTsNum()
+    local tsn = r.TimeMap_GetTimeSigAtTime(0, r.GetCursorPosition())
+    return (tsn and tsn > 0) and tsn or 4
+end
+
+-- Debounced publish (one editor:apply per edit gesture, not per drag frame).
+local function scheduleApply()
+    state.apply_t = r.time_precise() + 0.25
+end
+
+local function flushApply()
+    if state.apply_t and state.mode == "clip" and state.clip then
+        Bus.Send("editor:apply", state.clip)
+    end
+    state.apply_t = nil
+end
+
+local function makeClipBackend(c)
+    local nt = c.notes
+    return {
+        readAll = function()
+            local n = #nt.s
+            for i = 1, n do
+                Roll.starts[i], Roll.lens[i], Roll.pitches[i], Roll.vels[i]
+                    = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+            end
+            return n
+        end,
+        insertNote = function(t, pitch, len, vel)
+            local n = #nt.s + 1
+            nt.s[n], nt.l[n], nt.p[n], nt.v[n] = t, len, pitch, vel
+        end,
+        deleteNote = function(i)
+            table.remove(nt.s, i)
+            table.remove(nt.l, i)
+            table.remove(nt.p, i)
+            table.remove(nt.v, i)
+        end,
+        setNote = function(i, t, len, pitch, vel)
+            if t ~= nil then nt.s[i] = t end
+            if len ~= nil then nt.l[i] = len end
+            if pitch ~= nil then nt.p[i] = pitch end
+            if vel ~= nil then nt.v[i] = vel end
+        end,
+        -- (start, pitch) order keeps Sync's selection-by-identity stable
+        sort = function()
+            local idx = {}
+            for i = 1, #nt.s do idx[i] = i end
+            table.sort(idx, function(a, b)
+                if nt.s[a] ~= nt.s[b] then return nt.s[a] < nt.s[b] end
+                return nt.p[a] < nt.p[b]
+            end)
+            local s, l, p, v = {}, {}, {}, {}
+            for k = 1, #idx do
+                local i = idx[k]
+                s[k], l[k], p[k], v[k] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+            end
+            nt.s, nt.l, nt.p, nt.v = s, l, p, v
+        end,
+        undo = function() scheduleApply() end,
+    }
+end
+
 local function setItem(item)
     local take = r.GetActiveTake(item)
     if not take then return false end
+    flushApply()
+    state.clip = nil
     if r.TakeIsMIDI(take) then
         dropOwnSource()
         state.mode, state.item, state.take = "midi", item, take
@@ -245,6 +320,8 @@ local function setItem(item)
 end
 
 local function setFile(path)
+    flushApply()
+    state.clip = nil
     local src = r.PCM_Source_CreateFromFile(path)
     if not src then
         flash("Cannot open: " .. path)
@@ -262,11 +339,46 @@ local function setFile(path)
     return true
 end
 
+-- Focus a take-less MIDI clip. The editor edits the clip IN PLACE and
+-- publishes it back (editor:apply) after each gesture.
+local function setClip(c)
+    flushApply()
+    dropOwnSource()
+    Roll.Detach()
+    state.mode, state.item, state.take = "clip", nil, nil
+    state.clip = c
+    c.notes = c.notes or { s = {}, l = {}, p = {}, v = {} }
+    state.name = (c.name and c.name ~= "") and c.name or "Clip"
+    state.src, state.path = nil, ""
+    state.len = (c.bars and c.bars > 0 and c.bars or 4) * clipTsNum()
+    state.ch, state.sr = 0, 0
+    -- the item selected when the clip opened must not steal the focus back
+    state.seen_sel_item = r.GetSelectedMediaItem(0, 0)
+    Roll.SetBackend(makeClipBackend(c))
+    -- vertical fit to the notes (same as the midi branch of setItem)
+    local vlo, vhi = 127, 0
+    for i = 1, Roll.count do
+        local p = Roll.pitches[i]
+        if p < vlo then vlo = p end
+        if p > vhi then vhi = p end
+    end
+    if Roll.count == 0 then vlo, vhi = 48, 71 end
+    local rows = (vhi - vlo) + 6
+    if rows < 18 then rows = 18 elseif rows > 48 then rows = 48 end
+    state.view_rows = rows
+    state.view_hi = math.min(127, vhi + 2)
+    state.mdrag = nil
+    resetForTarget()
+    return true
+end
+
 local function clearTarget()
+    flushApply()
     Audio.Stop()   -- a dying item takes its source with it; stop first
     dropOwnSource()
     Roll.Detach()
     state.mode, state.item, state.take = nil, nil, nil
+    state.clip = nil
     state.path, state.name, state.len = "", "", 0
     state.mdrag = nil
 end
@@ -282,11 +394,18 @@ local function targetRegion()
 end
 
 local function metaLine()
-    if state.mode == "midi" then
+    if state.mode == "midi" or state.mode == "clip" then
         if state.meta_line and state.meta_rollver == Roll.version then
             return state.meta_line
         end
-        state.meta_line = string.format("%d notes  ·  %.2fs", Roll.count, state.len)
+        if state.mode == "clip" then
+            state.meta_line = string.format("%d notes  ·  %g beats%s",
+                Roll.count, state.len,
+                (state.clip and state.clip.origin)
+                    and ("  ·  " .. state.clip.origin) or "")
+        else
+            state.meta_line = string.format("%d notes  ·  %.2fs", Roll.count, state.len)
+        end
         state.meta_rollver = Roll.version
         return state.meta_line
     end
@@ -322,7 +441,7 @@ local function openClip(c)
             end
         end
     elseif c.kind == "midi" then
-        flash("MIDI clips open in the Looper editor for now")
+        setClip(c)
     end
 end
 
@@ -346,10 +465,17 @@ local function pollTarget()
     local clip = Bus.Recv("editor:open")
     if clip then openClip(clip) end
 
-    -- follow the arrange selection
+    -- follow the arrange selection. In clip mode the clip owns the focus:
+    -- only a NEW selection (not the one already selected when the clip
+    -- opened) pulls the editor back to the arrange.
     if not state.lock then
         local it = r.GetSelectedMediaItem(0, 0)
-        if it and it ~= state.item then
+        if state.mode == "clip" then
+            if it ~= state.seen_sel_item then
+                state.seen_sel_item = it
+                if it then setItem(it) end
+            end
+        elseif it and it ~= state.item then
             setItem(it)
         end
     end
@@ -387,6 +513,11 @@ end
 -- Playback
 -- ---------------------------------------------------------------------------
 local function togglePlay()
+    if state.mode == "clip" then
+        -- a clip has no transport here; it plays in its origin engine
+        flash("Clip plays in its engine (Looper)")
+        return
+    end
     if state.mode == "midi" then
         -- MIDI previews in context: the item plays through its track
         r.Main_OnCommand(40044, 0)   -- Transport: Play/stop
@@ -403,7 +534,13 @@ local function togglePlay()
     -- the raw file otherwise ignores every edit.
     PLAY_OPTS.vol, PLAY_OPTS.pitch, PLAY_OPTS.rate = nil, nil, nil
     PLAY_OPTS.fade_in, PLAY_OPTS.fade_out, PLAY_OPTS.ppitch = nil, nil, nil
+    PLAY_OPTS.out_track = nil
     if state.mode == "item" and state.take then
+        -- route through the item's own track: its FX chain + fader apply,
+        -- so the preview sits in the mix like the arrange does
+        if opts.thru_track then
+            PLAY_OPTS.out_track = r.GetMediaItemTrack(state.item)
+        end
         local v = r.GetMediaItemTakeInfo_Value(state.take, "D_VOL")
         -- compose take gain WITH the user's preview-volume setting (an OR in
         -- Audio.Play would otherwise let take gain replace the monitor level)
@@ -594,6 +731,8 @@ local function openSettings()
         { label = "Preview volume", children = {
             volItem(25), volItem(50), volItem(75), volItem(100),
         } },
+        { label = "Preview through item's track (its FX)", checked = opts.thru_track,
+          action = function() opts.thru_track = not opts.thru_track markDirty() end },
     })
 end
 
@@ -1123,16 +1262,28 @@ local function gridStepQN()
 end
 
 local function itemPos()
+    if not state.item then return 0 end   -- clip/file mode: no item
     return r.GetMediaItemInfo_Value(state.item, "D_POSITION")
+end
+
+-- Roll time mapping. Item-backed modes: the cache unit is item-relative
+-- SECONDS, mapped through the project TimeMap (tempo maps respected).
+-- Clip mode: the cache unit IS beats (QN) — identity mapping.
+local function rollToQN(t)
+    if state.mode == "clip" then return t end
+    return r.TimeMap2_timeToQN(0, itemPos() + t)
+end
+
+local function qnToRoll(qn)
+    if state.mode == "clip" then return qn end
+    return r.TimeMap2_QNToTime(0, qn) - itemPos()
 end
 
 local function midiSnap(t)
     if not opts.midi_snap then return t end
-    local pos = itemPos()
-    local qn = r.TimeMap2_timeToQN(0, pos + t)
     local step = gridStepQN()
-    qn = math.floor(qn / step + 0.5) * step
-    local nt = r.TimeMap2_QNToTime(0, qn) - pos
+    local qn = math.floor(rollToQN(t) / step + 0.5) * step
+    local nt = qnToRoll(qn)
     if nt < 0 then nt = 0 end
     return nt
 end
@@ -1141,24 +1292,22 @@ end
 -- cursor — round-to-nearest used to push clicks into the NEXT cell.
 local function midiSnapFloor(t)
     if not opts.midi_snap then return t end
-    local pos = itemPos()
-    local qn = r.TimeMap2_timeToQN(0, pos + t)
     local step = gridStepQN()
-    qn = math.floor(qn / step + 0.0001) * step
-    local nt = r.TimeMap2_QNToTime(0, qn) - pos
+    local qn = math.floor(rollToQN(t) / step + 0.0001) * step
+    local nt = qnToRoll(qn)
     if nt < 0 then nt = 0 end
     return nt
 end
 
--- One grid step, in seconds, around item-relative time t.
+-- One grid step, in cache units, around time t.
 local function gridStepSec(t)
-    local pos = itemPos()
-    local qn = r.TimeMap2_timeToQN(0, pos + t)
-    return r.TimeMap2_QNToTime(0, qn + gridStepQN()) - (pos + t)
+    local qn = rollToQN(t)
+    return qnToRoll(qn + gridStepQN()) - t
 end
 
--- Context handed to the shared RollUI (keyboard map + transform menu). The
--- take's cache unit is item-relative SECONDS, so every amount here is seconds.
+-- Context handed to the shared RollUI (keyboard map + transform menu).
+-- Every amount is in the roll's cache unit: item-relative seconds for a
+-- take, beats for a clip — the rollToQN/qnToRoll pair hides which.
 local midiCtx = {
     Roll = Roll, Keys = Keys,
     Shift = Core_tk.ModShift, Ctrl = Core_tk.ModCtrl, Alt = Core_tk.ModAlt,
@@ -1167,44 +1316,54 @@ local midiCtx = {
     gridStep = function(t) return gridStepSec(t) end,
     snap = function(t) return midiSnap(t) end,
     divToUnit = function(div)
-        local pos = itemPos()
         local t0 = (Roll.sel and Roll.starts[Roll.sel]) or 0
-        local qn = r.TimeMap2_timeToQN(0, pos + t0)
-        return r.TimeMap2_QNToTime(0, qn + div * 4) - r.TimeMap2_QNToTime(0, qn)
+        local qn = rollToQN(t0)
+        return qnToRoll(qn + div * 4) - qnToRoll(qn)
     end,
     pasteAt = function()
+        if state.mode == "clip" then return 0 end
         local at = r.GetCursorPosition() - itemPos()
         return at < 0 and 0 or at
     end,
-    -- Bar boundaries, item-relative seconds. Routed through the measure map
-    -- rather than arithmetic, so tempo maps and odd meters come out right.
+    -- Bar boundaries. Item mode goes through the measure map (tempo maps
+    -- and odd meters come out right); clip mode is plain beat arithmetic
+    -- on the project time signature.
     barFloor = function(t)
-        local pos = itemPos()
-        local qn = r.TimeMap2_timeToQN(0, pos + t)
+        local qn = rollToQN(t)
+        if state.mode == "clip" then
+            local tsn = clipTsNum()
+            local nt = math.floor(qn / tsn) * tsn
+            return nt < 0 and 0 or nt
+        end
         local _, ms = r.TimeMap_QNToMeasures(0, qn + 1e-6)
         if not ms then return t end
-        local nt = r.TimeMap2_QNToTime(0, ms) - pos
+        local nt = qnToRoll(ms)
         return nt < 0 and 0 or nt
     end,
     barCeil = function(t)
-        local pos = itemPos()
-        local qn = r.TimeMap2_timeToQN(0, pos + t)
+        local qn = rollToQN(t)
+        if state.mode == "clip" then
+            local tsn = clipTsNum()
+            local m = math.floor(qn / tsn)
+            -- already sitting on a barline: that bar IS the answer
+            if qn - m * tsn < 1e-4 then return m * tsn end
+            return (m + 1) * tsn
+        end
         local _, ms, me = r.TimeMap_QNToMeasures(0, qn + 1e-6)
         if not ms then return t end
         -- already sitting on a barline: that bar IS the answer, don't skip ahead
         local qb = (qn <= ms + 1e-6) and ms or (me or ms)
-        local nt = r.TimeMap2_QNToTime(0, qb) - pos
+        local nt = qnToRoll(qb)
         return nt < 0 and 0 or nt
     end,
     swingSnap = function(amt)
         return function(t)
-            local pos = itemPos()
             local step = gridStepQN()
-            local qn = r.TimeMap2_timeToQN(0, pos + t)
+            local qn = rollToQN(t)
             local idx = math.floor(qn / step + 0.5)
             local base = idx * step
             if idx % 2 == 1 then base = base + step * amt end
-            local nt = r.TimeMap2_QNToTime(0, base) - pos
+            local nt = qnToRoll(base)
             return nt < 0 and 0 or nt
         end
     end,
@@ -1327,11 +1486,13 @@ local function drawMidiBar(theme)
     if UI.Button("m_transform", "Transform") then
         UI.NativeMenu(RollUI.TransformMenu(midiCtx))
     end
-    UI.SameLine()
-    if UI.Button("m_native", "Native") then
-        r.SelectAllMediaItems(0, false)
-        r.SetMediaItemSelected(state.item, true)
-        r.Main_OnCommand(40153, 0)   -- Item: open in built-in MIDI editor
+    if state.item then   -- take-backed only (a clip has no native editor)
+        UI.SameLine()
+        if UI.Button("m_native", "Native") then
+            r.SelectAllMediaItems(0, false)
+            r.SetMediaItemSelected(state.item, true)
+            r.Main_OnCommand(40153, 0)   -- Item: open in built-in MIDI editor
+        end
     end
 end
 
@@ -1383,19 +1544,26 @@ local function renderRollGrid(theme, rows, w, h, row_h)
             gfx.line(0, i * row_h, w - 1, i * row_h)
         end
     end
-    -- vertical grid: project-grid steps, measure starts stronger
-    local pos = itemPos()
+    -- vertical grid: grid steps, measure starts stronger. Clip mode: the
+    -- axis is beats and a measure = the project time signature.
     local gc = theme.colors.text_mute or theme.colors.text_disabled
-    local qn = math.floor(r.TimeMap2_timeToQN(0, pos + state.t0) / step) * step
+    local ctsn = state.mode == "clip" and clipTsNum() or 0
+    local qn = math.floor(rollToQN(state.t0) / step) * step
     local guard = 0
     while guard < 512 do
         guard = guard + 1
-        local t = r.TimeMap2_QNToTime(0, qn) - pos
+        local t = qnToRoll(qn)
         if t > state.t1 then break end
         if t >= state.t0 then
             local x = (t - state.t0) / span() * w
-            local _, mstart = r.TimeMap_QNToMeasures(0, qn + 0.0001)
-            local strong = math.abs(qn - (mstart or -1)) < 0.001
+            local strong
+            if ctsn > 0 then
+                local m = qn / ctsn
+                strong = math.abs(m - math.floor(m + 0.5)) < 0.001
+            else
+                local _, mstart = r.TimeMap_QNToMeasures(0, qn + 0.0001)
+                strong = math.abs(qn - (mstart or -1)) < 0.001
+            end
             gfx.set(gc[1], gc[2], gc[3], strong and 0.35 or 0.12)
             gfx.line(x, 0, x, h - 1)
         end
@@ -1450,6 +1618,9 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local in_lane = mx >= lane_x0 and mx < wave.x
                 and my >= wave.ry and my < wave.ry + wave.rh
     if Core_tk.HasPopup() then in_grid, in_vel, in_ruler, in_lane = false, false, false, false end
+    -- clip mode: the ruler is inert (edit cursor / time selection are
+    -- project concepts; a clip has neither)
+    if state.mode == "clip" then in_ruler = false end
 
     local t = timeAtX(mx)
     local row = math.floor((my - wave.ry) / row_h) + 1
@@ -1832,20 +2003,30 @@ local function drawRoll(theme, area_h)
     gfx.a, gfx.mode = 1, 0
     gfx.blit(MROLL_BUF, 1, 0, 0, 0, wave.w, grid_h, wave.x, wave.ry, wave.w, grid_h)
 
-    -- measure labels in the ruler
+    -- measure labels in the ruler (clip mode: bar numbers from 1, plain
+    -- beat arithmetic on the project time signature)
     UI.SetFontCaption()
     do
-        local pos = itemPos()
         local step = gridStepQN()
-        local qn = math.floor(r.TimeMap2_timeToQN(0, pos + state.t0) / step) * step
+        local ctsn = state.mode == "clip" and clipTsNum() or 0
+        local qn = math.floor(rollToQN(state.t0) / step) * step
         local guard = 0
         while guard < 512 do
             guard = guard + 1
-            local t = r.TimeMap2_QNToTime(0, qn) - pos
+            local t = qnToRoll(qn)
             if t > state.t1 then break end
             if t >= state.t0 then
-                local midx, mstart = r.TimeMap_QNToMeasures(0, qn + 0.0001)
-                if math.abs(qn - (mstart or -1)) < 0.001 then
+                local midx
+                if ctsn > 0 then
+                    local m = qn / ctsn
+                    if math.abs(m - math.floor(m + 0.5)) < 0.001 then
+                        midx = math.floor(m + 0.5) + 1
+                    end
+                else
+                    local mi, mstart = r.TimeMap_QNToMeasures(0, qn + 0.0001)
+                    if math.abs(qn - (mstart or -1)) < 0.001 then midx = mi end
+                end
+                if midx then
                     Core_tk.DrawText(tostring(midx), xAtTime(t) + 3, gy + 2,
                                      col_mute[1], col_mute[2], col_mute[3], 1)
                 end
@@ -1940,8 +2121,13 @@ local function drawRoll(theme, area_h)
     end
 
     -- time selection (native loop/time range) painted over the grid + ruler,
-    -- with grab handles (notches) at both edges in the ruler strip
-    local ts_a, ts_b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+    -- with grab handles (notches) at both edges in the ruler strip.
+    -- Clip mode has no project time concepts: no time selection, no edit
+    -- cursor, no transport playhead.
+    local ts_a, ts_b = 0, 0
+    if state.mode ~= "clip" then
+        ts_a, ts_b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+    end
     if ts_b > ts_a then
         local pos = itemPos()
         local xaf = xAtTime(ts_a - pos)   -- true edge x (unclamped, for handles)
@@ -1968,7 +2154,7 @@ local function drawRoll(theme, area_h)
     end
 
     -- edit cursor + a small flag handle at the top (grabbable)
-    do
+    if state.mode ~= "clip" then
         local ec = r.GetCursorPosition() - itemPos()
         if ec >= state.t0 and ec <= state.t1 then
             local x = xAtTime(ec)
@@ -1980,7 +2166,7 @@ local function drawRoll(theme, area_h)
     end
 
     -- playback cursor (transport, in context)
-    if r.GetPlayState() & 1 == 1 then
+    if state.mode ~= "clip" and r.GetPlayState() & 1 == 1 then
         local pp = r.GetPlayPosition() - itemPos()
         if pp >= state.t0 and pp <= state.t1 then
             local x = xAtTime(pp)
@@ -2014,7 +2200,7 @@ local function handleKeys()
     if not char or char <= 0 then return end
     if Core_tk.GetState().focus then return end
 
-    local midi = state.mode == "midi"
+    local midi = state.mode == "midi" or state.mode == "clip"
     -- Note-editing keys are BLOCKED mid-drag: they Commit → Sort → Sync, which
     -- reshuffles indices and would strand the drag's move_snap (silent MIDI
     -- corruption). Mirrors the pollTarget mid-drag Sync guard.
@@ -2031,10 +2217,13 @@ local function handleKeys()
 
     if not midi_edit then return end
 
-    -- in-editor undo / redo (the take is part of REAPER's undo). pollTarget
-    -- re-validates + re-syncs the roll next frame, so don't touch it here.
-    if char == 26 then r.Undo_DoUndo2(0); UI.ConsumeChar(); return end   -- Ctrl+Z
-    if char == 25 then r.Undo_DoRedo2(0); UI.ConsumeChar(); return end   -- Ctrl+Y
+    -- in-editor undo / redo (take-backed only: the take is part of REAPER's
+    -- undo, a clip lives outside it). pollTarget re-validates + re-syncs
+    -- the roll next frame, so don't touch it here.
+    if state.mode == "midi" then
+        if char == 26 then r.Undo_DoUndo2(0); UI.ConsumeChar(); return end   -- Ctrl+Z
+        if char == 25 then r.Undo_DoRedo2(0); UI.ConsumeChar(); return end   -- Ctrl+Y
+    end
 
     -- shared note-editing commands (identical keyboard map in CP_Looper)
     if RollUI.HandleKey(char, midiCtx) then
@@ -2050,6 +2239,10 @@ local function frame(theme)
     pollTarget()
     Kit.Poll()
     Audio.Poll()
+    -- debounced clip publish (editor:apply): one message per edit gesture
+    if state.apply_t and r.time_precise() >= state.apply_t then
+        flushApply()
+    end
     if Peaks.Step() then UI.RequestRedraw() end
     handleKeys()
 
@@ -2065,7 +2258,7 @@ local function frame(theme)
     UI.Spacing(2)
     UI.Separator()
     UI.Spacing(2)
-    if state.mode == "midi" then
+    if state.mode == "midi" or state.mode == "clip" then
         drawMidiBar(theme)
     else
         drawOpsRow(theme)
@@ -2078,7 +2271,7 @@ local function frame(theme)
     local status_h = 18
     local area_h = UI.GetAvailableHeight() - status_h - pad
     if area_h < 80 then area_h = 80 end
-    if state.mode == "midi" then
+    if state.mode == "midi" or state.mode == "clip" then
         drawRoll(theme, area_h)
     else
         drawWave(theme, area_h)
@@ -2089,7 +2282,7 @@ local function frame(theme)
     if state.flash_msg ~= "" and r.time_precise() < state.flash_until then
         UI.Text(state.flash_msg, { disabled = true })
         UI.RequestRedraw()
-    elseif state.mode == "midi" then
+    elseif state.mode == "midi" or state.mode == "clip" then
         if Roll.seln > 1 then
             UI.Text(Roll.seln .. " notes selected  ·  drag = move all · Del = delete · arrows = transpose",
                     { disabled = true })
@@ -2127,6 +2320,7 @@ UI.Init("Editor", 780, 420, {
 
 UI.OnClose(function()
     -- Core keeps a SINGLE OnClose callback — everything belongs here.
+    flushApply()   -- a pending clip edit must reach its engine
     if state.aud_note then Kit.StuffNote(state.aud_note, false) end
     persistConfig()
     Audio.Destroy()
