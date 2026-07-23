@@ -50,14 +50,19 @@ Les banques sont des JSFX purs (`ModJSFX.writeBankFile`), la modulation passe
 par les parameter links natifs (`plink` + `mod.baseline`) → résolution audio,
 fonctionne sans script ouvert ; le panneau Lua n'est qu'une télécommande.
 
-- [ ] **Move `ModJSFX` → `CP_Engine/`** (le vrai reste du chantier
-  "standalone"). **DÉCISION 2026-07-23 : attend le retour de Cédric** — à
-  faire en une seule fois avec la spec Bitwig-grade (slew, courbes, one-shot,
-  re-sync, LFO→LFO) de ANALYSE_Interactions.
-- [ ] **Moduler les modulateurs** (LFO → depth/base/freq d'un autre LFO) :
-  faisable — les params d'un slot sont des sliders JSFX, donc des cibles
-  plink comme les autres. Travail = exposer les sorties de slots comme
-  sources + affordance UI.
+- [x] **Move `ModJSFX` → `CP_Engine/`** (`d5b56ff`, session 2) : move pur,
+  CP_ModLFO et LinkEngine chargent depuis CP_Engine/. PLUS la spec
+  Bitwig-grade complète (`6cf79c5`) : slew (lissage one-pole), curve
+  (power bend, pulse width sur Square), mode One-shot (un cycle puis
+  tient), Loop resync (phase libre repart au play), trig manuel (bouton
+  Sync). Layout étendu APPEND-ONLY (params 56..87) : les plinks
+  existants survivent, les instances anciennes recompilent au
+  rechargement de projet.
+- [x] **Moduler les modulateurs** (`6cf79c5`) : LFO→LFO — la sortie d'un
+  slot pilote rate/phase/curve/slew d'un autre slot du même bank via le
+  plink natif (résolution audio, zéro script requis). Section "LFO → LFO"
+  dans le panneau (les deux banks, les deux hôtes). Portes fermées :
+  jamais les sorties ni les triggers (pas de feedback).
 - [ ] **DnD vers VST tiers** : verdict honnête — on sait identifier la
   *fenêtre* du plugin sous la souris au relâchement (js_ReaScriptAPI), pas
   le *knob* dans une GUI étrangère (personne ne peut, Vital drop dans sa
@@ -139,3 +144,44 @@ ModJSFX différé, spec session view à rédiger.
 
 **En attente de Cédric** : go session view (sur la base de la spec),
 format Inst standalone, refonte UI, move ModJSFX→Engine.
+
+---
+
+## Session 2 (2026-07-23 après-midi) — retours de test + 2 chantiers
+
+Cédric a testé, rapporté 4 problèmes, choisi 2 chantiers (ModJSFX +
+éditeur universel ; overflow explicitement non retenu), puis est parti 1 h.
+
+Retours de test, tous corrigés :
+
+- [x] **Multi-kit : armé qui saute, tous les C2 qui jouent** (`d2f9fbb`) :
+  l'invariant "un seul bus kit armé" n'était appliqué qu'au SetActive —
+  il est désormais CONTINU (Poll) ; SetActive crée le bus MIDI s'il
+  manque (la cause du "désarmé sans raison") et ré-affirme armé comme
+  état par défaut ; le kit actif est persisté par projet.
+- [x] **Knob Pitch mort puis hyper-sensible** (`d2f9fbb`) : il pilotait le
+  slider À CRANS "Shift (semitones)" (chaque petit drag re-snappait).
+  Rebind sur "Shift (full range)" continu, plage ±24 st, migration
+  one-shot du résidu du slider à crans, et Shift = drag fin (1/10e)
+  sur TOUS les knobs du toolkit.
+- [x] **Lignes drum du Looper = le kit routé** (`2041086`) :
+  `Loop.KitView(lane)` — une ligne par pad chargé (nom du pad) plus les
+  pitches du clip ; charger un sample ajoute sa ligne. (Version légère
+  en attendant l'unification chantier 10, comme convenu.)
+- [x] **Preview de l'Editor fidèle à l'item** (`6ed102c`) :
+  `Audio.PlaySource` joue la VRAIE source du take → reverse et sections
+  enfin pré-écoutables, même base de temps que les peaks ; fades réels
+  de l'item (longueurs) et mode repitch (B_PPITCH) reflétés ; gain/
+  pitch/rate l'étaient déjà. Hors périmètre CF_Preview : les take FX
+  (routage piste / bake, suite du chantier éditeur universel).
+
+Chantiers choisis, exécutés :
+
+- [x] **ModJSFX → CP_Engine + Bitwig-grade + LFO→LFO** (`d5b56ff`,
+  `6cf79c5`) : voir section 2 MOD ci-dessus.
+- [x] **Chantier 10, fondations** (`fa9fb91`) : CP_Editor écoute
+  `editor:open` sur le Bus (Clips, RÉGION incluse : sélection + zoom à
+  l'arrivée) en plus du canal legacy ; le Sampler émet le trim du pad,
+  le Media Explorer émet la section active du strip — le trou "l'Editor
+  s'ouvre sur le fichier entier" d'ANALYSE_Interactions est fermé.
+  Clips MIDI : nécessitent le backend Roll sans take (suite du chantier).

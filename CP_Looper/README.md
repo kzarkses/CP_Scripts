@@ -103,9 +103,11 @@ from scratch on an empty lane.
 Notes are **audible while you edit**: drawing a note, dragging it to another
 pitch, or right-clicking a row label plays it through the lane's routed
 instrument. The **Keys/Drum** button switches the vertical axis between the
-melodic piano window and **drum rows** — only the pitches the clip actually
-uses (GM drum octave when empty), named, with group moves working in rows
-(the same shared row model as CP_Editor's drum mode).
+melodic piano window and **drum rows** — the pads of the kit the lane is
+routed to (one row per loaded sample, labeled with the pad's name) plus the
+pitches the clip already uses, GM drum octave when both are empty. Loading a
+sample onto a pad grows a row; group moves work in rows (the same shared row
+model as CP_Editor's drum mode).
 
 - **Click empty** — add a note; **keep dragging right to set its length** (a plain
   click keeps one grid step).
