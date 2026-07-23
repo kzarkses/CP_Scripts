@@ -274,6 +274,61 @@ function Loop.GetLaneDest(lane)
     return tr
 end
 
+-- ---------------------------------------------------------------------------
+-- Kit view: the pads of the CP kit a lane is routed to, shaped like the Kit
+-- module's surface (BASE/MAX/pads[note].fx/.name) so Rows.Build/Rows.Label
+-- can consume either. Drum rows in the editor must mirror the INSTRUMENT
+-- (one row per pad holding a sample), not just the pitches the clip already
+-- uses — loading a sample onto a pad grows a row here on the next project
+-- change. Read-only; rebuilt at most once per project state change.
+-- ---------------------------------------------------------------------------
+local kitview = { BASE = 0, MAX = 128, pads = {}, version = 0 }
+local kv_change, kv_lane = -1, -1
+
+-- The routed track may be the kit parent itself, its MIDI bus, or a pad
+-- child: walk up the folder chain looking for the CP_KIT mark.
+local function kitParentOf(tr)
+    local hops = 0
+    while tr and hops < 16 do
+        local _, v = r.GetSetMediaTrackInfo_String(tr, "P_EXT:CP_KIT", "", false)
+        if v and v ~= "" then return tr end
+        tr = r.GetParentTrack(tr)
+        hops = hops + 1
+    end
+    return nil
+end
+
+function Loop.KitView(lane)
+    local c = r.GetProjectStateChangeCount(0)
+    if c == kv_change and lane == kv_lane then
+        return kitview.n > 0 and kitview or nil
+    end
+    kv_change, kv_lane = c, lane
+    local pads, n = kitview.pads, 0
+    for k in pairs(pads) do pads[k] = nil end
+    local parent = kitParentOf(Loop.GetLaneDest(lane))
+    if parent then
+        local i = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
+        local depth, cnt = 1, r.CountTracks(0)
+        while depth > 0 and i < cnt do
+            local tr = r.GetTrack(0, i)
+            local _, nv = r.GetSetMediaTrackInfo_String(tr, "P_EXT:CP_KIT_NOTE", "", false)
+            local note = tonumber(nv or "")
+            if note and note >= 0 and note <= 127
+               and r.TrackFX_GetCount(tr) > 0 then
+                local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+                pads[note] = { fx = true, name = nm }
+                n = n + 1
+            end
+            depth = depth + r.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH")
+            i = i + 1
+        end
+    end
+    kitview.n = n
+    kitview.version = kitview.version + 1
+    return n > 0 and kitview or nil
+end
+
 -- Create a fresh instrument track for a lane and route it there. Selects it so
 -- the user can drop their synth on it. Returns the new track.
 function Loop.NewDestTrack(lane)

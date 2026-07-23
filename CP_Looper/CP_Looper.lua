@@ -980,8 +980,12 @@ local function drawEditor(theme)
 
     -- roll area: a note grid above a velocity lane. Rows come from the
     -- shared model — melodic window (ed_lo..ed_hi) or drum pitch list.
+    -- Drum rows mirror the routed kit's pads (one row per loaded sample,
+    -- labeled with the pad name), plus whatever pitches the clip already
+    -- uses — not just the clip, which collapsed to the first drawn note.
+    local kv = state.ed_drum and Loop.KitView(lane) or nil
     local rows = Rows.Build(erows, {
-        drum = state.ed_drum, roll = Roll,
+        drum = state.ed_drum, roll = Roll, kit = kv,
         view_hi = state.ed_hi, view_rows = state.ed_hi - state.ed_lo + 1,
     })
     if not rows.drum then
@@ -1016,7 +1020,7 @@ local function drawEditor(theme)
         if rows.drum then
             Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, 0.17, 0.17, 0.19, 1)
             if rowh >= 8 then
-                Core.DrawText(Rows.Label(rows, p), x + 3, yy + rowh * 0.5 - 5,
+                Core.DrawText(Rows.Label(rows, p, kv), x + 3, yy + rowh * 0.5 - 5,
                               C.text[1], C.text[2], C.text[3], 0.9)
             end
         else
