@@ -45,6 +45,9 @@ Roll.init(r)
 -- Shared command layer (keyboard map + transform menu) — same one CP_Editor
 -- uses, so the two editors feel identical.
 local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
+-- Shared row model (melodic window / drum pitch-list) — same one CP_Editor
+-- uses, so drum mode behaves identically in both editors.
+local Rows = dofile(cp_root .. "CP_Engine/Rows.lua")
 
 -- ---------------------------------------------------------------------------
 -- Config / state
@@ -66,9 +69,26 @@ local state = {
     edit_lane = nil,      -- lane index currently open in the note editor, or nil
     snap_idx  = 3,        -- SNAP_OPTS index (1/16)
     edrag     = nil,      -- active note drag { note, kind, grab, start0 }
-    ed_lo     = 48, ed_hi = 78,   -- editor pitch range
+    ed_lo     = 48, ed_hi = 78,   -- editor pitch range (melodic window)
+    ed_drum   = false,    -- drum rows (arbitrary pitch list) in the editor
     vel       = 100,      -- velocity for newly drawn notes
+    aud_note  = nil,      -- pending audition note-off (pitch)
+    aud_off_t = 0,
 }
+
+-- Editor rows (host-owned; Rows.Build re-keys it on version/window change)
+local erows = { list = {}, map = {}, n = 0, drum = false, key = nil }
+
+-- Audition through the edited lane's routed instrument: the router track is
+-- armed on all MIDI inputs, so the VKB queue reaches it and the JSFX
+-- re-channels the note onto the armed lane (enterEdit arms the edited one).
+-- Same deferred-note-off scheme as CP_Editor.
+local function auditionNote(pitch, vel)
+    if state.aud_note then r.StuffMIDIMessage(0, 0x80, state.aud_note, 0) end
+    r.StuffMIDIMessage(0, 0x90, pitch, vel or state.vel or 100)
+    state.aud_note = pitch
+    state.aud_off_t = r.time_precise() + 0.2
+end
 
 -- A Roll backend that reads/writes the gmem note list of one lane (cache unit
 -- is beats). sort/undo are no-ops: gate playback and identity-sync don't need
@@ -264,12 +284,7 @@ local function xToPhase(mx, rx, rw, L)
     return ph
 end
 local function phaseToX(ph, rx, rw, L) return rx + ph / L * rw end
-local function pitchRowY(pitch, ry, rowh, hi) return ry + (hi - pitch) * rowh end
-local function yToPitch(my, ry, rowh, lo, hi)
-    local p = hi - math.floor((my - ry) / rowh)
-    if p < lo then p = lo elseif p > hi then p = hi end
-    return p
-end
+-- (row↔pitch math lives in Engine/Rows now — shared with CP_Editor)
 
 -- fit the editor pitch range to the lane's notes (+ margin, min ~2 octaves)
 local function fitEditRange(lane)
@@ -813,34 +828,60 @@ local function drawEditor(theme)
     if tinyBtn(x + 138, hy2, 64, hbh, "Quantize", 0.20, 0.22, 0.26, theme) then
         flash(Roll.Quantize(loopCtx.snap) .. " quantized")
     end
-    Core.DrawText(selHint(), x + 210, hy2 + 5,
+    if tinyBtn(x + 206, hy2, 52, hbh, state.ed_drum and "Drum" or "Keys",
+               state.ed_drum and 0.26 or 0.20, state.ed_drum and 0.30 or 0.22, 0.26, theme) then
+        state.ed_drum = not state.ed_drum
+    end
+    Core.DrawText(selHint(), x + 266, hy2 + 5,
                   C.text_mute[1], C.text_mute[2], C.text_mute[3], 0.85)
 
-    -- roll area: a note grid above a velocity lane
-    local kbw = 24
+    -- roll area: a note grid above a velocity lane. Rows come from the
+    -- shared model — melodic window (ed_lo..ed_hi) or drum pitch list.
+    local rows = Rows.Build(erows, {
+        drum = state.ed_drum, roll = Roll,
+        view_hi = state.ed_hi, view_rows = state.ed_hi - state.ed_lo + 1,
+    })
+    if not rows.drum then
+        state.ed_hi = rows.view_hi
+        state.ed_lo = rows.view_hi - rows.view_rows + 1
+    end
+    local kbw = rows.drum and 56 or 24
     local VEL_H = 34
     local rx, ry = x + kbw, hy2 + hbh + 6
     local rw = w - kbw
     local grid_h = avail - (ry - y) - 2 - VEL_H - 4
-    if grid_h < 24 then Core.SetFontBody() return end
-    local lo, hi = state.ed_lo, state.ed_hi
-    local rowh = grid_h / (hi - lo + 1)
+    if grid_h < 24 or rows.n < 1 then Core.SetFontBody() return end
+    local rowh = grid_h / rows.n
     local vy = ry + grid_h + 4
 
-    -- pitch rows + keyboard
-    for p = lo, hi do
-        local yy = pitchRowY(p, ry, rowh, hi)
+    -- pitch rows + label column (piano keys / drum note names)
+    for i = 1, rows.n do
+        local p = rows.list[i]
+        local yy = ry + (i - 1) * rowh
         local blk = BLACK_KEY[p % 12]
-        local sh = blk and 0.095 or 0.13
-        if Roll.scale_on and not Roll.InScale(p) then sh = sh * 0.5 end   -- scale dim
+        local sh
+        if rows.drum then
+            sh = (i % 2 == 0) and 0.125 or 0.10
+        else
+            sh = blk and 0.095 or 0.13
+            if Roll.scale_on and not Roll.InScale(p) then sh = sh * 0.5 end   -- scale dim
+        end
         Core.DrawRect(rx, yy, rw, rowh + 0.5, sh, sh, sh + 0.006, 1)
-        if p % 12 == 0 then
+        if not rows.drum and p % 12 == 0 then
             Core.DrawLine(rx, yy, rx + rw, yy, C.border[1], C.border[2], C.border[3], 0.4)
         end
-        local kc = blk and 0.16 or 0.80
-        Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, kc, kc, kc + 0.02, 1)
-        if p % 12 == 0 and rowh >= 7 then
-            Core.DrawText(OCT_LBL[p] or "C", x + 1, yy + rowh * 0.5 - 4, 0.2, 0.2, 0.2, 1)
+        if rows.drum then
+            Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, 0.17, 0.17, 0.19, 1)
+            if rowh >= 8 then
+                Core.DrawText(Rows.Label(rows, p), x + 3, yy + rowh * 0.5 - 5,
+                              C.text[1], C.text[2], C.text[3], 0.9)
+            end
+        else
+            local kc = blk and 0.16 or 0.80
+            Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, kc, kc, kc + 0.02, 1)
+            if p % 12 == 0 and rowh >= 7 then
+                Core.DrawText(OCT_LBL[p] or "C", x + 1, yy + rowh * 0.5 - 4, 0.2, 0.2, 0.2, 1)
+            end
         end
     end
 
@@ -864,13 +905,12 @@ local function drawEditor(theme)
     -- notes
     local acc = C.accent
     for i = 1, Roll.count do
-        local p = Roll.pitches[i]
-        if p >= lo and p <= hi then
+        local yy = Rows.YOfPitch(rows, Roll.pitches[i], ry, rowh)
+        if yy then
             local nx = phaseToX(Roll.starts[i], rx, rw, L)
             local nw = Roll.lens[i] / L * rw
             if nw < 3 then nw = 3 end
             if nx + nw > rx + rw then nw = rx + rw - nx end
-            local yy = pitchRowY(p, ry, rowh, hi)
             local sel = Roll.IsSel(i)
             local a = 0.5 + 0.5 * (Roll.vels[i] / 127)
             Core.DrawRect(nx, yy + 1, nw, math.max(2, rowh - 2),
@@ -906,14 +946,17 @@ local function drawEditor(theme)
     local add = Core.ModShift()
 
     -- wheel: scroll vertical (plain) / zoom vertical (Ctrl). The loop always
-    -- fills the width, so horizontal (Shift/Alt) is a no-op here.
-    if (inGrid or inVel) and not Core.ModShift() and not Core.ModAlt() then
+    -- fills the width, so horizontal (Shift/Alt) is a no-op here — and drum
+    -- rows are a fixed list, so the wheel only drives the melodic window.
+    if (inGrid or inVel) and not Core.ModShift() and not Core.ModAlt()
+       and not rows.drum then
         local wheel = Core.GetState().mouse_wheel
         if wheel and wheel ~= 0 then
+            local lo, hi = state.ed_lo, state.ed_hi
             local notches = wheel / 120
             local span = hi - lo + 1
             if Core.ModCtrl() then                    -- vertical zoom about the mouse pitch
-                local anchor = yToPitch(my, ry, rowh, lo, hi)
+                local anchor = Rows.PitchAtY(rows, my, ry, rowh)
                 local ns = math.floor(span * (notches > 0 and 1 / 1.2 or 1.2) + 0.5)
                 if ns < 6 then ns = 6 elseif ns > 100 then ns = 100 end
                 local frac = (anchor - lo) / math.max(1, span - 1)
@@ -939,19 +982,22 @@ local function drawEditor(theme)
         state.edrag = nil                    -- index went stale — drop the drag
     end
 
-    -- piano-key column: click selects that whole pitch row (as in CP_Editor)
+    -- label column: click selects that whole pitch row (as in CP_Editor),
+    -- right-click auditions it through the lane's routed instrument
     if mx >= x and mx < rx and my >= ry and my < ry + grid_h and not Core.HasPopup()
        and not state.edrag and not state.marquee then
         UI.SetCursor("hand")
         if Core.MouseClicked(1) then
-            flash(Roll.SelectPitch(yToPitch(my, ry, rowh, lo, hi), add) .. " selected")
+            flash(Roll.SelectPitch(Rows.PitchAtY(rows, my, ry, rowh), add) .. " selected")
+        elseif Core.MouseClicked(2) then
+            auditionNote(Rows.PitchAtY(rows, my, ry, rowh), state.vel)
         end
     end
 
     -- grid presses (only when no drag / marquee is already live)
     if inGrid and not state.edrag and not state.marquee then
         local ph  = xToPhase(mx, rx, rw, L)
-        local pit = yToPitch(my, ry, rowh, lo, hi)
+        local pit = Rows.PitchAtY(rows, my, ry, rowh)
         local hit = Roll.At(ph, pit)
         if hit then
             local endx = phaseToX(Roll.starts[hit] + Roll.lens[hit], rx, rw, L)
@@ -980,6 +1026,7 @@ local function drawEditor(theme)
                 if t + len > L then len = L - t end
                 if len > 0.001 then
                     Roll.Insert(t, pit, len, state.vel)
+                    auditionNote(pit, state.vel)
                     if Roll.sel then
                         state.edrag = { note = Roll.sel, kind = "resize", px = mx, py = my,
                                         moved = false, ol = Roll.lens[Roll.sel] }
@@ -1018,16 +1065,32 @@ local function drawEditor(theme)
                 local ln = Roll.lens[ni] or 0
                 local nt = free and (ph - d.grab) or snapRound(ph - d.grab, s)
                 if nt < 0 then nt = 0 elseif nt > L - ln then nt = math.max(0, L - ln) end
-                local np = yToPitch(my, ry, rowh, lo, hi)
+                local np = Rows.PitchAtY(rows, my, ry, rowh)
                 if d.multi and d.multi > 1 then
-                    local dt, dp = nt - d.op, np - d.opp
-                    for k = 1, d.multi do
-                        local e = move_snap[k]
-                        local ns = e.s + dt; if ns < 0 then ns = 0 elseif ns > L - e.l then ns = math.max(0, L - e.l) end
-                        local npp = e.p + dp; if npp < 0 then npp = 0 elseif npp > 127 then npp = 127 end
-                        Roll.MoveLive(e.i, ns, npp)
+                    -- group move: the vertical delta is in ROWS, not semitones —
+                    -- drum rows are an arbitrary pitch list where one row can be
+                    -- a 7-semitone jump, and a pitch delta would throw every
+                    -- other note between the pads. Melodic rows are contiguous,
+                    -- where the two deltas are the same thing.
+                    local dt = nt - d.op
+                    if rows.drum then
+                        local drow = (rows.map[np] or 0) - (rows.map[d.opp] or 0)
+                        for k = 1, d.multi do
+                            local e = move_snap[k]
+                            local ns = e.s + dt; if ns < 0 then ns = 0 elseif ns > L - e.l then ns = math.max(0, L - e.l) end
+                            Roll.MoveLive(e.i, ns, Rows.Shift(rows, e.p, drow))
+                        end
+                    else
+                        local dp = np - d.opp
+                        for k = 1, d.multi do
+                            local e = move_snap[k]
+                            local ns = e.s + dt; if ns < 0 then ns = 0 elseif ns > L - e.l then ns = math.max(0, L - e.l) end
+                            local npp = e.p + dp; if npp < 0 then npp = 0 elseif npp > 127 then npp = 127 end
+                            Roll.MoveLive(e.i, ns, npp)
+                        end
                     end
                 else
+                    if np ~= Roll.pitches[ni] then auditionNote(np, Roll.vels[ni]) end
                     Roll.MoveLive(ni, nt, np)
                 end
             end
@@ -1082,9 +1145,20 @@ local function drawEditor(theme)
             if m.moved then
                 local cph = xToPhase(mx, rx, rw, L)
                 local ta, tb = math.min(m.t0, cph), math.max(m.t0, cph)
-                local pa = yToPitch(math.max(m.y, my), ry, rowh, lo, hi)
-                local pb = yToPitch(math.min(m.y, my), ry, rowh, lo, hi)
-                local n = Roll.SelectBox(ta, tb, math.min(pa, pb), math.max(pa, pb), add)
+                -- rows → pitch range: the list is sorted, so every pitch
+                -- between the extremes of the spanned rows belongs to one
+                -- of them — a numeric SelectBox stays row-accurate
+                local ra = Rows.AtY(rows, math.min(m.y, my), ry, rowh)
+                local rb = Rows.AtY(rows, math.max(m.y, my), ry, rowh)
+                local plo, phi = 127, 0
+                for rr = ra, rb do
+                    local pp = rows.list[rr]
+                    if pp then
+                        if pp < plo then plo = pp end
+                        if pp > phi then phi = pp end
+                    end
+                end
+                local n = (phi >= plo) and Roll.SelectBox(ta, tb, plo, phi, add) or 0
                 flash(n .. " selected")
             elseif m.p0 then
                 local idx = Roll.At(m.t0, m.p0)
@@ -1223,6 +1297,12 @@ local function frame(theme)
     -- leaving a valid attachment (or losing it) drops out of the editor
     if state.edit_lane ~= nil and not attached then exitEdit() end
 
+    -- deferred audition note-off (editor clicks through the router's live thru)
+    if state.aud_note and r.time_precise() >= state.aud_off_t then
+        r.StuffMIDIMessage(0, 0x80, state.aud_note, 0)
+        state.aud_note = nil
+    end
+
     drawToolbar(attached)
     UI.Spacing(4)
 
@@ -1272,11 +1352,13 @@ UI.Init("Looper", 470, 620, {
 UI.OnClose(function()
     -- the debounce would drop anything edited in the last 1.5 s
     pcall(Loop.SaveState)
+    if state.aud_note then r.StuffMIDIMessage(0, 0x80, state.aud_note, 0) end
     Loop.Panic()
 end)
 
 r.atexit(function()
     pcall(Loop.SaveState)
+    if state.aud_note then pcall(r.StuffMIDIMessage, 0, 0x80, state.aud_note, 0) end
     pcall(Loop.Panic)
 end)
 

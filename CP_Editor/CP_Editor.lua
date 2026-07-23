@@ -28,6 +28,7 @@ local Peaks = dofile(cp_root .. "CP_Engine/Peaks.lua")
 local Ops   = dofile(cp_root .. "CP_Engine/Ops.lua")
 local Roll  = dofile(cp_root .. "CP_Engine/Roll.lua")
 local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
+local Rows  = dofile(cp_root .. "CP_Engine/Rows.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
@@ -1209,41 +1210,16 @@ local mrows = { list = {}, map = {}, n = 0, drum = false, key = nil }
 local function rollRows()
     local drum = state.drum_mode
     if drum == nil then drum = Kit.Exists() end
-    local key = (drum and 1 or 0) .. ":" .. Roll.version .. ":" .. Kit.version
-             .. ":" .. (state.view_hi or 0) .. ":" .. (state.view_rows or 0)
-    if mrows.key == key then return mrows end
-    mrows.key = key
-    mrows.drum = drum
-    local list = mrows.list
-    for i = #list, 1, -1 do list[i] = nil end
-    if drum then
-        local set = {}
-        for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
-            local pad = Kit.pads[note]
-            if pad and pad.fx then set[note] = true end
-        end
-        for i = 1, Roll.count do set[Roll.pitches[i]] = true end
-        for p = 127, 0, -1 do
-            if set[p] then list[#list + 1] = p end
-        end
-        if #list == 0 then
-            for p = 51, 36, -1 do list[#list + 1] = p end
-        end
-    else
-        -- manual, scrollable/zoomable vertical view (wheel + Ctrl+wheel)
-        local rows = state.view_rows or 30
-        local hi = state.view_hi or 71
-        local lo = hi - rows + 1
-        if lo < 0 then lo = 0; hi = math.min(127, rows - 1) end
-        if hi > 127 then hi = 127; lo = math.max(0, 127 - rows + 1) end
-        state.view_hi, state.view_rows = hi, (hi - lo + 1)
-        for p = hi, lo, -1 do list[#list + 1] = p end
+    -- the row model itself is shared with CP_Looper (Engine/Rows), so drum
+    -- rows and the melodic window behave identically in both editors
+    local m = Rows.Build(mrows, {
+        drum = drum, roll = Roll, kit = Kit,
+        view_hi = state.view_hi, view_rows = state.view_rows,
+    })
+    if not drum then
+        state.view_hi, state.view_rows = m.view_hi, m.view_rows
     end
-    local map = mrows.map
-    for k in pairs(map) do map[k] = nil end
-    for idx = 1, #list do map[list[idx]] = idx end
-    mrows.n = #list
-    return mrows
+    return m
 end
 
 -- ---------------------------------------------------------------------------
@@ -1678,14 +1654,27 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 if nt < 0 then nt = 0 end
                 local np = pitch or (md.multi and md.opp) or Roll.pitches[md.idx]
                 if md.multi and md.multi > 1 then
-                    -- group move: same delta on every snapshot note
+                    -- group move: same delta on every snapshot note. Vertically
+                    -- the delta is in ROWS when the rows are a drum list — one
+                    -- row there can be a 7-semitone jump, and a pitch delta
+                    -- would throw every other note between the pads. Melodic
+                    -- rows are contiguous, where the two deltas are the same.
                     local dt = nt - md.op
-                    local dp = np - md.opp
-                    for k = 1, md.multi do
-                        local e = move_snap[k]
-                        local ns = math.max(0, e.s + dt)
-                        local npp = math.min(127, math.max(0, e.p + dp))
-                        Roll.MoveLive(e.i, ns, npp)
+                    if rows.drum then
+                        local drow = (rows.map[np] or 0) - (rows.map[md.opp] or 0)
+                        for k = 1, md.multi do
+                            local e = move_snap[k]
+                            Roll.MoveLive(e.i, math.max(0, e.s + dt),
+                                          Rows.Shift(rows, e.p, drow))
+                        end
+                    else
+                        local dp = np - md.opp
+                        for k = 1, md.multi do
+                            local e = move_snap[k]
+                            local ns = math.max(0, e.s + dt)
+                            local npp = math.min(127, math.max(0, e.p + dp))
+                            Roll.MoveLive(e.i, ns, npp)
+                        end
                     end
                     md.moved = true
                 elseif nt ~= Roll.starts[md.idx] or np ~= Roll.pitches[md.idx] then
