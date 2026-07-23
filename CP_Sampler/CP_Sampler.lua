@@ -121,6 +121,8 @@ local MODE_TABS   = { { key = "drum", id = "mode_drum", label = "Drum" },
                       { key = "instrument", id = "mode_instr", label = "Instr" } }
 local ICONBTN_OPTS = { width = 0, height = 0 }
 local KNOB_OPTS   = { size = 34 }
+-- ±24 st over the knob travel: slower drag so one pixel stays sub-decimal
+local PITCH_KNOB_OPTS = { size = 34, sensitivity = 0.002 }
 local COMBO_OPTS  = { width = 58 }
 local ROOT_OPTS   = { step = 1, format = "%.0f", width = 50 }
 local PLAY_OPTS   = {}            -- pooled Audio.Play opts
@@ -1157,11 +1159,14 @@ local function drawControls(theme)
     do
         -- Pitch that keeps the length (ReaPitch, élastique) — Tune above is
         -- RS5K resample, the vinyl move: pitch and duration coupled.
+        -- The knob spans ±24 st on ReaPitch's continuous full-range shift
+        -- (SetPadPitch clamps into the param's real bounds); Shift = fine.
         local st = Kit.PadPitch(note)
-        local changed, nv = UI.Knob("k_rpitch", "Pitch", 0.5 + st / 24, 0.5, KNOB_OPTS)
-        if changed then Kit.SetPadPitch(note, (nv - 0.5) * 24) end
+        local changed, nv = UI.Knob("k_rpitch", "Pitch", 0.5 + st / 48, 0.5,
+                                    PITCH_KNOB_OPTS)
+        if changed then Kit.SetPadPitch(note, (nv - 0.5) * 48) end
         if UI.IsItemHovered() then
-            UI.Tooltip(string.format("%+.1f st — elastique pitch, length unchanged", st))
+            UI.Tooltip(string.format("%+.2f st — elastique pitch, length unchanged (Shift = fine)", st))
         end
         UI.SameLine()
     end

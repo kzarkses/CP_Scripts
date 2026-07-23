@@ -1656,7 +1656,9 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         if Core.MouseDown(1) then
             local _, dy = Core.MouseDelta()
             if dy ~= 0 then
-                new_value = new_value - dy * sensitivity
+                -- Shift = fine drag (all knobs): 1/10th of the travel
+                local sens = Core.ModShift() and sensitivity * 0.1 or sensitivity
+                new_value = new_value - dy * sens
                 new_value = max(0, min(1, new_value))
                 if new_value ~= value then changed = true end
             end

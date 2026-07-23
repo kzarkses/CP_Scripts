@@ -293,7 +293,12 @@ function Kit.Scan()
     for i = #kits, 1, -1 do kits[i] = nil end
     local count = r.CountTracks(0)
     -- every kit parent in the project; the ACTIVE one (by GUID) is the kit
-    -- this module drives — first found when no choice was made yet
+    -- this module drives — the project's saved choice when no choice was
+    -- made this session yet, the first found as last resort
+    if not Kit.active_guid then
+        local _, g = r.GetProjExtState(0, "CP_Sampler", "ACTIVE_KIT")
+        if g and g ~= "" then Kit.active_guid = g end
+    end
     for i = 0, count - 1 do
         local tr = r.GetTrack(0, i)
         if getExt(tr, "CP_KIT") then
@@ -365,23 +370,41 @@ local function busOf(parent)
     return bus
 end
 
--- Choose which kit this module drives. Pad clicks travel over the VKB
--- queue, which reaches EVERY armed bus — so exactly one kit may listen:
--- the inactive kits' input buses disarm here (their content still plays
--- through channel sends, e.g. from CP_Looper lanes; sends ignore arm).
-function Kit.SetActive(track)
-    if not valid(track) then return false end
-    Kit.active_guid = r.GetTrackGUID(track)
-    Kit.Scan()
+-- Pad clicks travel over the VKB queue, which reaches EVERY armed bus —
+-- so exactly one kit may listen: the ACTIVE one. This runs continuously
+-- (from Poll), not just at SetActive time, because project loads restore
+-- saved arm states and selection helpers (CP_AutoArmVSTiTrack) re-arm
+-- tracks behind our back. Inactive kits still PLAY through channel sends
+-- (e.g. CP_Looper lanes; sends ignore arm) — they just stop listening to
+-- live input. Only writes on an actual mismatch.
+local function enforceSingleListener()
+    if #Kit.kits < 2 then return end
     for _, ktr in ipairs(Kit.kits) do
-        if ktr ~= Kit.parent then
+        if ktr ~= Kit.parent and valid(ktr) then
             local bus = busOf(ktr)
-            if bus then
+            if bus and (r.GetMediaTrackInfo_Value(bus, "I_RECARM") == 1
+                     or r.GetMediaTrackInfo_Value(bus, "I_RECMON") ~= 0) then
                 r.SetMediaTrackInfo_Value(bus, "I_RECARM", 0)
                 r.SetMediaTrackInfo_Value(bus, "I_RECMON", 0)
+                last_change = r.GetProjectStateChangeCount(0)
             end
         end
     end
+end
+
+-- Choose which kit this module drives. Armed is the working default, so
+-- switching kits re-asserts it — and builds the MIDI bus if this kit
+-- never had one (a kit without a bus could not arm, which read as the
+-- arm state "turning itself off" when coming back to it). The choice is
+-- saved per project.
+function Kit.SetActive(track)
+    if not valid(track) then return false end
+    Kit.active_guid = r.GetTrackGUID(track)
+    r.SetProjExtState(0, "CP_Sampler", "ACTIVE_KIT", Kit.active_guid)
+    Kit.Scan()
+    if not valid(Kit.bus) then Kit.EnsureBus() end
+    enforceSingleListener()
+    Kit.arm_intent = true
     Kit.HoldArm()
     return true
 end
@@ -427,9 +450,11 @@ function Kit.Poll()
     last_change = c
     Kit.Scan()
     -- something changed the project: that is exactly when another script may
-    -- have disarmed our input bus, so re-assert the intent before anything else
-    -- reads Kit.Armed() (the audition path branches on it).
+    -- have disarmed our input bus — or re-armed an inactive kit's — so
+    -- re-assert both intents before anything else reads Kit.Armed() (the
+    -- audition path branches on it).
     Kit.HoldArm()
+    enforceSingleListener()
     -- One-time routing migration/repair per session: kits built before
     -- the MIDI-bus architecture have choke+sends on the folder parent
     -- (feedback-muted) and possibly pads armed as a user workaround.
@@ -1093,12 +1118,40 @@ local function padReaPitch(pad, create)
         if fx < 0 then return nil end
         hideFX(pad.track, fx)
     end
+    -- Bind the CONTINUOUS "Shift (full range)" slider, not the stepped
+    -- integer "Shift (semitones)" one: a stepped param snaps every small
+    -- knob drag back to the last whole value, which reads as a dead —
+    -- then jumpy — knob. Semitones kept as a fallback for old ReaPitch
+    -- builds that may name things differently.
+    local full, semi
     for i = 0, r.TrackFX_GetNumParams(pad.track, fx) - 1 do
         local _, pn = r.TrackFX_GetParamName(pad.track, fx, i, "")
-        if pn and pn:lower():find("semitone", 1, true) then
-            pad.rp_fx, pad.rp_param = fx, i
-            return fx, i
+        local low = pn and pn:lower() or ""
+        if not low:find("formant", 1, true) then
+            -- no break: BOTH are needed (semitones comes after full range)
+            if not full and low:find("full range", 1, true) then full = i end
+            if not semi and low:find("semitone", 1, true) then semi = i end
         end
+    end
+    local best = full or semi
+    if best then
+        -- One-shot migration: an earlier build drove the stepped slider —
+        -- fold any leftover shift into the continuous param so the audible
+        -- pitch and the knob agree again.
+        if full and semi and semi ~= full then
+            local sv = r.TrackFX_GetParam(pad.track, fx, semi)
+            if sv and sv ~= 0 then
+                local cur, mn, mx = r.TrackFX_GetParam(pad.track, fx, full)
+                local v = (cur or 0) + sv
+                if mn and mx and mx > mn then
+                    if v < mn then v = mn elseif v > mx then v = mx end
+                end
+                r.TrackFX_SetParam(pad.track, fx, full, v)
+                r.TrackFX_SetParam(pad.track, fx, semi, 0)
+            end
+        end
+        pad.rp_fx, pad.rp_param = fx, best
+        return fx, best
     end
     return nil
 end
