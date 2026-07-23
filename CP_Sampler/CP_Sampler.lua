@@ -27,6 +27,7 @@ local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 local Kit     = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks  = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Tempo   = dofile(cp_root .. "CP_Engine/Tempo.lua")
+local Bake    = dofile(cp_root .. "CP_Engine/Bake.lua")
 local Audio   = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 
@@ -38,6 +39,7 @@ if not okW or type(Peaks) ~= "table" then Peaks = nil end
 Tracks.init(r)
 Kit.init(r, Tracks)
 Tempo.init(r)
+Bake.init(r)
 Audio.init(r)
 DragBus.init(r)
 if Peaks then Peaks.init(r) end
@@ -356,6 +358,27 @@ local function chokeMenuItems(note)
     return items
 end
 
+-- Bake the pad's trimmed region (SOFFS..EOFFS) into a new WAV next to the
+-- source and point the pad at it — destructive editing without touching the
+-- original file. With no trim set this consolidates the sample as a clean
+-- WAV copy (useful to materialize an MP3/FLAC pad).
+local function bakeCropPad(note)
+    local pad = Kit.pads[note]
+    if not (pad and pad.path) then return end
+    local s = Kit.Param(note, Kit.P.SOFFS) or 0
+    local e = Kit.Param(note, Kit.P.EOFFS) or 1
+    if e <= s then flash("Nothing to crop") return end
+    local psrc = r.PCM_Source_CreateFromFile(pad.path)
+    if not psrc then flash("Cannot open " .. pad.path) return end
+    local slen = r.GetMediaSourceLength(psrc)
+    r.PCM_Source_Destroy(psrc)
+    local dst = Bake.NextPath(pad.path, "crop")
+    local frames, err = Bake.FileRegionToWav(pad.path, s * slen, e * slen, dst)
+    if not frames then flash("Bake failed: " .. (err or "?")) return end
+    Kit.LoadSample(note, dst)
+    flash("Baked -> " .. (dst:match("[^\\/]+$") or dst))
+end
+
 local function openPadMenu(note)
     local pad = Kit.pads[note]
     local has = pad and pad.path
@@ -397,6 +420,9 @@ local function openPadMenu(note)
                 end
             end
         end }
+        items[#items + 1] = { separator = true }
+        items[#items + 1] = { label = "Bake: crop to trim (new file)",
+                              action = function() bakeCropPad(note) end }
         items[#items + 1] = { separator = true }
         items[#items + 1] = { label = "Rename pad...", action = function()
             local ok, name = r.GetUserInputs("Rename pad", 1,
