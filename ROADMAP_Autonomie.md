@@ -277,3 +277,38 @@ Full autonomie, code propre, pérenne, performance maître mot. »
   Editor, Session. Restent : Media Explorer, CP_ModLFO, FXC.
 - [ ] Encore ouvert (ordre libre) : DnD-capture de modulation, "?"
   dans ME/ModLFO/FXC, overflow (§3.5), maquettes HTML design.
+
+---
+
+## Session 4 (2026-07-23 nuit) — ses retours de test sur le programme
+
+Retours : "cliquer une lane ouvre encore l'éditeur embarqué", "la
+Session n'accepte ni DnD ni clic-pour-éditer", "toujours pas d'audio
+DnD dans le looper (stretch au beat ?)", "sample sync dans le
+sampler ?", perfs légèrement en baisse (stutter au drag de fenêtre),
+couleurs hardcodées (scrollbars, lignes ME/FXB, Looper), knobs
+disgracieux.
+
+Corrigé/livré (`35d4440`, `4ed5ee1`, `cc6361c`) :
+- [x] **Unification réelle** : `Bus.OpenEditor` lance CP_Editor s'il ne
+  tourne pas (action enregistrée persistée + heartbeat) ; clic sur le
+  mini-roll d'une lane → CP_Editor (Alt+clic = éditeur embarqué) ;
+  double-clic sur une cellule Session → CP_Editor (même vide).
+- [x] **Session** : cible DragBus (fichier audio → cellule A, clip MIDI
+  → lane) ; **rangée AUDIO interim (P3)** : CF_Preview par cellule,
+  tempo-match natif (rate + preserve pitch), boucle, aligné mesure
+  quand le transport tourne, sortie via piste sélectionnée, persistée
+  par projet. Consomme aussi editor:apply (marche sans Looper ouvert).
+- [x] **Perf** : la Session repasse en idle-throttle (redraw seulement
+  quand pending/lecture) — c'était la seule fenêtre à tourner en
+  continu sans besoin. Suspicion résiduelle du stutter : le coût
+  de composition des arrondis → si ça persiste, bascule des surfaces
+  vers des buffers bakés (la réserve notée dans ANALYSE_DesignSystem).
+- [x] **Knobs lissés** : bake 2× + blit filtré (gfx.mode 4), bords de
+  l'arc de valeur adoucis à demi-alpha.
+- Réponses données : le **sync du sampler existe** (menu pad → "Sync to
+  project tempo", repitch par TUNE, BPM source du nom de fichier ou
+  saisi) ; l'**audio du looper** vit dans la Session (rangée A interim,
+  moteur JSFX sample-lock = P4) ; les **couleurs hardcodées** = la
+  tranche "palette sémantique + tokens" d'ANALYSE_DesignSystem §4.1 (à
+  faire : play/record/mod en tokens + sweep des littéraux d'apps).
