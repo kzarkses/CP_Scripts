@@ -48,6 +48,13 @@ local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
 -- Shared row model (melodic window / drum pitch-list) — same one CP_Editor
 -- uses, so drum mode behaves identically in both editors.
 local Rows = dofile(cp_root .. "CP_Engine/Rows.lua")
+-- Clip + Bus: the lane ↔ CP_Editor round trip — open a lane over there,
+-- hear its edits come back live (editor:apply).
+local Clip = dofile(cp_root .. "CP_Engine/Clip.lua")
+local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
+local Bus = dofile(cp_root .. "CP_Engine/Bus.lua")
+DragBus.init(r)
+Bus.init(r, DragBus, Clip)
 
 -- ---------------------------------------------------------------------------
 -- Config / state
@@ -975,7 +982,19 @@ local function drawEditor(theme)
     if tinyBtn(x + 262, hy2, 56, hbh, "To item", 0.22, 0.26, 0.32, theme) then
         exportLaneToItem(lane)
     end
-    Core.DrawText(selHint(), x + 326, hy2 + 5,
+    -- hand the lane to CP_Editor (universal editor): it edits the clip and
+    -- its editor:apply messages land back in this lane live
+    if tinyBtn(x + 322, hy2, 52, hbh, "Editor", 0.22, 0.26, 0.32, theme) then
+        local c = Loop.LaneToClip(lane)
+        if c then
+            c.origin = "looper:" .. lane
+            Bus.Send("editor:open", c)
+            flash("Lane sent to CP_Editor")
+        else
+            flash("Empty lane")
+        end
+    end
+    Core.DrawText(selHint(), x + 384, hy2 + 5,
                   C.text_mute[1], C.text_mute[2], C.text_mute[3], 0.85)
 
     -- roll area: a note grid above a velocity lane. Rows come from the
@@ -1440,6 +1459,20 @@ local function frame(theme)
     end
 
     pollPersist(attached)
+
+    -- edits coming home from CP_Editor (a lane opened there via the "Editor"
+    -- button): apply notes + length WITHOUT touching the lane's mode, so a
+    -- playing loop keeps playing through the edit.
+    if attached then
+        local ac = Bus.Recv("editor:apply")
+        if ac and ac.origin then
+            local ln = tonumber(ac.origin:match("^looper:(%d+)"))
+            if ln and ln >= 0 and ln < LANES and Loop.ApplyClip(ln, ac) then
+                ev[ln].ver = -1
+                roll_ver = -1
+            end
+        end
+    end
 
     -- leaving a valid attachment (or losing it) drops out of the editor
     if state.edit_lane ~= nil and not attached then exitEdit() end

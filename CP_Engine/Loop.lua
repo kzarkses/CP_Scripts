@@ -680,6 +680,28 @@ end
 -- Load a MIDI clip into a lane: replaces its content, leaves it STOPPED
 -- and ready to launch (never yanks a playing set). False when the clip
 -- overflows the engine's note cap.
+-- Live-apply an edited clip into a lane: notes + length only — the mode is
+-- NOT touched, so a playing lane keeps playing (the JSFX reconciles the
+-- sounding notes against the new list every block). This is the
+-- editor:apply consumer's path; ClipToLane below stays the cold "load a
+-- clip here" that also settles the stopped/empty mode.
+function Loop.ApplyClip(lane, clip)
+    if not attached or not clip or clip.kind ~= "midi" then return false end
+    local nt = clip.notes
+    local n = (nt and nt.s and #nt.s) or 0
+    if n > Loop.MAX_NOTES then return false end
+    for i = 1, n do
+        Loop.PutNote(lane, i - 1, nt.s[i], nt.l[i], nt.p[i], nt.v[i])
+    end
+    Loop.SetNoteCount(lane, n)
+    if clip.bars and clip.bars > 0
+       and clip.bars ~= Loop.GetLengthBars(lane) then
+        Loop.SetLengthBars(lane, clip.bars)
+    end
+    Loop.BumpVer(lane)
+    return true
+end
+
 function Loop.ClipToLane(lane, clip)
     if not attached or not clip or clip.kind ~= "midi" then return false end
     local nt = clip.notes
