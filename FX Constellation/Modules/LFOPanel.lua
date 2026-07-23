@@ -323,7 +323,21 @@ function LFOPanel.draw(theme, ctx)
 					{ 0.4, 0, theme.button_height },
 					{ gap = theme.item_spacing })
 				UItk.Text(t.pname or "?")
-				if UItk.IsItemHovered() then UItk.Tooltip(t.fxname or "") end
+				if UItk.IsItemHovered() then
+					UItk.Tooltip((t.fxname or "") .. "  —  click to inspect")
+				end
+				-- Click the name to pin it in the target inspector below.
+				-- The last-touched override is suspended until a NEW touch:
+				-- remember what "touched" said at pin time and ignore it
+				-- while it keeps saying the same thing.
+				if UItk.IsItemClicked() and ctx.inspect and ctx.inspect(t.tr, t.fx, t.parm) then
+					LFOPanel._target = { tr = t.tr, fx = t.fx, parm = t.parm }
+					if ctx.touched then
+						local ttr, tfx, tparm = ctx.touched()
+						LFOPanel._pin_touch = ttr
+							and (tostring(ttr) .. ":" .. tfx .. ":" .. tparm) or "-"
+					end
+				end
 				UItk.NextColumn()
 				local dc2, dv2 = UItk.SliderDouble("lfopanel_tgtd_" .. i, "",
 					t.scale, -1, 1,
@@ -350,6 +364,14 @@ function LFOPanel.draw(theme, ctx)
 	-- the Bitwig "per-target amount" pattern.
 	if ctx.touched and ctx.inspect then
 		local tr, fx, parm = ctx.touched()
+		-- A name-click pinned a target: the stale "last touched" must not
+		-- steal it back. Only a DIFFERENT touch re-arms the override.
+		local tsig = tr and (tostring(tr) .. ":" .. fx .. ":" .. parm) or "-"
+		if LFOPanel._pin_touch and tsig == LFOPanel._pin_touch then
+			tr = nil
+		else
+			LFOPanel._pin_touch = nil
+		end
 		if tr and ctx.inspect(tr, fx, parm) then
 			local t = LFOPanel._target
 			if not (t and t.tr == tr and t.fx == fx and t.parm == parm) then
