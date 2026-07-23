@@ -179,20 +179,25 @@ local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, t
         entry = {}
         knob_bg_cache[size] = entry
     end
-    local cx, cy = size / 2, size / 2
-    local radius = size / 2
-    local ar = radius - 3
     gfx.dest = buf_id
     -- Force a real clear (audit B9): setimgdim with unchanged dims does NOT
     -- clear the buffer and drawing a rect at alpha 0 is a no-op — re-bakes
     -- after a theme change used to blend the new colors over the old pixels
     -- (permanent ghosting). Resizing to 0×0 and back wipes the pixels.
+    --
+    -- Supersampled 2×: circles/arcs rasterize with visible stairs at 1×.
+    -- Baking double-size and blitting down with filtering (gfx.mode 4)
+    -- smooths them — the cost lives in the bake, never in the frame.
+    local ss = size * 2
     gfx.setimgdim(buf_id, 0, 0)
-    gfx.setimgdim(buf_id, size, size)
+    gfx.setimgdim(buf_id, ss, ss)
+    local cx, cy = ss / 2, ss / 2
+    local radius = ss / 2
+    local ar = radius - 6
     gfx.set(bg_r, bg_g, bg_b, 0.5)
-    gfx.circle(cx, cy, radius - 1, 1, 1)
+    gfx.circle(cx, cy, radius - 2, 1, 1)
     gfx.set(trk_r, trk_g, trk_b, 0.25)
-    for i = 0, tw - 1 do
+    for i = 0, tw * 2 - 1 do
         gfx.arc(cx, cy, ar - i, KNOB_ANGLE_MIN, KNOB_ANGLE_MAX, 1)
     end
     gfx.dest = -1
@@ -1824,7 +1829,10 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         local knob_buf = get_knob_bg_buffer(size,
             bg[1], bg[2], bg[3], trk[1], trk[2], trk[3], tw)
         if knob_buf then
-            gfx.blit(knob_buf, 1, 0, 0, 0, size, size, x, y, size, size)
+            local om = gfx.mode
+            gfx.mode = 4   -- filtered blit: the 2× bake downsamples smooth
+            gfx.blit(knob_buf, 1, 0, 0, 0, size * 2, size * 2, x, y, size, size)
+            gfx.mode = om
         else
             gfx.set(bg[1], bg[2], bg[3], 0.5)
             gfx.circle(cx, cy, radius - 1, 1, 1)
@@ -1834,11 +1842,16 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
             end
         end
 
-        -- Value arc (from min to current value)
+        -- Value arc (from min to current value). Half-radius edge passes at
+        -- reduced alpha soften the band's borders — poor-man's AA for the
+        -- one part that can't be baked (it changes with the value).
         if display_val > 0.005 then
             local ac = theme.colors.accent
             if Core.IsActive(id) then ac = theme.colors.accent_active
             elseif hovered then ac = theme.colors.accent_hovered end
+            gfx.set(ac[1], ac[2], ac[3], (ac[4] or 1) * 0.45)
+            gfx.arc(cx, cy, ar + 0.5, angle_min, angle_val, 1)
+            gfx.arc(cx, cy, ar - tw + 0.5, angle_min, angle_val, 1)
             gfx.set(ac[1], ac[2], ac[3], ac[4])
             for i = 0, tw - 1 do
                 gfx.arc(cx, cy, ar - i, angle_min, angle_val, 1)
@@ -1946,7 +1959,10 @@ function Widgets.ModKnob(id, label, base, depth, live, theme, opts)
         local knob_buf = get_knob_bg_buffer(size,
             bg[1], bg[2], bg[3], trk[1], trk[2], trk[3], tw)
         if knob_buf then
-            gfx.blit(knob_buf, 1, 0, 0, 0, size, size, x, y, size, size)
+            local om = gfx.mode
+            gfx.mode = 4   -- filtered blit: the 2× bake downsamples smooth
+            gfx.blit(knob_buf, 1, 0, 0, 0, size * 2, size * 2, x, y, size, size)
+            gfx.mode = om
         else
             gfx.set(bg[1], bg[2], bg[3], 0.5)
             gfx.circle(cx, cy, radius - 1, 1, 1)
