@@ -746,7 +746,7 @@ local function drawViz(theme, l, el, x, y, w, h, mode)
     for b = 0, nb do
         local gx = x + (b / lenB) * w
         local gc = ((b % tsnum) == 0) and GBAR or GBEAT
-        Core.DrawLine(gx, y, gx, y + h, gc[1], gc[2], gc[3], 1)
+        Core.DrawLine(gx, y, gx, y + h, gc[1], gc[2], gc[3], gc[4] or 1)
     end
 
     -- note bars
@@ -1125,33 +1125,47 @@ local function drawEditor(theme)
     local rowh = grid_h / rows.n
     local vy = ry + grid_h + 4
 
-    -- pitch rows + label column (piano keys / drum note names)
+    -- Pitch rows + label column (piano keys / drum note names).
+    --
+    -- These used to be six literal greys (0.125 / 0.10 / 0.095 / 0.13 / 0.17 /
+    -- 0.16 / 0.80) while CP_Editor read canvas tokens for exactly the same
+    -- elements — so the two rolls could not look alike, and no theme reached
+    -- either one of them. Same tokens on both sides now.
+    local ROW_LIT  = C.canvas_row
+    local ROW_DARK = C.canvas_row_dark
+    local ROW_OFF  = C.canvas_row_off
+    local LANE     = C.canvas_lane
     for i = 1, rows.n do
         local p = rows.list[i]
         local yy = ry + (i - 1) * rowh
         local blk = BLACK_KEY[p % 12]
-        local sh
+        local rc
         if rows.drum then
-            sh = (i % 2 == 0) and 0.125 or 0.10
+            rc = (i % 2 == 0) and ROW_LIT or ROW_DARK
         else
-            sh = blk and 0.095 or 0.13
-            if Roll.scale_on and not Roll.InScale(p) then sh = sh * 0.5 end   -- scale dim
+            rc = blk and ROW_DARK or ROW_LIT
+            if Roll.scale_on and not Roll.InScale(p) then rc = ROW_OFF end
         end
-        Core.DrawRect(rx, yy, rw, rowh + 0.5, sh, sh, sh + 0.006, 1)
+        Core.DrawRect(rx, yy, rw, rowh + 0.5, rc[1], rc[2], rc[3], rc[4] or 1)
         if not rows.drum and p % 12 == 0 then
-            Core.DrawLine(rx, yy, rx + rw, yy, C.border[1], C.border[2], C.border[3], 0.4)
+            Core.DrawLine(rx, yy, rx + rw, yy, C.border[1], C.border[2], C.border[3], 1)
         end
         if rows.drum then
-            Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, 0.17, 0.17, 0.19, 1)
+            Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, LANE[1], LANE[2], LANE[3], LANE[4] or 1)
             if rowh >= 8 then
                 Core.DrawText(Rows.Label(rows, p, kv), x + 3, yy + rowh * 0.5 - 5,
                               C.text[1], C.text[2], C.text[3], 0.9)
             end
         else
-            local kc = blk and 0.16 or 0.80
-            Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, kc, kc, kc + 0.02, 1)
+            -- A real keyboard: white keys light, black keys dark. The lane
+            -- token is chrome, so the black key borrows it and the white key
+            -- takes the text luminance.
+            local kc = blk and LANE or C.text
+            Core.DrawRect(x, yy, kbw - 1, rowh + 0.5, kc[1], kc[2], kc[3], 1)
             if p % 12 == 0 and rowh >= 7 then
-                Core.DrawText(OCT_LBL[p] or "C", x + 1, yy + rowh * 0.5 - 4, 0.2, 0.2, 0.2, 1)
+                local lc = C.canvas_bg
+                Core.DrawText(OCT_LBL[p] or "C", x + 1, yy + rowh * 0.5 - 4,
+                              lc[1], lc[2], lc[3], 1)
             end
         end
     end
@@ -1170,22 +1184,25 @@ local function drawEditor(theme)
     local GSUB  = C.canvas_line_sub
     local GFINE = C.canvas_line_fine
     local s = snapBeats()
+    -- Alpha comes from the token, not from a literal 1 here: three of the
+    -- four tiers are black laid over the row, so their weight has to stay
+    -- relative to whatever row they cross.
     if s > 0 and s < 1 then                      -- the snap's own subdivisions
         for i = 0, math.floor(L / s + 1e-6) do
             local gx = phaseToX(i * s, rx, rw, L)
-            Core.DrawLine(gx, ry, gx, ry + grid_h, GFINE[1], GFINE[2], GFINE[3], 1)
+            Core.DrawLine(gx, ry, gx, ry + grid_h, GFINE[1], GFINE[2], GFINE[3], GFINE[4] or 1)
         end
     end
     if s > 0 and s <= 0.5 + 1e-9 then            -- eighths, once we work that fine
         for i = 0, math.floor(L * 2 + 1e-6) do
             local gx = phaseToX(i * 0.5, rx, rw, L)
-            Core.DrawLine(gx, ry, gx, ry + grid_h, GSUB[1], GSUB[2], GSUB[3], 1)
+            Core.DrawLine(gx, ry, gx, ry + grid_h, GSUB[1], GSUB[2], GSUB[3], GSUB[4] or 1)
         end
     end
     for b = 0, math.floor(L + 1e-6) do           -- beats, barlines stronger
         local gx = phaseToX(b, rx, rw, L)
         local gc = ((b % tsnum) == 0) and GBAR or GBEAT
-        Core.DrawLine(gx, ry, gx, ry + grid_h, gc[1], gc[2], gc[3], 1)
+        Core.DrawLine(gx, ry, gx, ry + grid_h, gc[1], gc[2], gc[3], gc[4] or 1)
     end
 
     -- notes

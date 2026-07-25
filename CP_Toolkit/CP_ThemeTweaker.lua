@@ -54,13 +54,15 @@ end
 
 -- State
 local active_tab = 1
-local tabs = { "Macro", "Presets", "Colors", "Layout", "Fonts", "Preview" }
+local tabs = { "Presets", "Colors", "Layout", "Fonts", "Preview" }
 
--- Knob option tables, hoisted (a widget opts built inline allocates per frame)
-local K_STEP = { min = 0.02, max = 0.11, decimals = 3, label_right = true }
-local K_TEXT = { min = 0.60, max = 1.00, decimals = 2, label_right = true }
-local K_OUTL = { min = 0.00, max = 1.00, decimals = 2, label_right = true }
-local K_BASE = { min = 0.02, max = 0.30, decimals = 3, label_right = true }
+-- The Macro tab is gone. It derived forty colours from six numbers, and it
+-- was a bad trade three times over: it never actually ran (no theme file on
+-- disk carried a macro block), it was inert at load time (LoadSaved applied
+-- the literals after it), and when it did fire one turn of one knob silently
+-- rewrote 43 of the 49 colours edited by hand on the next tab. The identity
+-- is now eight written numbers in Theme.lua — see Theme.RAMP — which is a
+-- thing you can read, and not a thing that can overwrite you.
 local group_states = {}
 local save_name = "theme"
 local eyedropper_target = nil  -- color key to set when eyedropper picks
@@ -86,96 +88,9 @@ UI.Run(function()
     local t = UI.GetTheme()
 
     -- ================================================================
-    -- MACRO TAB — the six numbers a theme is really made of
-    -- ================================================================
-    if active_tab == 1 then
-        if not t.macro then
-            UI.TextWrapped("This theme was hand-tuned colour by colour, before macros existed. "
-                .. "Switching derives the whole chrome from six values instead — surfaces, "
-                .. "frames, text — and that is what fixes contrast: the levels get spaced "
-                .. "apart on purpose instead of landing wherever each was typed.")
-            UI.Spacing(6)
-            UI.Spacing(2)
-            UI.SetFontCaption()
-            UI.TextWrapped("Reversible: your colours are kept aside and one click brings "
-                .. "them back. A theme built by hand — a debug theme above all — is an "
-                .. "instrument, and no convenience is worth losing it.", { disabled = true })
-            UI.SetFontBody()
-            UI.Spacing(6)
-            if UI.Button("tw_macro_on", "Derive this theme from macros") then
-                UI.Theme.BeginMacro(t)
-                -- keep what the theme already said about its own identity
-                local a = t.colors_pre_macro.accent
-                local w = t.colors_pre_macro.window_bg
-                t.macro.primary = { a[1], a[2], a[3] }
-                t.macro.base = { w[1] * 0.75, w[2] * 0.75, w[3] * 0.75 }
-                UI.Theme.ApplyMacro(t)
-                mark_dirty()
-            end
-        else
-            local m = t.macro
-            UI.Text("Ground")
-            UI.Separator()
-            local bc = { m.base[1], m.base[2], m.base[3], 1 }
-            local ch, nc = UI.ColorPicker("tw_m_base", "Base", bc)
-            if ch then m.base = { nc[1], nc[2], nc[3] } UI.Theme.ApplyMacro(t) mark_dirty() end
-
-            local sc, sv = UI.Knob("tw_m_step", "Contrast",
-                (m.step - 0.02) / 0.09, (0.055 - 0.02) / 0.09, K_STEP)
-            if sc then m.step = 0.02 + sv * 0.09 UI.Theme.ApplyMacro(t) mark_dirty() end
-            UI.SameLine(14)
-            local oc, ov = UI.Knob("tw_m_outline", "Frames", m.outline, 0.62, K_OUTL)
-            if oc then m.outline = ov UI.Theme.ApplyMacro(t) mark_dirty() end
-            UI.SameLine(14)
-            local xc, xv = UI.Knob("tw_m_text", "Text",
-                (m.text - 0.6) / 0.4, (0.92 - 0.6) / 0.4, K_TEXT)
-            if xc then m.text = 0.6 + xv * 0.4 UI.Theme.ApplyMacro(t) mark_dirty() end
-
-            UI.Spacing(8)
-            UI.Text("Voices")
-            UI.Separator()
-            local pc = { m.primary[1], m.primary[2], m.primary[3], 1 }
-            local pch, pnv = UI.ColorPicker("tw_m_pri", "Primary", pc)
-            if pch then m.primary = { pnv[1], pnv[2], pnv[3] } UI.Theme.ApplyMacro(t) mark_dirty() end
-            local qc = { m.secondary[1], m.secondary[2], m.secondary[3], 1 }
-            local qch, qnv = UI.ColorPicker("tw_m_sec", "Secondary", qc)
-            if qch then m.secondary = { qnv[1], qnv[2], qnv[3] } UI.Theme.ApplyMacro(t) mark_dirty() end
-
-            -- The ladder, drawn. Reading five swatches is the only honest way
-            -- to answer "is there enough contrast" — a number cannot say it.
-            UI.Spacing(10)
-            UI.Text("Levels", { disabled = true })
-            UI.Spacing(2)
-            local lx, ly = UI.GetCursorPos()
-            local sw, sh = 46, 34
-            local keys = { "window_bg", "surface", "frame_bg", "button", "button_hovered" }
-            for i = 1, #keys do
-                local c = t.colors[keys[i]]
-                UI.Core.DrawRect(lx + (i - 1) * (sw + 4), ly, sw, sh, c[1], c[2], c[3], 1)
-                local b = t.colors.border
-                UI.Core.DrawRect(lx + (i - 1) * (sw + 4), ly, sw, sh, b[1], b[2], b[3], b[4] or 1, false)
-            end
-            UI.Layout.AdvanceCursor(#keys * (sw + 4), sh)
-            UI.Spacing(4)
-            UI.SetFontCaption()
-            UI.TextWrapped("Window · panel · input · button · hovered. If two of these read "
-                .. "as the same grey, raise Contrast — that, and Frames, are the whole fix.",
-                { disabled = true })
-            UI.SetFontBody()
-
-            if t.colors_pre_macro then
-                UI.Spacing(12)
-                if UI.Button("tw_macro_off", "Stop deriving — restore my colours") then
-                    UI.Theme.EndMacro(t)
-                    mark_dirty()
-                end
-            end
-        end
-
-    -- ================================================================
     -- PRESETS TAB
     -- ================================================================
-    elseif active_tab == 2 then
+    if active_tab == 1 then
         -- Active preset indicator row
         UI.Text("Built-in Presets")
         UI.SameLine()
@@ -269,7 +184,7 @@ UI.Run(function()
     -- ================================================================
     -- COLORS TAB
     -- ================================================================
-    elseif active_tab == 3 then
+    elseif active_tab == 2 then
         local groups = UI.Theme.GetColorGroups()
 
         -- Eyedropper status
@@ -318,7 +233,7 @@ UI.Run(function()
     -- ================================================================
     -- LAYOUT TAB
     -- ================================================================
-    elseif active_tab == 4 then
+    elseif active_tab == 3 then
         -- Widget style toggle (flat vs windows)
         UI.Text("Widget Style")
         UI.Separator()
@@ -374,7 +289,7 @@ UI.Run(function()
     -- ================================================================
     -- FONTS TAB
     -- ================================================================
-    elseif active_tab == 5 then
+    elseif active_tab == 4 then
         UI.SetFontH1()
         UI.Text("Font Sizes")
         UI.SetFontBody()
@@ -435,7 +350,7 @@ UI.Run(function()
     -- ================================================================
     -- PREVIEW TAB
     -- ================================================================
-    elseif active_tab == 6 then
+    elseif active_tab == 5 then
         UI.SetFontH1()
         UI.Text("Font Hierarchy")
         UI.SetFontBody()

@@ -7,58 +7,56 @@ local Theme = {}
 -- DEFAULT THEME (dark, REAPER-ish) — values at scale 1.0
 -- ============================================================================
 -- ============================================================================
--- MACROS — the six numbers a theme is really made of
+-- THE RAMP — eight neutrals, written, not derived
 -- ============================================================================
--- The colour list below is forty-odd keys, and editing it by hand produces
--- exactly one outcome: a pile of near-identical greys. Measured on a real
--- hand-tuned theme — window 0.18, surface 0.16, surface2 0.20, frame 0.22,
--- header 0.22, tab 0.20, list 0.18 — seven levels inside six hundredths, with
--- a border at 0.30 × 0.5 alpha (≈0.25 effective) that could not draw a line
--- between any of them. Nothing separated because nothing was far enough apart.
+-- This used to be a macro system: six numbers, forty colours derived from them
+-- by formula. It is gone, and the reasons are worth keeping.
 --
--- So the chrome is DERIVED from six macros instead of authored key by key:
+--   • It never ran. No theme file on disk carried a `macro` block, so
+--     LoadSaved set t.macro = nil in every script and the whole system slept.
+--   • It was inert even when awake: LoadSaved called ApplyMacro and then
+--     applied the 63 literal colours on top, so the macros decided nothing.
+--   • It was destructive when it did fire: one turn of one knob rewrote 43 of
+--     the 49 hand-editable colours, with no warning.
+--   • And it left the product with NO identity. Theme.Default() was a
+--     placeholder overwritten on its last line, so "what the product looks
+--     like" was whatever CP_Config/theme.lua happened to hold.
 --
---   base       the deepest ground; everything else climbs from it
---   step       the distance between two levels — this IS the contrast knob
---   primary    "active, chosen, yours" — the accent
---   secondary  the second voice: selection, links, informational chrome
---   text       text luminance
---   outline    how strongly elements are framed (0 = none, 1 = hard edges)
+-- A ramp of eight written numbers does not need to be derived from six others.
 --
--- Levels, and what may live on each — a widget picks a LEVEL, never a colour:
---   L0 base            the window
---   L1 base + step     panels, lists, popups
---   L2 base + 2·step   inputs, headers, tabs, alternating rows
---   L3 base + 3·step   buttons at rest
---   L4 base + 4·step   buttons hovered
--- A pressed control goes DOWN to L1: sunken, not brighter.
+-- Measured off `Reapertips Theme – Green` v1.91 — the theme actually in use —
+-- with lightness in CIE L*, because sRGB distance lies at the dark end.
+-- The old ladder lived between L* 9.7 and L* 30. This one lives between
+-- L* 14.7 and L* 53.4. That gap is the whole complaint: it was never a
+-- contrast problem, it was a LIGHT problem, and adding contrast inside a box
+-- that dark only hardens it.
 --
--- The neutral is tinted a few percent toward `secondary` on purpose. A pure
--- grey reads as unconsidered; the tint is what makes it look chosen.
-function Theme.MacroDefault()
-    return {
-        base      = { 0.105, 0.105, 0.115 },
-        step      = 0.055,
-        primary   = { 0.40, 0.62, 0.45 },
-        secondary = { 0.42, 0.55, 0.72 },
-        text      = 0.92,
-        outline   = 0.62,
-    }
-end
+--   n1  0.145  #252525  L* 14.7   app ground, gutters
+--   n2  0.196  #323232  L* 20.8   panel surface        ← the base
+--   n3  0.243  #3e3e3e  L* 26.2   raised: toolbar, header
+--   n4  0.259  #424242  L* 28.0   canvas ground, control at rest
+--   n5  0.298  #4c4c4c  L* 32.3   hover, light row
+--   n6  0.345  #585858  L* 37.4   soft border
+--   n7  0.420  #6b6b6b  L* 45.3   border
+--   n8  0.502  #808080  L* 53.4   strong border, bar line
+--
+-- ACHROMATIC on purpose. The old lvl() tinted every neutral 3.5 % toward the
+-- secondary, on the grounds that "a pure grey reads as unconsidered". That is
+-- a web maxim and it is wrong in a DAW: here the colour belongs to the user's
+-- content — their tracks, their clips, their envelopes — so the chrome has to
+-- get out of its way. The reference theme is grey to the bit, R = G = B, on
+-- essentially every neutral it defines.
+--
+-- Two values may repeat when the surfaces they paint are never adjacent, or
+-- are separated by an edge. list_bg == surface is deliberate (a list sits
+-- flush in its panel and is separated by its border — REAPER does the same:
+-- genlist_bg and col_main_bg are both #323232). What is NOT allowed is what
+-- this file used to do: five names — surface, list_bg, button_active,
+-- frame_active, header_active — resolving to one identical colour, so that a
+-- pressed control was indistinguishable from the panel carrying it.
+Theme.RAMP = { 0.145, 0.196, 0.243, 0.259, 0.298, 0.345, 0.420, 0.502 }
 
 local function clamp01(v) return v < 0 and 0 or (v > 1 and 1 or v) end
-
--- level → an rgba on the ladder, tinted toward `secondary`
-local function lvl(m, n, a)
-    local s = m.secondary
-    local out = {}
-    for i = 1, 3 do
-        local g = m.base[i] + m.step * n
-        out[i] = clamp01(g + (s[i] - 0.5) * 0.035)
-    end
-    out[4] = a or 1
-    return out
-end
 
 local function scaled(c, k, a)
     return { clamp01(c[1] * k), clamp01(c[2] * k), clamp01(c[3] * k), a or 1 }
@@ -66,243 +64,195 @@ end
 
 local function grey(v, a) return { v, v, v, a or 1 } end
 
--- Rewrite every CHROME colour from the macros. Role colours (play, record,
--- pending, …) are deliberately untouched: they mean something, so they are
--- not the theme's to reinterpret.
-function Theme.ApplyMacro(t)
-    local m = t.macro
-    if not m then return t end
-    local c = t.colors
-    local pri, sec = m.primary, m.secondary
-
-    c.window_bg   = lvl(m, 0)
-    c.title_bar   = lvl(m, -0.4)
-    c.surface     = lvl(m, 1)
-    c.list_bg     = lvl(m, 1)
-    c.popup_bg    = lvl(m, 1.4, 0.98)
-    c.surface2    = lvl(m, 2)
-    c.frame_bg    = lvl(m, 2)
-    c.header      = lvl(m, 2)
-    c.tab         = lvl(m, 1.4)
-    c.list_alt_bg = lvl(m, 1.5)
-    c.list_hover  = lvl(m, 2.4)
-    c.frame_hovered  = lvl(m, 2.8)
-    c.header_hovered = lvl(m, 3)
-    c.tab_hovered    = lvl(m, 2.6)
-    c.tab_active     = lvl(m, 3.4)
-    c.button         = lvl(m, 3)
-    c.button_hovered = lvl(m, 4.2)
-    -- pressed goes DOWN, not up: a sunken control is the physical metaphor
-    c.button_active  = lvl(m, 1)
-    c.frame_active   = lvl(m, 1)
-    c.header_active  = lvl(m, 1)
-
-    -- Framing. Opaque on purpose: a half-alpha border over a dark ground is
-    -- the thing that stopped drawing a line at all.
-    local ow = 3.4 + 4.6 * m.outline
-    c.border      = lvl(m, ow)
-    c.border_soft = lvl(m, 2.2 + 2.2 * m.outline)
-    c.separator   = lvl(m, ow * 0.85)
-    c.list_grid   = lvl(m, 2.4, 0.55)
-
-    c.text          = grey(clamp01(m.text))
-    c.title_text    = grey(clamp01(m.text * 0.86))
-    c.list_text     = grey(clamp01(m.text * 0.95))
-    c.value_normal  = grey(clamp01(m.text * 0.85))
-    c.text_mute     = grey(clamp01(m.text * 0.52))
-    c.text_disabled = grey(clamp01(m.text * 0.40))
-
-    c.accent         = { pri[1], pri[2], pri[3], 1 }
-    c.accent_hovered = scaled(pri, 1.22)
-    c.accent_active  = scaled(pri, 0.82)
-    c.accent_dim     = scaled(pri, 0.62)
-    c.list_selected      = { sec[1], sec[2], sec[3], 1 }
-    c.list_selected_text = grey(1)
-    c.scrollbar_bg   = lvl(m, 0.6, 0.35)
-    c.scrollbar_grab = lvl(m, 4, 0.75)
-
-    -- CANVAS. The rows straddle the ground rather than both sitting under it:
-    -- one level ABOVE, one BELOW. That is the difference between an
-    -- alternation you can see and one you have to look for — a shade laid
-    -- only downward, on a dark ground, has almost nowhere to go.
-    c.canvas_bg       = lvl(m, 0.7)
-    c.canvas_row      = lvl(m, 1.5)
-    c.canvas_row_dark = lvl(m, 0.1)
-    c.canvas_row_off  = lvl(m, -0.3)
-    c.canvas_lane     = lvl(m, 1.1)
-    c.canvas_ruler    = lvl(m, 1.8)
-    -- The grid climbs well past the button level: a bar line has to out-read
-    -- every surface under it, which is the whole job it has.
-    c.canvas_line_bar  = lvl(m, 5.6 + 2.4 * m.outline)
-    c.canvas_line_beat = lvl(m, 3.8 + 1.4 * m.outline)
-    c.canvas_line_sub  = lvl(m, 2.6 + 0.7 * m.outline)
-    c.canvas_line_fine = lvl(m, 1.9)
-    c.canvas_item      = { pri[1], pri[2], pri[3], 1 }
-    c.canvas_item_sel  = grey(clamp01(m.text * 0.98))
-    c.canvas_playhead  = grey(clamp01(m.text))
-    return t
-end
-
--- Deriving REPLACES the whole colour list, which quietly destroys a theme
--- built by hand — including a DEBUG theme whose entire value is that chosen
--- keys are lurid, so you can see which of them a widget actually reads.
--- Losing that to a convenience feature is not a trade worth making, so the
--- literals are kept aside and the switch goes both ways.
-function Theme.BeginMacro(t)
-    if not t.colors_pre_macro then
-        local snap = {}
-        for k, v in pairs(t.colors) do
-            snap[k] = { v[1], v[2], v[3], v[4] or 1 }
-        end
-        t.colors_pre_macro = snap
-    end
-    if not t.macro then t.macro = Theme.MacroDefault() end
-    return Theme.ApplyMacro(t)
-end
-
-function Theme.EndMacro(t)
-    if t.colors_pre_macro then
-        for k, v in pairs(t.colors_pre_macro) do t.colors[k] = v end
-    end
-    t.macro = nil
-    return t
+-- A state is a DISPLACEMENT on the ramp, not another key. Rest sits on some
+-- step; hover climbs one; pressed sinks one — sunken is the physical metaphor,
+-- and it keeps "lit" free for the accent, which is a different channel.
+--
+-- The twelve state keys below (button/frame/header/tab × rest/hover/active)
+-- stay for now because 704 read sites name them directly; they are simply no
+-- longer allowed to collide. New code should ask for a step.
+function Theme.Step(n, a)
+    local r = Theme.RAMP
+    if n < 1 then n = 1 elseif n > #r then n = #r end
+    local lo = math.floor(n)
+    local v = r[lo]
+    if lo < n and r[lo + 1] then v = v + (r[lo + 1] - v) * (n - lo) end
+    return { v, v, v, a or 1 }
 end
 
 function Theme.Default()
     local t = {
-        -- Derived chrome: see Theme.MacroDefault. A theme file that carries a
-        -- `macro` block is re-derived on load; one that does not keeps the
-        -- literal colours it was hand-tuned with. The literals below are the
-        -- pre-macro values — kept as the shape of the table, immediately
-        -- overwritten by ApplyMacro at the bottom of this function.
-        macro = Theme.MacroDefault(),
         -- Scale factor (1.0 = 100%, 1.5 = 150%, 2.0 = 200%)
         scale = 1.0,
 
-        -- Colors: {r, g, b, a} in 0-1 range (not affected by scale)
+        -- ================================================================
+        -- THE IDENTITY — written, versioned, and the product's own
+        -- ================================================================
+        -- Every neutral here is a step of Theme.RAMP (top of this file), or a
+        -- value written out between two steps. Reading this table tells you
+        -- what the screen looks like without running anything — which is the
+        -- whole point, and exactly what a derived table could never do.
+        --
+        -- A saved theme is a DIFF against this table (see Theme.Save), so a
+        -- key added here reaches every theme ever saved. That is the cure for
+        -- CP_Config/DEFAULT.lua: written before canvas_* and the roles
+        -- existed, saved as a full snapshot of 44 keys out of 63, it left the
+        -- chrome on one palette and the roll on another — and the piano roll
+        -- came out DARKER than the window containing it.
         colors = {
-            window_bg       = { 0.13, 0.13, 0.14, 1.0 },
-            text            = { 0.88, 0.88, 0.88, 1.0 },
-            text_disabled   = { 0.50, 0.50, 0.50, 1.0 },
-            border          = { 0.30, 0.30, 0.32, 0.5 },
+            -- ---- ground --------------------------------------------------
+            title_bar       = { 0.118, 0.118, 0.118, 1.0 },  -- deepest strip
+            window_bg       = { 0.145, 0.145, 0.145, 1.0 },  -- n1
+            surface         = { 0.196, 0.196, 0.196, 1.0 },  -- n2, the panel
+            surface2        = { 0.243, 0.243, 0.243, 1.0 },  -- n3, raised
+            popup_bg        = { 0.212, 0.212, 0.212, 1.0 },  -- opaque on purpose
 
-            button          = { 0.24, 0.24, 0.26, 1.0 },
-            button_hovered  = { 0.32, 0.32, 0.35, 1.0 },
-            button_active   = { 0.18, 0.18, 0.20, 1.0 },
+            -- ---- fields sink, buttons rise --------------------------------
+            -- REAPER ships the same relation: col_main_editbk #2a2a2a sits
+            -- UNDER col_main_bg #323232. An input is a hole, a button a lump.
+            frame_bg        = { 0.165, 0.165, 0.165, 1.0 },
+            frame_hovered   = { 0.190, 0.190, 0.190, 1.0 },
+            frame_active    = { 0.145, 0.145, 0.145, 1.0 },  -- deeper when live
 
-            frame_bg        = { 0.20, 0.20, 0.22, 1.0 },
-            frame_hovered   = { 0.26, 0.26, 0.28, 1.0 },
-            frame_active    = { 0.18, 0.18, 0.20, 1.0 },
+            button          = { 0.275, 0.275, 0.275, 1.0 },
+            button_hovered  = { 0.320, 0.320, 0.320, 1.0 },
+            button_active   = { 0.212, 0.212, 0.212, 1.0 },  -- sunken, not lit
 
-            accent          = { 0.35, 0.60, 0.85, 1.0 },
-            accent_hovered  = { 0.45, 0.70, 0.95, 1.0 },
-            accent_active   = { 0.25, 0.50, 0.75, 1.0 },
+            header          = { 0.230, 0.230, 0.230, 1.0 },
+            header_hovered  = { 0.255, 0.255, 0.255, 1.0 },
+            header_active   = { 0.205, 0.205, 0.205, 1.0 },
 
-            header          = { 0.22, 0.22, 0.24, 1.0 },
-            header_hovered  = { 0.28, 0.28, 0.30, 1.0 },
-            header_active   = { 0.18, 0.18, 0.20, 1.0 },
+            tab             = { 0.220, 0.220, 0.220, 1.0 },
+            tab_hovered     = { 0.259, 0.259, 0.259, 1.0 },
+            tab_active      = { 0.290, 0.290, 0.290, 1.0 },
 
-            separator       = { 0.30, 0.30, 0.32, 0.5 },
+            -- ---- edges ---------------------------------------------------
+            -- Opaque. A half-alpha border over a dark ground is the thing
+            -- that stopped drawing a line at all.
+            border          = { 0.420, 0.420, 0.420, 1.0 },  -- n7
+            border_soft     = { 0.345, 0.345, 0.345, 1.0 },  -- n6
+            separator       = { 0.345, 0.345, 0.345, 1.0 },
+            list_grid       = { 0.300, 0.300, 0.300, 1.0 },
 
-            scrollbar_bg    = { 0.15, 0.15, 0.16, 0.3 },
-            scrollbar_grab  = { 0.40, 0.40, 0.42, 0.5 },
+            scrollbar_bg    = { 0.176, 0.176, 0.176, 1.0 },
+            scrollbar_grab  = { 0.380, 0.380, 0.380, 1.0 },
 
-            -- List/table rendering (matches REAPER's "Window list" color layer)
-            list_bg           = { 0.18, 0.18, 0.20, 1.0 },  -- list container background
-            list_alt_bg       = { 0.16, 0.16, 0.18, 1.0 },  -- alternating row (every other)
-            list_text         = { 0.85, 0.85, 0.85, 1.0 },  -- text inside lists
-            list_grid         = { 0.25, 0.25, 0.27, 0.3 },  -- grid lines between rows/cols
-            list_selected     = { 0.25, 0.50, 0.80, 1.0 },  -- selected row background
-            list_selected_text = { 1.00, 1.00, 1.00, 1.0 }, -- selected row text
-            list_hover        = { 0.22, 0.22, 0.25, 1.0 },  -- hovered row highlight
+            -- ---- lists ---------------------------------------------------
+            -- list_bg == surface on purpose: a list sits flush inside its
+            -- panel and is separated by its border, not by its fill. REAPER
+            -- makes the same call (genlist_bg == col_main_bg == #323232).
+            -- Repeating a value is fine when the two surfaces never touch, or
+            -- touch across an edge. What is banned is what this file used to
+            -- do: surface, list_bg, button_active, frame_active and
+            -- header_active all resolving to ONE colour, so that a pressed
+            -- control was indistinguishable from the panel carrying it.
+            list_bg         = { 0.196, 0.196, 0.196, 1.0 },
+            list_alt_bg     = { 0.220, 0.220, 0.220, 1.0 },
+            list_hover      = { 0.259, 0.259, 0.259, 1.0 },
+            -- Selection is a DARK tinted band with light text — the DAW
+            -- convention (REAPER: genlist_selbg #466168 with white on top).
+            -- A bright selection fights the content it is meant to point at.
+            list_selected      = { 0.135, 0.341, 0.302, 1.0 },
+            list_selected_text = { 1.000, 1.000, 1.000, 1.0 },
+            list_text          = { 0.784, 0.784, 0.784, 1.0 },
 
-            -- Value coloring (for property displays, meters, etc.)
-            value_normal    = { 0.75, 0.75, 0.75, 1.0 },
-            value_modified  = { 0.00, 0.80, 0.60, 1.0 },
-            value_negative  = { 0.80, 0.40, 0.60, 1.0 },
+            -- ---- text ----------------------------------------------------
+            text            = { 0.784, 0.784, 0.784, 1.0 },  -- 7.66:1 on n2
+            title_text      = { 0.627, 0.627, 0.627, 1.0 },
+            value_normal    = { 0.784, 0.784, 0.784, 1.0 },
+            text_mute       = { 0.482, 0.482, 0.482, 1.0 },  -- 3.03:1 on n2
+            text_disabled   = { 0.380, 0.380, 0.380, 1.0 },
 
-            popup_bg        = { 0.16, 0.16, 0.18, 0.97 },
-
-            tab             = { 0.20, 0.20, 0.22, 1.0 },
-            tab_hovered     = { 0.30, 0.30, 0.33, 1.0 },
-            tab_active      = { 0.26, 0.26, 0.29, 1.0 },
-
-            -- Window chrome (custom header bar)
-            title_bar       = { 0.10, 0.10, 0.11, 1.0 },
-            title_text      = { 0.70, 0.70, 0.72, 1.0 },
-            close_btn       = { 0.80, 0.25, 0.25, 1.0 },
-            close_btn_hover = { 0.95, 0.30, 0.30, 1.0 },
-
-            -- Surface hierarchy (added 2026-05-10 for FX Browser refonte).
-            -- surface  = elevated panels above window_bg (footer, toolbar);
-            -- surface2 = next layer up (hover row, alt list).
-            surface         = { 0.16, 0.16, 0.17, 1.0 },
-            surface2        = { 0.20, 0.20, 0.22, 1.0 },
-            border_soft     = { 0.22, 0.22, 0.24, 0.6 },
-            text_mute       = { 0.40, 0.40, 0.42, 1.0 },
-
-            -- Semantic accent variants for state coloring.
-            accent_dim      = { 0.25, 0.42, 0.58, 1.0 },  -- selected row bg, primary btn bg
-            danger          = { 0.78, 0.32, 0.32, 1.0 },  -- delete / clear
-            bypass          = { 0.78, 0.62, 0.32, 1.0 },  -- amber for bypassed FX
-
-            -- ROLE colours. Not decoration: these say what a lit control is
-            -- DOING, and they are the only place the apps may take a hue from
-            -- for transport state. Everything else uses the single accent —
-            -- if every toggle is coloured, colour stops meaning anything, and
-            -- the place it has to read at a glance is the clip grid, not Snap.
-            -- Kept as theme tokens rather than literals copied into each app
-            -- (ANALYSE_DesignSystem §4.1): a theme can restyle them once.
-            play            = { 0.31, 0.75, 0.42, 1.0 },  -- playing / running
-            record          = { 0.82, 0.34, 0.35, 1.0 },  -- capturing / armed to capture
-            pending         = { 0.85, 0.65, 0.25, 1.0 },  -- queued, waiting for the boundary
-            mute            = { 0.44, 0.48, 0.55, 1.0 },  -- silenced on purpose
-            solo            = { 0.90, 0.80, 0.30, 1.0 },  -- the only one you hear
-            mod             = { 0.62, 0.47, 0.86, 1.0 },  -- modulation source / depth
-
-            -- ================================================================
-            -- CANVAS — the drawing surfaces: piano roll, waveform, clip grid
-            -- ================================================================
-            -- These did not exist. Everything you actually LOOK at inside a
-            -- roll was a derivation with no name: the ruler was list_bg × 0.8,
-            -- the black keys list_bg × 0.5, the row shading pure black at 18 %
-            -- laid over the ground, and the grid lines text_mute at 45/26/15/8
-            -- percent alpha. Two consequences, both fatal:
+            -- ---- accent --------------------------------------------------
+            -- #1abc98, lifted from col_toolbar_text_on: the colour the
+            -- reference theme uses to say "this button is ON". 5.30:1 on the
+            -- panel.
             --
-            --   • Nothing could be found or changed. "The colour of a bar
-            --     line" was a product, not a value, so no theme could reach it.
-            --   • Multiplying pulls toward BLACK. It cannot push two levels
-            --     apart, only squash them — so raising the theme's contrast
-            --     changed nothing inside a roll, which is exactly where the
-            --     complaint was. The strongest separator on screen, the bar
-            --     line, composited to ≈0.27 over a 0.16 ground. It could not
-            --     be seen because it was never bright.
+            -- Text ON an accent fill must be BLACK: 7.76:1, against 2.13:1
+            -- for white the moment the control is hovered — i.e. white is
+            -- least readable exactly when you are interacting with it.
+            accent          = { 0.102, 0.737, 0.596, 1.0 },
+            accent_hovered  = { 0.184, 0.851, 0.698, 1.0 },
+            accent_active   = { 0.200, 0.596, 0.529, 1.0 },  -- = col_cursor
+            accent_dim      = { 0.135, 0.341, 0.302, 1.0 },
+            on_accent       = { 0.070, 0.070, 0.070, 1.0 },  -- text on accent
+
+            -- ---- semantic ------------------------------------------------
+            danger          = { 0.929, 0.278, 0.290, 1.0 },
+            bypass          = { 0.627, 0.494, 0.231, 1.0 },
+            value_modified  = { 0.102, 0.737, 0.596, 1.0 },
+            value_negative  = { 0.929, 0.278, 0.290, 1.0 },
+            close_btn       = { 0.929, 0.278, 0.290, 1.0 },
+            close_btn_hover = { 1.000, 0.400, 0.400, 1.0 },
+
+            -- ---- ROLES ---------------------------------------------------
+            -- What a lit control is DOING. Every one is lifted straight from
+            -- the reference theme, so they already agree with the REAPER
+            -- arrange sitting behind our windows: `pending` IS its play
+            -- cursor, `mod` its envelope purple, `solo` its take marker.
+            play            = { 0.200, 0.722, 0.188, 1.0 },  -- item_grouphl
+            record          = { 0.929, 0.278, 0.290, 1.0 },  -- env_track_mute
+            pending         = { 0.996, 0.757, 0.227, 1.0 },  -- playcursor_color
+            solo            = { 1.000, 0.847, 0.188, 1.0 },  -- take_marker
+            mute            = { 0.431, 0.478, 0.510, 1.0 },
+            mod             = { 0.690, 0.541, 1.000, 1.0 },  -- col_env13
+
+            -- ---- CANVAS: piano roll, waveform, clip grid ------------------
+            -- The work surface is BRIGHTER than the chrome around it. That is
+            -- the reference theme's arrangement (arrange #424242 over a
+            -- #323232 window) and the opposite of what we shipped, where the
+            -- roll sat in a hole.
+            canvas_bg        = { 0.243, 0.243, 0.243, 1.0 },
+            canvas_row       = { 0.298, 0.298, 0.298, 1.0 },  -- white key
+            canvas_row_dark  = { 0.259, 0.259, 0.259, 1.0 },  -- black key
+            canvas_row_off   = { 0.212, 0.212, 0.212, 1.0 },  -- out of scale
+            -- 4.3 L* between the two rows. The previous pass put 9.5 there,
+            -- more than twice the reference — over-corrected, so the roll
+            -- read as striped rather than as ruled.
+
+            -- The ruler and the key column are CHROME, so they sit BELOW the
+            -- work surface, not above it (REAPER: midi_rulerbg and midi_leftbg
+            -- are both #323232 under a #424242 roll).
+            canvas_lane      = { 0.200, 0.200, 0.200, 1.0 },
+            canvas_ruler     = { 0.200, 0.200, 0.200, 1.0 },
+
+            -- Grid — and the one place alpha is right. A line laid in alpha
+            -- keeps a constant RELATIVE weight whichever row it crosses; an
+            -- opaque line tuned on the light row is too strong on the dark
+            -- one. The old defect was never the alpha itself: it was that the
+            -- alpha lived at the draw site instead of in the token, so no
+            -- theme could reach it. Here colour AND alpha are both authored.
             --
-            -- Named, derived from the macros like the rest, and editable.
-            canvas_bg        = { 0.14, 0.14, 0.15, 1.0 },  -- the roll's ground
-            canvas_row       = { 0.18, 0.18, 0.19, 1.0 },  -- white-key row
-            canvas_row_dark  = { 0.11, 0.11, 0.12, 1.0 },  -- black-key row / alternation
-            canvas_row_off   = { 0.09, 0.09, 0.10, 1.0 },  -- out of the current scale
-            canvas_lane      = { 0.16, 0.16, 0.17, 1.0 },  -- the note-name / pad column
-            canvas_ruler     = { 0.19, 0.19, 0.20, 1.0 },  -- the bar ruler strip
-            -- Grid, from strongest to weakest. FULL alpha, real colours: the
-            -- hierarchy is carried by the values, not by fading one colour out
-            -- until it disappears into the ground.
-            canvas_line_bar  = { 0.52, 0.52, 0.55, 1.0 },
-            canvas_line_beat = { 0.34, 0.34, 0.37, 1.0 },
-            canvas_line_sub  = { 0.24, 0.24, 0.26, 1.0 },
-            canvas_line_fine = { 0.19, 0.19, 0.21, 1.0 },
-            canvas_item      = { 0.35, 0.60, 0.85, 1.0 },  -- a note / a clip
-            canvas_item_sel  = { 0.85, 0.88, 0.95, 1.0 },  -- selected
-            canvas_playhead  = { 0.95, 0.95, 0.98, 1.0 },  -- where we are
+            -- Only the BAR line goes toward the light. It is then the only
+            -- bright thing in the roll and cannot be confused with anything
+            -- else — the same trick the reference theme uses (one white line
+            -- among black ones).
+            --   bar +25.6 L*    beat -9.6    sub -5.6    fine -2.6
+            canvas_line_bar  = { 0.502, 0.502, 0.502, 1.00 },
+            canvas_line_beat = { 0.000, 0.000, 0.000, 0.32 },
+            canvas_line_sub  = { 0.000, 0.000, 0.000, 0.19 },
+            canvas_line_fine = { 0.000, 0.000, 0.000, 0.09 },
+
+            canvas_item      = { 0.102, 0.737, 0.596, 1.0 },  -- a note / a clip
+            canvas_item_sel  = { 0.920, 0.920, 0.920, 1.0 },
+            canvas_playhead  = { 0.980, 0.980, 0.980, 1.0 },
         },
 
         -- Font settings (sizes are scaled)
+        --
+        -- A SCALE, not a list. h2 used to equal body (12 and 12), so Core
+        -- loaded slots 3 and 4 with the identical font and the sub-heading
+        -- level existed only as bold. Same for slots 7 and 9. Four names have
+        -- to be four sizes or they are not a hierarchy.
+        --
+        -- And mono is never SMALLER than body: a value matters more than the
+        -- label beside it, and the saved theme had mono 14 against body 16 —
+        -- the numbers came out smaller than their own captions.
         fonts = {
             face      = "Tahoma",     -- main font face for everything
-            title     = 16,           -- window title (bold)
-            h1        = 14,           -- section header ("Sliders", "Buttons")
-            h2        = 12,           -- sub-section header, collapsing headers
+            title     = 18,           -- window title (bold)
+            h1        = 16,           -- section header ("Sliders", "Buttons")
+            h2        = 14,           -- sub-section header, collapsing headers
             body      = 12,           -- default body text, widget labels
             caption   = 10,           -- hints, small labels, disabled text
             mono_face = "Consolas",   -- monospaced font face
@@ -364,7 +314,7 @@ function Theme.Default()
         tooltip_max_w   = 320,   -- wrap width in px (scaled)
         tooltip_delay   = 0.4,   -- hover delay in seconds (not scaled)
     }
-    return Theme.ApplyMacro(t)
+    return t
 end
 
 -- ============================================================================
@@ -596,15 +546,42 @@ function Theme.BumpVersion()
     return v
 end
 
+-- A saved theme is a DIFF against Theme.Default(), never a snapshot.
+--
+-- Snapshots are what broke CP_Config/DEFAULT.lua. It was written when the
+-- canvas tokens and the role colours did not exist, so it froze 44 of the 63
+-- keys and silently kept the defaults for the other 19 — chrome from one
+-- palette, piano roll from another, and a roll darker than the window holding
+-- it. Every theme ever saved carried the same latent fault, and every key
+-- added to the identity made it worse.
+--
+-- A diff carries INTENT ("I changed the accent"), so everything the author did
+-- not touch follows the identity as it evolves. It also turns a 63-line colour
+-- block into the two or three lines someone actually meant.
+local function colors_diff(t)
+    local base = Theme.Default().colors
+    local out = {}
+    for key, c in pairs(t.colors) do
+        local b = base[key]
+        if not b then
+            out[key] = { c[1], c[2], c[3], c[4] or 1 }   -- key we don't ship
+        else
+            local a1, a2 = c[4] or 1, b[4] or 1
+            if c[1] ~= b[1] or c[2] ~= b[2] or c[3] ~= b[3] or a1 ~= a2 then
+                out[key] = { c[1], c[2], c[3], a1 }
+            end
+        end
+    end
+    return out
+end
+
 function Theme.Save(t, name)
     ensure_config_dir()
     local path = get_theme_path(name)
 
     -- Build saveable data (exclude runtime/computed fields)
     local data = {
-        macro = t.macro,
-        colors_pre_macro = t.colors_pre_macro,   -- so deriving stays reversible
-        colors = {},
+        colors = colors_diff(t),
         fonts = {
             face = t.fonts.face,
             title = t.fonts.title,
@@ -644,10 +621,6 @@ function Theme.Save(t, name)
         rounding_large = t.rounding_large,
     }
 
-    for key, c in pairs(t.colors) do
-        data.colors[key] = { c[1], c[2], c[3], c[4] or 1 }
-    end
-
     local file = io.open(path, "w")
     if not file then return false end
     file:write("-- CP_Toolkit Theme: " .. (name or "theme") .. "\n")
@@ -672,20 +645,13 @@ function Theme.LoadSaved(name)
 
     local t = Theme.Default()
 
-    -- A file that carries macros is re-derived from them; the literal colour
-    -- list it also stores is then only an override layer for the few keys a
-    -- user pinned by hand. A file WITHOUT macros predates them and is left
-    -- exactly as authored — upgrading someone's theme without being asked
-    -- would be the rudest possible reading of "make it more contrasted".
-    t.colors_pre_macro = data.colors_pre_macro
-    if data.macro then
-        for k, v in pairs(data.macro) do t.macro[k] = v end
-        Theme.ApplyMacro(t)
-    else
-        t.macro = nil
-    end
-
-    -- Apply loaded data
+    -- The identity is the base; the file is an override layer on top. A file
+    -- saved before a key existed simply has nothing to say about it, and gets
+    -- the current identity's value — which is the entire point of saving a
+    -- diff, and what full snapshots could not do.
+    --
+    -- Old full-snapshot files still load correctly: they just override every
+    -- key instead of a few. They shrink to a diff on their next save.
     if data.colors then
         for key, c in pairs(data.colors) do
             if t.colors[key] then t.colors[key] = c end
@@ -759,6 +725,32 @@ local PRESET_LIST = {
 
 function Theme.Presets()
     return PRESET_LIST
+end
+
+-- A light preset that only repaints the chrome leaves the canvas on the dark
+-- identity, and the piano roll comes out as a black hole inside a white
+-- window. That is precisely the fault that made CP_Config/DEFAULT.lua
+-- unusable, so a preset that flips the polarity has to flip ALL of it.
+--
+-- The ramp is mirrored rather than inverted key by key: the work surface stays
+-- brighter than the chrome around it, the ruler and key lane stay chrome, and
+-- only the bar line reverses direction — on a light ground it must go DARK to
+-- remain the one line that reads differently from every other.
+local function light_canvas(t)
+    local c = t.colors
+    c.canvas_bg        = { 0.980, 0.980, 0.980, 1.0 }
+    c.canvas_row       = { 0.940, 0.940, 0.940, 1.0 }
+    c.canvas_row_dark  = { 0.890, 0.890, 0.890, 1.0 }
+    c.canvas_row_off   = { 0.840, 0.840, 0.840, 1.0 }
+    c.canvas_lane      = { 0.870, 0.870, 0.880, 1.0 }
+    c.canvas_ruler     = { 0.870, 0.870, 0.880, 1.0 }
+    c.canvas_line_bar  = { 0.380, 0.380, 0.400, 1.00 }
+    c.canvas_line_beat = { 1.000, 1.000, 1.000, 0.70 }
+    c.canvas_line_sub  = { 0.000, 0.000, 0.000, 0.13 }
+    c.canvas_line_fine = { 0.000, 0.000, 0.000, 0.06 }
+    c.canvas_item_sel  = { 0.120, 0.120, 0.130, 1.0 }
+    c.canvas_playhead  = { 0.100, 0.100, 0.110, 1.0 }
+    c.on_accent        = { 0.070, 0.070, 0.070, 1.0 }
 end
 
 function Theme.GetPreset(key)
@@ -853,6 +845,7 @@ function Theme.GetPreset(key)
         t.colors.value_normal    = { 0.15, 0.15, 0.16, 1.0 }
         t.colors.value_modified  = { 0.10, 0.55, 0.25, 1.0 }
         t.colors.value_negative  = { 0.80, 0.15, 0.25, 1.0 }
+        light_canvas(t)
         return t
 
     elseif key == "light" then
@@ -880,6 +873,7 @@ function Theme.GetPreset(key)
         t.colors.title_bar       = { 0.82, 0.82, 0.84, 1.0 }
         t.colors.title_text      = { 0.25, 0.25, 0.27, 1.0 }
         t.colors.close_btn       = { 0.80, 0.25, 0.25, 1.0 }
+        light_canvas(t)
         return t
 
     elseif key == "midnight" then
@@ -938,9 +932,18 @@ end
 -- Module constants (audit P18: these tables were rebuilt on EVERY call, and
 -- the ThemeTweaker calls them 30+ times per frame — dozens of KB of garbage
 -- per frame on the very page meant for tuning the rendering).
+-- Every key in Theme.Default().colors MUST appear in exactly one group. A key
+-- outside this table has no editor at all — and fourteen of them used to be
+-- outside it, including `surface` and `surface2` (the panel fills) and
+-- `text_mute`, the fifth most-read colour in the repo. They were visible on
+-- every screen and reachable from nowhere.
 local COLOR_GROUPS = {
-    { name = "Base",     keys = { "window_bg", "text", "text_disabled", "border", "separator" } },
-    { name = "Accent",   keys = { "accent", "accent_hovered", "accent_active" } },
+    { name = "Base",     keys = { "window_bg", "surface", "surface2", "title_bar",
+                                  "border", "border_soft", "separator" } },
+    { name = "Text",     keys = { "text", "title_text", "text_mute", "text_disabled",
+                                  "value_normal", "value_modified", "value_negative" } },
+    { name = "Accent",   keys = { "accent", "accent_hovered", "accent_active",
+                                  "accent_dim", "on_accent" } },
     { name = "Buttons",  keys = { "button", "button_hovered", "button_active" } },
     { name = "Frames",   keys = { "frame_bg", "frame_hovered", "frame_active" } },
     { name = "Headers",  keys = { "header", "header_hovered", "header_active" } },
@@ -948,6 +951,7 @@ local COLOR_GROUPS = {
                                   "list_selected", "list_selected_text", "list_hover" } },
     { name = "Tabs",     keys = { "tab", "tab_hovered", "tab_active" } },
     { name = "Popups",   keys = { "popup_bg", "scrollbar_bg", "scrollbar_grab" } },
+    { name = "Semantic", keys = { "danger", "bypass", "close_btn", "close_btn_hover" } },
     { name = "Canvas",   keys = { "canvas_bg", "canvas_row", "canvas_row_dark",
                                   "canvas_row_off", "canvas_lane", "canvas_ruler",
                                   "canvas_line_bar", "canvas_line_beat",
@@ -960,6 +964,12 @@ local COLOR_LABELS = {
     window_bg = "Window BG", text = "Text", text_disabled = "Text Dim",
     border = "Border", separator = "Separator",
     accent = "Accent", accent_hovered = "Accent Hover", accent_active = "Accent Active",
+    accent_dim = "Accent Dim", on_accent = "Text on accent",
+    surface = "Panel", surface2 = "Panel raised", border_soft = "Border soft",
+    title_bar = "Title bar", title_text = "Title text", text_mute = "Text muted",
+    value_normal = "Value", value_modified = "Value changed", value_negative = "Value negative",
+    danger = "Danger", bypass = "Bypassed",
+    close_btn = "Close", close_btn_hover = "Close hover",
     button = "Button", button_hovered = "Button Hover", button_active = "Button Active",
     frame_bg = "Frame BG", frame_hovered = "Frame Hover", frame_active = "Frame Active",
     header = "Header", header_hovered = "Header Hover", header_active = "Header Active",

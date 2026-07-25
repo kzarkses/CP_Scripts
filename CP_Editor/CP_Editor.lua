@@ -1871,7 +1871,11 @@ local function gridLine(qn, tier, sp, w, h)
     -- instead of straddling two
     local x = math.floor((t - state.t0) / sp * w)
     local c = GRID_COL[tier]
-    gfx.set(c[1], c[2], c[3], 1)
+    -- The token carries its own alpha now. Three of the four tiers are laid
+    -- in black over the row, so their weight stays constant whichever row
+    -- they cross; forcing 1 here made them opaque and flattened the
+    -- hierarchy back into four near-identical greys.
+    gfx.set(c[1], c[2], c[3], c[4] or 1)
     gfx.line(x, 0, x, h - 1)
 end
 

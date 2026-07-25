@@ -213,6 +213,20 @@ end
 local COLOR_WHITE = { 1, 1, 1, 1 }
 local COLOR_ICON_HOVER = { 1, 1, 1, 0.9 }
 
+-- Hover on a caller-supplied hue: one step of VALUE on the same hue, so a
+-- custom accent (a record red, say) still answers the mouse. Writes into a
+-- shared scratch — a draw path may not allocate a table per frame, and the
+-- result is consumed immediately by the fill that follows.
+local SCRATCH_COLOR = { 0, 0, 0, 1 }
+local function scaledColor(c, k)
+    local r, g, b = c[1] * k, c[2] * k, c[3] * k
+    SCRATCH_COLOR[1] = r > 1 and 1 or r
+    SCRATCH_COLOR[2] = g > 1 and 1 or g
+    SCRATCH_COLOR[3] = b > 1 and 1 or b
+    SCRATCH_COLOR[4] = c[4] or 1
+    return SCRATCH_COLOR
+end
+
 function Widgets.Init(core, layout, theme_mod)
     Core = core
     Layout = layout
@@ -257,8 +271,8 @@ end
 -- was asking for: a FILL only separates two surfaces when they sit far apart
 -- on the ladder, an EDGE separates them at any distance. Cheap, and it makes
 -- a dense bar legible without pushing every level further from its neighbour.
--- Uses the theme's `border`, which the macro system now derives high enough
--- above the button level to actually draw a line (see Theme.ApplyMacro).
+-- Uses the theme's `border` — ramp step n7, opaque, deliberately well above
+-- the button level so that it actually draws a line (see Theme.RAMP).
 local function frameIt(x, y, w, h, rad, theme, a)
     if theme.widget_style == "windows" then return end   -- the bevel is its frame
     local c = theme.colors.border
@@ -4707,14 +4721,18 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
         local dim = disabled and 0.5 or 1
         local rad0 = theme.widget_style ~= "windows" and theme.rounding or 0
         fillRound(x, y, w, h, rad0, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
-        -- Same vocabulary as the rail: a bar on the leading edge, never a
-        -- coloured frame. The fill already carries the accent here, so the
-        -- bar only has to say "this one is the lit one" among neighbours.
+        -- NO accent bar here. The previous pass drew one, in `accent`, on top
+        -- of a fill that was already `accent` — zero contrast, so the bar
+        -- simply did not exist, and the comment claiming "the same vocabulary
+        -- as the rail" described something nobody could see.
+        --
+        -- The rule it broke (COMPOSANTS.md §0): a dense UI has three channels
+        -- — value, hue, weight — and a message may use exactly one. Lit
+        -- changes the HUE; hover changes the VALUE. Two orthogonal channels,
+        -- so "lit, not hovered" can never be confused with "unlit, hovered",
+        -- and no third marker is needed. The bar is only for the case the
+        -- rail has: a lit item whose fill stays neutral.
         frameIt(x, y, w, h, rad0, theme, dim * (hovered and 1 or 0.8))
-        if new_on then
-            local a = theme.colors.accent
-            Core.DrawRect(x + 1, y + 1, 3, h - 2, a[1], a[2], a[3], dim)
-        end
 
         -- Bevel: ON = sunken (pressed), OFF = raised (like a button)
         if not disabled then
@@ -4722,9 +4740,12 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
         end
 
         -- Text
+        -- Text on an accent fill is BLACK, not white: 7.76:1 against 2.13:1,
+        -- and the white case got WORSE on hover — least readable exactly when
+        -- the pointer is on it.
         local tc
         if disabled then tc = theme.colors.text_disabled
-        elseif new_on then tc = COLOR_WHITE
+        elseif new_on then tc = theme.colors.on_accent
         else tc = theme.colors.text end
         local tx = x + floor((w - tw) / 2)
         local ty = y + floor((h - th) / 2)
@@ -4798,7 +4819,13 @@ local function iconWidget(id, icon, icon_off, is_on, theme, opts, toggle)
         local paired = (icon_off ~= nil)
         local bg
         if on and not paired then
-            bg = opts.accent or (hovered and theme.colors.accent_hovered or theme.colors.accent)
+            -- opts.accent used to swallow the hover branch entirely, so a
+            -- lit red-record toggle stopped answering the mouse. Lit picks
+            -- the HUE (custom or theme), hover adds a step of VALUE — the
+            -- two channels stay independent whichever hue is in play.
+            local base = opts.accent or theme.colors.accent
+            bg = hovered and (opts.accent and scaledColor(base, 1.18)
+                              or theme.colors.accent_hovered) or base
         elseif opts.flat and not hovered and not on then
             bg = nil
         elseif on then
@@ -4815,7 +4842,10 @@ local function iconWidget(id, icon, icon_off, is_on, theme, opts, toggle)
             if not opts.flat then
                 frameIt(x, y, w, h, rad, theme, dim * (hovered and 1 or 0.8))
             end
-            if on then   -- the shared vocabulary: a bar, never a frame
+            -- The bar ONLY where the fill stays neutral. With a single glyph
+            -- the fill already carries the accent, so a bar in that same
+            -- accent painted itself invisible (see ToggleButton above).
+            if on and paired then
                 local a = opts.accent or theme.colors.accent
                 Core.DrawRect(x + 1, y + 1, 3, h - 2, a[1], a[2], a[3], dim)
             end
@@ -4826,7 +4856,7 @@ local function iconWidget(id, icon, icon_off, is_on, theme, opts, toggle)
 
         local tc
         if disabled then tc = theme.colors.text_disabled
-        elseif on and not paired then tc = COLOR_WHITE
+        elseif on and not paired then tc = theme.colors.on_accent
         elseif on then tc = theme.colors.accent
         else tc = theme.colors.text end
         local a = (tc[4] or 1) * dim * ((hovered or on) and 1 or 0.82)
