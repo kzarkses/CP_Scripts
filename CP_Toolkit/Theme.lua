@@ -120,6 +120,51 @@ function Theme.ApplyMacro(t)
     c.list_selected_text = grey(1)
     c.scrollbar_bg   = lvl(m, 0.6, 0.35)
     c.scrollbar_grab = lvl(m, 4, 0.75)
+
+    -- CANVAS. The rows straddle the ground rather than both sitting under it:
+    -- one level ABOVE, one BELOW. That is the difference between an
+    -- alternation you can see and one you have to look for — a shade laid
+    -- only downward, on a dark ground, has almost nowhere to go.
+    c.canvas_bg       = lvl(m, 0.7)
+    c.canvas_row      = lvl(m, 1.5)
+    c.canvas_row_dark = lvl(m, 0.1)
+    c.canvas_row_off  = lvl(m, -0.3)
+    c.canvas_lane     = lvl(m, 1.1)
+    c.canvas_ruler    = lvl(m, 1.8)
+    -- The grid climbs well past the button level: a bar line has to out-read
+    -- every surface under it, which is the whole job it has.
+    c.canvas_line_bar  = lvl(m, 5.6 + 2.4 * m.outline)
+    c.canvas_line_beat = lvl(m, 3.8 + 1.4 * m.outline)
+    c.canvas_line_sub  = lvl(m, 2.6 + 0.7 * m.outline)
+    c.canvas_line_fine = lvl(m, 1.9)
+    c.canvas_item      = { pri[1], pri[2], pri[3], 1 }
+    c.canvas_item_sel  = grey(clamp01(m.text * 0.98))
+    c.canvas_playhead  = grey(clamp01(m.text))
+    return t
+end
+
+-- Deriving REPLACES the whole colour list, which quietly destroys a theme
+-- built by hand — including a DEBUG theme whose entire value is that chosen
+-- keys are lurid, so you can see which of them a widget actually reads.
+-- Losing that to a convenience feature is not a trade worth making, so the
+-- literals are kept aside and the switch goes both ways.
+function Theme.BeginMacro(t)
+    if not t.colors_pre_macro then
+        local snap = {}
+        for k, v in pairs(t.colors) do
+            snap[k] = { v[1], v[2], v[3], v[4] or 1 }
+        end
+        t.colors_pre_macro = snap
+    end
+    if not t.macro then t.macro = Theme.MacroDefault() end
+    return Theme.ApplyMacro(t)
+end
+
+function Theme.EndMacro(t)
+    if t.colors_pre_macro then
+        for k, v in pairs(t.colors_pre_macro) do t.colors[k] = v end
+    end
+    t.macro = nil
     return t
 end
 
@@ -214,6 +259,42 @@ function Theme.Default()
             mute            = { 0.44, 0.48, 0.55, 1.0 },  -- silenced on purpose
             solo            = { 0.90, 0.80, 0.30, 1.0 },  -- the only one you hear
             mod             = { 0.62, 0.47, 0.86, 1.0 },  -- modulation source / depth
+
+            -- ================================================================
+            -- CANVAS — the drawing surfaces: piano roll, waveform, clip grid
+            -- ================================================================
+            -- These did not exist. Everything you actually LOOK at inside a
+            -- roll was a derivation with no name: the ruler was list_bg × 0.8,
+            -- the black keys list_bg × 0.5, the row shading pure black at 18 %
+            -- laid over the ground, and the grid lines text_mute at 45/26/15/8
+            -- percent alpha. Two consequences, both fatal:
+            --
+            --   • Nothing could be found or changed. "The colour of a bar
+            --     line" was a product, not a value, so no theme could reach it.
+            --   • Multiplying pulls toward BLACK. It cannot push two levels
+            --     apart, only squash them — so raising the theme's contrast
+            --     changed nothing inside a roll, which is exactly where the
+            --     complaint was. The strongest separator on screen, the bar
+            --     line, composited to ≈0.27 over a 0.16 ground. It could not
+            --     be seen because it was never bright.
+            --
+            -- Named, derived from the macros like the rest, and editable.
+            canvas_bg        = { 0.14, 0.14, 0.15, 1.0 },  -- the roll's ground
+            canvas_row       = { 0.18, 0.18, 0.19, 1.0 },  -- white-key row
+            canvas_row_dark  = { 0.11, 0.11, 0.12, 1.0 },  -- black-key row / alternation
+            canvas_row_off   = { 0.09, 0.09, 0.10, 1.0 },  -- out of the current scale
+            canvas_lane      = { 0.16, 0.16, 0.17, 1.0 },  -- the note-name / pad column
+            canvas_ruler     = { 0.19, 0.19, 0.20, 1.0 },  -- the bar ruler strip
+            -- Grid, from strongest to weakest. FULL alpha, real colours: the
+            -- hierarchy is carried by the values, not by fading one colour out
+            -- until it disappears into the ground.
+            canvas_line_bar  = { 0.52, 0.52, 0.55, 1.0 },
+            canvas_line_beat = { 0.34, 0.34, 0.37, 1.0 },
+            canvas_line_sub  = { 0.24, 0.24, 0.26, 1.0 },
+            canvas_line_fine = { 0.19, 0.19, 0.21, 1.0 },
+            canvas_item      = { 0.35, 0.60, 0.85, 1.0 },  -- a note / a clip
+            canvas_item_sel  = { 0.85, 0.88, 0.95, 1.0 },  -- selected
+            canvas_playhead  = { 0.95, 0.95, 0.98, 1.0 },  -- where we are
         },
 
         -- Font settings (sizes are scaled)
@@ -522,6 +603,7 @@ function Theme.Save(t, name)
     -- Build saveable data (exclude runtime/computed fields)
     local data = {
         macro = t.macro,
+        colors_pre_macro = t.colors_pre_macro,   -- so deriving stays reversible
         colors = {},
         fonts = {
             face = t.fonts.face,
@@ -595,6 +677,7 @@ function Theme.LoadSaved(name)
     -- user pinned by hand. A file WITHOUT macros predates them and is left
     -- exactly as authored — upgrading someone's theme without being asked
     -- would be the rudest possible reading of "make it more contrasted".
+    t.colors_pre_macro = data.colors_pre_macro
     if data.macro then
         for k, v in pairs(data.macro) do t.macro[k] = v end
         Theme.ApplyMacro(t)
@@ -865,6 +948,12 @@ local COLOR_GROUPS = {
                                   "list_selected", "list_selected_text", "list_hover" } },
     { name = "Tabs",     keys = { "tab", "tab_hovered", "tab_active" } },
     { name = "Popups",   keys = { "popup_bg", "scrollbar_bg", "scrollbar_grab" } },
+    { name = "Canvas",   keys = { "canvas_bg", "canvas_row", "canvas_row_dark",
+                                  "canvas_row_off", "canvas_lane", "canvas_ruler",
+                                  "canvas_line_bar", "canvas_line_beat",
+                                  "canvas_line_sub", "canvas_line_fine",
+                                  "canvas_item", "canvas_item_sel", "canvas_playhead" } },
+    { name = "Roles",    keys = { "play", "record", "pending", "mute", "solo", "mod" } },
 }
 
 local COLOR_LABELS = {
@@ -879,6 +968,14 @@ local COLOR_LABELS = {
     list_hover = "List Hover",
     tab = "Tab", tab_hovered = "Tab Hover", tab_active = "Tab Active",
     popup_bg = "Popup BG", scrollbar_bg = "Scroll BG", scrollbar_grab = "Scroll Grab",
+    canvas_bg = "Roll BG", canvas_row = "Row", canvas_row_dark = "Row (black key)",
+    canvas_row_off = "Row (off scale)", canvas_lane = "Key lane", canvas_ruler = "Ruler",
+    canvas_line_bar = "Bar line", canvas_line_beat = "Beat line",
+    canvas_line_sub = "Subdivision", canvas_line_fine = "Fine line",
+    canvas_item = "Note / clip", canvas_item_sel = "Note selected",
+    canvas_playhead = "Playhead",
+    play = "Playing", record = "Recording", pending = "Queued",
+    mute = "Muted", solo = "Solo", mod = "Modulation",
 }
 
 -- Returns organized color groups for the theme editor UI (shared constant —

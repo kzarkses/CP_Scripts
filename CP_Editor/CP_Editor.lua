@@ -1322,15 +1322,21 @@ local function drawWave(theme, area_h)
     wave.x, wave.y, wave.w, wave.h = gx, gy, aw, area_h
     wave.ry, wave.rh = gy + RULER_H, area_h - RULER_H
 
-    local col_bg   = theme.colors.list_bg or theme.colors.window_bg
-    local col_mute = theme.colors.text_mute or theme.colors.text_disabled
-    local col_acc  = theme.colors.accent
-    local col_text = theme.colors.text
-    local col_mark = theme.colors.value_modified or col_acc
+    -- Named canvas colours here too: the waveform view is the same kind of
+    -- surface as the roll, and it had the same nameless × 0.8 ruler.
+    local C        = theme.colors
+    local col_bg   = C.canvas_bg
+    local col_mute = C.text_mute or C.text_disabled
+    local col_acc  = C.canvas_item
+    local col_text = C.text
+    local col_mark = C.value_modified or col_acc
+    local col_edge = C.border
 
-    -- ruler strip
-    Core_tk.DrawRect(gx, gy, aw, RULER_H,
-                     col_bg[1] * 0.8, col_bg[2] * 0.8, col_bg[3] * 0.8, 1)
+    -- ruler strip, with its own edge
+    local cr = C.canvas_ruler
+    Core_tk.DrawRect(gx, gy, aw, RULER_H, cr[1], cr[2], cr[3], 1)
+    Core_tk.DrawRect(gx, gy + RULER_H - 1, aw, 1,
+                     col_edge[1], col_edge[2], col_edge[3], col_edge[4] or 1)
 
     if not state.mode or not state.src or state.len <= 0 then
         Core_tk.DrawRect(gx, wave.ry, aw, wave.rh,
@@ -1627,6 +1633,15 @@ local GRID_CHOICES = {
     { "1/8 T", 1 / 12 }, { "1/16 T", 1 / 24 },
 }
 
+-- The same choices as a combo's two parallel arrays, entry 1 being "follow
+-- the project". Built once at load: a combo needs a plain list of strings and
+-- rebuilding one per frame would allocate for nothing.
+local GRID_ITEMS, GRID_VALS = { "Grid: project" }, { false }
+for i = 1, #GRID_CHOICES do
+    GRID_ITEMS[i + 1] = "Grid " .. GRID_CHOICES[i][1]
+    GRID_VALS[i + 1]  = GRID_CHOICES[i][2]
+end
+
 local function gridMenu()
     local items = {
         { label = "Follow project grid", checked = opts.grid_div == nil,
@@ -1724,8 +1739,25 @@ local function railMidi(theme)
         opts.midi_snap = not opts.midi_snap
         markDirty()
     end
-    if UI.RailItem("m_grid", "Grid", railWide() and gridLabel() or nil, false) then
-        gridMenu()   -- a native menu beats a combo here: it carries triplets
+    if railWide() then
+        -- A real COMBO, not a button that opens a menu. The mousewheel walks
+        -- the divisions without opening anything, which is the gesture that
+        -- was missing — and triplets are just two more entries in the list,
+        -- so nothing had to be given up to get it.
+        local idx = 1
+        for i = 2, #GRID_ITEMS do
+            if opts.grid_div and math.abs(opts.grid_div - GRID_VALS[i]) < 1e-9 then
+                idx = i break
+            end
+        end
+        local gch, gi = UI.Combo("m_grid", "", idx, GRID_ITEMS, BARS_OPTS)
+        if gch then
+            opts.grid_div = (gi == 1) and nil or GRID_VALS[gi]
+            grid_lbl.div = -1
+            markDirty()
+        end
+    elseif UI.RailItem("m_grid", "Grid", nil, false) then
+        gridMenu()   -- folded: no room for a combo, the menu still answers
     end
 
     UI.RailGroup("View")
@@ -1820,20 +1852,26 @@ end
 -- ---------------------------------------------------------------------------
 local wbm = { t0 = -1, t1 = -1, w = 0, h = 0, rows = nil, step = 0 }
 
--- Grid line weight: measure > beat > eighth > finer, ranked by the shared
--- RollUI so this roll and the Looper's read the same.
-local GRID_TIER_A = RollUI.GRID_ALPHA
+-- Grid line COLOURS: bar > beat > subdivision > fine. Four theme tokens at
+-- full alpha, not one colour faded four ways. Fading was the defect: the
+-- strongest line, the barline, was text_mute at 45 % — composited over the
+-- ground it landed near 0.27, so the thing meant to cut the view the hardest
+-- was the thing you could least see. A hierarchy has to be carried by the
+-- values themselves, or the weakest end of it disappears into the floor.
+-- Filled per frame from the theme; module-level so nothing allocates.
+local GRID_COL = { nil, nil, nil, nil }
 
 -- One vertical gridline at a QN position. Module level on purpose: a closure
 -- built inside the render would allocate on every cache miss, and a cache
 -- miss is every frame while the view is being dragged.
-local function gridLine(qn, tier, sp, w, h, gc)
+local function gridLine(qn, tier, sp, w, h)
     local t = qnToRoll(qn)
     if t < state.t0 or t > state.t1 then return end
     -- floored like the notes, so a note edge and its gridline share a column
     -- instead of straddling two
     local x = math.floor((t - state.t0) / sp * w)
-    gfx.set(gc[1], gc[2], gc[3], GRID_TIER_A[tier])
+    local c = GRID_COL[tier]
+    gfx.set(c[1], c[2], c[3], 1)
     gfx.line(x, 0, x, h - 1)
 end
 
@@ -1860,22 +1898,24 @@ local function renderRollGrid(theme, rows, w, h, row_h)
     gfx.dest = MROLL_BUF
     gfx.setimgdim(MROLL_BUF, w, h)
     gfx.muladdrect(0, 0, w, h, 0, 0, 0, 0)
-    local bg = theme.colors.list_bg or theme.colors.window_bg
-    gfx.set(bg[1], bg[2], bg[3], 1)
-    gfx.rect(0, 0, w, h, 1)
-
-    -- row shading: black keys (melodic) / alternation (drum)
-    gfx.set(0, 0, 0, 0.18)
+    local C = theme.colors
+    -- Rows are PAINTED, each in its own colour, instead of the ground being
+    -- covered by a black wash. A wash can only go one way — down — and on a
+    -- dark ground it has almost nowhere to go, which is why the alternation
+    -- was there in the code and invisible on screen. Two named colours that
+    -- straddle the ground separate at any theme brightness.
+    local cw, cd = C.canvas_row, C.canvas_row_dark
     for i = 1, rows.n do
         local p = rows.list[i]
-        local shade = rows.drum and (i % 2 == 0) or BLACK_KEY[p % 12]
-        if shade then
-            gfx.rect(0, (i - 1) * row_h, w, row_h + 1, 1)
-        end
+        local dark = rows.drum and (i % 2 == 0) or BLACK_KEY[p % 12]
+        local c = dark and cd or cw
+        gfx.set(c[1], c[2], c[3], 1)
+        gfx.rect(0, (i - 1) * row_h, w, row_h + 1, 1)
     end
-    -- scale highlight: dim out-of-scale rows so the in-scale ones read as "playable"
+    -- out of the current scale: its own colour, not a second wash on top
     if Roll.scale_on then
-        gfx.set(0, 0, 0, 0.30)
+        local co = C.canvas_row_off
+        gfx.set(co[1], co[2], co[3], 1)
         for i = 1, rows.n do
             if not Roll.InScale(rows.list[i]) then
                 gfx.rect(0, (i - 1) * row_h, w, row_h + 1, 1)
@@ -1884,8 +1924,8 @@ local function renderRollGrid(theme, rows, w, h, row_h)
     end
     -- row separators
     if row_h >= 7 then
-        local mc = theme.colors.text_mute or theme.colors.text_disabled
-        gfx.set(mc[1], mc[2], mc[3], 0.08)
+        local mc = C.canvas_line_fine
+        gfx.set(mc[1], mc[2], mc[3], 1)
         for i = 1, rows.n - 1 do
             gfx.line(0, i * row_h, w - 1, i * row_h)
         end
@@ -1896,10 +1936,13 @@ local function renderRollGrid(theme, rows, w, h, row_h)
     -- LAND on the subdivision lattice to appear, it comes from the measure
     -- map itself, and each pass simply overwrites the previous at the same x
     -- so the strongest weight always wins.
-    -- text_mute, and CP_Looper's roll reads the same key: the two rolls used
-    -- to pull from different colours, so a barline changed shade depending on
-    -- which window you were in.
-    local gc = theme.colors.text_mute or theme.colors.text_disabled
+    -- Four canvas tokens, and CP_Looper's roll reads the same four: the two
+    -- rolls used to derive their lines separately, so a barline changed shade
+    -- depending on which window you were looking at.
+    GRID_COL[1] = C.canvas_line_bar
+    GRID_COL[2] = C.canvas_line_beat
+    GRID_COL[3] = C.canvas_line_sub
+    GRID_COL[4] = C.canvas_line_fine
     local sp = span()
     -- What "a beat" is. Item mode takes the real meter, so 6/8 tiers on its
     -- eighths instead of on quarter notes; clip mode keeps the ENGINE's
@@ -1917,7 +1960,7 @@ local function renderRollGrid(theme, rows, w, h, row_h)
         local i0 = math.floor(qn0 / step)
         local n  = math.floor((qn1 - qn0) / step) + 2
         if n > 4096 then n = 4096 end            -- absurd zoom, not a grid
-        for i = 0, n do gridLine((i0 + i) * step, 4, sp, w, h, gc) end
+        for i = 0, n do gridLine((i0 + i) * step, 4, sp, w, h) end
     end
     -- pass 2 — eighths, only once the working resolution is at least that
     -- fine (showing halves of a beat under a 1/4 grid is noise, not help) AND
@@ -1931,7 +1974,7 @@ local function renderRollGrid(theme, rows, w, h, row_h)
         local i0 = math.floor(qn0 / half)
         local n  = math.floor((qn1 - qn0) / half) + 2
         if n > 2048 then n = 2048 end
-        for i = 0, n do gridLine((i0 + i) * half, 3, sp, w, h, gc) end
+        for i = 0, n do gridLine((i0 + i) * half, 3, sp, w, h) end
     end
     -- pass 3 — beats. Drawn whatever the grid division: at 1/1 the grid alone
     -- shows nothing between barlines, and "where is beat 3" is exactly what
@@ -1940,21 +1983,21 @@ local function renderRollGrid(theme, rows, w, h, row_h)
         local i0 = math.floor(qn0 / beatQN)
         local n  = math.floor((qn1 - qn0) / beatQN) + 2
         if n > 1024 then n = 1024 end
-        for i = 0, n do gridLine((i0 + i) * beatQN, 2, sp, w, h, gc) end
+        for i = 0, n do gridLine((i0 + i) * beatQN, 2, sp, w, h) end
     end
     -- pass 4 — barlines, from the measure map in item mode so a tempo map or
     -- a meter change puts them where the ruler says they are
     if ctsn > 0 then
         local i0 = math.floor(qn0 / ctsn)
         local n  = math.floor((qn1 - qn0) / ctsn) + 2
-        for i = 0, n do gridLine((i0 + i) * ctsn, 1, sp, w, h, gc) end
+        for i = 0, n do gridLine((i0 + i) * ctsn, 1, sp, w, h) end
     else
         local _, ms = r.TimeMap_QNToMeasures(0, qn0 + 1e-6)
         local q = ms or qn0
         local guard = 0
         while q <= qn1 and guard < 512 do
             guard = guard + 1
-            gridLine(q, 1, sp, w, h, gc)
+            gridLine(q, 1, sp, w, h)
             local _, _, me = r.TimeMap_QNToMeasures(0, q + 1e-6)
             -- never stall: a degenerate measure would spin this loop
             q = (me and me > q) and me or (q + 4)
@@ -2378,15 +2421,26 @@ local function drawRoll(theme, area_h)
     wave.ry, wave.rh = gy + RULER_H, grid_h
     local vy = wave.ry + grid_h + 4
 
-    local col_bg   = theme.colors.list_bg or theme.colors.window_bg
-    local col_mute = theme.colors.text_mute or theme.colors.text_disabled
-    local col_acc  = theme.colors.accent
-    local col_text = theme.colors.text
-    local col_sel  = theme.colors.list_selected or col_acc
+    -- Every surface in this view is a NAMED colour now. It used to be
+    -- list_bg multiplied by 0.8 / 0.9 / 0.5 — a product with no name, which
+    -- nothing could find and no contrast setting could reach, and which could
+    -- only ever move toward black.
+    local C        = theme.colors
+    local col_bg   = C.canvas_bg
+    local col_mute = C.text_mute or C.text_disabled
+    local col_acc  = C.canvas_item
+    local col_text = C.text
+    local col_sel  = C.canvas_item_sel
+    local col_edge = C.border
+    local col_head = C.canvas_playhead
 
     -- ruler strip (measure numbers on strong lines)
-    Core_tk.DrawRect(gx, gy, aw, RULER_H,
-                     col_bg[1] * 0.8, col_bg[2] * 0.8, col_bg[3] * 0.8, 1)
+    local cr = C.canvas_ruler
+    Core_tk.DrawRect(gx, gy, aw, RULER_H, cr[1], cr[2], cr[3], 1)
+    -- and a real edge under it: the zones are told apart by a line, not by
+    -- hoping two fills land far enough apart
+    Core_tk.DrawRect(gx, gy + RULER_H - 1, aw, 1,
+                     col_edge[1], col_edge[2], col_edge[3], col_edge[4] or 1)
 
     -- grid background (buffered)
     renderRollGrid(theme, rows, wave.w, grid_h, row_h)
@@ -2429,8 +2483,8 @@ local function drawRoll(theme, area_h)
     -- labels lane: piano keyboard (melodic) or named pad rows (drum). The
     -- lane header is a clickable target — clicking a row selects the whole
     -- pitch (drum) / key (melodic).
-    Core_tk.DrawRect(gx, wave.ry, lane_w, grid_h,
-                     col_bg[1] * 0.9, col_bg[2] * 0.9, col_bg[3] * 0.9, 1)
+    local cl = C.canvas_lane
+    Core_tk.DrawRect(gx, wave.ry, lane_w, grid_h, cl[1], cl[2], cl[3], 1)
     UI.SetFontCaption()
     -- name the rows after the instrument THIS clip plays into (same helper
     -- CP_Looper uses), not after whatever kit the Sampler has open
@@ -2448,8 +2502,9 @@ local function drawRoll(theme, area_h)
             -- piano key: black keys drawn darker + inset, C rows labelled
             local black = BLACK_KEY[p % 12]
             if black then
+                local ck = C.canvas_row_dark
                 Core_tk.DrawRect(gx, y + 1, lane_w * 0.62, row_h - 1,
-                                 col_bg[1] * 0.5, col_bg[2] * 0.5, col_bg[3] * 0.5, 1)
+                                 ck[1], ck[2], ck[3], 1)
             else
                 Core_tk.DrawRect(gx, y + 1, lane_w - 1, row_h - 1,
                                  0.82, 0.82, 0.84, 1)
@@ -2465,8 +2520,9 @@ local function drawRoll(theme, area_h)
                              col_acc[1], col_acc[2], col_acc[3], 0.18)
         end
     end
+    -- the lane's own edge: opaque, like every other zone boundary
     Core_tk.DrawRect(gx + lane_w - 1, wave.ry, 1, grid_h,
-                     col_mute[1], col_mute[2], col_mute[3], 0.4)
+                     col_edge[1], col_edge[2], col_edge[3], col_edge[4] or 1)
     UI.SetFontBody()
 
     -- notes
@@ -2492,7 +2548,7 @@ local function drawRoll(theme, area_h)
                                  col_acc[1], col_acc[2], col_acc[3], alpha)
                 if Roll.IsSel(i) then
                     Core_tk.DrawRect(x0, y + 1, x1 - x0 - 1, row_h - 2,
-                                     col_text[1], col_text[2], col_text[3], 1, false)
+                                     col_sel[1], col_sel[2], col_sel[3], 1, false)
                 end
                 if show_names and row_h >= 11 and (x1 - x0) > 22 then
                     Core_tk.DrawText(NOTE_NAMES[Roll.pitches[i]], x0 + 3,
@@ -2504,8 +2560,9 @@ local function drawRoll(theme, area_h)
     end
     if show_names then UI.SetFontBody() end
 
-    -- velocity lane
+    -- velocity lane — its own zone, so it gets its own edge
     Core_tk.DrawRect(gx, vy, aw, VEL_H, col_bg[1], col_bg[2], col_bg[3], 1)
+    Core_tk.DrawRect(gx, vy, aw, 1, col_edge[1], col_edge[2], col_edge[3], col_edge[4] or 1)
     for i = 1, Roll.count do
         local t0n = Roll.starts[i]
         if t0n >= state.t0 and t0n <= state.t1 then
@@ -2569,7 +2626,7 @@ local function drawRoll(theme, area_h)
         if pp >= state.t0 and pp <= state.t1 then
             local x = xAtTime(pp)
             Core_tk.DrawRect(x, wave.ry, 1, grid_h + 4 + VEL_H,
-                             col_text[1], col_text[2], col_text[3], 0.8)
+                             col_head[1], col_head[2], col_head[3], 1)
         end
         UI.RequestRedraw()
     end
@@ -2583,7 +2640,7 @@ local function drawRoll(theme, area_h)
             if ph >= state.t0 and ph <= state.t1 then
                 local x = xAtTime(ph)
                 Core_tk.DrawRect(x, wave.ry, 1, grid_h + 4 + VEL_H,
-                                 col_text[1], col_text[2], col_text[3], 0.8)
+                                 col_head[1], col_head[2], col_head[3], 1)
             end
             UI.RequestRedraw()
         end

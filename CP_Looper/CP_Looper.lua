@@ -737,14 +737,16 @@ local function drawViz(theme, l, el, x, y, w, h, mode)
 
     -- beat / bar gridlines, same ranking and colour as the note editor (this
     -- strip is too short for subdivisions, so it stops at the first two tiers)
-    local A = RollUI.GRID_ALPHA
-    local gcol = C.text_mute or C.text_disabled
+    -- Canvas colours at FULL alpha, the same ones CP_Editor reads. They used
+    -- to be one colour faded four ways, which left the strongest line — the
+    -- barline — sitting almost on the ground it was meant to cut.
+    local GBAR, GBEAT = C.canvas_line_bar, C.canvas_line_beat
     local nb = math.floor(lenB + 0.5)
     if nb < 1 then nb = 1 end
     for b = 0, nb do
         local gx = x + (b / lenB) * w
-        Core.DrawLine(gx, y, gx, y + h, gcol[1], gcol[2], gcol[3],
-                      A[(b % tsnum) == 0 and 1 or 2])
+        local gc = ((b % tsnum) == 0) and GBAR or GBEAT
+        Core.DrawLine(gx, y, gx, y + h, gc[1], gc[2], gc[3], 1)
     end
 
     -- note bars
@@ -1159,28 +1161,31 @@ local function drawEditor(theme)
     -- Ranked through the shared RollUI table, so a barline looks like a
     -- barline in this roll and in CP_Editor alike. The loop axis is beats and
     -- phase 0 is bar-aligned by construction, so all of it is arithmetic.
-    local A = RollUI.GRID_ALPHA
-    -- text_mute, the same key CP_Editor's roll reads: these two used to pull
-    -- from different colours, so a barline changed shade between windows
-    local gcol = C.text_mute or C.text_disabled
-    local br, bgc, bbc = gcol[1], gcol[2], gcol[3]
+    -- The four canvas colours at FULL alpha, shared with CP_Editor: a barline
+    -- looks like a barline in either window, and the hierarchy is carried by
+    -- the values instead of by fading one colour until its weak end vanishes
+    -- into the ground.
+    local GBAR  = C.canvas_line_bar
+    local GBEAT = C.canvas_line_beat
+    local GSUB  = C.canvas_line_sub
+    local GFINE = C.canvas_line_fine
     local s = snapBeats()
     if s > 0 and s < 1 then                      -- the snap's own subdivisions
         for i = 0, math.floor(L / s + 1e-6) do
             local gx = phaseToX(i * s, rx, rw, L)
-            Core.DrawLine(gx, ry, gx, ry + grid_h, br, bgc, bbc, A[4])
+            Core.DrawLine(gx, ry, gx, ry + grid_h, GFINE[1], GFINE[2], GFINE[3], 1)
         end
     end
     if s > 0 and s <= 0.5 + 1e-9 then            -- eighths, once we work that fine
         for i = 0, math.floor(L * 2 + 1e-6) do
             local gx = phaseToX(i * 0.5, rx, rw, L)
-            Core.DrawLine(gx, ry, gx, ry + grid_h, br, bgc, bbc, A[3])
+            Core.DrawLine(gx, ry, gx, ry + grid_h, GSUB[1], GSUB[2], GSUB[3], 1)
         end
     end
     for b = 0, math.floor(L + 1e-6) do           -- beats, barlines stronger
         local gx = phaseToX(b, rx, rw, L)
-        Core.DrawLine(gx, ry, gx, ry + grid_h, br, bgc, bbc,
-                      A[(b % tsnum) == 0 and 1 or 2])
+        local gc = ((b % tsnum) == 0) and GBAR or GBEAT
+        Core.DrawLine(gx, ry, gx, ry + grid_h, gc[1], gc[2], gc[3], 1)
     end
 
     -- notes

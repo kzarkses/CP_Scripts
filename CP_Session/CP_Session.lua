@@ -883,20 +883,26 @@ local function drawCell(theme, t, s, x, y, w, h)
         end
     end
 
-    local br, bg_, bb = 0.15, 0.15, 0.17
-    if capturing or waiting then
-        local d = C.danger or C.accent
-        local k = capturing and 1 or 0.4
-        br = 0.15 + (d[1] * 0.5 - 0.15) * k
-        bg_ = 0.15 + (d[2] * 0.3 - 0.15) * k
-        bb = 0.17 + (d[3] * 0.3 - 0.17) * k
-    elseif playing then
-        local a = C.accent
-        br, bg_, bb = a[1] * 0.45, a[2] * 0.45, a[3] * 0.45
-    elseif c then
-        br, bg_, bb = 0.21, 0.21, 0.24
+    -- A cell is a canvas surface, and its state is that surface MIXED toward
+    -- the role colour — never a hand-typed grey nor an accent multiplied down.
+    -- The mix keeps the cell readable at any theme brightness, and the role
+    -- (play / record / pending) stays the theme's to redefine.
+    local base = c and C.canvas_row or C.canvas_row_dark
+    local br, bg_, bb = base[1], base[2], base[3]
+    local role, k
+    if capturing then role, k = C.record, 0.42
+    elseif waiting then role, k = C.pending, 0.30
+    elseif playing then role, k = C.play, 0.34 end
+    if role then
+        br = br + (role[1] - br) * k
+        bg_ = bg_ + (role[2] - bg_) * k
+        bb = bb + (role[3] - bb) * k
     end
     Core.DrawRoundRectFilled(x, y, w, h, rad, br, bg_, bb, 1)
+    -- and a real edge, so a cell is an object on the grid rather than a
+    -- slightly different shade of it
+    local ec = C.border
+    Core.DrawRect(x, y, w, h, ec[1], ec[2], ec[3], (ec[4] or 1) * 0.9, false)
 
     -- The transport button owns its own strip on the left. Clicking the REST
     -- of the cell opens it in CP_Editor — editing must never cost a play

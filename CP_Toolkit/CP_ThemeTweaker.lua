@@ -95,14 +95,20 @@ UI.Run(function()
                 .. "frames, text — and that is what fixes contrast: the levels get spaced "
                 .. "apart on purpose instead of landing wherever each was typed.")
             UI.Spacing(6)
+            UI.Spacing(2)
+            UI.SetFontCaption()
+            UI.TextWrapped("Reversible: your colours are kept aside and one click brings "
+                .. "them back. A theme built by hand — a debug theme above all — is an "
+                .. "instrument, and no convenience is worth losing it.", { disabled = true })
+            UI.SetFontBody()
+            UI.Spacing(6)
             if UI.Button("tw_macro_on", "Derive this theme from macros") then
-                t.macro = UI.Theme.MacroDefault()
-                -- keep what the theme already said about identity
-                local a = t.colors.accent
+                UI.Theme.BeginMacro(t)
+                -- keep what the theme already said about its own identity
+                local a = t.colors_pre_macro.accent
+                local w = t.colors_pre_macro.window_bg
                 t.macro.primary = { a[1], a[2], a[3] }
-                t.macro.base = { t.colors.window_bg[1] * 0.75,
-                                 t.colors.window_bg[2] * 0.75,
-                                 t.colors.window_bg[3] * 0.75 }
+                t.macro.base = { w[1] * 0.75, w[2] * 0.75, w[3] * 0.75 }
                 UI.Theme.ApplyMacro(t)
                 mark_dirty()
             end
@@ -156,6 +162,14 @@ UI.Run(function()
                 .. "as the same grey, raise Contrast — that, and Frames, are the whole fix.",
                 { disabled = true })
             UI.SetFontBody()
+
+            if t.colors_pre_macro then
+                UI.Spacing(12)
+                if UI.Button("tw_macro_off", "Stop deriving — restore my colours") then
+                    UI.Theme.EndMacro(t)
+                    mark_dirty()
+                end
+            end
         end
 
     -- ================================================================

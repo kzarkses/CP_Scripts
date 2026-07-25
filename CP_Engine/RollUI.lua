@@ -384,6 +384,13 @@ end
 -- Layering rather than classifying is what keeps odd meters and tempo maps
 -- honest: a barline never has to land on the subdivision lattice to appear,
 -- and a triplet grid keeps drawing triplets.
-RollUI.GRID_ALPHA = { 0.45, 0.26, 0.15, 0.085 }
+-- REMOVED. Grid weight used to be one colour faded four ways — 0.45 / 0.26 /
+-- 0.15 / 0.085 of text_mute. Composited over a dark ground, the strongest of
+-- the four, the barline, landed near 0.27: the line whose whole job was to cut
+-- the view was the one you could least see, and no contrast setting could
+-- reach it because alpha is not a colour. Both rolls now read four real theme
+-- tokens at full alpha (canvas_line_bar / _beat / _sub / _fine), so the
+-- hierarchy lives in the values and stays editable.
+RollUI.GRID_ALPHA = nil
 
 return RollUI

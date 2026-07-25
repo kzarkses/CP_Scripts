@@ -4707,13 +4707,13 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
         local dim = disabled and 0.5 or 1
         local rad0 = theme.widget_style ~= "windows" and theme.rounding or 0
         fillRound(x, y, w, h, rad0, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
-        -- A lit toggle takes a brighter frame: the state reads on the EDGE as
-        -- well as on the fill, so it survives a low-contrast theme.
+        -- Same vocabulary as the rail: a bar on the leading edge, never a
+        -- coloured frame. The fill already carries the accent here, so the
+        -- bar only has to say "this one is the lit one" among neighbours.
+        frameIt(x, y, w, h, rad0, theme, dim * (hovered and 1 or 0.8))
         if new_on then
             local a = theme.colors.accent
-            strokeRound(x, y, w, h, rad0, a[1], a[2], a[3], 0.85 * dim)
-        else
-            frameIt(x, y, w, h, rad0, theme, dim * (hovered and 1 or 0.8))
+            Core.DrawRect(x + 1, y + 1, 3, h - 2, a[1], a[2], a[3], dim)
         end
 
         -- Bevel: ON = sunken (pressed), OFF = raised (like a button)
@@ -4812,11 +4812,12 @@ local function iconWidget(id, icon, icon_off, is_on, theme, opts, toggle)
         end
         if bg then
             fillRound(x, y, w, h, rad, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
-            if on then
-                local a = opts.accent or theme.colors.accent
-                strokeRound(x, y, w, h, rad, a[1], a[2], a[3], 0.85 * dim)
-            elseif not opts.flat then
+            if not opts.flat then
                 frameIt(x, y, w, h, rad, theme, dim * (hovered and 1 or 0.8))
+            end
+            if on then   -- the shared vocabulary: a bar, never a frame
+                local a = opts.accent or theme.colors.accent
+                Core.DrawRect(x + 1, y + 1, 3, h - 2, a[1], a[2], a[3], dim)
             end
             if not disabled and not opts.flat then
                 draw_win32_bevel(x, y, w, h, theme, on and "sunken" or "raised")
@@ -4899,7 +4900,12 @@ function Widgets.BeginRail(id, collapsed, theme, opts)
         local x0, w0 = px - pad, rail.w + pad * 2
         local y0 = py - pady
         local h0 = p.y + p.h - y0
-        local bg = theme.colors.surface1 or theme.colors.header
+        -- `surface`, not a name I made up. The previous line read
+        -- `theme.colors.surface1 or theme.colors.header` — surface1 has never
+        -- existed, so it was nil and the `or` swallowed the typo for good.
+        -- That is why the rail's colour could not be found in the theme: it
+        -- was not the one the code claimed to use. No `or` on a colour key.
+        local bg = theme.colors.surface
         Core.DrawRect(x0, y0, w0, h0, bg[1], bg[2], bg[3], 1)
         local ln = theme.colors.border_soft or theme.colors.border
         Core.DrawRect(x0 + w0 - 1, y0, 1, h0, ln[1], ln[2], ln[3], ln[4] or 1)
@@ -4907,23 +4913,16 @@ function Widgets.BeginRail(id, collapsed, theme, opts)
     Layout.BeginColumns(id, { rail.w, 1.0 }, { gap = opts.gap or 12 })
 end
 
--- Section label. Collapsed it becomes a hairline: the grouping survives even
--- when there is no room to name it.
-function Widgets.RailGroup(label, theme)
-    Layout.Spacing(6)
+-- Section break. It is a RULE, never a title — in both widths. A title NAMES
+-- a group; only a line SEPARATES one, and separation was what was missing.
+-- The label argument is kept because it says at the call site what the group
+-- is, which is worth having in the source; it is deliberately not drawn.
+function Widgets.RailGroup(_, theme)
+    Layout.Spacing(7)
     local x, y = Layout.GetCursorPos()
-    if rail.slim then
-        local ln = theme.colors.border_soft or theme.colors.border
-        Core.DrawRect(x + 9, y + 3, rail.w - 18, 1, ln[1], ln[2], ln[3], (ln[4] or 1) * 0.9)
-        Layout.AdvanceCursor(rail.w, 7)
-    else
-        Core.SetFontCaption()
-        local c = theme.colors.text_mute or theme.colors.text_disabled
-        Core.DrawText(label, x + 4, y, c[1], c[2], c[3], 0.85)
-        local _, h = Core.MeasureText(label)
-        Core.SetFontBody()
-        Layout.AdvanceCursor(rail.w, h + 2)
-    end
+    local c = theme.colors.border
+    Core.DrawRect(x + 8, y, rail.w - 16, 1, c[1], c[2], c[3], c[4] or 1)
+    Layout.AdvanceCursor(rail.w, 8)
 end
 
 -- One entry. `selected` is the durable state the rail exists to show, so it
@@ -4944,15 +4943,19 @@ function Widgets.RailItem(id, icon, label, selected, theme, opts)
     end
 
     if Core.IsVisible(x, y, w, h) then
+        -- ONE highlight vocabulary, here and everywhere: a solid accent BAR on
+        -- the leading edge, a wash behind it, the label in bold. No coloured
+        -- frame — that was the mistake. Two lit entries next to each other
+        -- gave two frames that touched, and the eye read a table of cells
+        -- instead of two states. A bar cannot do that: it never meets its
+        -- neighbour.
         local rad = theme.rounding_small or 0
         if selected then
             local a = opts.accent or theme.colors.accent
-            fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.20)
-            strokeRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.7)
-            Core.DrawRect(x + 3, y + 2, 2, h - 4, a[1], a[2], a[3], 1)
+            fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.13)
+            Core.DrawRect(x + 3, y + 1, 3, h - 2, a[1], a[2], a[3], 1)
         elseif hovered then
             fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, 0.07)
-            frameIt(x + 3, y, w - 6, h, rad, theme, 0.7)
         end
         local tc
         if disabled then tc = theme.colors.text_disabled
