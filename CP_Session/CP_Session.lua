@@ -391,8 +391,10 @@ local function audioPlay(t, s, c)
         r.CF_Preview_SetValue(prev, "B_PPITCH", 1)
     end
     r.CF_Preview_SetValue(prev, "B_LOOP", 1)
+    local align = false
     if (r.GetPlayState() & 1) == 1 then
         r.CF_Preview_SetValue(prev, "D_MEASUREALIGN", 1)
+        align = true
     end
     -- Route through the track this column stands for, so its FX apply — but
     -- NOT when that track hosts a virtual instrument: a VSTi replaces its
@@ -409,7 +411,28 @@ local function audioPlay(t, s, c)
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
     r.CF_Preview_Play(prev)
-    aplay[t] = { prev = prev, src = src, s = s }
+    aplay[t] = { prev = prev, src = src, s = s, align = align }
+end
+
+-- CF_Preview's measure align holds EVERY loop pass to the grid, not only the
+-- first. A sample that is not exactly N measures long therefore WAITS at the
+-- end of each pass — the gap that appears with Clock: Follow and never with
+-- Free (where the transport is stopped, so the align was never set).
+-- So: align the START, then release it. The launch still lands on the bar, and
+-- the loop runs seamlessly afterwards, which is what a session clip does
+-- everywhere else. Released only once playback has actually begun — clearing
+-- it while the preview is still waiting for the bar would start it on the spot.
+local function pollAudioAlign()
+    for t = 0, TRACKS - 1 do
+        local a = aplay[t]
+        if a and a.align then
+            local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
+            if ok and rv and pos and pos > 0 then
+                pcall(r.CF_Preview_SetValue, a.prev, "D_MEASUREALIGN", 0)
+                a.align = false
+            end
+        end
+    end
 end
 
 local function isAudio(c) return c and c.kind == "audio" and c.path end
@@ -1357,6 +1380,7 @@ local function frame(theme)
         end
     end
     pollRec()
+    pollAudioAlign()
 
     -- edits coming home from CP_Editor (own channel: see the editor's
     -- flushApply — a shared one would let CP_Looper consume our cells)
@@ -1508,16 +1532,14 @@ local function frame(theme)
     -- the strip asks for frames of its own whenever anything can be making
     -- sound — the engine, the transport, or a sound cell (which plays through
     -- CF_Preview and needs neither of the other two).
-    if Loop.Playing() or mix_hot then
+    local audio_on = false
+    for t = 0, TRACKS - 1 do
+        if aplay[t] then audio_on = true break end
+    end
+    if Loop.Playing() or mix_hot or audio_on then
         UI.RequestRedraw()
-    elseif mix_open then
-        if (r.GetPlayState() & 1) == 1 then
-            UI.RequestRedraw()
-        else
-            for t = 0, TRACKS - 1 do
-                if aplay[t] then UI.RequestRedraw() break end
-            end
-        end
+    elseif mix_open and (r.GetPlayState() & 1) == 1 then
+        UI.RequestRedraw()
     end
 end
 
