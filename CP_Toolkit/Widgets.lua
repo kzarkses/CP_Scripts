@@ -11,10 +11,21 @@ local Core, Layout, Theme, Log, Icons, Keys  -- set via init
 -- Accumulated gfx wheel delta → whole notches, rounded away from zero
 -- (±120 per notch; fast spins deliver multiples in one defer tick and must
 -- scroll proportionally, sub-120 trackpad deltas still move min one step).
+--
+-- This deliberately differs from Layout's wheel_to_px, which stays
+-- fractional. The two answer different questions: a VALUE or a list index is
+-- discrete, so a small trackpad delta must still move exactly one step or
+-- nothing happens at all; pixel scrolling is continuous, so the same delta
+-- should glide. Making them agree would break smooth trackpad scrolling.
 local function wheel_notches(wheel)
     local n = wheel / 120
     return n > 0 and ceil(n) or floor(n)
 end
+
+-- One handle width for every track-shaped control. It was written three
+-- times under two names (grab_w twice, handle_w once), so the sliders could
+-- and did drift apart.
+local SLIDER_GRAB_W = 8
 
 -- ============================================================================
 -- SHARED OFFSCREEN BUFFERS (module-level — visible to all widgets below)
@@ -161,6 +172,16 @@ local KNOB_MAX_BUF = 925
 -- excursion arc near mid-travel exploded to almost the full dial).
 local KNOB_ANGLE_MIN = -pi * 0.75
 local KNOB_ANGLE_MAX = pi * 0.75
+local KNOB_SWEEP     = KNOB_ANGLE_MAX - KNOB_ANGLE_MIN
+
+-- Module level, not a closure inside the draw. ModKnob used to define this
+-- with `local function` inside its render block, which is the toolkit's only
+-- per-frame allocation on a drawing path — one closure per visible mod knob,
+-- per frame, on a rack that can hold dozens.
+local function knobAngle(v)
+    if v < 0 then v = 0 elseif v > 1 then v = 1 end
+    return KNOB_ANGLE_MIN + KNOB_SWEEP * v
+end
 
 local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, tw)
     local entry = knob_bg_cache[size]
@@ -1047,13 +1068,31 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
         and Core.MouseInClippedRect(sx, sy, slider_w, h)
         and not Core.HasPopup()
 
-    -- Inline value entry (F5, ImGui idiom): Ctrl+click or double-click on the
-    -- track types an exact value. Enter commits (clamped), Esc cancels,
-    -- losing focus cancels. Reuses the NumberInput interaction model.
+    -- One gesture, one meaning, whatever shape the parameter is drawn as.
+    --
+    -- The knob and the slider used to disagree head-on: double-click meant
+    -- "reset to default" on a dial and "open the editor" on a track, so the
+    -- same reflex did opposite things two controls apart — and the track had
+    -- no reset gesture at all. Now RIGHT-CLICK types, everywhere, and
+    -- DOUBLE-CLICK resets, everywhere.
+    --
+    -- Ctrl+click still opens the editor: it was here first, it costs nothing,
+    -- and double-click keeps falling back to it when the caller gave no
+    -- default — losing a way to type a value would be a worse trade than an
+    -- extra way to do it.
+    local has_default = opts.default ~= nil
     if hovered and not sd.editing
-       and ((Core.ModCtrl() and Core.MouseClicked(1)) or Core.MouseDoubleClicked()) then
+       and ((Core.ModCtrl() and Core.MouseClicked(1))
+            or Core.MouseClicked(2)
+            or (Core.MouseDoubleClicked() and not has_default)) then
         numEntryStart(sd, id, is_int and tostring(floor(value + 0.5))
                                      or string.format("%.3f", value))
+    end
+
+    if hovered and not sd.editing and has_default and Core.MouseDoubleClicked() then
+        new_value = max(min_val, min(max_val, opts.default))
+        if is_int then new_value = floor(new_value + 0.5) end
+        if new_value ~= value then changed = true end
     end
 
     local typed = numEntryUpdate(sd, id)
@@ -1071,6 +1110,24 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
         if Core.MouseClicked(1) and not Core.ModCtrl() then
             Core.SetActive(id)
             if Log then Log.WidgetClicked(id, "Slider", string.format("val=%s range=[%s,%s]", tostring(value), tostring(min_val), tostring(max_val))) end
+        end
+    end
+
+    -- Wheel. The knob had it and the slider did not, so the same gesture
+    -- worked or did nothing depending on which shape the parameter happened
+    -- to be drawn as — the exact opposite of a vocabulary. One notch is 1/50
+    -- of the range (an integer slider steps by one), Ctrl is fine.
+    if hovered and not sd.editing and not Core.HasPopup() and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            local span = max_val - min_val
+            local step = opts.wheel_step or (is_int and 1 or span * 0.02)
+            if Core.ModCtrl() and not is_int then step = step * 0.25 end
+            new_value = value + wheel_notches(wheel) * step
+            if is_int then new_value = floor(new_value + 0.5) end
+            new_value = max(min_val, min(max_val, new_value))
+            if new_value ~= value then changed = true end
+            Core.ConsumeWheel()
         end
     end
 
@@ -1124,20 +1181,40 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
             local display_val = changed and new_value or value
             local ratio = (display_val - min_val) / (max_val - min_val)
             ratio = max(0, min(1, ratio))
-            local fill_w = floor((slider_w - s_top - s_bot) * ratio)
+            local track_w = slider_w - s_top - s_bot
+            local fill_w = floor(track_w * ratio)
             local ac = theme.colors.accent
             local dim = disabled and 0.5 or 1
-            if fill_w > 0 then
+
+            -- Same origin rule as the knob: a bipolar slider fills OUT OF THE
+            -- CENTRE, so the sign is the first thing you read instead of
+            -- something you infer from a length.
+            if opts.bipolar then
+                local o = floor(track_w * 0.5)
+                local fx, fw
+                if fill_w >= o then fx, fw = o, fill_w - o
+                else fx, fw = fill_w, o - fill_w end
+                if fw > 0 then
+                    fillRound(sx + s_top + fx, sy + s_top, fw, h - s_top - s_bot, srad,
+                        ac[1], ac[2], ac[3], (ac[4] or 1) * dim)
+                end
+                local oc = theme.colors.border
+                Core.DrawRect(sx + s_top + o, sy + s_top, 1, h - s_top - s_bot,
+                              oc[1], oc[2], oc[3], oc[4] or 1)
+            elseif fill_w > 0 then
                 fillRound(sx + s_top, sy + s_top, fill_w, h - s_top - s_bot, srad,
                     ac[1], ac[2], ac[3], (ac[4] or 1) * dim)
             end
 
-            -- Grab handle
-            local grab_w = 8
+            -- Grab handle. It used to be accent on an accent fill — the same
+            -- invisible-on-itself fault as the toggle's bar. The handle is a
+            -- POSITION, so it reads on the text ramp and stands clear of the
+            -- fill whichever side of it the value sits on.
+            local grab_w = SLIDER_GRAB_W
             local grab_x = sx + fill_w - floor(grab_w / 2)
             grab_x = max(sx, min(sx + slider_w - grab_w, grab_x))
-            local grab_c = Core.IsActive(id) and theme.colors.accent_active or
-                            (hovered and theme.colors.accent_hovered or theme.colors.accent)
+            local grab_c = Core.IsActive(id) and theme.colors.text or
+                            (hovered and theme.colors.text or theme.colors.value_normal)
             fillRound(grab_x, sy, grab_w, h, srad, grab_c[1], grab_c[2], grab_c[3], (grab_c[4] or 1) * dim)
             draw_win32_bevel(grab_x, sy, grab_w, h, theme, Core.IsActive(id) and "sunken" or "raised")
 
@@ -1960,20 +2037,42 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
             end
         end
 
-        -- Value arc (from min to current value). Half-radius edge passes at
-        -- reduced alpha soften the band's borders — poor-man's AA for the
-        -- one part that can't be baked (it changes with the value).
-        if display_val > 0.005 then
+        -- Value arc. It runs from the ORIGIN to the current value, and for a
+        -- bipolar parameter the origin is the CENTRE, not the left stop.
+        --
+        -- Without this, a pan, a pitch offset or a signed gain is unreadable:
+        -- every value from -100 % to +100 % draws a band growing out of the
+        -- same corner, so "hard left" and "centre" differ only by length and
+        -- nothing tells you which side of zero you are on. Filling out of the
+        -- middle makes the sign the first thing you see.
+        --
+        -- Half-radius edge passes at reduced alpha soften the band's borders —
+        -- poor-man's AA for the one part that cannot be baked.
+        local origin = opts.bipolar and (angle_min + (angle_max - angle_min) * 0.5)
+                       or angle_min
+        local a0, a1 = origin, angle_val
+        if a1 < a0 then a0, a1 = a1, a0 end
+        if a1 - a0 > 0.004 then
             local ac = theme.colors.accent
             if Core.IsActive(id) then ac = theme.colors.accent_active
             elseif hovered then ac = theme.colors.accent_hovered end
             gfx.set(ac[1], ac[2], ac[3], (ac[4] or 1) * 0.45)
-            gfx.arc(cx, cy, ar + 0.5, angle_min, angle_val, 1)
-            gfx.arc(cx, cy, ar - tw + 0.5, angle_min, angle_val, 1)
+            gfx.arc(cx, cy, ar + 0.5, a0, a1, 1)
+            gfx.arc(cx, cy, ar - tw + 0.5, a0, a1, 1)
             gfx.set(ac[1], ac[2], ac[3], ac[4])
             for i = 0, tw - 1 do
-                gfx.arc(cx, cy, ar - i, angle_min, angle_val, 1)
+                gfx.arc(cx, cy, ar - i, a0, a1, 1)
             end
+        end
+
+        -- Centre tick for a bipolar dial: the origin has to be visible even
+        -- when the value sits on it and no arc is drawn at all.
+        if opts.bipolar then
+            local ca, sa = cos(origin), sin(origin)
+            local tc = theme.colors.border
+            gfx.set(tc[1], tc[2], tc[3], tc[4] or 1)
+            gfx.line(cx + ca * (ar + 1), cy + sa * (ar + 1),
+                     cx + ca * (ar - tw - 1), cy + sa * (ar - tw - 1), 1)
         end
 
         -- Value pointer. The arc alone is genuinely hard to read at 28-34 px,
@@ -2095,6 +2194,25 @@ function Widgets.ModKnob(id, label, base, depth, live, theme, opts)
         end
     end
 
+    -- Wheel, which this dial did not have while its twin did — same drawing,
+    -- same grip, and the gesture worked on one and not the other. Alt aims
+    -- the wheel at the modulation depth, exactly as it aims the drag.
+    if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            local step = (opts.wheel_step or 0.02) * (Core.ModCtrl() and 0.25 or 1)
+            local n = wheel_notches(wheel)
+            if Core.ModAlt() then
+                new_depth = max(-1, min(1, depth + n * step))
+                if new_depth ~= depth then depth_changed = true end
+            else
+                new_base = max(0, min(1, base + n * step))
+                if new_base ~= base then base_changed = true end
+            end
+            Core.ConsumeWheel()
+        end
+    end
+
     if hovered then Core.SetCursor("size_ns") end
 
     -- Strict visibility guard: gfx.blit/gfx.arc bypass the software clip
@@ -2108,8 +2226,6 @@ function Widgets.ModKnob(id, label, base, depth, live, theme, opts)
         -- gfx.arc angles are 0 = up, clockwise.
         local angle_min = KNOB_ANGLE_MIN
         local angle_max = KNOB_ANGLE_MAX
-        local sweep = angle_max - angle_min
-        local function angleOf(v) return angle_min + sweep * max(0, min(1, v)) end
         local ar = radius - 3                       -- outer arc radius
         local tw = max(2, floor(radius * 0.1))      -- track thickness
         local mr = ar - tw - 1                      -- modulation ring radius
@@ -2139,15 +2255,15 @@ function Widgets.ModKnob(id, label, base, depth, live, theme, opts)
             elseif hovered then ac = theme.colors.accent_hovered end
             gfx.set(ac[1], ac[2], ac[3], ac[4])
             for i = 0, tw - 1 do
-                gfx.arc(cx, cy, ar - i, angle_min, angleOf(d_base), 1)
+                gfx.arc(cx, cy, ar - i, angle_min, knobAngle(d_base), 1)
             end
         end
 
         -- Modulation excursion arc on the inner ring
         local half = math.abs(d_depth) * 0.5
         if half > 0.003 then
-            local lo = angleOf(d_base - half)
-            local hi = angleOf(d_base + half)
+            local lo = knobAngle(d_base - half)
+            local hi = knobAngle(d_base + half)
             local mc = d_depth < 0 and (theme.colors.value_negative or theme.colors.accent)
                 or theme.colors.accent
             gfx.set(mc[1], mc[2], mc[3], 0.45)
@@ -2158,7 +2274,7 @@ function Widgets.ModKnob(id, label, base, depth, live, theme, opts)
 
         -- Live dot riding the modulation ring
         if live then
-            local la = angleOf(live)
+            local la = knobAngle(live)
             local dot_r = max(2, floor(radius * 0.09))
             local dx = cx + math.sin(la) * (mr - tw * 0.5)
             local dy2 = cy - math.cos(la) * (mr - tw * 0.5)
@@ -3060,8 +3176,10 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
         if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
             local wheel = Core.GetState().mouse_wheel
             if wheel ~= 0 then
-                local dir = wheel > 0 and 1 or -1
-                new_value = value + dir * step
+                -- Notch COUNT, not just direction. This was the one wheel
+                -- site that ignored it, so a fast spin moved a list nine rows
+                -- and the number beside it by exactly one.
+                new_value = value + wheel_notches(wheel) * step
                 if min_val then new_value = max(min_val, new_value) end
                 if max_val then new_value = min(max_val, new_value) end
                 if step >= 1 then new_value = floor(new_value + 0.5) end
@@ -5181,7 +5299,7 @@ function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, 
     local range = range_max - range_min
     local ratio_min = (val_min - range_min) / range
     local ratio_max = (val_max - range_min) / range
-    local grab_w = 8
+    local grab_w = SLIDER_GRAB_W
     local edge_zone = grab_w  -- pixels around each handle that count as "grab handle"
 
     local min_px = sx + floor(ratio_min * slider_w)
@@ -5451,7 +5569,7 @@ function Widgets.ValueRangeSlider(id, label, value, val_min, val_max,
     local value_changed = false
     local range_changed = false
 
-    local handle_w   = 8                 -- min/max grab handle width
+    local handle_w   = SLIDER_GRAB_W                 -- min/max grab handle width
     local edge_zone  = handle_w          -- pixel zone counted as "on the handle"
     -- Small dot — just a marker for the current value, not a grab knob.
     -- The dot stays out of the way so the user can still read the min/max
