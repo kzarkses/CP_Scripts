@@ -806,8 +806,8 @@ suffit à en remplacer un sans toucher au code ; `SetHot` sur les 14 widgets
 muets ; l'anneau de focus (`RegisterFocusable`/`FocusNext`/`FocusPrev` existent
 et n'ont **aucun appelant**, et TAB est capturé comme touche de validation) ;
 les centrages `y + h * 0.5 - 6` dans les apps, où 6 est la moitié de `body = 12`
-alors que le tweaker laisse monter `body` à 24 ; et `mod`, le dernier jeton qui
-ne peint encore rien (`mute` et `solo` sont branchés depuis la session 12).
+alors que le tweaker laisse monter `body` à 24. *(Les trois jetons de rôle qui
+ne peignaient rien sont branchés : `mute` et `solo` en session 12, `mod` en 13.)*
 
 **Les scripts périphériques attendent, sur sa demande** : ChordLab, ColorPicker,
 Inspector, VideoKit, PaintSynth ne sont pas migrés sur les zones. « Le cœur
@@ -874,6 +874,72 @@ que trois contrôles muets ne disent pas quelle piste sonne trop fort.
 - **Le stop par colonne existait déjà** (rangée de carrés sous la grille,
   session 7) — c'est le seul élément de tranche que l'analyse Ableton
   réclamait et il était en place.
+
+---
+
+## Session 13 (2026-07-26) — la forme d'onde, les poignées, et trois retours de test
+
+### Le rendu de forme d'onde, une seule fois et lisse
+
+Trois endroits dessinaient la même boucle avec trois petites divergences, et
+tous les trois dessinaient une **palissade** : un trait vertical par colonne,
+isolé de ses voisins. `Peaks.Render` est cette boucle, une fois, et elle fait
+deux choses de plus :
+
+- les colonnes sont **reliées** le long des enveloppes haute et basse. Une
+  colonne seule redevient une palissade dès que le zoom dépasse la résolution
+  des crêtes ; reliée, c'est une forme avec un bord ;
+- l'appelant **cuit en 2×** et reblitte en `gfx.mode = 4` — le tour que les
+  knobs utilisent déjà. Les crêtes sont **lues** deux fois plus fin, donc ce
+  n'est pas un flou de données grossières mais du vrai suréchantillonnage.
+
+Coût : un `GetPeaks` de double compte et deux fois plus d'appels de ligne, tous
+deux payés **seulement quand la vue change**. Une frame stable reste un blit.
+
+### CP_Sampler — retours de test
+
+- [x] **Le trou sous la waveform.** La réserve de la bande de contrôle était
+  dimensionnée pour le cas le plus haut et le contenu ne la remplissait jamais.
+  On mesure maintenant ce que la grille a *réellement* pris et la forme d'onde
+  reçoit tout le reste.
+- [x] **La bande ne change plus de taille** (176 → 56 px pour un pad vide) :
+  cliquer un pad vide redimensionnait la grille sous le curseur. Les knobs
+  restent, **désactivés** — d'où le support `disabled` ajouté au knob du toolkit.
+- [x] **Les poignées répondent** : le dessin connaît ce qui est sous le curseur
+  *avant* le clic, trois états sur chacune, et la réponse est la **taille**
+  autant que la couleur (sur 5 px, une teinte seule n'est pas une réponse).
+  Prise en haut **et** en bas sur les bords de région. Le curseur souris lit le
+  même test que le dessin.
+- [x] **Choke et Loop rentrent dans le rang** → `UI.KnobChip` / `UI.KnobToggle`.
+- [x] L'enveloppe ADSR prend le jeton `mod` (le violet d'enveloppe de REAPER) :
+  **le dernier jeton de rôle non lu est branché**, et un ambre en dur disparaît.
+
+### CP_Editor — retours de test
+
+- [x] **Le curseur de lecture.** Le test était `IsPlaying(state.path)`, or en
+  mode item la preview joue la *source* de la prise — sans chemin, donc le test
+  ne pouvait jamais être vrai là. Il suit maintenant ce qui joue quel que soit
+  le mode, **et** le transport de REAPER quand l'item suivi passe sous la tête
+  de lecture. Couleur `pending`, prise à REAPER : la même que celle qui bouge
+  dans l'arrangeur.
+- [x] **La boucle** (bouton à côté de Play) sur la partie jouée — la sélection,
+  sinon la région. Sans FIN il n'y a rien contre quoi rebondir, d'où le repli
+  sur la région ; `Audio.SetLoop` agit sur ce qui joue **déjà**.
+- [x] **Les bords de la partie jouée se tirent**, comme la région du Sampler
+  (`Ops.TrimEdge` : le bord de début déplace l'item avec lui, comme le glisser
+  natif). Prises en **bas** pour ne jamais se disputer avec les fondus en haut.
+  Les bords d'une sélection existante la redimensionnent au lieu d'en commencer
+  une nouvelle. Deux familles, deux couleurs : la géométrie de l'**item** en
+  couleur de texte, la sélection de l'**éditeur** en accent.
+
+### CP_Session — un clip audio n'attend plus à chaque tour
+
+L'alignement mesure de CF_Preview tient **chaque** passe de boucle à la grille,
+pas seulement la première : un sample qui ne fait pas exactement N mesures
+attend donc à la fin de chaque tour. C'est le trou entendu en Clock: Follow et
+jamais en Free (transport arrêté ⇒ alignement jamais posé). On aligne le
+**départ**, puis on relâche — une fois la lecture réellement commencée, sinon
+la preview partirait sur-le-champ.
 
 Les trois jetons de rôle `mute`, `solo` et `mod` attendent précisément ça —
 `mute` et `solo` sont le vocabulaire documenté des boutons M/S, et ils sont

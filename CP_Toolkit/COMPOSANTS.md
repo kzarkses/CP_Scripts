@@ -201,6 +201,32 @@ Trois choses à retenir :
 - **`opts.mark`** dessine le cran (l'unité, le centre) — un fader sans repère
   oblige à lire le nombre pour savoir où est le zéro.
 
+### Une rangée de knobs doit rester une RANGÉE
+
+| Appel | Pour quoi |
+|---|---|
+| `UI.KnobToggle(id, label, icon, on, opts)` | un oui/non, dans l'empreinte d'un cadran |
+| `UI.KnobChip(id, label, text, opts)` | un choix parmi une poignée → `clicked, wheel_delta` |
+
+Une rangée de cadrans est un **rythme** : une largeur, une hauteur, une légende
+dessous. Y poser un combo étiqueté et une case à cocher casse ce rythme, et
+l'œil lit deux intrus venus d'une autre fenêtre. Ces deux-là occupent
+exactement la boîte d'un knob (`KNOB_SIZE` + la ligne de légende) et portent ce
+qu'un cadran ne peut pas.
+
+**Carré arrondi, pas rond** — volontairement. La forme dit « ce n'est pas
+continu ». C'est le rythme qui doit correspondre, pas le contour.
+
+`KnobChip` **montre** la valeur courante et laisse l'appelant ouvrir son propre
+menu au clic ; la molette rend un delta déjà consommé. Il est *sunken* au repos
+(une valeur qu'on lit est un champ, pas un bouton) et **allumé** quand il n'est
+pas à sa valeur neutre, ce qui rend « ce pad est dans un groupe » lisible sans
+lire le mot.
+
+**Le knob sait enfin être désactivé** (`opts.disabled`, ou `UI.BeginDisabled`).
+Il garde sa place et sa valeur, et ne répond plus à rien — parce qu'un contrôle
+qui disparaît quand il ne sert pas emporte la mise en page avec lui.
+
 ### Rail ou barre ?
 
 Le rail existe toujours (`UI.BeginRail`), avec `RailCombo` et `RailValue` qui
