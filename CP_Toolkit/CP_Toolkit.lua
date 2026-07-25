@@ -133,6 +133,7 @@ function UI.Run(loop_fn)
         Layout.End()
         -- Update eyedropper if active (runs before tooltip layer in Core)
         Widgets.UpdateEyedropper(UI._theme)
+        Widgets.UpdateInspector(UI._theme)
     end)
 end
 
@@ -393,6 +394,14 @@ end
 function UI.IsEyedropperActive()
     return Widgets.IsEyedropperActive()
 end
+
+-- Inspector (screen colour → which theme key is that?)
+function UI.StartInspector()      return Widgets.StartInspector(UI._theme) end
+function UI.StopInspector()       return Widgets.StopInspector() end
+function UI.IsInspectorActive()   return Widgets.IsInspectorActive() end
+function UI.IsInspectorFrozen()   return Widgets.IsInspectorFrozen() end
+function UI.ToggleInspectorFreeze() return Widgets.ToggleInspectorFreeze() end
+function UI.InspectorMatches()    return Widgets.InspectorMatches() end
 
 -- Number Input
 function UI.NumberInput(id, label, value, min_val, max_val, opts)

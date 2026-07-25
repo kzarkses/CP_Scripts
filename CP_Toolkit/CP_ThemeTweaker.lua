@@ -187,9 +187,102 @@ UI.Run(function()
     elseif active_tab == 2 then
         local groups = UI.Theme.GetColorGroups()
 
+        -- ------------------------------------------------------------------
+        -- INSPECTOR. Point at any CP window and it names the colour.
+        -- ------------------------------------------------------------------
+        -- Sixty-four keys is not a lot for a theme (the REAPER theme this one
+        -- is drawn from has 396), but a name only helps if you can get from a
+        -- pixel to it. Without this you are reduced to changing a key and
+        -- looking for what moved, which is how "I don't even know which
+        -- colour the column uses" happened in the first place.
+        if UI.IsInspectorActive() then
+            local frozen = UI.IsInspectorFrozen()
+            if UI.Button("tw_insp_off", frozen and "Resume (E)" or "Freeze (E)") then
+                UI.ToggleInspectorFreeze()
+            end
+            UI.SameLine()
+            if UI.Button("tw_insp_stop", "Stop") then UI.StopInspector() end
+            UI.SameLine()
+            UI.Text(frozen and "  frozen" or "  hover any CP window",
+                    { color = frozen and t.colors.pending or t.colors.accent })
+
+            local m, col = UI.InspectorMatches()
+            if col then
+                UI.Spacing(4)
+                local sx, sy = UI.GetCursorPos()
+                UI.Core.DrawRect(sx, sy, 40, 40, col[1], col[2], col[3], 1)
+                local bc = t.colors.border
+                UI.Core.DrawRect(sx, sy, 40, 40, bc[1], bc[2], bc[3], 1, false)
+                UI.Layout.AdvanceCursor(44, 40)
+                UI.SameLine(6)
+                UI.SetFontMono()
+                UI.Text(string.format("%d %d %d",
+                    math.floor(col[1] * 255 + 0.5),
+                    math.floor(col[2] * 255 + 0.5),
+                    math.floor(col[3] * 255 + 0.5)), { disabled = true })
+                UI.SetFontBody()
+                UI.Spacing(4)
+
+                for i = 1, 3 do
+                    local e = m[i]
+                    if e and e.key then
+                        -- An exact hit is a flat fill. A near hit is either an
+                        -- alpha layer or an edge pixel, and saying which is
+                        -- the difference between an answer and a guess.
+                        local exact = e.d < 0.00002
+                        local label = UI.Theme.GetColorLabel(e.key)
+                        local note
+                        if e.over then
+                            note = " (over " .. UI.Theme.GetColorLabel(e.over) .. ")"
+                        elseif not exact then
+                            note = " ~"
+                        else
+                            note = ""
+                        end
+                        if i == 1 then
+                            UI.Text(label .. note)
+                            UI.SetFontCaption()
+                            UI.Text("  " .. e.key, { disabled = true })
+                            UI.SetFontBody()
+                            local c = t.colors[e.key]
+                            if c then
+                                local ch, nc = UI.ColorPicker("twi_" .. e.key, "Edit", c)
+                                if ch then
+                                    t.colors[e.key] = { nc[1], nc[2], nc[3], c[4] or 1 }
+                                    mark_dirty()
+                                end
+                            end
+                            UI.Spacing(4)
+                            UI.SetFontCaption()
+                            UI.Text("also close:", { disabled = true })
+                            UI.SetFontBody()
+                        else
+                            UI.SetFontCaption()
+                            UI.Text("  " .. label .. note, { disabled = true })
+                            UI.SetFontBody()
+                        end
+                    end
+                end
+            end
+            UI.Spacing(6)
+            UI.Separator()
+        else
+            if UI.Button("tw_insp_on", "Inspect a colour on screen") then
+                UI.StartInspector()
+            end
+            UI.SameLine()
+            UI.SetFontCaption()
+            UI.Text("  hover a CP window, E freezes", { disabled = true })
+            UI.SetFontBody()
+            UI.Spacing(4)
+            UI.Separator()
+        end
+
+        UI.Spacing(4)
+
         -- Eyedropper status
         if UI.IsEyedropperActive() then
-            UI.Text("Pipette active — click anywhere to pick", { color = { 1, 0.8, 0.3, 1 } })
+            UI.Text("Pipette active — press E to pick", { color = { 1, 0.8, 0.3, 1 } })
         elseif eyedropper_target then
             UI.Text("Color applied to: " .. eyedropper_target, { disabled = true })
         end

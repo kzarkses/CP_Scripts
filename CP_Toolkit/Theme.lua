@@ -999,4 +999,80 @@ function Theme.GetColorLabel(key)
     return COLOR_LABELS[key] or key
 end
 
+-- ============================================================================
+-- REVERSE LOOKUP — "what is this pixel?"
+-- ============================================================================
+-- The complaint that started all of this was "I don't even know which colour
+-- the column uses, and it isn't in the theme". A token nobody can locate is a
+-- token nobody can tune, and no amount of renaming fixes that on its own: you
+-- have to be able to point at a pixel and get an answer.
+--
+-- So the match table is built the way the screen is: every token appears at
+-- its own value AND, when it is drawn with alpha, at the values it actually
+-- composites to over the grounds it is laid on. Without that second part the
+-- grid lines could never be identified — a beat line is black at 32 %, and
+-- black at 32 % is not a colour anyone ever sees.
+local COMPOSITE_OVER = { "canvas_row", "canvas_row_dark", "canvas_bg", "surface", "window_bg" }
+
+function Theme.BuildMatchTable(t)
+    local mt = {}
+    local c = t.colors
+    for key, col in pairs(c) do
+        local a = col[4] or 1
+        if a >= 0.999 then
+            mt[#mt + 1] = { key = key, r = col[1], g = col[2], b = col[3] }
+        else
+            -- The token's own value stays in, for the case where it is blitted
+            -- opaque somewhere, but the composites are what will actually hit.
+            mt[#mt + 1] = { key = key, r = col[1], g = col[2], b = col[3], alpha = a }
+            for i = 1, #COMPOSITE_OVER do
+                local ground = c[COMPOSITE_OVER[i]]
+                if ground then
+                    mt[#mt + 1] = {
+                        key = key, over = COMPOSITE_OVER[i], alpha = a,
+                        r = col[1] * a + ground[1] * (1 - a),
+                        g = col[2] * a + ground[2] * (1 - a),
+                        b = col[3] * a + ground[3] * (1 - a),
+                    }
+                end
+            end
+        end
+    end
+    return mt
+end
+
+-- Nearest entries to an (r, g, b), best first. Writes into `out` — this runs
+-- every frame while the inspector is live, and a fresh table per frame in a
+-- polling loop is exactly the kind of garbage this codebase does not make.
+-- Distance is weighted for the eye (green counts most), which keeps a grey
+-- from claiming a faint tint and vice versa.
+function Theme.MatchColor(mt, r, g, b, out, want)
+    want = want or 3
+    -- `out` carries its own slot tables, filled in place: this runs every
+    -- frame while the inspector is live.
+    for i = 1, want do
+        if not out[i] then out[i] = { key = nil, over = nil, alpha = nil, d = 0 } end
+        out[i].key = nil
+        out[i].d = math.huge
+    end
+    local n = 0
+    for i = 1, #mt do
+        local e = mt[i]
+        local dr, dg, db = e.r - r, e.g - g, e.b - b
+        local d = dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11
+        -- Insertion into the top-N. N is 3, so this beats any sort and, more
+        -- to the point, allocates nothing.
+        if d < out[want].d then
+            local pos = want
+            while pos > 1 and d < out[pos - 1].d do pos = pos - 1 end
+            local last = out[want]
+            for j = want, pos + 1, -1 do out[j] = out[j - 1] end
+            out[pos] = last
+            last.key, last.over, last.alpha, last.d = e.key, e.over, e.alpha, d
+            if n < want then n = n + 1 end
+        end
+    end
+    return n
+end
+
 return Theme

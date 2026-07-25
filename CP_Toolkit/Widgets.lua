@@ -2474,7 +2474,14 @@ end
 -- when it ends (audit P16: a 1×1 LICE bitmap + the desktop DC used to be
 -- created and destroyed EVERY frame while the eyedropper was active — GDI
 -- object churn measured in ms on old hardware).
+-- Two users now: the eyedropper and the inspector, which sample the screen the
+-- same way and can be armed at the same time. Counted, because a plain
+-- release from either one would pull the bitmap and the desktop DC out from
+-- under the other — a crash-shaped bug that only shows up when both are on.
+local sampler_users = 0
+
 local function eyedropper_acquire()
+    sampler_users = sampler_users + 1
     if eyedropper.bm then return true end
     if not _has_js_api() then return false end
     local hwnd, dc = _get_desktop_dc()
@@ -2482,12 +2489,14 @@ local function eyedropper_acquire()
     local bm = reaper.JS_LICE_CreateBitmap(true, 1, 1)
     if not bm then
         reaper.JS_GDI_ReleaseDC(hwnd, dc)
+        sampler_users = sampler_users - 1
         return false
     end
     local bm_dc = reaper.JS_LICE_GetDC(bm)
     if not bm_dc then
         reaper.JS_LICE_DestroyBitmap(bm)
         reaper.JS_GDI_ReleaseDC(hwnd, dc)
+        sampler_users = sampler_users - 1
         return false
     end
     eyedropper.bm, eyedropper.bm_dc = bm, bm_dc
@@ -2496,10 +2505,23 @@ local function eyedropper_acquire()
 end
 
 local function eyedropper_release()
+    if sampler_users > 0 then sampler_users = sampler_users - 1 end
+    if sampler_users > 0 then return end          -- the other user still needs it
     if eyedropper.bm then reaper.JS_LICE_DestroyBitmap(eyedropper.bm) end
     if eyedropper.dc then reaper.JS_GDI_ReleaseDC(eyedropper.dc_hwnd, eyedropper.dc) end
     eyedropper.bm, eyedropper.bm_dc = nil, nil
     eyedropper.dc, eyedropper.dc_hwnd = nil, nil
+end
+
+-- Global key state. The eyedropper and the inspector both run while the
+-- pointer is over ANOTHER window, so the script has no focus and
+-- gfx.getchar() sees nothing — the key has to be read from the OS.
+-- JS_VKeys_GetState indexes its byte string by virtual-key code.
+local VK_E = 0x45
+local function key_down_global(vk)
+    if not reaper.JS_VKeys_GetState then return false end
+    local st = reaper.JS_VKeys_GetState(0)
+    return st ~= nil and st:byte(vk) == 1
 end
 
 -- Sample one pixel from the desktop at SCREEN coordinates (sx, sy) using the
@@ -2560,7 +2582,7 @@ local function _draw_eyedropper_overlay()
                 color[1], color[2], color[3]
         end
         Core.DrawText(eyedropper.rgb_str, sw_x + sw_size + 8, hy + 4, tc[1], tc[2], tc[3], 1)
-        Core.DrawText("Click to pick — Esc / R-click to cancel",
+        Core.DrawText("Press E to pick — Esc / R-click to cancel",
                               sw_x + sw_size + 8, hy + 18, tc[1], tc[2], tc[3], 0.7)
     else
         Core.DrawText("Eyedropper failed (JS_ReaScriptAPI missing?)",
@@ -2587,14 +2609,20 @@ function Widgets.UpdateEyedropper(theme)
 
     -- Global mouse button state (independent of script window focus)
     local mstate = reaper.JS_Mouse_GetState(0xFF)
-    local lmb_now = (mstate & 1) ~= 0
     local rmb_now = (mstate & 2) ~= 0
 
-    -- Commit on down→up edge, but ONLY if lmb_was_up was already set on a
-    -- PREVIOUS frame. This prevents the arming click's release from firing
-    -- immediately (the old code set lmb_was_up and checked it in the same
-    -- frame iteration, so the very first release always triggered commit).
-    if eyedropper.lmb_was_up and eyedropper.prev_lmb and not lmb_now then
+    -- Commit on E, not on click.
+    --
+    -- Clicking to pick meant you could not use the window you were sampling:
+    -- every click was swallowed by the picker, so you could not open the very
+    -- menu or select the very row whose colour you were after. With a key, the
+    -- target window keeps working normally and you sample whenever the thing
+    -- you want is actually on screen.
+    --
+    -- Read globally: the script window is NOT focused while you hover another
+    -- one, so gfx.getchar() sees nothing here.
+    local e_now = key_down_global(VK_E)
+    if e_now and not eyedropper.prev_e then
         if color and eyedropper.callback then
             eyedropper.callback(color)
         end
@@ -2603,10 +2631,7 @@ function Widgets.UpdateEyedropper(theme)
         eyedropper_release()
         return
     end
-
-    -- Update lmb_was_up AFTER the edge check (not before)
-    if not lmb_now then eyedropper.lmb_was_up = true end
-    eyedropper.prev_lmb = lmb_now
+    eyedropper.prev_e = e_now
 
     -- Right-click or Escape cancels (the consumed ESC must not bubble up to
     -- Core.Run's close handling — audit B2)
@@ -2615,6 +2640,91 @@ function Widgets.UpdateEyedropper(theme)
         eyedropper.active = false
         eyedropper.callback = nil
         eyedropper_release()
+    end
+end
+
+-- ============================================================================
+-- INSPECTOR — point at a pixel, get the token
+-- ============================================================================
+-- Same screen sampling as the eyedropper, asking the opposite question. The
+-- eyedropper says "give me this colour"; the inspector says "tell me WHICH
+-- colour this is" — which is the one you need when the theme has sixty-four
+-- keys and you are looking at a grey you cannot name.
+--
+-- It reads the screen, so it works on any CP window without those windows
+-- knowing anything about it. No draw-site instrumentation, and nothing to
+-- maintain in eight applications.
+local inspector = { active = false, matches = {}, table = nil, frozen = false }
+
+function Widgets.StartInspector(theme)
+    if inspector.active then return true end      -- never acquire twice
+    if not eyedropper_acquire() then return false end
+    inspector.active = true
+    inspector.frozen = false
+    inspector.prev_e = true       -- the arming key may still be down
+    inspector.table = Theme.BuildMatchTable(theme)
+    inspector.theme_ver = Theme.GetVersion()
+    return true
+end
+
+function Widgets.StopInspector()
+    if not inspector.active then return end
+    inspector.active = false
+    inspector.table = nil
+    eyedropper_release()
+end
+
+function Widgets.IsInspectorActive() return inspector.active end
+function Widgets.IsInspectorFrozen() return inspector.frozen end
+
+-- Same effect as the E key. The key is what you use in practice (your pointer
+-- is on the other window); the button is how you find out the key exists.
+function Widgets.ToggleInspectorFreeze()
+    inspector.frozen = not inspector.frozen
+end
+
+-- Best matches for the pixel under the pointer, best first. Shared table —
+-- read it, do not keep it.
+function Widgets.InspectorMatches() return inspector.matches, inspector.color end
+
+function Widgets.UpdateInspector(theme)
+    if not inspector.active then return end
+    Core.RequestRedraw()
+
+    -- Editing a colour changes what the pixel should be called, so the match
+    -- table follows the theme instead of going stale mid-session.
+    local ver = Theme.GetVersion()
+    if ver ~= inspector.theme_ver then
+        inspector.table = Theme.BuildMatchTable(theme)
+        inspector.theme_ver = ver
+    end
+
+    -- E freezes the reading. You need it: the answer is displayed in the
+    -- tweaker, and walking the pointer back there would otherwise re-sample
+    -- the tweaker's own chrome and overwrite what you went to read.
+    --
+    -- The eyedropper owns E while it is armed — it is a modal action with a
+    -- single outcome, so one press must not also flip the freeze behind it.
+    local e_now = key_down_global(VK_E)
+    if not eyedropper.active then
+        if e_now and not inspector.prev_e then inspector.frozen = not inspector.frozen end
+    end
+    inspector.prev_e = e_now
+
+    if not inspector.frozen then
+        local sx, sy = reaper.GetMousePosition()
+        local color = sample_screen_pixel(sx, sy)
+        if color then
+            local c = inspector.color
+            if not c then c = {}; inspector.color = c end
+            c[1], c[2], c[3] = color[1], color[2], color[3]
+            Theme.MatchColor(inspector.table, c[1], c[2], c[3], inspector.matches, 3)
+        end
+    end
+
+    if Core.GetChar() == 27 then
+        Core.ConsumeChar()
+        Widgets.StopInspector()
     end
 end
 
