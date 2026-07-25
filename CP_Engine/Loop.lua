@@ -783,11 +783,32 @@ end
 -- Re-selects our gmem block (Engine/Tempo steals it), lets one queued command
 -- leave, and re-derives the live half of each pair. Hosts used to do these
 -- separately, or not at all, which is precisely how they drifted apart.
+-- Lane destinations live on the router (P_EXT GUIDs) and are resolved to
+-- track pointers by a scan, so they are cached rather than re-read per frame.
+-- But the cache MUST follow the project: another window routing a column
+-- writes that GUID, and reconnect() — the only other place that refreshes —
+-- early-returns as soon as the router is found, so a script that resolved
+-- once would answer with the old destination for the rest of its life. That
+-- is invisible until something reads the destination for real (the editor
+-- naming its rows after the routed instrument), and then it is baffling.
+-- Throttled: routing changes are rare, half a second of lag is not visible,
+-- and the scan must not land on every frame of a note drag.
+local dest_chg, dest_t = -1, 0
+local function pollDests()
+    local c = r.GetProjectStateChangeCount(0)
+    if c == dest_chg then return end
+    local now = r.time_precise()
+    if now - dest_t < 0.5 then return end
+    dest_chg, dest_t = c, now
+    Loop.RefreshDests()
+end
+
 function Loop.Poll()
     if not attached then return end
     r.gmem_attach(GMEM_NAME)
     Loop.PumpCmd()
     resolveLive()
+    pollDests()
 end
 
 -- ---------------------------------------------------------------------------

@@ -198,6 +198,10 @@ local function dropOwnSource()
 end
 
 local function resetForTarget()
+    -- Back to auto: the rows describe THIS target's instrument, and a manual
+    -- "show me drum rows" chosen for a kit clip must not follow you onto the
+    -- next clip, which may be a synth.
+    state.drum_mode = nil
     state.sel_a, state.sel_b = nil, nil
     state.cursor = 0
     for i = #state.markers, 1, -1 do state.markers[i] = nil end

@@ -58,6 +58,7 @@ local state = {
     grid = nil,            -- grid geometry (drop hit-testing)
     arow = nil,            -- audio-cell row geometry
     engine_checked = false,   -- one-shot "is the loaded engine current" probe
+    engine_tried   = false,   -- one-shot auto-create (opening this window IS the ask)
 }
 
 local function flash(msg)
@@ -913,19 +914,28 @@ local function frame(theme)
     end
     UI.Spacing(4)
 
-    -- The engine belongs to the suite, not to CP_Looper: this window creates
-    -- it on ask, like any other. Creating tracks is never done behind the
-    -- user's back, so it takes a click — but it takes it HERE.
+    -- This window IS the engine's front end — a grid with no engine can do
+    -- nothing at all — so opening it IS the request. It builds the router
+    -- itself, once, instead of sending the user to a third script for a step
+    -- that holds no decision. The button below stays for the case where that
+    -- failed.
     if not attached then
-        UI.SetFontCaption()
-        UI.TextWrapped("No looper engine in this project yet.")
-        UI.SetFontBody()
-        UI.Spacing(2)
-        if UI.Button("mkengine", "Create looper engine") then
-            local ok, note = Loop.Ensure(true)
-            flash(note or (ok and "Engine ready" or "Could not create the engine"))
+        if not state.engine_tried then
+            state.engine_tried = true
+            local _, note = Loop.Ensure(true)
+            if note then flash(note) end
+            attached = Loop.IsAttached()
         end
-        return
+        if not attached then
+            UI.SetFontCaption()
+            UI.TextWrapped("No looper engine in this project, and it could not be created.")
+            UI.SetFontBody()
+            UI.Spacing(2)
+            if UI.Button("mkengine", "Create looper engine") then
+                state.engine_tried = false
+            end
+            return
+        end
     end
 
     -- An engine loaded before the lanes grew DROPS every command aimed at the
