@@ -950,9 +950,9 @@ local function frame(theme)
         local _, note = Loop.Ensure(false)
         if note then flash(note) end
     end
-    if Loop.EngineLanes() < Loop.MAX_LANES then
+    if not Loop.EngineCurrent() then
         UI.SetFontCaption()
-        UI.TextWrapped("This project's looper engine is older than the grid and ignores half its lanes — open CP_Looper and click \"Reload engine\".")
+        UI.TextWrapped("This project's looper engine is out of date and it would not refresh — open CP_Looper and click \"Reload engine\".")
         UI.SetFontBody()
         UI.Spacing(2)
     end

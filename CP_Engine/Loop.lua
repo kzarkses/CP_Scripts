@@ -41,7 +41,16 @@ local G_LANE_STATE = 200   -- stride 8: +0 mode,+1 nev(shared),+2 phase,+3 lenbe
 local G_TRANSPORT  = 3000  -- +0 tempo,+1 play_state,+2 beat,+3 spb,+4 ts_num,+5 ts_denom,+6 srate
 local G_INIT_COUNT = 3095  -- incremented by the JSFX @init: counts engine resets
 local G_ENG_LANES  = 3097  -- lanes the LOADED JSFX actually serves
+local G_BUILD      = 3094  -- behaviour revision of the LOADED JSFX
 local G_VERSION    = 3099
+
+-- The behaviour revision this module expects. The .jsfx is only recopied into
+-- REAPER's Effects folder on create/reload, so a project opened with an older
+-- instance keeps running the old code — silently, and with symptoms that look
+-- like Lua bugs (a shortened loop folding its later bars onto the first one
+-- was exactly that). Bumping this makes Loop.Ensure refresh the engine, which
+-- the loops survive; bumping the JSFX's LAYOUT_VER would wipe them.
+Loop.ENGINE_BUILD = 2
 local G_NOTE_BASE  = 10000
 
 local GMEM_NAME  = "CP_MidiLooper"
@@ -514,11 +523,14 @@ function Loop.Ensure(create)
         return true, "Looper engine created"
     end
     -- The engine loaded in the chain can be OLDER than this build (the .jsfx
-    -- is only recopied on create/reload). A lane it does not scan drops every
-    -- command aimed at it, silently — a clip that never starts and a column
-    -- that stops instead of switching. Refresh it; the loops live in gmem and
-    -- survive the swap.
-    if Loop.EngineAlive() and Loop.EngineLanes() < Loop.MAX_LANES then
+    -- is only recopied on create/reload), in two ways that both misbehave in
+    -- silence: too few lanes, so every command aimed at the upper half is
+    -- dropped (a clip that never starts, a column that stops instead of
+    -- switching), or an out-of-date behaviour revision. Refresh it; the loops
+    -- live in gmem and survive the swap.
+    if Loop.EngineAlive()
+       and (Loop.EngineLanes() < Loop.MAX_LANES
+            or Loop.EngineBuild() < Loop.ENGINE_BUILD) then
         if Loop.ReloadEngine() then return true, "Looper engine refreshed" end
         return false, "The loaded engine is out of date and would not reload."
     end
@@ -841,6 +853,18 @@ end
 -- watches this to re-read its caches — and it is the field proof that a reset
 -- happened at all, which is how the old loop-loss bug was pinned down.
 function Loop.InitCount() return attached and (gread(G_INIT_COUNT) or 0) or 0 end
+
+-- Behaviour revision of the RUNNING engine (0 = older than the field existed).
+function Loop.EngineBuild()
+    if not attached then return 0 end
+    return math.floor((gread(G_BUILD) or 0) + 0.5)
+end
+
+-- Is the loaded engine the one this build expects, in lanes AND behaviour?
+function Loop.EngineCurrent()
+    return Loop.EngineLanes() >= Loop.MAX_LANES
+       and Loop.EngineBuild() >= Loop.ENGINE_BUILD
+end
 
 -- ---------------------------------------------------------------------------
 -- Note storage (each note = start, length, pitch, vel — all in beats/0..127).

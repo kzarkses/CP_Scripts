@@ -545,18 +545,28 @@ end
 
 local function metaLine()
     if state.mode == "midi" or state.mode == "clip" then
-        if state.meta_line and state.meta_rollver == Roll.version then
+        if state.meta_line and state.meta_rollver == Roll.version
+           and state.meta_len == state.len then
             return state.meta_line
         end
         if state.mode == "clip" then
-            state.meta_line = string.format("%d notes  ·  %g beats%s",
+            -- Notes past the loop end are KEPT but silent. Shortening a loop
+            -- must never destroy what you wrote — lengthening it brings the
+            -- music back — but without saying so, a shorter loop looks like
+            -- a deletion.
+            local out = 0
+            for i = 1, Roll.count do
+                if Roll.starts[i] >= state.len - 1e-6 then out = out + 1 end
+            end
+            state.meta_line = string.format("%d notes  ·  %g beats%s%s",
                 Roll.count, state.len,
+                out > 0 and ("  ·  " .. out .. " past the loop (kept, silent)") or "",
                 (state.clip and state.clip.origin)
                     and ("  ·  " .. state.clip.origin) or "")
         else
             state.meta_line = string.format("%d notes  ·  %.2fs", Roll.count, state.len)
         end
-        state.meta_rollver = Roll.version
+        state.meta_rollver, state.meta_len = Roll.version, state.len
         return state.meta_line
     end
     if state.meta_line then return state.meta_line end

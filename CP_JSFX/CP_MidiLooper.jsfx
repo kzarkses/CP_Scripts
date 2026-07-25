@@ -91,6 +91,7 @@ GMEM_INIT_COUNT = 3095;
 GMEM_ENG_LANES  = 3097; // lanes THIS binary serves (a host with an older
                         // engine still loaded must not write past them)
 GMEM_FREEBEAT   = 3096; // free clock position, mirrored so a reset doesn't warp it
+GMEM_BUILD      = 3094; // behaviour revision of THIS binary — see BUILD_VER
 GMEM_MAGIC      = 3098; // layout signature — its absence means "cold gmem"
 GMEM_VERSION    = 3099;
 GMEM_NOTE_BASE  = 10000; // per lane: MAX_NOTES * NOTE_STRIDE floats
@@ -98,6 +99,13 @@ GMEM_NOTE_BASE  = 10000; // per lane: MAX_NOTES * NOTE_STRIDE floats
 // Bump LAYOUT_VER on ANY change to the gmem layout above: it forces the next
 // @init to treat the block as cold, so a stale layout is never reinterpreted.
 LAYOUT_VER = 6;
+
+// Bump BUILD_VER on any change to BEHAVIOUR that leaves the layout alone. The
+// .jsfx on disk is only recopied on create/reload, so an instance loaded from
+// an older run keeps playing the old code until something notices — this is
+// what lets Loop.Ensure notice, and refresh WITHOUT marking the block cold
+// (the loops survive, which bumping LAYOUT_VER would not allow).
+BUILD_VER = 2;
 MAGIC      = 8451000 + LAYOUT_VER;
 
 // Finalize the pending note of (cl, p): append a note object ending at endphase.
@@ -176,6 +184,7 @@ prev_freerun = -1;   // -1 = no previous block yet (skip the first edge)
 last_pb = 0;
 gmem[GMEM_VERSION]    = LAYOUT_VER;
 gmem[GMEM_ENG_LANES]  = MAX_LANES;
+gmem[GMEM_BUILD]      = BUILD_VER;
 gmem[GMEM_INIT_COUNT] = gmem[GMEM_INIT_COUNT] + 1;
 
 @block
@@ -648,8 +657,17 @@ active ? (
       loop(nev,
         na  = GMEM_NOTE_BASE + (li*MAX_NOTES + k) * NOTE_STRIDE;
         nst = gmem[na+0]; nln = gmem[na+1]; np = gmem[na+2];
-        dd = p0 - nst; dd -= floor(dd / Lb) * Lb;
-        dd < nln ? ( DESIRE[np] = k + 1; DVEL[np] = gmem[na+3]; );
+        // A note that STARTS past the loop end is outside the clip: it stays
+        // stored (shortening a loop must never destroy what you wrote, and
+        // lengthening it again brings the music back) but it does not sound.
+        // The wrap below is only there so a note running THROUGH the loop
+        // boundary keeps its tail; applying it to an out-of-range start was
+        // folding bars 2, 3 and 4 on top of bar 1 when a 4-bar loop was
+        // shortened to one.
+        nst < Lb ? (
+          dd = p0 - nst; dd -= floor(dd / Lb) * Lb;
+          dd < nln ? ( DESIRE[np] = k + 1; DVEL[np] = gmem[na+3]; );
+        );
         k += 1;
       );
 
