@@ -55,6 +55,10 @@ local function icon_font_done()
     if _restore_font then _restore_font() end
 end
 
+-- This module's own folder: the generated Lucide pack and the PNG override
+-- folder both sit beside it.
+local module_dir = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or ""
+
 local function center(x, y, size)
     return x + size / 2, y + size / 2
 end
@@ -687,6 +691,59 @@ function Icons.Layers(x, y, size, r, g, b, a)
 end
 
 -- ============================================================================
+-- LUCIDE PACK (generated — CP_Tools/icons/build_pack.mjs)
+-- ============================================================================
+-- The hand-drawn glyphs above cover what the suite needed while it was small.
+-- The rest comes from Lucide, embedded as DATA (IconsPack.lua): flat streams
+-- of coordinates in its 24x24 space, which one renderer strokes with the same
+-- kit as everything else. A generated glyph is therefore the same kind of
+-- object as an authored one — same optical weight (Lucide's stroke is 2/24,
+-- stroke_w is 0.09), same round caps, same bake, same tint. Nothing is
+-- imported as a bitmap: a PNG would lose the tint, the crispness at odd sizes
+-- and the zero-file-access property all at once.
+--
+-- Additive only: a name already drawn by hand keeps its glyph. Some of those
+-- are FILLED (the transport triangles) and read better than an outline at the
+-- 14 px a session cell gives them, so replacing the set wholesale would be a
+-- regression dressed as consistency. Judge them one at a time, later.
+--
+-- The renderer allocates nothing: it walks numeric indices of a table built
+-- once at load, and it only ever runs at bake time anyway.
+local ok_pack, pack = pcall(dofile, module_dir .. "IconsPack.lua")
+if ok_pack and type(pack) == "table" then
+    for name, ops in pairs(pack) do
+        if Icons[name] == nil then
+            Icons[name] = function(x, y, size, r, g, b, a)
+                set_color(r, g, b, a)
+                local k = size / 24
+                local w = stroke_w(size)
+                local i, n = 1, #ops
+                while i < n do
+                    if ops[i] == 3 then
+                        sring(x + ops[i + 1] * k, y + ops[i + 2] * k, ops[i + 3] * k, w)
+                        i = i + 4
+                    else
+                        local closed = (ops[i] == 2)
+                        local cnt = ops[i + 1]
+                        local b0 = i + 2
+                        local ax, ay = x + ops[b0] * k, y + ops[b0 + 1] * k
+                        local px, py = ax, ay
+                        for j = 1, cnt - 1 do
+                            local qx = x + ops[b0 + j * 2] * k
+                            local qy = y + ops[b0 + j * 2 + 1] * k
+                            sline(px, py, qx, qy, w)
+                            px, py = qx, qy
+                        end
+                        if closed then sline(px, py, ax, ay, w) end
+                        i = b0 + cnt * 2
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================================
 -- BAKE POOL (audit P10 + supersampling quality pass)
 -- ============================================================================
 -- Rasterizing arcs/circles/triangles per frame ate the 2005-target's frame
@@ -715,8 +772,7 @@ local icon_next_buf = ICON_BUF_FIRST
 -- PNG overrides: CP_Toolkit/IconOverrides/<Name>.png (white on transparent,
 -- 64-128px square). Missing files are probed once per session; present
 -- files are re-loaded per bake (disk cost is bake-time only, amortized).
-local override_dir =
-    (debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "") .. "IconOverrides/"
+local override_dir = module_dir .. "IconOverrides/"
 local png_probe = {}       -- [name] = true (exists) | false (absent)
 
 local function png_load(name)

@@ -1,0 +1,88 @@
+# CP icon pack — which Lucide glyphs get embedded.
+#
+#   <LuaName> = <lucide-file-name>
+#
+# LuaName is how the icon is called: UI.Icons.<LuaName>(x, y, size, r, g, b, a).
+# The right-hand side is a file in Lucide/lucide-main/icons/ WITHOUT the .svg.
+#
+# Adding an icon is one line here plus a re-run of build_pack.mjs. Only the
+# glyphs listed below are embedded — the other ~1700 stay out of the repo.
+#
+# A name already defined procedurally in Icons.lua is SKIPPED, with a warning:
+# the hand-drawn set was authored at the same optical weight as Lucide (stroke
+# 2/24) and some of it — the filled transport triangles above all — reads
+# better than an outline at the 14 px a session cell gives it. Adding here,
+# replacing never, until a glyph is judged one at a time.
+
+# ---- transport / session ----------------------------------------------------
+Repeat        = repeat
+Repeat1       = repeat-1
+Mic           = mic
+Headphones    = headphones
+Disc          = disc-3
+Note          = music-4
+AudioWave     = audio-waveform
+Metronome     = timer
+
+# ---- mixer ------------------------------------------------------------------
+Sliders       = sliders-horizontal
+SlidersV      = sliders-vertical
+VolumeOff     = volume-x
+VolumeUp      = volume-2
+Gauge         = gauge
+
+# ---- editing ----------------------------------------------------------------
+Pencil        = pencil
+Eraser        = eraser
+Scissors      = scissors
+Magnet        = magnet
+Grid          = grid-3x3
+Ruler         = ruler
+Move          = move
+Hand          = hand
+Pointer       = mouse-pointer-2
+ZoomIn        = zoom-in
+ZoomOut       = zoom-out
+Wand          = wand-sparkles
+Brush         = paintbrush
+Trash         = trash-2
+UndoArrow     = undo-2
+RedoArrow     = redo-2
+RotateCW      = rotate-cw
+ArrowUpDown   = arrow-down-up
+
+# ---- layout / rail ----------------------------------------------------------
+PanelLeft     = panel-left
+PanelLeftClose = panel-left-close
+PanelLeftOpen = panel-left-open
+LayoutGrid    = layout-grid
+ListView      = list
+Maximize      = maximize-2
+Minimize      = minimize-2
+
+# ---- status / help ----------------------------------------------------------
+Info          = info
+Help          = circle-question-mark
+Alert         = triangle-alert
+Power         = power
+Link          = link
+Unlink        = link-2-off
+Target        = target
+
+# ---- instruments ------------------------------------------------------------
+Drum          = drum
+Piano         = piano
+KeyboardMusic = keyboard-music
+
+# ---- modulation -------------------------------------------------------------
+Activity      = activity
+Blend         = blend
+Shuffle       = shuffle
+Dices         = dices
+Sparkles      = sparkles
+
+# ---- files ------------------------------------------------------------------
+FolderOpen    = folder-open
+Import        = import
+Upload        = upload
+Settings2     = settings-2
