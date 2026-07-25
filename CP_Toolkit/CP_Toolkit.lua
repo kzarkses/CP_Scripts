@@ -571,6 +571,11 @@ end
 -- with. See Core.SetWindowOpacity for why an app cannot fade its own panel.
 UI.SetWindowOpacity = Core.SetWindowOpacity
 UI.SetClearColor    = Core.SetClearColor
+-- Colour key: every pixel of this exact colour becomes fully transparent AND
+-- click-through. The only way to get a non-rectangular window — and the reason
+-- an oversized window stops mattering. See Core.SetColorKey.
+UI.SetColorKey      = Core.SetColorKey
+UI.IsColorKeyed     = Core.IsColorKeyed
 
 function UI.SetTopMost(topmost)
     Core.SetTopMost(topmost)

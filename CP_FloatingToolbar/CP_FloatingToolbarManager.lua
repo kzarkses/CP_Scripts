@@ -41,6 +41,12 @@ local search_dirty   = true
 local target_options = { "main", "mixer", "transport", "media_explorer", "arrange", "ruler" }
 local direction_options = { "horizontal", "vertical" }
 local snap_options = { "left", "right", "free" }
+local style_options = { "panel", "chips", "none" }
+local STYLE_HINT = {
+    panel = "one rounded slab behind everything — a toolbar",
+    chips = "one rounded chip per icon — detached buttons",
+    none  = "nothing but the glyphs",
+}
 
 local function active_toolbar()
     return Persistence.GetActiveToolbar(data)
@@ -167,27 +173,61 @@ local function draw_layout_section(tb)
     local cp, np = UI.SliderInt("tb_padding", "Padding", tb.layout.padding or 0, 0, 32)
     if cp then tb.layout.padding = np; dirty() end
 
-    -- The WINDOW's opacity — icons included. A gfx window has no per-pixel
-    -- alpha, so nothing the strip paints can be see-through; only the window
-    -- itself can. The old "background alpha" faded a panel against an opaque
-    -- clear, which is why it could reach 0 and still leave a rectangle.
-    -- Floored at 0.2: a toolbar you cannot see is a toolbar you cannot click.
-    local co, no = UI.SliderDouble("tb_opacity", "Opacity (whole strip)",
-        tb.layout.opacity or 1, 0.2, 1)
-    if co then tb.layout.opacity = no; dirty() end
+    -- What sits UNDER the icons. This is the setting that decides whether the
+    -- strip reads as a toolbar, as a row of detached buttons, or as icons
+    -- floating over the arrange.
+    local cur_style = index_of(style_options, tb.layout.style or "panel")
+    local st_changed, st_idx = UI.Combo("tb_style", "Ground", cur_style,
+                                        style_options, { width = 200 })
+    if st_changed then tb.layout.style = style_options[st_idx]; dirty() end
+    UI.SetFontCaption()
+    UI.Text(STYLE_HINT[tb.layout.style or "panel"], { disabled = true })
+    UI.SetFontBody()
 
-    local color = tb.layout.bg_color or { 0.12, 0.12, 0.14 }
-    local cc, nc = UI.ColorPicker("tb_bg_color", "Background color", color)
-    if cc then
-        tb.layout.bg_color = { nc[1], nc[2], nc[3] }
-        dirty()
+    -- Keying makes the unpainted pixels of the window transparent AND
+    -- click-through. It is what "chips" and "none" need to exist at all, and
+    -- it is why the window's size stops mattering.
+    local ct, nt = UI.Checkbox("tb_transp", "Transparent background",
+        tb.layout.transparent ~= false)
+    if ct then tb.layout.transparent = nt; dirty() end
+
+    local style = tb.layout.style or "panel"
+
+    if style == "panel" then
+        local color = tb.layout.bg_color or { 0.12, 0.12, 0.14 }
+        local cc, nc = UI.ColorPicker("tb_bg_color", "Panel color", color)
+        if cc then tb.layout.bg_color = { nc[1], nc[2], nc[3] }; dirty() end
+
+        local cr, nr = UI.SliderInt("tb_bg_radius", "Panel corner",
+            tb.layout.bg_radius or 0, 0, 24)
+        if cr then tb.layout.bg_radius = nr; dirty() end
+
+        local cb, nb = UI.Checkbox("tb_bg_border", "Panel border",
+            tb.layout.bg_border == true)
+        if cb then tb.layout.bg_border = nb; dirty() end
     end
 
-    local cr, nr = UI.SliderInt("tb_bg_radius", "Corner radius", tb.layout.bg_radius or 0, 0, 24)
-    if cr then tb.layout.bg_radius = nr; dirty() end
+    if style == "chips" then
+        local ccol = tb.layout.chip_color or UI.GetTheme().colors.button
+        local ccc, ncc = UI.ColorPicker("tb_chip_color", "Chip color", ccol)
+        if ccc then tb.layout.chip_color = { ncc[1], ncc[2], ncc[3] }; dirty() end
 
-    local cb, nb = UI.Checkbox("tb_bg_border", "Border", tb.layout.bg_border == true)
-    if cb then tb.layout.bg_border = nb; dirty() end
+        local ccr, ncr = UI.SliderInt("tb_chip_radius", "Chip corner",
+            tb.layout.chip_radius or 4, 0, 16)
+        if ccr then tb.layout.chip_radius = ncr; dirty() end
+
+        local ccb, ncb = UI.Checkbox("tb_chip_border", "Chip border",
+            tb.layout.chip_border == true)
+        if ccb then tb.layout.chip_border = ncb; dirty() end
+    end
+
+    -- Only meaningful without the key: with it, "see-through" is the gaps
+    -- being genuinely absent rather than the whole strip being faded.
+    if tb.layout.transparent == false then
+        local co, no = UI.SliderDouble("tb_opacity", "Opacity (whole strip)",
+            tb.layout.opacity or 1, 0.2, 1)
+        if co then tb.layout.opacity = no; dirty() end
+    end
 end
 
 -- A row's icon, whatever its source, as something we can actually show.

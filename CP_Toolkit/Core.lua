@@ -1343,6 +1343,80 @@ local _clear_color = nil
 function Core.SetClearColor(c) _clear_color = c end
 function Core.GetClearColor() return _clear_color end
 
+-- ----------------------------------------------------------------------------
+-- Colour key — the only way to get a NON-RECTANGULAR window
+-- ----------------------------------------------------------------------------
+-- Windows can make every pixel of one exact colour fully transparent AND
+-- click-through. That is what turns a floating strip from "a panel with icons
+-- on it" into "icons floating over the arrange", and it is the only mechanism
+-- that does: a gfx window has no per-pixel alpha, so nothing an app paints can
+-- be see-through by itself.
+--
+-- It also makes the window's SIZE stop mattering. Whatever is not painted is
+-- keyed out, so a window that opened larger than its content shows nothing
+-- extra — which is worth more than any amount of fighting gfx over the size it
+-- decided to remember.
+--
+-- The catch, and it is real: the match is EXACT, so an antialiased edge drawn
+-- against the key blends toward it and leaves a fringe. Corners are therefore
+-- drawn hard when a key is active — see Core.DrawRoundRectFilled.
+local _color_key = nil     -- { r, g, b } in 0..1, or nil — the ACTIVE key
+local _color_key_want = nil    -- what the app asked for
+local _color_key_applied = false
+
+-- Only ever true once the key is really applied to the window. Everything the
+-- app draws depends on this, and the failure mode is nasty: an app that clears
+-- to magenta believing it will be keyed out, on a window that was never
+-- keyed, is a magenta rectangle on screen.
+function Core.IsColorKeyed() return _color_key ~= nil end
+
+local function b8(v)
+    v = floor(v * 255 + 0.5)
+    if v < 0 then v = 0 elseif v > 255 then v = 255 end
+    return v
+end
+
+-- Try to hand the key to the window. Returns true when it took.
+local function _apply_color_key()
+    local hwnd = Core.GetHWND()
+    if not hwnd or not reaper.JS_Window_SetOpacity then return false end
+    if not _color_key_want then
+        reaper.JS_Window_SetOpacity(hwnd, "ALPHA", 1.0)
+        _color_key, _color_key_applied = nil, true
+        return true
+    end
+    local c = _color_key_want
+    -- JS takes 0xRRGGBB. Built from the same numbers we clear with, so the two
+    -- can never disagree about which colour is "the key".
+    local key = b8(c[1]) * 65536 + b8(c[2]) * 256 + b8(c[3])
+    local ok = pcall(reaper.JS_Window_SetOpacity, hwnd, "COLOR", key)
+    if not ok then return false end
+    _color_key = c
+    _clear_color = c
+    _color_key_applied = true
+    return true
+end
+
+function Core.SetColorKey(c)
+    -- No JS extension, no key. Say so by staying opaque rather than clearing
+    -- to a colour nothing will remove.
+    if c and not reaper.JS_Window_SetOpacity then
+        if Log then Log.Warn("CORE", "JS_ReaScriptAPI required for a colour key") end
+        return false
+    end
+    _color_key_want = c
+    _color_key_applied = false
+    -- The window may not exist yet (apps set this up before the loop starts),
+    -- so this is retried from the frame until it takes.
+    return _apply_color_key()
+end
+
+function Core._PollColorKey()
+    if _color_key_applied then return end
+    if _color_key_want == nil and _color_key == nil then return end
+    _apply_color_key()
+end
+
 -- Set window always on top
 function Core.SetTopMost(topmost)
     if win_hwnd and reaper.JS_Window_SetZOrder then
@@ -1970,6 +2044,20 @@ function Core.DrawRoundRectFilled(x, y, w, h, radius, r, g, b, a)
         Core.DrawRect(x, y, w, h, r, g, b, a)
         return
     end
+    -- Under a colour key the corner discs must be HARD. An antialiased edge
+    -- blends toward whatever is behind it, and behind it is the key colour —
+    -- so a soft corner comes out as a fringe of half-keyed pixels around every
+    -- chip. A 4 px corner without antialiasing is a corner; a fringe is a bug.
+    if _color_key then
+        Core.DrawRect(x + radius, y, w - radius * 2, h, r, g, b, a)
+        Core.DrawRect(x, y + radius, radius, h - radius * 2, r, g, b, a)
+        Core.DrawRect(x + w - radius, y + radius, radius, h - radius * 2, r, g, b, a)
+        Core.DrawCircle(x + radius, y + radius, radius, r, g, b, a, true, false)
+        Core.DrawCircle(x + w - radius - 1, y + radius, radius, r, g, b, a, true, false)
+        Core.DrawCircle(x + radius, y + h - radius - 1, radius, r, g, b, a, true, false)
+        Core.DrawCircle(x + w - radius - 1, y + h - radius - 1, radius, r, g, b, a, true, false)
+        return
+    end
     -- Record the WHOLE control once, then mute the pieces. This is built from
     -- three slabs and four discs, so without the guard a rounded button — and
     -- the default theme rounds everything — came out as three separate
@@ -2227,6 +2315,11 @@ function Core.Run(loop_fn)
         -- after gfx.init, and if nothing wakes the loop in between the wrong
         -- size is what stays on screen until the user jiggles the mouse.
         _assert_frameless_size()
+        -- And the colour key, for the same reason: an app declares it before
+        -- the window exists, so it has to be retried until the window is there
+        -- to take it. Until it lands, IsColorKeyed() stays false and the app
+        -- keeps painting an opaque ground — never a magenta rectangle.
+        Core._PollColorKey()
         -- ----- Idle skip check (cheap path, runs first) -----
         if _can_skip_frame() then
             -- Keyboard can't be observed without consuming: poll it here.

@@ -50,17 +50,28 @@ function Persistence.NewToolbar(name)
             icon_size = 24,
             spacing  = 4,
             padding  = 6,             -- inner padding around icon block
-            -- bg_color IS the strip's ground: the window is cleared with it,
-            -- because a gfx window is always opaque and a panel painted on top
-            -- of the theme's background was just a panel on a panel.
-            bg_color = { 0.12, 0.12, 0.14 },
-            -- The WINDOW's opacity, icons included — the only see-through a
-            -- gfx window has. `bg_alpha` was the old name for a panel fade
-            -- that could never actually fade anything; it is left unread so an
-            -- existing config does not suddenly turn near-invisible.
+            -- The ground under the icons:
+            --   "panel"  one rounded slab behind everything (a toolbar)
+            --   "chips"  one rounded chip PER icon (detached buttons)
+            --   "none"   nothing but the glyphs
+            style = "panel",
+            -- transparent = true keys the window's unpainted pixels out, which
+            -- is what makes "chips" and "none" possible at all — and what
+            -- stops an oversized window from showing as an oversized panel.
+            transparent = true,
+            bg_color  = { 0.12, 0.12, 0.14 },  -- the panel's colour
+            bg_radius = 6,            -- panel corner (0 = sharp)
+            bg_border = false,        -- thin border around the panel
+            -- Chips have their own colour and corner: a slab and the buttons
+            -- inside it are not the same shape and should not share a number.
+            chip_color  = nil,        -- nil = the theme's button colour
+            chip_radius = nil,        -- nil = the theme's small rounding
+            chip_border = false,
+            -- Only used when transparent = false: the whole window's opacity.
+            -- `bg_alpha` was the old name for a panel fade that could never
+            -- fade anything; it is left unread so an existing config does not
+            -- suddenly turn near-invisible.
             opacity   = 1.0,
-            bg_radius = 6,            -- rounded corners (0 = sharp)
-            bg_border = false,        -- thin border around the strip
         },
         actions = {},                 -- {{command_id=..., ...}, ...}
     }

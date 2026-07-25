@@ -119,21 +119,42 @@ end
 
 UI.SetAnchor(anchor_opts(toolbar))
 
--- The strip owns its ground. The toolkit would otherwise clear the window with
--- the theme's window background, and the toolbar would be a panel painted on
--- top of another panel — which is exactly what "background alpha" was fading
--- against, and why it could go to 0 and still leave a solid rectangle.
+-- A colour that no icon and no theme will ever contain, so keying it out
+-- cannot eat part of a glyph. Magenta is the convention for exactly this.
+local KEY_COLOR = { 1, 0, 1 }
+
+-- Three grounds, and the difference between them is the whole look:
+--   "panel"  one rounded slab behind everything      (a toolbar)
+--   "chips"  one rounded chip PER ICON               (detached buttons)
+--   "none"   nothing at all, just the glyphs         (floating icons)
 --
--- Real see-through is `opacity`, and it belongs to the WINDOW: a gfx window
--- has no per-pixel alpha, so nothing an app paints can be see-through. It is a
--- separate setting from `bg_alpha` on purpose — repurposing the old key would
--- have turned an existing 0.27 into a nearly invisible toolbar without asking.
+-- All three need the window to disappear where nothing is painted, which is a
+-- COLOUR KEY: Windows makes every pixel of one exact colour transparent and
+-- click-through. It is the only mechanism that does — a gfx window has no
+-- per-pixel alpha — and it has a second effect worth as much: the window's
+-- SIZE stops mattering. Whatever is not painted is keyed out, so a window that
+-- opened larger than its content shows nothing extra.
+--
+-- `transparent = false` goes back to a plain opaque window for anyone who
+-- wants the strip to read as a solid panel.
 local function apply_look(tb)
-    UI.SetClearColor(tb.layout.bg_color)
-    local o = tb.layout.opacity
-    if o == nil then o = 1 end
-    if o < 0.2 then o = 0.2 end   -- a toolbar you cannot see is a toolbar you cannot click
-    UI.SetWindowOpacity(o)
+    local L = tb.layout
+    if L.transparent == false then
+        UI.SetColorKey(nil)
+        UI.SetClearColor(L.bg_color)
+        local o = L.opacity
+        if o == nil then o = 1 end
+        if o < 0.2 then o = 0.2 end   -- one you cannot see is one you cannot click
+        UI.SetWindowOpacity(o)
+    else
+        UI.SetWindowOpacity(1)
+        -- The clear stays the strip's own colour as a fallback. The key is
+        -- applied as soon as the window exists to take it; until then (and if
+        -- JS_ReaScriptAPI is missing, forever) the strip simply reads as an
+        -- opaque panel instead of a magenta rectangle.
+        UI.SetClearColor(L.bg_color)
+        UI.SetColorKey(KEY_COLOR)
+    end
 end
 
 apply_look(toolbar)
@@ -153,8 +174,11 @@ local function toolbar_signature(tb)
         -- and the hot-reload would go quiet. `opacity` is new, so it is the
         -- one that would have been nil in every existing config.
         tb.layout.padding, tb.layout.opacity or 1,
+        tb.layout.style or "panel", tb.layout.transparent == false and 0 or 1,
         tb.layout.bg_radius or 0, tb.layout.bg_border and 1 or 0,
         tb.layout.bg_color and table.concat(tb.layout.bg_color, ",") or "",
+        tb.layout.chip_radius or -1, tb.layout.chip_border and 1 or 0,
+        tb.layout.chip_color and table.concat(tb.layout.chip_color, ",") or "",
         tb.anchor.target,
         tb.anchor.snap or "free",
         tb.anchor.x, tb.anchor.y, tb.anchor.offset_x, tb.anchor.offset_y,
@@ -256,27 +280,41 @@ UI.Run(function(theme)
 
     poll_states_if_due(tb.actions)
 
-    -- The REAL window size, not the size we asked for. gfx does not always
-    -- open the window at the requested dimensions (the geometry is remembered
-    -- per window name), and the frameless resize lands a frame or two later.
-    -- Painting from the intended size meant the strip's ground stopped short
-    -- of the window and the rest showed the clear underneath — the oversized
-    -- rectangle on opening.
-    local ww, wh = UI.Core.GetWindowSize()
+    -- The REAL window size, not the size we asked for: gfx does not always
+    -- open at the requested dimensions (the geometry is remembered per window
+    -- name) and the frameless resize lands a frame or two later.
+    local L = tb.layout
+    local style = L.style or "panel"
+    local radius = L.bg_radius or 0
+    local bg = L.bg_color or theme.colors.surface
 
-    -- The border is drawn here; the FILL is the window's clear (see
-    -- apply_look), because a fill painted at partial alpha over an opaque
-    -- clear cannot make anything see-through.
-    if tb.layout.bg_border then
-        local radius = tb.layout.bg_radius or 0
-        local bc = theme.colors.border
-        if radius > 0 then
-            UI.DrawRoundRect(0, 0, ww - 1, wh - 1, radius, bc[1], bc[2], bc[3], 0.6)
-        else
-            UI.Core.DrawRect(0, 0, ww, 1, bc[1], bc[2], bc[3], 0.6)
-            UI.Core.DrawRect(0, wh - 1, ww, 1, bc[1], bc[2], bc[3], 0.6)
-            UI.Core.DrawRect(0, 0, 1, wh, bc[1], bc[2], bc[3], 0.6)
-            UI.Core.DrawRect(ww - 1, 0, 1, wh, bc[1], bc[2], bc[3], 0.6)
+    -- Under a key, everything starts transparent and we paint what should
+    -- exist. Without one, the window is already the ground and we only add the
+    -- border. Either way the STRIP's box is computed, never the window's — so
+    -- an oversized window cannot show as an oversized panel.
+    local strip_w, strip_h = compute_window_size(tb)
+
+    -- No explicit fill of the keyed area: Core.SetColorKey made the key the
+    -- window's CLEAR colour, so the toolkit has already painted every pixel we
+    -- want gone. One less full-window fill per frame.
+
+    if style == "panel" then
+        -- Painted whether or not the key took: without it the clear is already
+        -- this colour, so it costs one rect and it is what makes the corner
+        -- rounding show up the moment the key does land.
+        UI.Core.DrawRoundRectFilled(0, 0, strip_w, strip_h, radius,
+                                    bg[1], bg[2], bg[3], 1)
+        if L.bg_border then
+            local bc = theme.colors.border
+            if radius > 0 then
+                UI.DrawRoundRect(0, 0, strip_w - 1, strip_h - 1, radius,
+                                 bc[1], bc[2], bc[3], 0.6)
+            else
+                UI.Core.DrawRect(0, 0, strip_w, 1, bc[1], bc[2], bc[3], 0.6)
+                UI.Core.DrawRect(0, strip_h - 1, strip_w, 1, bc[1], bc[2], bc[3], 0.6)
+                UI.Core.DrawRect(0, 0, 1, strip_h, bc[1], bc[2], bc[3], 0.6)
+                UI.Core.DrawRect(strip_w - 1, 0, 1, strip_h, bc[1], bc[2], bc[3], 0.6)
+            end
         end
     end
 
@@ -284,8 +322,11 @@ UI.Run(function(theme)
     -- We work in SCREEN coords (reaper.GetMousePosition) — using
     -- gfx.mouse_x/y here would feed back into itself, since the window
     -- moves under the cursor each frame and gfx coords are window-local.
+    -- The drag zone is the STRIP, not the window: the window may be larger,
+    -- and under a colour key its extra area is transparent and click-through,
+    -- so a Ctrl-click out there never reaches us anyway.
     local screen_mx, screen_my = reaper.GetMousePosition()
-    if not drag.active and UI.Core.MouseInRect(0, 0, ww, wh)
+    if not drag.active and UI.Core.MouseInRect(0, 0, strip_w, strip_h)
        and UI.Core.MouseClicked(1) and UI.Core.ModCtrl() then
         drag.active = true
         drag.start_mouse_x = screen_mx
@@ -314,7 +355,11 @@ UI.Run(function(theme)
         end
     end
 
-    local rad = theme.rounding_small or 0
+    -- The chip's own corner, separate from the panel's: a slab and the buttons
+    -- inside it are not the same shape and should not share a number.
+    local rad = L.chip_radius or theme.rounding_small or 0
+    local chips = (style == "chips")
+    local C = theme.colors
 
     for i, action in ipairs(tb.actions) do
         local x, y, w, h = action_rect(tb, i)
@@ -322,20 +367,32 @@ UI.Run(function(theme)
         local down = hovered and UI.Core.MouseDown(1)
         local is_on = state_cache[tostring(action.command_id)] == 1
 
-        -- The same four states as everywhere else in the suite, and the same
-        -- rounding: a floating strip is still a command zone. Rest stays
-        -- unpainted here — a row of chips over the arrange would fight the
-        -- track lanes for attention, and this is the one command zone that
-        -- floats over someone else's content.
+        -- The same four states as everywhere else in the suite. What differs
+        -- is the REST state: on a panel or on nothing, rest is unpainted (a
+        -- row of chips over the arrange would fight the track lanes for
+        -- attention); in "chips" style rest IS the chip, because the whole
+        -- point of that style is buttons that read as separate objects.
+        local fill, alpha
         if is_on then
-            local c = theme.colors.accent
-            UI.Core.DrawRoundRectFilled(x, y, w, h, rad, c[1], c[2], c[3],
-                                        down and 0.55 or 0.42)
+            fill = C.accent
+            alpha = down and 0.95 or 0.85
+        elseif down then
+            fill = C.button_active
+            alpha = chips and 1 or 0.55
         elseif hovered then
-            local c = down and theme.colors.button_active
-                            or (theme.colors.button_hovered or theme.colors.button)
-            UI.Core.DrawRoundRectFilled(x, y, w, h, rad, c[1], c[2], c[3],
-                                        down and 0.55 or 0.35)
+            fill = C.button_hovered or C.button
+            alpha = chips and 1 or 0.35
+        elseif chips then
+            fill = L.chip_color or C.button
+            alpha = 1
+        end
+        if fill then
+            UI.Core.DrawRoundRectFilled(x, y, w, h, rad,
+                                        fill[1], fill[2], fill[3], alpha)
+        end
+        if chips and L.chip_border then
+            local bc = C.border
+            UI.DrawRoundRect(x, y, w - 1, h - 1, rad, bc[1], bc[2], bc[3], 0.7)
         end
 
         -- Icon: PNG if provided, otherwise builtin Icons table, otherwise label initials
