@@ -1045,3 +1045,65 @@ Les trois jetons de rôle `mute`, `solo` et `mod` attendent précisément ça �
 `mute` et `solo` sont le vocabulaire documenté des boutons M/S, et ils sont
 définis dans le thème sans que rien ne les lise. Le mixer est ce qui les
 branche.
+
+## Session 14 (2026-07-26) — quatre correctifs : le transport, le clic, la séparation
+
+### CP_Session — un son suit l'horloge comme tout le reste
+
+- [x] **En Follow, un clip audio attend le transport.** Les lanes MIDI l'ont
+  toujours fait — le moteur avance sur le beat de l'hôte, donc un lancement mis
+  en file sur un transport arrêté attend, tout simplement. Les cellules audio
+  démarraient sur-le-champ : la grille montrait un clip en attente et le son
+  sortait quand même.
+  Un lancement et le moment où il démarre sont **deux choses différentes** dès
+  que l'horloge suit. `audioPlay` **arme** la cellule, `pollAudio` la démarre
+  quand l'horloge tourne (alignée à la mesure), lui **reprend** l'aperçu quand
+  le transport s'arrête, et la garde armée entre les deux. Une cellule armée
+  porte la couleur d'un lancement en file : même état, même signe.
+
+### CP_Sampler — le drumkit et l'instrument sont deux instruments
+
+L'instrument était une **page du kit** : piste fille du dossier, nourrie par le
+bus du kit, avec la même plage de notes que les pads. Les deux ne pouvaient donc
+que se relayer — regarder l'un **mutait** l'autre. Un kit ne pouvait pas jouer
+pendant qu'un instrument était à l'écran, et aucun des deux ne se mixait
+séparément puisque l'audio de l'instrument passait par le fader du kit.
+
+- [x] **Sa piste, son entrée MIDI, sa sortie.** Plus aucun mute : les deux
+  sonnent en même temps, c'est tout l'intérêt.
+- [x] **Une seule chose reste exclusive, et elle doit l'être : qui entend le
+  clavier.** Un clic de pad passe par la file du clavier virtuel, qui est une
+  **diffusion** et atteint toute piste armée — sans arbitrage, cliquer un pad
+  jouerait aussi l'instrument. L'écoute suit donc la vue (`armTarget`), comme la
+  règle « un seul kit écoute » qui existait déjà pour exactement cette raison,
+  et elle n'écarte l'autre que **tant qu'on revendique l'entrée** : désarmé, on
+  n'a pas à toucher une piste que l'utilisateur a armée lui-même.
+- [x] **`SplitInstrument` migre les projets existants**, une fois par session :
+  coupe l'envoi du bus, donne l'entrée, sort la piste du dossier (la profondeur
+  de fermeture repasse à l'enfant du dessus, ce qui couvre l'enfant unique comme
+  l'enfant du milieu) et lève **les mutes que le mode avait posés** — ceux-là
+  seulement, un pad muté à la main reste muté. En lecture pure quand il n'y a
+  rien à faire : pas de bloc d'annulation ouvert pour rien.
+- [x] **« Clicking a pad plays it » monte dans la barre** (puce pointeur) et
+  quitte les settings. On y répond plusieurs fois par session — on tape sur les
+  pads, puis on tourne des knobs pendant qu'une boucle joue — et une décision
+  prise si souvent n'a rien à faire à deux clics de profondeur. Un seul foyer
+  par décision : elle n'est plus dans le menu.
+- [x] **Root / Voices / Loop prennent l'empreinte d'un cadran** côté instrument,
+  comme Choke et Loop l'ont prise côté drum et pour la même raison : une boîte à
+  chiffres et une case à cocher au bout d'une rangée de knobs sont deux intrus
+  venus d'une autre fenêtre. **Voices est le choke de l'instrument** — à 1 le
+  RS5K est monophonique, donc chaque note coupe la précédente, et c'est la seule
+  forme de choke qu'un instrument chromatique unique puisse avoir.
+
+### CP_MediaExplorer — le double-clic ouvre l'éditeur
+
+- [x] Écouter un fichier puis vouloir le regarder de près est le pas suivant
+  normal, et l'arrangement est à un glisser. Un fichier largué dans
+  l'arrangement pour être examiné, lui, doit être retrouvé et supprimé. Le
+  double-clic ouvre donc **CP_Editor en file mode** par défaut, avec la section
+  active de la bande qui voyage avec — l'éditeur atterrit sélectionné sur ce
+  qu'on écoutait. `Bus.OpenEditor` et non `Bus.Send` : un double-clic qui ne
+  fait rien parce qu'une fenêtre était fermée serait pire que pas de
+  double-clic du tout. Le choix est dans les options (éditeur / insertion au
+  curseur), et un `.mid` prend l'autre route quoi qu'il arrive.
