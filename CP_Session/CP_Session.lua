@@ -121,8 +121,10 @@ loops TEMPO-MATCHED (native stretch), measure-aligned when the
 transport runs, through that column's track. Drop or write MIDI and it
 plays through the engine. A track still plays ONE thing at a time,
 whichever kind — launching a sound stops the MIDI under it and the
-other way round. (Sounds use the interim preview engine; the
-sample-locked one comes later.)
+other way round. A sound obeys the clock like everything else: with
+Clock: Follow and the transport stopped it is ARMED and blinks, and it
+starts when the transport does. (Sounds use the interim preview engine;
+the sample-locked one comes later.)
 
 ## The mixer strip
 The band under the grid (toggle it beside the "?") balances what you
@@ -376,13 +378,28 @@ local function audioStop(t)
     aplay[t] = nil
 end
 
-local function audioPlay(t, s, c)
-    audioStop(t)
-    if not HAS_CF then flash("Audio cells need the SWS extension") return end
+-- Give back the preview but KEEP the cell armed: what the transport took away
+-- it can give back. Used when the clock follows a transport that stopped.
+local function audioRelease(t)
+    local a = aplay[t]
+    if not a then return end
+    if a.prev then pcall(r.CF_Preview_Stop, a.prev) end
+    if a.src then r.PCM_Source_Destroy(a.src) end
+    a.prev, a.src, a.align = nil, nil, nil
+end
+
+-- Actually make the sound. Split from audioPlay because a launch and the
+-- moment it starts are two different things as soon as the clock follows.
+local function audioStart(t)
+    local a = aplay[t]
+    if not a or a.prev then return end
+    local c = a.c
     local src = r.PCM_Source_CreateFromFile(c.path)
-    if not src then flash("Cannot open: " .. (c.path or "?")) return end
+    if not src then flash("Cannot open: " .. (c.path or "?")) aplay[t] = nil return end
     local prev = r.CF_CreatePreview(src)
-    if not prev then r.PCM_Source_Destroy(src) return end
+    -- drop the cell rather than leave it armed: a start that cannot succeed
+    -- would be retried on every frame, disk open included
+    if not prev then r.PCM_Source_Destroy(src) aplay[t] = nil return end
     local ok, _, rate = pcall(r.GetTempoMatchPlayRate, src, 1.0, 0, 1.0)
     local rt = (ok and rate and rate > 0.05 and rate < 20) and rate or 1.0
     r.CF_Preview_SetValue(prev, "D_VOLUME", 1)
@@ -411,9 +428,34 @@ local function audioPlay(t, s, c)
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
     r.CF_Preview_Play(prev)
-    aplay[t] = { prev = prev, src = src, s = s, align = align }
+    a.prev, a.src, a.align = prev, src, align
 end
 
+-- Is the clock RUNNING? Free run has its own, which never stops; following
+-- means there is nothing to follow until the transport rolls.
+local function clockRolling()
+    if Loop.GetFreeRun() then return true end
+    return (r.GetPlayState() & 1) == 1
+end
+
+-- Launch a sound cell. With the clock free it starts on the spot; following a
+-- stopped transport it is ARMED and starts when the transport does — which is
+-- what following MEANS, and what the MIDI lanes have always done (the engine
+-- advances on the host beat, so a launch queued on a stopped transport simply
+-- waits). Sound cells used to ignore that and start immediately: the grid
+-- showed a clip waiting for a transport, and the sound came out anyway.
+local function audioPlay(t, s, c)
+    audioStop(t)
+    if not HAS_CF then flash("Audio cells need the SWS extension") return end
+    aplay[t] = { s = s, c = c }
+    if clockRolling() then audioStart(t) end
+end
+
+-- Per-frame reconciliation of the sound cells with the clock:
+--   * armed + the clock rolling      → start (measure-aligned)
+--   * playing + the transport left   → give the preview back, stay armed
+--   * playing + still aligned        → release the align (see below)
+--
 -- CF_Preview's measure align holds EVERY loop pass to the grid, not only the
 -- first. A sample that is not exactly N measures long therefore WAITS at the
 -- end of each pass — the gap that appears with Clock: Follow and never with
@@ -422,14 +464,21 @@ end
 -- the loop runs seamlessly afterwards, which is what a session clip does
 -- everywhere else. Released only once playback has actually begun — clearing
 -- it while the preview is still waiting for the bar would start it on the spot.
-local function pollAudioAlign()
+local function pollAudio()
+    local rolling = clockRolling()
     for t = 0, TRACKS - 1 do
         local a = aplay[t]
-        if a and a.align then
-            local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
-            if ok and rv and pos and pos > 0 then
-                pcall(r.CF_Preview_SetValue, a.prev, "D_MEASUREALIGN", 0)
-                a.align = false
+        if a then
+            if not a.prev then
+                if rolling then audioStart(t) end
+            elseif not rolling then
+                audioRelease(t)
+            elseif a.align then
+                local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
+                if ok and rv and pos and pos > 0 then
+                    pcall(r.CF_Preview_SetValue, a.prev, "D_MEASUREALIGN", 0)
+                    a.align = false
+                end
             end
         end
     end
@@ -931,7 +980,10 @@ local function drawCell(theme, t, s, x, y, w, h)
     local playing
     if audio then
         local a = aplay[t]
-        playing = (a ~= nil and a.s == s)
+        -- armed but not started (the clock follows a stopped transport) is
+        -- the same state a queued MIDI launch is in, and wears its colour
+        playing = (a ~= nil and a.s == s and a.prev ~= nil)
+        if a and a.s == s and not a.prev then pend = 1 end
     else
         playing = (mode == 3 or mode == 5)
     end
@@ -1380,7 +1432,7 @@ local function frame(theme)
         end
     end
     pollRec()
-    pollAudioAlign()
+    pollAudio()
 
     -- edits coming home from CP_Editor (own channel: see the editor's
     -- flushApply — a shared one would let CP_Looper consume our cells)
