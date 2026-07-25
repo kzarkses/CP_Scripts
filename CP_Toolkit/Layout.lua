@@ -167,8 +167,15 @@ function Layout.Begin(id, theme, opts)
     local pad = theme and theme.window_padding or 8
     local spacing = theme and theme.item_spacing or 4
 
-    -- Clear background
-    if theme then
+    -- Clear background. An overlay (the floating toolbar) owns its own ground
+    -- and sets a clear colour; everything else uses the theme's. The clear is
+    -- always OPAQUE — a partial clear leaves the previous frame showing
+    -- through, and see-through is the window's job, not the painter's
+    -- (Core.SetWindowOpacity).
+    local ov = Core.GetClearColor and Core.GetClearColor()
+    if ov then
+        Core.DrawRect(0, 0, w, h, ov[1], ov[2], ov[3], 1)
+    elseif theme then
         local bg = theme.colors.window_bg
         Core.DrawRect(0, 0, w, h, bg[1], bg[2], bg[3], bg[4])
     else

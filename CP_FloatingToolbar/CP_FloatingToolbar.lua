@@ -119,6 +119,25 @@ end
 
 UI.SetAnchor(anchor_opts(toolbar))
 
+-- The strip owns its ground. The toolkit would otherwise clear the window with
+-- the theme's window background, and the toolbar would be a panel painted on
+-- top of another panel — which is exactly what "background alpha" was fading
+-- against, and why it could go to 0 and still leave a solid rectangle.
+--
+-- Real see-through is `opacity`, and it belongs to the WINDOW: a gfx window
+-- has no per-pixel alpha, so nothing an app paints can be see-through. It is a
+-- separate setting from `bg_alpha` on purpose — repurposing the old key would
+-- have turned an existing 0.27 into a nearly invisible toolbar without asking.
+local function apply_look(tb)
+    UI.SetClearColor(tb.layout.bg_color)
+    local o = tb.layout.opacity
+    if o == nil then o = 1 end
+    if o < 0.2 then o = 0.2 end   -- a toolbar you cannot see is a toolbar you cannot click
+    UI.SetWindowOpacity(o)
+end
+
+apply_look(toolbar)
+
 -- Periodic config reload — pick up edits from the manager without restart.
 -- 0.25s feels responsive without burning CPU on dofile/disk reads.
 local last_reload = 0
@@ -129,7 +148,14 @@ local function toolbar_signature(tb)
     if not tb then return "" end
     local parts = {
         tb.id, tb.layout.direction, tb.layout.icon_size, tb.layout.spacing,
-        tb.layout.padding, tb.layout.bg_alpha, tb.anchor.target,
+        -- Every entry needs a value: a nil would punch a hole in the array and
+        -- table.concat would stop there, so the signature would stop changing
+        -- and the hot-reload would go quiet. `opacity` is new, so it is the
+        -- one that would have been nil in every existing config.
+        tb.layout.padding, tb.layout.opacity or 1,
+        tb.layout.bg_radius or 0, tb.layout.bg_border and 1 or 0,
+        tb.layout.bg_color and table.concat(tb.layout.bg_color, ",") or "",
+        tb.anchor.target,
         tb.anchor.snap or "free",
         tb.anchor.x, tb.anchor.y, tb.anchor.offset_x, tb.anchor.offset_y,
         tb.anchor.auto_hide_min_width or 0,
@@ -138,9 +164,13 @@ local function toolbar_signature(tb)
         #tb.actions,
     }
     for _, a in ipairs(tb.actions) do
+        -- native_icon belongs here too: picking a REAPER icon in the manager
+        -- changed only that field, so the signature stayed identical and the
+        -- running toolbar never noticed. The icon only appeared on restart.
         parts[#parts + 1] = tostring(a.command_id) .. "|" ..
                             tostring(a.icon or "") .. "|" ..
-                            tostring(a.builtin_icon or "")
+                            tostring(a.builtin_icon or "") .. "|" ..
+                            tostring(a.native_icon or "")
     end
     return table.concat(parts, ":")
 end
@@ -167,6 +197,7 @@ local function maybe_reload()
     UI.SetSize(win_w, win_h)
 
     UI.SetAnchor(anchor_opts(toolbar))
+    apply_look(toolbar)
 end
 
 -- ---------------------------------------------------------------------------
@@ -225,27 +256,27 @@ UI.Run(function(theme)
 
     poll_states_if_due(tb.actions)
 
-    -- Background — fill + optional border + rounded corners
-    if tb.layout.bg_alpha and tb.layout.bg_alpha > 0 then
-        local bg = tb.layout.bg_color or theme.colors.window_bg
+    -- The REAL window size, not the size we asked for. gfx does not always
+    -- open the window at the requested dimensions (the geometry is remembered
+    -- per window name), and the frameless resize lands a frame or two later.
+    -- Painting from the intended size meant the strip's ground stopped short
+    -- of the window and the rest showed the clear underneath — the oversized
+    -- rectangle on opening.
+    local ww, wh = UI.Core.GetWindowSize()
+
+    -- The border is drawn here; the FILL is the window's clear (see
+    -- apply_look), because a fill painted at partial alpha over an opaque
+    -- clear cannot make anything see-through.
+    if tb.layout.bg_border then
         local radius = tb.layout.bg_radius or 0
+        local bc = theme.colors.border
         if radius > 0 then
-            UI.DrawRoundRect(0, 0, win_w - 1, win_h - 1, radius,
-                bg[1], bg[2], bg[3], tb.layout.bg_alpha)
+            UI.DrawRoundRect(0, 0, ww - 1, wh - 1, radius, bc[1], bc[2], bc[3], 0.6)
         else
-            UI.Core.DrawRect(0, 0, win_w, win_h, bg[1], bg[2], bg[3], tb.layout.bg_alpha)
-        end
-        if tb.layout.bg_border then
-            local bc = theme.colors.border
-            if radius > 0 then
-                UI.DrawRoundRect(0, 0, win_w - 1, win_h - 1, radius,
-                    bc[1], bc[2], bc[3], 0.6)
-            else
-                UI.Core.DrawRect(0, 0, win_w, 1, bc[1], bc[2], bc[3], 0.6)
-                UI.Core.DrawRect(0, win_h - 1, win_w, 1, bc[1], bc[2], bc[3], 0.6)
-                UI.Core.DrawRect(0, 0, 1, win_h, bc[1], bc[2], bc[3], 0.6)
-                UI.Core.DrawRect(win_w - 1, 0, 1, win_h, bc[1], bc[2], bc[3], 0.6)
-            end
+            UI.Core.DrawRect(0, 0, ww, 1, bc[1], bc[2], bc[3], 0.6)
+            UI.Core.DrawRect(0, wh - 1, ww, 1, bc[1], bc[2], bc[3], 0.6)
+            UI.Core.DrawRect(0, 0, 1, wh, bc[1], bc[2], bc[3], 0.6)
+            UI.Core.DrawRect(ww - 1, 0, 1, wh, bc[1], bc[2], bc[3], 0.6)
         end
     end
 
@@ -254,7 +285,7 @@ UI.Run(function(theme)
     -- gfx.mouse_x/y here would feed back into itself, since the window
     -- moves under the cursor each frame and gfx coords are window-local.
     local screen_mx, screen_my = reaper.GetMousePosition()
-    if not drag.active and UI.Core.MouseInRect(0, 0, win_w, win_h)
+    if not drag.active and UI.Core.MouseInRect(0, 0, ww, wh)
        and UI.Core.MouseClicked(1) and UI.Core.ModCtrl() then
         drag.active = true
         drag.start_mouse_x = screen_mx
@@ -283,18 +314,28 @@ UI.Run(function(theme)
         end
     end
 
+    local rad = theme.rounding_small or 0
+
     for i, action in ipairs(tb.actions) do
         local x, y, w, h = action_rect(tb, i)
         local hovered = UI.Core.MouseInRect(x, y, w, h)
+        local down = hovered and UI.Core.MouseDown(1)
         local is_on = state_cache[tostring(action.command_id)] == 1
 
-        -- Subtle hover/active fill (alpha low so it stays "floating")
+        -- The same four states as everywhere else in the suite, and the same
+        -- rounding: a floating strip is still a command zone. Rest stays
+        -- unpainted here — a row of chips over the arrange would fight the
+        -- track lanes for attention, and this is the one command zone that
+        -- floats over someone else's content.
         if is_on then
             local c = theme.colors.accent
-            UI.Core.DrawRect(x, y, w, h, c[1], c[2], c[3], 0.35)
+            UI.Core.DrawRoundRectFilled(x, y, w, h, rad, c[1], c[2], c[3],
+                                        down and 0.55 or 0.42)
         elseif hovered then
-            local c = theme.colors.button_hovered or theme.colors.button
-            UI.Core.DrawRect(x, y, w, h, c[1], c[2], c[3], 0.25)
+            local c = down and theme.colors.button_active
+                            or (theme.colors.button_hovered or theme.colors.button)
+            UI.Core.DrawRoundRectFilled(x, y, w, h, rad, c[1], c[2], c[3],
+                                        down and 0.55 or 0.35)
         end
 
         -- Icon: PNG if provided, otherwise builtin Icons table, otherwise label initials

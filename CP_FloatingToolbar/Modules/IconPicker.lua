@@ -140,16 +140,40 @@ function IconPicker.NewState()
         open = false,
         target = nil,       -- the action being edited (or anything you want to remember)
         search = "",
+        source = "native",  -- "native" (REAPER's PNGs) or "cp" (the toolkit pack)
         on_pick = nil,      -- function(filename) called when user clicks an icon
+        on_pick_cp = nil,   -- function(icon_name) for a toolkit glyph
         on_clear = nil,     -- optional, called when "Clear" is pressed
     }
+end
+
+-- The toolkit's own glyphs, listed once. They are DRAWN, not loaded: no image
+-- buffer, no LRU pool, and they take the colour they are asked for — which is
+-- why a CP glyph follows the theme and a REAPER PNG cannot.
+local cp_names = nil
+local IP_SEARCH_OPTS = { hint = "Filter (play, mixer, fx…)" }
+
+local function ensure_cp_list()
+    if cp_names then return cp_names end
+    cp_names = {}
+    local skip = { Init = true, SetLog = true, Set = true,
+                   ReloadOverrides = true, SetFontRestorer = true }
+    for k, v in pairs(UI.Icons) do
+        if type(v) == "function" and not skip[k] then
+            cp_names[#cp_names + 1] = k
+        end
+    end
+    table.sort(cp_names)
+    return cp_names
 end
 
 function IconPicker.Open(state, opts)
     state.open = true
     state.target = opts and opts.target
     state.search = opts and opts.search or ""
+    state.source = (opts and opts.source) or state.source or "native"
     state.on_pick = opts and opts.on_pick
+    state.on_pick_cp = opts and opts.on_pick_cp
     state.on_clear = opts and opts.on_clear
     -- Lazy scan on first open so script startup stays cheap
     ensure_list()
@@ -182,19 +206,39 @@ function IconPicker.Draw(state, opts)
     local height  = opts.height or 280
     local columns = opts.columns or 12
 
-    UI.SetFontH2()
-    UI.Text("Pick a REAPER toolbar icon")
-    UI.SetFontBody()
-
-    local changed, new_text = UI.InputText("ip_search", "Filter", state.search, {
-        hint = "Type to filter (e.g. play, mixer, fx)",
-        width = -1,
-        select_all_on_focus = true,
-    })
+    -- Two sources, one grid. REAPER's own PNGs are the big set (~1500 files
+    -- in Data/toolbar_icons) and they are what a REAPER user already knows;
+    -- the toolkit's glyphs are ~110, they are DRAWN rather than loaded, and
+    -- they take the theme's colour. Neither replaces the other, so the picker
+    -- offers both instead of choosing for you.
+    local cp = (state.source == "cp")
+    UI.BeginBar("ip_bar")
+    UI.BarRight()
+    if UI.BarIcon("ip_close", "Close", "Close the picker") then
+        state.open = false
+    end
+    if state.on_clear then
+        if UI.BarIcon("ip_clear", "Eraser", "Remove this icon") then
+            state.on_clear()
+            state.open = false
+        end
+    end
+    UI.BarSep()
+    UI.BarLeft()
+    if UI.BarButton("ip_src_native", "REAPER icons", false, not cp) then
+        state.source = "native"
+    end
+    if UI.BarButton("ip_src_cp", "CP pack", false, cp) then
+        state.source = "cp"
+    end
+    UI.BarSep()
+    local changed, new_text = UI.BarInput("ip_search", state.search, IP_SEARCH_OPTS)
     if changed then state.search = new_text end
+    UI.EndBar()
+    UI.Spacing(4)
 
     -- Filter
-    local list = ensure_list()
+    local list = cp and ensure_cp_list() or ensure_list()
     local q = state.search:lower()
     local filtered = {}
     if q == "" then
@@ -238,24 +282,36 @@ function IconPicker.Draw(state, opts)
         -- The LRU pool caps at POOL_SIZE entries so big icon folders
         -- don't exhaust gfx's hard buffer cap.
         if UI.Core.IsVisible(cx, cy, cell, cell) then
-            local thumb = get_thumb(fname)
-            if thumb then
-                local sx, sy, sw, sh = first_state_rect(thumb.w, thumb.h)
-                -- gfx.blit modulates by gfx.r/g/b/a — reset before each
-                -- blit so the prior hover/DrawRect tint doesn't dim icons.
-                gfx.set(1, 1, 1, 1)
-                gfx.blit(thumb.buffer, 1, 0, sx, sy, sw, sh, cx, cy, cell, cell)
+            if cp then
+                -- Drawn, not loaded: no buffer, no pool, and it takes the
+                -- colour it is asked for.
+                local draw = UI.Icons[fname]
+                local tc = UI.GetTheme().colors.text
+                if draw then draw(cx, cy, cell, tc[1], tc[2], tc[3], 1) end
             else
-                UI.Core.DrawText(fname:sub(1, 2), cx + 6, cy + 8,
-                    0.7, 0.7, 0.7, 1)
+                local thumb = get_thumb(fname)
+                if thumb then
+                    local sx, sy, sw, sh = first_state_rect(thumb.w, thumb.h)
+                    -- gfx.blit modulates by gfx.r/g/b/a — reset before each
+                    -- blit so the prior hover/DrawRect tint doesn't dim icons.
+                    gfx.set(1, 1, 1, 1)
+                    gfx.blit(thumb.buffer, 1, 0, sx, sy, sw, sh, cx, cy, cell, cell)
+                else
+                    UI.Core.DrawText(fname:sub(1, 2), cx + 6, cy + 8,
+                        0.7, 0.7, 0.7, 1)
+                end
             end
         end
 
         if hovered then
             -- Tooltip-ish hint via overlay rect at the bottom of the picker
             state._hovered_name = fname
-            if UI.Core.MouseClicked(1) and state.on_pick then
-                state.on_pick(fname)
+            if UI.Core.MouseClicked(1) then
+                if cp then
+                    if state.on_pick_cp then state.on_pick_cp(fname) end
+                elseif state.on_pick then
+                    state.on_pick(fname)
+                end
                 state.open = false
             end
         end
@@ -267,24 +323,11 @@ function IconPicker.Draw(state, opts)
 
     UI.EndChild()
 
-    -- Footer: hovered name + close/clear buttons
-    if state._hovered_name then
-        UI.TextColored(state._hovered_name, 0.7, 0.7, 0.7, 1)
-        state._hovered_name = nil
-    else
-        UI.Text(" ")  -- keep height stable
-    end
-
-    if UI.Button("ip_close", "Close") then
-        state.open = false
-    end
-    if state.on_clear then
-        UI.SameLine(8)
-        if UI.Button("ip_clear", "Clear icon") then
-            state.on_clear()
-            state.open = false
-        end
-    end
+    -- The name of what is under the cursor, in the status zone. Close and
+    -- Clear moved into the bar at the top, where every other window keeps
+    -- them — a picker is not a reason to put them somewhere else.
+    UI.AppStatus(state._hovered_name or "click an icon to use it")
+    state._hovered_name = nil
 
     return true
 end

@@ -35,16 +35,8 @@ local search_text   = ""
 local search_results = {}
 local search_dirty   = true
 
-local builtin_icons = {}
-do
-    local skip = { Init = true, SetLog = true, Set = true }
-    for k, v in pairs(UI.Icons) do
-        if type(v) == "function" and not skip[k] then
-            table.insert(builtin_icons, k)
-        end
-    end
-    table.sort(builtin_icons)
-end
+-- (the list of toolkit glyphs lives in IconPicker now — it is the thing that
+-- shows them, so it is the thing that should own the list)
 
 local target_options = { "main", "mixer", "transport", "media_explorer", "arrange", "ruler" }
 local direction_options = { "horizontal", "vertical" }
@@ -109,19 +101,9 @@ local function draw_toolbar_list_section()
         end
     end
 
-    UI.Spacing(6)
-    if UI.Button("add_toolbar", "+ New") then
-        local tb = Persistence.NewToolbar("Toolbar " .. (#data.toolbars + 1))
-        table.insert(data.toolbars, tb)
-        data.active_toolbar_id = tb.id
-        dirty()
-    end
-    UI.SameLine(8)
-    local tb = active_toolbar()
-    if tb then
-        local toggled, on = UI.ToggleButton("tb_enabled", tb.enabled and "Enabled" or "Disabled", tb.enabled)
-        if toggled then tb.enabled = on; dirty() end
-    end
+    -- "+ New" and the enabled toggle moved into the command bar at the top,
+    -- where they belong: they act on the window's whole state, not on the list
+    -- they were sitting under.
 end
 
 local function draw_anchor_section(tb)
@@ -185,109 +167,248 @@ local function draw_layout_section(tb)
     local cp, np = UI.SliderInt("tb_padding", "Padding", tb.layout.padding or 0, 0, 32)
     if cp then tb.layout.padding = np; dirty() end
 
-    local ca, na = UI.SliderDouble("tb_bg_alpha", "Background alpha (0 = invisible)",
-        tb.layout.bg_alpha or 0, 0, 1)
-    if ca then tb.layout.bg_alpha = na; dirty() end
+    -- The WINDOW's opacity — icons included. A gfx window has no per-pixel
+    -- alpha, so nothing the strip paints can be see-through; only the window
+    -- itself can. The old "background alpha" faded a panel against an opaque
+    -- clear, which is why it could reach 0 and still leave a rectangle.
+    -- Floored at 0.2: a toolbar you cannot see is a toolbar you cannot click.
+    local co, no = UI.SliderDouble("tb_opacity", "Opacity (whole strip)",
+        tb.layout.opacity or 1, 0.2, 1)
+    if co then tb.layout.opacity = no; dirty() end
 
-    -- Background appearance — only visible when alpha > 0 (otherwise no point)
-    if (tb.layout.bg_alpha or 0) > 0 then
-        local color = tb.layout.bg_color or { 0.12, 0.12, 0.14 }
-        local cc, nc = UI.ColorPicker("tb_bg_color", "Background color", color)
-        if cc then
-            tb.layout.bg_color = { nc[1], nc[2], nc[3] }
-            dirty()
-        end
-
-        local cr, nr = UI.SliderInt("tb_bg_radius", "Corner radius", tb.layout.bg_radius or 0, 0, 24)
-        if cr then tb.layout.bg_radius = nr; dirty() end
-
-        local cb, nb = UI.Checkbox("tb_bg_border", "Border", tb.layout.bg_border == true)
-        if cb then tb.layout.bg_border = nb; dirty() end
+    local color = tb.layout.bg_color or { 0.12, 0.12, 0.14 }
+    local cc, nc = UI.ColorPicker("tb_bg_color", "Background color", color)
+    if cc then
+        tb.layout.bg_color = { nc[1], nc[2], nc[3] }
+        dirty()
     end
+
+    local cr, nr = UI.SliderInt("tb_bg_radius", "Corner radius", tb.layout.bg_radius or 0, 0, 24)
+    if cr then tb.layout.bg_radius = nr; dirty() end
+
+    local cb, nb = UI.Checkbox("tb_bg_border", "Border", tb.layout.bg_border == true)
+    if cb then tb.layout.bg_border = nb; dirty() end
 end
+
+-- A row's icon, whatever its source, as something we can actually show.
+-- Cached on the action like the toolbar does, so a row costs one table lookup
+-- per frame and not a file probe.
+local function preview_image(act)
+    if act._prev_img == false then return nil end
+    if act._prev_img then return act._prev_img end
+    local path
+    if act.icon and act.icon ~= "" and r.file_exists(act.icon) then
+        path = act.icon
+    elseif act.native_icon and act.native_icon ~= "" then
+        local p = r.GetResourcePath() .. "/Data/toolbar_icons/" .. act.native_icon
+        if r.file_exists(p) then path = p end
+    end
+    if path then
+        local img = UI.LoadImage(path)
+        act._prev_img = img or false
+        return img
+    end
+    act._prev_img = false
+    return nil
+end
+
+-- REAPER packs 2 or 3 button states side by side in one PNG. Show the first.
+local function first_state(img)
+    local ratio = (img.h > 0) and (img.w / img.h) or 1
+    if ratio > 2.5 and ratio < 3.5 then
+        return 0, 0, math.floor(img.w / 3), img.h
+    elseif ratio > 1.6 and ratio < 2.4 then
+        return 0, 0, math.floor(img.w / 2), img.h
+    end
+    return 0, 0, img.w, img.h
+end
+
+-- A square button at an ABSOLUTE position, because the row is a grid and the
+-- layout cursor does not run it. Four states, like everything else.
+local function icon_btn(id, icon, x, y, size, rad, disabled, tip)
+    local theme = UI.GetTheme()
+    local c = theme.colors
+    local hovered = (not disabled)
+        and UI.Core.MouseInClippedRect(x, y, size, size) and not UI.Core.HasPopup()
+    local down = hovered and UI.Core.MouseDown(1)
+    local bg
+    if disabled then bg = c.button
+    elseif down then bg = c.button_active
+    elseif hovered then bg = c.button_hovered
+    else bg = c.button end
+    UI.Core.DrawRoundRectFilled(x, y, size, size, rad,
+                                bg[1], bg[2], bg[3], disabled and 0.4 or 1)
+    local ink = disabled and c.text_disabled or c.text
+    local draw = UI.Icons[icon]
+    if draw then
+        local pad = 3
+        draw(x + pad, y + pad, size - pad * 2, ink[1], ink[2], ink[3], 1)
+    end
+    if hovered then
+        UI.Core.SetHot(id)
+        if tip then UI.Tooltip(tip) end
+        return UI.Core.MouseClicked(1)
+    end
+    return false
+end
+
+-- One door to the icon, not three. The old row offered a combo of toolkit
+-- glyphs, a "PNG…" button and a "Native…" button side by side and never said
+-- which of the three was actually in effect.
+local function open_icon_picker(act)
+    IconPicker.Open(picker_state, {
+        target  = act,
+        search  = "",
+        on_pick = function(fname)
+            act.native_icon = fname
+            act.builtin_icon = nil
+            act.icon = nil
+            act._cached_image, act._prev_img = nil, nil
+            dirty()
+        end,
+        on_pick_cp = function(name)
+            act.builtin_icon = name
+            act.native_icon = nil
+            act.icon = nil
+            act._cached_image, act._prev_img = nil, nil
+            dirty()
+        end,
+        on_clear = function()
+            act.native_icon, act.builtin_icon, act.icon = nil, nil, nil
+            act._cached_image, act._prev_img = nil, nil
+            dirty()
+        end,
+    })
+end
+
+-- Per-row widget ids, memoised. Built with a concat ONCE per index and then
+-- reused forever, instead of "up_" .. i on every frame of every row.
+local row_ids = {}
+local function row_id(kind, i)
+    local t = row_ids[kind]
+    if not t then t = {}; row_ids[kind] = t end
+    local v = t[i]
+    if not v then v = kind .. "_" .. i; t[i] = v end
+    return v
+end
+
+-- Row numbers, same reason.
+local row_num = {}
+local function num_label(i)
+    local v = row_num[i]
+    if not v then v = i .. "."; row_num[i] = v end
+    return v
+end
+
+-- FIXED COLUMNS. This is the whole point of the rewrite: every row used to be
+-- laid out from the width of its own name, so no two rows had their buttons in
+-- the same place and the list read as debris. Now the row is a grid — the
+-- number, the icon, the name, then three square buttons hard against the right
+-- edge — and everything lines up down the column whatever the names are.
+local ROW_H     = 24
+local COL_NUM_W = 24     -- "12."
+local COL_ICO_W = 24     -- what this button will actually look like
+local BTN_W     = 22     -- up / down / remove
+local BTN_N     = 3
 
 local function draw_actions_section(tb)
     UI.SetFontH2(); UI.Text("Actions in this toolbar"); UI.SetFontBody()
     UI.Spacing(4)
 
     if #tb.actions == 0 then
-        UI.TextColored("(none yet — add from the right panel)", 0.6, 0.6, 0.6, 1)
-    else
-        for i, act in ipairs(tb.actions) do
-            UI.Text(string.format("%d.  %s", i, Actions.GetName(act.command_id)))
+        UI.TextColored("(none yet — add one from the list below)", 0.6, 0.6, 0.6, 1)
+        return
+    end
 
-            UI.SameLine(8)
-            if UI.Button("up_" .. i, "↑", { width = 26, height = 22 }) and i > 1 then
-                tb.actions[i - 1], tb.actions[i] = tb.actions[i], tb.actions[i - 1]
-                dirty()
-            end
-            UI.SameLine(2)
-            if UI.Button("dn_" .. i, "↓", { width = 26, height = 22 }) and i < #tb.actions then
-                tb.actions[i + 1], tb.actions[i] = tb.actions[i], tb.actions[i + 1]
-                dirty()
-            end
-            UI.SameLine(2)
-            if UI.Button("rm_" .. i, "✕", { width = 26, height = 22 }) then
-                table.remove(tb.actions, i)
-                dirty()
-                break
-            end
+    local theme = UI.GetTheme()
+    local tc    = theme.colors.text
+    local tm    = theme.colors.text_mute or theme.colors.text_disabled
+    local rad   = theme.rounding_small or 0
+    local remove_at = nil
 
-            -- Icon choice for this action
-            UI.SameLine(12)
-            local icons_list = { "(none)" }
-            for _, name in ipairs(builtin_icons) do icons_list[#icons_list + 1] = name end
-            local cur = 1
-            if act.builtin_icon then cur = (index_of(icons_list, act.builtin_icon)) end
-            local ic_changed, ic_idx = UI.Combo("ic_" .. i, "Icon", cur, icons_list, { width = 130 })
-            if ic_changed then
-                act.builtin_icon = (ic_idx > 1) and icons_list[ic_idx] or nil
-                act._cached_image = nil
-                dirty()
-            end
+    for i, act in ipairs(tb.actions) do
+        local x, y = UI.GetCursorPos()
+        local w = UI.GetAvailableWidth()
+        local row_hovered = UI.Core.MouseInClippedRect(x, y, w, ROW_H)
+                            and not UI.Core.HasPopup()
+        if row_hovered then
+            local hc = theme.colors.list_hover
+            UI.Core.DrawRect(x, y, w, ROW_H, hc[1], hc[2], hc[3], hc[4] or 1)
+        end
 
-            UI.SameLine(4)
-            if UI.Button("img_" .. i, act.icon and "PNG ✓" or "PNG…", { width = 70, height = 22 }) then
-                local ok, file = r.GetUserFileNameForRead("", "Pick PNG icon", ".png")
-                if ok and file ~= "" then
-                    act.icon = file
-                    act._cached_image = nil
-                    dirty()
-                end
-            end
-            if act.icon then
-                UI.SameLine(4)
-                if UI.Button("imgrm_" .. i, "Clear PNG", { width = 80, height = 22 }) then
-                    act.icon = nil
-                    act._cached_image = nil
-                    dirty()
-                end
-            end
+        -- 1. the rank
+        local nl = num_label(i)
+        local nw, nh = UI.Core.MeasureText(nl)
+        UI.Core.DrawText(nl, x + COL_NUM_W - nw - 6, y + math.floor((ROW_H - nh) / 2),
+                         tm[1], tm[2], tm[3], 1)
 
-            -- Native REAPER toolbar icon picker (opens visual grid below)
-            UI.SameLine(4)
-            local nat_label = act.native_icon
-                and ("Native: " .. act.native_icon:sub(1, 18))
-                or "Native…"
-            if UI.Button("nat_" .. i, nat_label, { width = 150, height = 22 }) then
-                local action_ref = act  -- capture in closure (loop var safety)
-                IconPicker.Open(picker_state, {
-                    target  = action_ref,
-                    search  = action_ref.native_icon or "",
-                    on_pick = function(fname)
-                        action_ref.native_icon = fname
-                        action_ref._cached_image = nil
-                        dirty()
-                    end,
-                    on_clear = function()
-                        action_ref.native_icon = nil
-                        action_ref._cached_image = nil
-                        dirty()
-                    end,
-                })
+        -- 2. a PREVIEW of the icon. The list said "Native: AI_Function_F.."
+        -- and you still had to imagine it; showing the glyph answers the only
+        -- question the row is really asking.
+        local ix = x + COL_NUM_W
+        local isz = ROW_H - 6
+        local iy = y + 3
+        if act.builtin_icon and UI.Icons[act.builtin_icon] then
+            UI.Icons[act.builtin_icon](ix, iy, isz, tc[1], tc[2], tc[3], 1)
+        else
+            local img = preview_image(act)
+            if img then
+                local sx, sy, sw, sh = first_state(img)
+                gfx.set(1, 1, 1, 1)
+                gfx.blit(img.buffer, 1, 0, sx, sy, sw, sh, ix, iy, isz, isz)
+            else
+                UI.Core.DrawRect(ix, iy, isz, isz, tm[1], tm[2], tm[3], 0.18)
             end
         end
+
+        -- 3. the name, truncated to whatever is left before the buttons
+        local btn_zone = BTN_N * (BTN_W + 2) + 4
+        local name_x = x + COL_NUM_W + COL_ICO_W + 4
+        local name_w = w - (name_x - x) - btn_zone
+        if name_w > 20 then
+            local name = Actions.GetName(act.command_id)
+            local nmw, nmh = UI.Core.MeasureText(name)
+            if nmw > name_w then name = UI.Core.TruncateText(name, name_w) end
+            UI.Core.DrawText(name, name_x, y + math.floor((ROW_H - nmh) / 2),
+                             tc[1], tc[2], tc[3], 1)
+        end
+
+        -- 4. the three buttons, right-aligned, always in the same column
+        local bx = x + w - btn_zone + 4
+        if icon_btn(row_id("up", i), "TriangleUp", bx, y + 1, BTN_W, rad,
+                    i == 1, "Move up") and i > 1 then
+            tb.actions[i - 1], tb.actions[i] = tb.actions[i], tb.actions[i - 1]
+            dirty()
+        end
+        if icon_btn(row_id("dn", i), "TriangleDown", bx + BTN_W + 2, y + 1, BTN_W, rad,
+                    i == #tb.actions, "Move down") and i < #tb.actions then
+            tb.actions[i + 1], tb.actions[i] = tb.actions[i], tb.actions[i + 1]
+            dirty()
+        end
+        if icon_btn(row_id("rm", i), "Close", bx + (BTN_W + 2) * 2, y + 1, BTN_W, rad,
+                    false, "Remove") then
+            remove_at = i
+        end
+
+        -- Clicking the row (outside the buttons) opens the icon picker. ONE
+        -- door instead of three controls fighting for the same job — the old
+        -- row offered a combo, a PNG button and a Native button side by side
+        -- and never said which one was actually in effect.
+        local mx = UI.Core.GetMousePos()
+        if row_hovered and UI.Core.MouseClicked(1) and mx < bx then
+            open_icon_picker(act)
+        end
+
+        UI.Layout.AdvanceCursor(w, ROW_H)
     end
+
+    if remove_at then
+        table.remove(tb.actions, remove_at)
+        dirty()
+    end
+
+    UI.Spacing(4)
+    UI.TextColored("click a row to change its icon", 0.55, 0.55, 0.55, 1)
 end
 
 local function draw_action_picker(tb)
@@ -324,27 +445,61 @@ end
 -- ---------------------------------------------------------------------------
 -- Main loop
 -- ---------------------------------------------------------------------------
+local TITLE_OPTS  = { title = "Floating Toolbar" }
+local PICKER_OPTS = { cell = 32, gap = 4, height = 380, columns = 16 }
+local HELP_TEXT = [[
+## What this is
+A strip of REAPER actions that floats over a REAPER window and follows
+it. Run CP_FloatingToolbar.lua to show the active one; edits made here
+reach it within about a second, without restarting anything.
+
+## Moving it
+Ctrl+drag anywhere on the strip. The position is saved as an offset
+from the window it is anchored to, so it stays put when that window
+moves or resizes.
+
+## Icons
+Click a row to pick its icon. Two sources: REAPER's own toolbar icons
+(the big set, the ones you already know) and the CP pack — drawn
+rather than loaded, so those follow the theme's colour.
+
+## Transparency
+"Background alpha" is the WINDOW's opacity, icons included. A gfx
+window has no per-pixel transparency, so a panel painted at 30 % over
+an opaque window fades nothing — this is the real thing.
+]]
+
 UI.Run(function()
-    UI.SetFontTitle()
-    UI.Text("CP Floating Toolbar")
-    UI.SetFontBody()
-    UI.Spacing(2)
-    UI.TextColored(
-        "Run CP_FloatingToolbar.lua to display the active toolbar. " ..
-        "Ctrl+drag to reposition, edits hot-reload within ~1s.",
-        0.6, 0.6, 0.6, 1)
-    UI.Separator()
+    -- Same chrome as every other CP window: a command bar with a ground and a
+    -- seam, and a status line anchored to the bottom edge.
+    UI.BeginBar("cmd", TITLE_OPTS)
+    UI.BarRight()
+    if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
+    UI.BarSep()
+    UI.BarLeft()
+    if UI.BarIcon("add_toolbar", "Plus", "New toolbar") then
+        local nt = Persistence.NewToolbar("Toolbar " .. (#data.toolbars + 1))
+        table.insert(data.toolbars, nt)
+        data.active_toolbar_id = nt.id
+        dirty()
+    end
+    local atb = active_toolbar()
+    if atb then
+        local hit = UI.BarToggle("tb_enabled", "Eye", "EyeOff", atb.enabled,
+                                 atb.enabled and "Enabled" or "Disabled")
+        if hit then atb.enabled = not atb.enabled; dirty() end
+    end
+    UI.EndBar()
+
+    local STATUS_H = 20
+    local body_h = UI.GetAvailableHeight() - STATUS_H
 
     -- Icon picker takes over the whole content area when open. This avoids
     -- cramming a 600-thumbnail grid into a column.
     if picker_state.open then
-        IconPicker.Draw(picker_state, {
-            cell    = 32,
-            gap     = 4,
-            height  = 380,
-            columns = 16,
-        })
+        IconPicker.Draw(picker_state, PICKER_OPTS)
     else
+        UI.BeginChild("body", -1, body_h, { border = false, padding = 0 })
         UI.BeginColumns("main_cols", { 0.42, 0.58 })
 
         -- LEFT: toolbar list + anchor + layout
@@ -368,6 +523,9 @@ UI.Run(function()
         end
 
         UI.EndColumns()
+        UI.EndChild()
+
+        UI.AppStatus("Ctrl+drag the strip to move it · edits reach the toolbar within ~1s")
     end
 
     Persistence.ProcessSaveQueue(data)

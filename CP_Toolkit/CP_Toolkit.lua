@@ -567,6 +567,11 @@ function UI.SetSize(w, h)
     return Core.SetSize(w, h)
 end
 
+-- Overlay controls: the window's own see-through, and the colour it clears
+-- with. See Core.SetWindowOpacity for why an app cannot fade its own panel.
+UI.SetWindowOpacity = Core.SetWindowOpacity
+UI.SetClearColor    = Core.SetClearColor
+
 function UI.SetTopMost(topmost)
     Core.SetTopMost(topmost)
 end

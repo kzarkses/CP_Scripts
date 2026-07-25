@@ -1223,6 +1223,12 @@ local init_dock = 0
 local is_frameless = false
 local win_hwnd = nil
 
+-- Frameless size assertion window (see _assert_frameless_size in the main
+-- loop). Declared up here because SetFrameless and SetSize, which arm it, are
+-- defined long before the loop is.
+local _size_assert_until = 0
+local _size_assert_last = 0
+
 function Core.Init(title, width, height, dock, x, y)
     win_title = title or win_title
     init_w = width or init_w
@@ -1269,6 +1275,10 @@ function Core.SetFrameless()
     gfx.update()  -- JS doc: required after resizing a script GUI
 
     is_frameless = true
+    -- gfx may not report the new client size for another frame or two; keep
+    -- asserting it until it agrees (see _assert_frameless_size).
+    _size_assert_until = reaper.time_precise() + 1.0
+    _size_assert_last = 0
     if Log then Log.Info("CORE", "Frameless mode enabled") end
     return true
 end
@@ -1290,11 +1300,48 @@ function Core.SetSize(w, h)
     state.win_w = w
     state.win_h = h
     if win_hwnd and reaper.JS_Window_Resize then
+        -- init_w/init_h ARE the intended size from here on: without this the
+        -- assertion loop would keep dragging the window back to whatever it
+        -- was born as, and a toolbar could never change its own length.
+        init_w, init_h = w, h
         reaper.JS_Window_Resize(win_hwnd, w, h)
+        _size_assert_until = reaper.time_precise() + 1.0
+        _size_assert_last = 0
         return true
     end
     return false
 end
+
+-- ----------------------------------------------------------------------------
+-- Window opacity — the only real transparency a gfx window has
+-- ----------------------------------------------------------------------------
+-- A gfx window always has an opaque backbuffer: whatever an app paints at
+-- alpha 0.3 is composited onto the window's own clear, not onto the desktop.
+-- That is why the floating toolbar's "background alpha" slider could go to 0
+-- and still leave a solid rectangle on screen — the panel it was fading was
+-- painted over an opaque clear a moment earlier.
+--
+-- Real see-through comes from the window itself. Applies to the whole window,
+-- icons included, which is what an overlay actually is.
+local _opacity = 1.0
+
+function Core.SetWindowOpacity(a)
+    if a == nil then return false end
+    if a < 0 then a = 0 elseif a > 1 then a = 1 end
+    if a == _opacity then return true end
+    _opacity = a
+    local hwnd = Core.GetHWND()
+    if not hwnd or not reaper.JS_Window_SetOpacity then return false end
+    reaper.JS_Window_SetOpacity(hwnd, "ALPHA", a)
+    return true
+end
+
+-- The colour the window is cleared with, when it should not be the theme's
+-- window background — an overlay owns its own ground.
+local _clear_color = nil
+
+function Core.SetClearColor(c) _clear_color = c end
+function Core.GetClearColor() return _clear_color end
 
 -- Set window always on top
 function Core.SetTopMost(topmost)
@@ -1840,9 +1887,19 @@ local function _serialize(value, indent)
             end
             return "{\n" .. table.concat(parts, ",\n") .. "\n" .. pad .. "}"
         else
-            -- Hash table — sort keys for stable output
+            -- Hash table — sort keys for stable output.
+            -- A leading underscore means RUNTIME: a memoised image handle, a
+            -- measured width, a "already resolved" flag. Writing those to disk
+            -- makes the config grow with junk and, worse, reloads a stale gfx
+            -- buffer id as if it were a valid cached image. The convention is
+            -- already used across the repo (_cached_image, _lbl, _info); this
+            -- makes the saver honour it.
             local keys = {}
-            for k, _ in pairs(value) do keys[#keys + 1] = k end
+            for k, _ in pairs(value) do
+                if not (type(k) == "string" and k:sub(1, 1) == "_") then
+                    keys[#keys + 1] = k
+                end
+            end
             table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
             for _, k in ipairs(keys) do
                 local v = value[k]
@@ -2060,6 +2117,40 @@ local function _mark_input()
     _last_input_time = reaper.time_precise()
 end
 
+-- ----------------------------------------------------------------------------
+-- Frameless size, re-asserted until it takes
+-- ----------------------------------------------------------------------------
+-- `gfx.init` does not always open the window at the size it is asked for: the
+-- geometry is remembered per window NAME, so a strip that was wider last run
+-- comes back wide. Removing the frame then resizes it, but that lands a frame
+-- or two later — and if nothing wakes the loop in between, the oversized
+-- window is what stays on screen until the user happens to move the mouse.
+-- That is the "it opens too big, then a small movement fixes it" report.
+--
+-- So we keep asserting the size for a short while after init, and stop as soon
+-- as gfx agrees. Only for FRAMELESS windows: a normal one is the user's to
+-- resize and we must not fight them for it.
+local function _assert_frameless_size()
+    if not is_frameless or not win_hwnd then return end
+    local now = reaper.time_precise()
+    if now > _size_assert_until then return end
+    if gfx.w == init_w and gfx.h == init_h then
+        _size_assert_until = 0   -- it took; stop paying for the check
+        return
+    end
+    if (now - _size_assert_last) < 0.05 then return end
+    _size_assert_last = now
+    if reaper.JS_Window_SetPosition then
+        local ok, left, top = reaper.JS_Window_GetRect(win_hwnd)
+        if ok then
+            reaper.JS_Window_SetPosition(win_hwnd, left, top, init_w, init_h,
+                                         "TOP", "NOZORDER,NOACTIVATE,FRAMECHANGED")
+            gfx.update()
+        end
+    end
+    state._request_redraw = true
+end
+
 local function _can_skip_frame()
     -- Throttle disabled globally? Never skip.
     if not _idle_throttle_enabled then return false end
@@ -2132,6 +2223,10 @@ function Core.Run(loop_fn)
         -- the feature only ever worked in whichever window you were already
         -- moving the mouse over.
         Core._PollReveal()
+        -- Same reasoning for the frameless size: it settles a frame or two
+        -- after gfx.init, and if nothing wakes the loop in between the wrong
+        -- size is what stays on screen until the user jiggles the mouse.
+        _assert_frameless_size()
         -- ----- Idle skip check (cheap path, runs first) -----
         if _can_skip_frame() then
             -- Keyboard can't be observed without consuming: poll it here.

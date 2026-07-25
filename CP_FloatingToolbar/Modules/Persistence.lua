@@ -50,10 +50,17 @@ function Persistence.NewToolbar(name)
             icon_size = 24,
             spacing  = 4,
             padding  = 6,             -- inner padding around icon block
-            bg_alpha = 0.0,           -- 0 = fully transparent (icones flottants)
-            bg_color = { 0.12, 0.12, 0.14 }, -- background color when bg_alpha > 0
+            -- bg_color IS the strip's ground: the window is cleared with it,
+            -- because a gfx window is always opaque and a panel painted on top
+            -- of the theme's background was just a panel on a panel.
+            bg_color = { 0.12, 0.12, 0.14 },
+            -- The WINDOW's opacity, icons included — the only see-through a
+            -- gfx window has. `bg_alpha` was the old name for a panel fade
+            -- that could never actually fade anything; it is left unread so an
+            -- existing config does not suddenly turn near-invisible.
+            opacity   = 1.0,
             bg_radius = 6,            -- rounded corners (0 = sharp)
-            bg_border = false,        -- thin border on top of background
+            bg_border = false,        -- thin border around the strip
         },
         actions = {},                 -- {{command_id=..., ...}, ...}
     }
