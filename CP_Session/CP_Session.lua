@@ -90,11 +90,14 @@ a side effect of wanting to edit. CP_Editor is the only place a cell is
 edited: notes, loop length, playhead and transport live there, and the
 edits come back here live. Right-click: edit / clear / stop.
 
-## Audio row (A)
-Drop an audio file from the Media Explorer on an A cell: click loops
-it TEMPO-MATCHED (native stretch), measure-aligned when the transport
-runs, through the selected track's FX. Interim engine — the
-sample-locked one comes later.
+## Sound or MIDI, same cell
+Any cell takes either. Drop a sound from the Media Explorer and it
+loops TEMPO-MATCHED (native stretch), measure-aligned when the
+transport runs, through that column's track. Drop or write MIDI and it
+plays through the engine. A track still plays ONE thing at a time,
+whichever kind — launching a sound stops the MIDI under it and the
+other way round. (Sounds use the interim preview engine; the
+sample-locked one comes later.)
 
 ## Clock
 Free = clips play without the transport. Follow = REAPER transport,
@@ -231,6 +234,53 @@ local function loadGrid()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- Audio cells. A cell holds EITHER a MIDI clip or a sound — same grid, same
+-- gestures, interchangeable. MIDI goes through the JSFX lanes; audio goes
+-- through CF_Preview, tempo-matched and looped (the interim engine, until
+-- the sample-locked one exists). Exclusivity is enforced across both: a
+-- track plays one thing, whatever its kind.
+-- ---------------------------------------------------------------------------
+local HAS_CF = r.CF_CreatePreview ~= nil
+local aplay = {}   -- [t] = { prev, src, s } the sound this track is playing
+
+local function audioStop(t)
+    local a = aplay[t]
+    if not a then return end
+    if a.prev then pcall(r.CF_Preview_Stop, a.prev) end
+    if a.src then r.PCM_Source_Destroy(a.src) end
+    aplay[t] = nil
+end
+
+local function audioPlay(t, s, c)
+    audioStop(t)
+    if not HAS_CF then flash("Audio cells need the SWS extension") return end
+    local src = r.PCM_Source_CreateFromFile(c.path)
+    if not src then flash("Cannot open: " .. (c.path or "?")) return end
+    local prev = r.CF_CreatePreview(src)
+    if not prev then r.PCM_Source_Destroy(src) return end
+    local ok, _, rate = pcall(r.GetTempoMatchPlayRate, src, 1.0, 0, 1.0)
+    local rt = (ok and rate and rate > 0.05 and rate < 20) and rate or 1.0
+    r.CF_Preview_SetValue(prev, "D_VOLUME", 1)
+    if rt ~= 1.0 then
+        r.CF_Preview_SetValue(prev, "D_PLAYRATE", rt)
+        r.CF_Preview_SetValue(prev, "B_PPITCH", 1)
+    end
+    r.CF_Preview_SetValue(prev, "B_LOOP", 1)
+    if (r.GetPlayState() & 1) == 1 then
+        r.CF_Preview_SetValue(prev, "D_MEASUREALIGN", 1)
+    end
+    -- route through the track this column stands for, so its FX apply
+    local tr = Loop.GetLaneDest(t) or r.GetSelectedTrack(0, 0)
+    if tr and r.CF_Preview_SetOutputTrack then
+        r.CF_Preview_SetOutputTrack(prev, 0, tr)
+    end
+    r.CF_Preview_Play(prev)
+    aplay[t] = { prev = prev, src = src, s = s }
+end
+
+local function isAudio(c) return c and c.kind == "audio" and c.path end
+
 local function cellBars(c)
     local b = c and c.bars or 4
     if not b or b < 1 then b = 4 end
@@ -257,6 +307,7 @@ local function armLane(lane, c)
 end
 
 local function stopTrack(t)
+    audioStop(t)   -- a track plays ONE thing, whatever its kind
     local lane = liveLane(t)
     local m = floor(Loop.Mode(lane) + 0.5)
     if m == 3 or m == 5 then Loop.StopClip(lane)
@@ -268,10 +319,21 @@ end
 -- buffers so the change happens on the boundary instead of mid-loop.
 local function launchCell(t, s)
     local c = cells[t][s]
-    if not c or cellNotes(c) == 0 then
-        flash("Empty cell — double-click to write something in it")
+    if isAudio(c) then
+        -- sound cell: same gestures, different engine. Re-launching the one
+        -- that plays stops it, and starting it evicts whatever the track had.
+        local a = aplay[t]
+        if a and a.s == s then audioStop(t) return end
+        stopTrack(t)
+        audioPlay(t, s, c)
+        cur[t] = s
         return
     end
+    if not c or cellNotes(c) == 0 then
+        flash("Empty cell — click the cell to write something in it")
+        return
+    end
+    audioStop(t)   -- this track was playing a sound: it leaves
     local live = liveLane(t)
     local busy = isRunning(live) or Loop.Pending(live) == 1
     if cur[t] == s then
@@ -437,78 +499,33 @@ local function cellMenu(t, s)
     })
 end
 
--- ---------------------------------------------------------------------------
--- Audio cells (interim engine, spec P3): one CF_Preview per cell, tempo-
--- matched playrate (the native ME's GetTempoMatchPlayRate), looped,
--- measure-aligned start when the transport runs. Output goes through the
--- first SELECTED track (its FX) or the default hardware out. The sample-
--- locked JSFX engine is P4 — this is the "good enough to jam" face.
--- ---------------------------------------------------------------------------
-local ACELLS = 4
-local acell = {}   -- [i] = { path, name, src, prev, rate }
-for i = 1, ACELLS do acell[i] = {} end
-local HAS_CF = r.CF_CreatePreview ~= nil
-
-local function acellStop(i)
-    local c = acell[i]
-    if c.prev then pcall(r.CF_Preview_Stop, c.prev) end
-    c.prev = nil
-end
-
--- Load (or clear with nil) a cell's file; persisted per project.
-local function acellLoad(i, path)
-    local c = acell[i]
-    acellStop(i)
-    if c.src then r.PCM_Source_Destroy(c.src) end
-    c.src, c.path, c.name = nil, nil, nil
-    if path and path ~= "" then
-        local src = r.PCM_Source_CreateFromFile(path)
-        if src then
-            c.src, c.path = src, path
-            c.name = path:match("([^/\\]+)$") or path
-        end
-    end
-    r.SetProjExtState(0, "CP_Session", "audio" .. i, c.path or "")
-end
-
-local function acellToggle(i)
-    local c = acell[i]
-    if c.prev then acellStop(i) return end
-    if not c.src then return end
-    if not HAS_CF then flash("Audio cells need the SWS extension") return end
-    local prev = r.CF_CreatePreview(c.src)
-    if not prev then return end
-    local ok, _, rate = pcall(r.GetTempoMatchPlayRate, c.src, 1.0, 0, 1.0)
-    c.rate = (ok and rate and rate > 0.05 and rate < 20) and rate or 1.0
-    r.CF_Preview_SetValue(prev, "D_VOLUME", 1)
-    if c.rate ~= 1.0 then
-        r.CF_Preview_SetValue(prev, "D_PLAYRATE", c.rate)
-        r.CF_Preview_SetValue(prev, "B_PPITCH", 1)
-    end
-    r.CF_Preview_SetValue(prev, "B_LOOP", 1)
-    if (r.GetPlayState() & 1) == 1 then
-        -- transport runs: land on the next measure (native ME semantics);
-        -- free-running has no measure to align to — immediate start
-        r.CF_Preview_SetValue(prev, "D_MEASUREALIGN", 1)
-    end
-    local tr = r.GetSelectedTrack(0, 0)
-    if tr and r.CF_Preview_SetOutputTrack then
-        r.CF_Preview_SetOutputTrack(prev, 0, tr)
-    end
-    r.CF_Preview_Play(prev)
-    c.prev = prev
-end
-
--- restore what was saved with the project
-for i = 1, ACELLS do
-    local _, p = r.GetProjExtState(0, "CP_Session", "audio" .. i)
-    if p and p ~= "" then acellLoad(i, p) end
-end
 loadGrid()
 
+-- Migration: the old fixed "A" row (four sound slots under the grid) is
+-- gone — a sound is a cell like any other now. Whatever was in it moves
+-- into the first free scene of the matching column, once.
+for i = 1, 4 do
+    local _, p = r.GetProjExtState(0, "CP_Session", "audio" .. i)
+    if p and p ~= "" then
+        local t = i - 1
+        if t < TRACKS then
+            for s = 0, SCENES - 1 do
+                if not cells[t][s] then
+                    local c = Clip.new("audio")
+                    c.path = p
+                    c.name = p:match("([^/\\]+)$") or p
+                    cells[t][s] = c
+                    break
+                end
+            end
+        end
+        r.SetProjExtState(0, "CP_Session", "audio" .. i, "")
+    end
+end
+
 -- ---------------------------------------------------------------------------
--- DragBus: an audio file over the A row loads that cell; a MIDI clip over
--- a grid cell fills that cell (it does NOT launch — dropping is not playing).
+-- DragBus: a drop on a cell FILLS that cell — a sound or a MIDI clip, the
+-- two are interchangeable. Dropping never launches; that is the button's job.
 -- ---------------------------------------------------------------------------
 local function busConsume()
     if not state.registered then
@@ -517,29 +534,23 @@ local function busConsume()
     DragBus.RectSync("session")
     local clip, sx, sy = Bus.TakeDrop("session")
     if not clip then return end
+    local g = state.grid
+    if not g then return end
     local cx, cy = Core.ScreenToClient(sx, sy)
-    local ar = state.arow
-    if clip.kind == "audio" and clip.path and ar
-       and cy >= ar.y and cy < ar.y + ar.h and cx >= ar.x0 then
-        local i = floor((cx - ar.x0) / (ar.cw + ar.gap)) + 1
-        if i >= 1 and i <= ACELLS then
-            acellLoad(i, clip.path)
-            flash("Audio cell " .. i .. ": " .. (acell[i].name or "?"))
-        end
+    if cx < g.x0 or cy < g.y0 then return end
+    local t = floor((cx - g.x0) / (g.cw + g.gap))
+    local s = floor((cy - g.y0) / (g.ch + g.gap))
+    if t < 0 or t >= TRACKS or s < 0 or s >= SCENES then return end
+    if not ((clip.kind == "audio" and clip.path)
+            or (clip.kind == "midi" and clip.notes)) then
         return
     end
-    local g = state.grid
-    if clip.kind == "midi" and clip.notes and g
-       and cx >= g.x0 and cy >= g.y0 then
-        local t = floor((cx - g.x0) / (g.cw + g.gap))
-        local s = floor((cy - g.y0) / (g.ch + g.gap))
-        if t >= 0 and t < TRACKS and s >= 0 and s < SCENES then
-            clip.cell = t .. "," .. s
-            cells[t][s] = clip
-            saveGrid()
-            flash("Clip -> " .. trackName(t) .. " / scene " .. (s + 1))
-        end
-    end
+    if cur[t] == s then stopTrack(t) end   -- replacing what plays there
+    clip.cell = t .. "," .. s
+    cells[t][s] = clip
+    saveGrid()
+    flash((clip.kind == "audio" and "Sound -> " or "Clip -> ")
+          .. trackName(t) .. " / scene " .. (s + 1))
 end
 
 -- ---------------------------------------------------------------------------
@@ -557,10 +568,17 @@ local function drawCell(theme, t, s, x, y, w, h)
     local c = cells[t][s]
     local rad = theme.rounding_small or theme.rounding or 0
     local live = liveLane(t)
+    local audio = isAudio(c)
     local is_cur = (cur[t] == s)
-    local mode = is_cur and floor(Loop.Mode(live) + 0.5) or 0
-    local pend = is_cur and Loop.Pending(live) or 0
-    local playing = is_cur and (mode == 3 or mode == 5)
+    local mode = (is_cur and not audio) and floor(Loop.Mode(live) + 0.5) or 0
+    local pend = (is_cur and not audio) and Loop.Pending(live) or 0
+    local playing
+    if audio then
+        local a = aplay[t]
+        playing = (a ~= nil and a.s == s)
+    else
+        playing = is_cur and (mode == 3 or mode == 5)
+    end
     local capturing = (rec and rec.t == t and rec.s == s) or false
 
     local br, bg_, bb = 0.15, 0.15, 0.17
@@ -620,11 +638,21 @@ local function drawCell(theme, t, s, x, y, w, h)
             UI.RequestRedraw()
         end
         if playing then
-            local ph = Loop.Phase(live)
-            local L  = Loop.LenBeats(live)
             local a = C.accent
-            if L > 0 then
-                Core.DrawRect(x + 2, y + h - 4, (w - 4) * (ph / L), 2,
+            local prog
+            if audio then
+                local ap = aplay[t]
+                local ok, rv, pos = pcall(r.CF_Preview_GetValue, ap.prev, "D_POSITION")
+                local ok2, rv2, len = pcall(r.CF_Preview_GetValue, ap.prev, "D_LENGTH")
+                if ok and rv and ok2 and rv2 and len and len > 0 then
+                    prog = (pos % len) / len
+                end
+            else
+                local L = Loop.LenBeats(live)
+                if L > 0 then prog = Loop.Phase(live) / L end
+            end
+            if prog then
+                Core.DrawRect(x + 2, y + h - 4, (w - 4) * prog, 2,
                               a[1], a[2], a[3], 0.9)
             end
             UI.RequestRedraw()
@@ -634,8 +662,8 @@ local function drawCell(theme, t, s, x, y, w, h)
         Core.DrawText(cellLabel(t, s, nm, tw), x + bw + 2, y + 3,
                       tc[1], tc[2], tc[3], 0.95)
         UI.SetFontCaption()
-        Core.DrawText(barsLabel(cellBars(c)), x + bw + 2, y + h - 13,
-                      mc[1], mc[2], mc[3], 0.85)
+        Core.DrawText(audio and "audio" or barsLabel(cellBars(c)),
+                      x + bw + 2, y + h - 13, mc[1], mc[2], mc[3], 0.85)
         UI.SetFontBody()
     end
 
@@ -661,50 +689,6 @@ local function drawCell(theme, t, s, x, y, w, h)
             elseif Core.MouseClicked(2) then
                 cellMenu(t, s)
             end
-        end
-    end
-end
-
--- Audio cell: name + phase sweep, click = loop/stop.
-local function drawAudioCell(theme, i, x, y, w, h)
-    local C = theme.colors
-    local c = acell[i]
-    local playing = c.prev ~= nil
-    local rad = theme.rounding_small or theme.rounding or 0
-    local br, bg_, bb = 0.15, 0.15, 0.17
-    if playing then
-        local a = C.accent
-        br, bg_, bb = a[1] * 0.4, a[2] * 0.4, a[3] * 0.4
-    elseif c.path then
-        br, bg_, bb = 0.19, 0.19, 0.22
-    end
-    Core.DrawRoundRectFilled(x, y, w, h, rad, br, bg_, bb, 1)
-    local tc = C.text
-    local mc = C.text_mute or C.text_disabled
-    if c.path then
-        Core.DrawText(cellLabel(TRACKS + i, 0, c.name or "?", w - 10), x + 5, y + 4,
-                      tc[1], tc[2], tc[3], 0.9)
-        if playing then
-            local ok, rv, pos = pcall(r.CF_Preview_GetValue, c.prev, "D_POSITION")
-            local ok2, rv2, len = pcall(r.CF_Preview_GetValue, c.prev, "D_LENGTH")
-            if ok and rv and ok2 and rv2 and len and len > 0 then
-                local a = C.accent
-                Core.DrawRect(x + 2, y + h - 4, (w - 4) * ((pos % len) / len), 2,
-                              a[1], a[2], a[3], 0.9)
-            end
-            UI.RequestRedraw()
-        end
-    else
-        Core.DrawText("drop audio", x + 5, y + 4, mc[1], mc[2], mc[3], 0.7)
-    end
-    if Core.MouseInRect(x, y, w, h) and not Core.HasPopup() then
-        Core.DrawRect(x, y, w, h, 1, 1, 1, 0.05)
-        if Core.MouseClicked(1) and c.path then
-            acellToggle(i)
-        elseif Core.MouseClicked(2) and c.path then
-            UI.NativeMenu({
-                { label = "Clear cell", action = function() acellLoad(i, nil) end },
-            })
         end
     end
 end
@@ -857,25 +841,7 @@ local function frame(theme)
         end
     end
 
-    -- ---- audio row (interim engine)
-    local ay = sy + sh + 6
-    local ah = 26
-    UI.SetFontCaption()
-    do
-        local mc = C.text_mute or C.text_disabled
-        Core.DrawText("A", x + 9, ay + floor(ah / 2) - 6, mc[1], mc[2], mc[3], 0.8)
-    end
-    state.arow = state.arow or {}
-    state.arow.x0, state.arow.y = x + scene_w + gap, ay
-    state.arow.cw, state.arow.gap, state.arow.h = cell_w, gap, ah
-    for i = 1, ACELLS do
-        local cx = x + scene_w + gap + (i - 1) * (cell_w + gap)
-        if i <= TRACKS then
-            drawAudioCell(theme, i, cx, ay, cell_w, ah)
-        end
-    end
-    UI.SetFontBody()
-    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 6 + ah + 4)
+    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 4)
 
     -- status
     UI.SetFontCaption()
@@ -903,11 +869,7 @@ UI.Init("CP Session", 580, 400, {
 })
 
 UI.OnClose(function()
-    for i = 1, ACELLS do
-        acellStop(i)
-        if acell[i].src then r.PCM_Source_Destroy(acell[i].src) end
-        acell[i].src = nil
-    end
+    for t = 0, TRACKS - 1 do audioStop(t) end
     if state.registered then pcall(DragBus.Unregister, "session") end
 end)
 
