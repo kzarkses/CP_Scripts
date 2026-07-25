@@ -687,6 +687,9 @@ UI.BarRight = Widgets.BarRight
 UI.BarLeft  = Widgets.BarLeft
 function UI.BarSep()               return Widgets.BarSep(UI._theme) end
 function UI.BarLabel(text, opts)   return Widgets.BarLabel(text, UI._theme, opts) end
+function UI.BarCaption(text, opts) return Widgets.BarCaption(text, UI._theme, opts) end
+UI.BarSlot = Widgets.BarSlot
+UI.BarFree = Widgets.BarFree
 -- `label` and `disabled` are positional on purpose: they change from frame to
 -- frame, and writing them as opts fields would build a table per control per
 -- frame. `opts` is for the constants, and comes from a module-level table.
@@ -706,6 +709,9 @@ end
 function UI.BarValue(id, label, value, min_val, max_val, disabled, opts)
     return Widgets.BarValue(id, label, value, min_val, max_val, disabled,
                             UI._theme, opts)
+end
+function UI.BarInput(id, text, opts)
+    return Widgets.BarInput(id, text, UI._theme, opts)
 end
 function UI.AppStatus(text, opts)  return Widgets.AppStatus(text, UI._theme, opts) end
 function UI.SeamH(x, y, w)         return Widgets.SeamH(x, y, w, UI._theme) end

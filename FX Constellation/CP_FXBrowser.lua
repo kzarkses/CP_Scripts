@@ -440,53 +440,47 @@ end
 -- ---------------------------------------------------------------------------
 -- UI helpers (V2)
 -- ---------------------------------------------------------------------------
--- Icon-only square button. Returns clicked.
-local function iconBtn(id, icon_fn, tooltip, opts)
-    local theme = UI.GetTheme()
-    opts = opts or {}
-    local size = opts.size or theme.button_height
-    local Core_tk = UI.Core
-    local cx, cy = UI.GetCursorPos()
-    local clicked = UI.Button(id, "", { width = size, height = size })
-    -- Draw the icon centered over the button face.
-    local color = opts.color or theme.colors.text
-    icon_fn(cx, cy, size, color[1], color[2], color[3], color[4] or 1)
-    if tooltip and Core_tk.MouseInRect(cx, cy, size, size) then
-        UI.Tooltip(tooltip)
-    end
-    return clicked
-end
+-- The private iconBtn that lived here is gone. It was the third copy in the
+-- repo and the only one with a colour option, which is exactly how three
+-- copies drift: each grows the one thing its own caller happened to need.
+-- The bar owns a chip in a command zone; UI.IconButton owns one anywhere else.
+-- Their opts tables are built ONCE, here, not per frame.
+local ICON_ADD   = { height = 0, tooltip = "New tab" }
+local ICON_DICE  = { tooltip = "Add random FX (uses count)" }
+local ICON_CLEAR = { accent = nil, tooltip = "Clear FX chain" }
 
 -- ---------------------------------------------------------------------------
 -- UI: top toolbar (V2)
 --   [Search ........................ flex] [Scan] [Sort A-Z]
 -- ---------------------------------------------------------------------------
-local function drawToolbar()
-    local theme = UI.GetTheme()
-    local btn   = theme.button_height
-    local gap   = theme.gap or 4
-    -- Total available width minus 2 icon buttons + 2 gaps.
-    local avail = UI.GetAvailableWidth()
-    local search_w = math.max(120, avail - (btn + gap) * 2)
+local SEARCH_OPTS = { hint = "Search FX (multi-word)…" }
 
-    local sc, sv = UI.InputText("fxbr_search", "", state.search,
-        { hint = "Search FX (multi-word)…", width = search_w })
+local function drawToolbar()
+    UI.BeginBar("cmd")
+
+    -- Right end reserved first: the search field then grows into exactly what
+    -- is left, instead of being handed a width computed from a button count.
+    UI.BarRight()
+    local sort_tip = (state.sort_mode == "az") and "Sort A-Z (click for Z-A)"
+                                                or  "Sort Z-A (click for A-Z)"
+    if UI.BarIcon("fxbr_sort", "Sort", sort_tip) then
+        state.sort_mode = (state.sort_mode == "az") and "za" or "az"
+        persistConfig()
+    end
+    if UI.BarIcon("fxbr_scan", "Scan", "Rescan plugin database") then
+        local n = FXDatabase.scanPlugins()
+        flash("Scanned " .. n .. " plugins")
+    end
+    UI.BarSep()
+    UI.BarLeft()
+
+    local sc, sv = UI.BarInput("fxbr_search", state.search, SEARCH_OPTS)
     if sc then
         state.search = sv
         state.selected_idx = 0
     end
-    UI.SameLine(gap)
-    if iconBtn("fxbr_scan", UI.Icons.Scan, "Rescan plugin database") then
-        local n = FXDatabase.scanPlugins()
-        flash("Scanned " .. n .. " plugins")
-    end
-    UI.SameLine(gap)
-    local sort_tip = (state.sort_mode == "az") and "Sort A→Z (click for Z→A)"
-                                                or  "Sort Z→A (click for A→Z)"
-    if iconBtn("fxbr_sort", UI.Icons.Sort, sort_tip) then
-        state.sort_mode = (state.sort_mode == "az") and "za" or "az"
-        persistConfig()
-    end
+
+    UI.EndBar()
 end
 
 -- ---------------------------------------------------------------------------
@@ -587,8 +581,8 @@ local function drawFilterChips()
     end
 
     -- "+" chip
-    if iconBtn("chip_tab_add", UI.Icons.Plus, "New tab",
-               { size = chip_h }) then
+    ICON_ADD.height = chip_h
+    if UI.IconButton("chip_tab_add", "Plus", ICON_ADD) then
         state.new_tab_open = true
         state.new_tab_name = ""
     end
@@ -1247,7 +1241,7 @@ local function drawFooter(theme, plugins)
     end
 
     -- Random dice + count slider
-    if iconBtn("fxbr_dice", UI.Icons.Dice, "Add random FX (uses count)") then
+    if UI.IconButton("fxbr_dice", "Dice", ICON_DICE) then
         refreshTrack()
         if not Core.isTrackValid() then
             flash("No track selected")
@@ -1309,8 +1303,8 @@ local function drawFooter(theme, plugins)
     UI.SameLine(0)
 
     -- Clear chain
-    if iconBtn("fxbr_clear", UI.Icons.Erase, "Clear FX chain",
-               { color = theme.colors.danger }) then
+    ICON_CLEAR.accent = theme.colors.danger
+    if UI.IconButton("fxbr_clear", "Erase", ICON_CLEAR) then
         refreshTrack()
         if Core.isTrackValid() then
             r.Undo_BeginBlock()

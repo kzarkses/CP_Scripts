@@ -757,40 +757,14 @@ end
 -- ---------------------------------------------------------------------------
 -- Hoisted per-frame opts tables (PERFORMANCE.md rule 1: no table literals in
 -- the frame loop — widgets consume opts synchronously, mutation is safe).
-local ICONBTN_OPTS = { width = 0, height = 0 }
 local SEARCH_OPTS  = { hint = "Search (kick 808 -loop)…", width = 120 }
-local VOL_OPTS     = { width = 110 }
-local PITCH_OPTS   = { step = 1, format = "%.0f st", width = 62 }
-local RATE_OPTS    = { step = 0.05, format = "%.2fx", width = 62 }
 local LIST_OPTS    = { scrollable = true, border = false, padding = 0,
                        spacing = 0, bg = nil }
 
-local function iconBtn(id, icon_fn, tip, size)
-    local theme = UI.GetTheme()
-    size = size or theme.button_height
-    local cx, cy = UI.GetCursorPos()
-    ICONBTN_OPTS.width, ICONBTN_OPTS.height = size, size
-    local clicked = UI.Button(id, "", ICONBTN_OPTS)
-    local color = theme.colors.text
-    icon_fn(cx, cy, size, color[1], color[2], color[3], color[4] or 1)
-    if tip and Core_tk.MouseInRect(cx, cy, size, size) then UI.Tooltip(tip) end
-    return clicked
-end
-
-local function iconToggle(id, icon_fn, tip, on, size)
-    local theme = UI.GetTheme()
-    size = size or theme.button_height
-    local cx, cy = UI.GetCursorPos()
-    local bg = on and theme.colors.accent or theme.colors.button
-    local hov = Core_tk.MouseInRect(cx, cy, size, size) and not Core_tk.HasPopup()
-    if hov and not on then bg = theme.colors.button_hovered end
-    Core_tk.DrawRect(cx, cy, size, size, bg[1], bg[2], bg[3], bg[4] or 1)
-    local fg = on and theme.colors.list_selected_text or theme.colors.text
-    icon_fn(cx, cy, size, fg[1], fg[2], fg[3], fg[4] or 1)
-    UI.Layout.AdvanceCursor(size, size)
-    if hov and tip then UI.Tooltip(tip) end
-    return hov and Core_tk.MouseClicked(1)
-end
+-- The two private helpers that lived here (iconBtn, iconToggle, with two
+-- different signatures) are gone: the bar owns a chip's height, its four
+-- states and its tooltip now. A one-off like a coloured collection swatch
+-- still gets the zone's geometry, through UI.BarSlot.
 
 -- Ellipsised row label: toolkit-memoized truncation (Core.TruncateText probes
 -- with raw measurestr — no measure-cache pollution) + a per-node fast path.
@@ -1077,13 +1051,20 @@ end
 -- Toolbar + chips
 -- ---------------------------------------------------------------------------
 local function drawToolbar(theme)
-    local btn = theme.button_height
-    local gap = theme.gap or 4
-    local avail = UI.GetAvailableWidth()
-    local search_w = math.max(120, avail - (btn + gap) * 3)
+    UI.BeginBar("cmd")
 
-    SEARCH_OPTS.width = search_w
-    local changed, text = UI.InputText("mx_search", "", state.search, SEARCH_OPTS)
+    -- Right end reserved first, so the search field grows into exactly what is
+    -- left instead of being handed a width someone guessed once.
+    UI.BarRight()
+    if UI.BarIcon("mx_settings", "Settings", "Settings") then openSettings() end
+    if UI.BarIcon("mx_addroot", "Plus", "Add folder") then addRootDialog() end
+    if UI.BarIcon("mx_random", "Dice", "Random file  (R · Shift+R inserts)") then
+        randomJump(false)
+    end
+    UI.BarSep()
+    UI.BarLeft()
+
+    local changed, text = UI.BarInput("mx_search", state.search, SEARCH_OPTS)
     if changed then
         state.search = text
         state.fx_rows = nil  -- FX chip filters plugins with the same box
@@ -1097,18 +1078,7 @@ local function drawToolbar(theme)
             MediaDB.Start()
         end
     end
-    UI.SameLine(gap)
-    if iconBtn("mx_random", UI.Icons.Dice, "Random file  (R · Shift+R inserts)") then
-        randomJump(false)
-    end
-    UI.SameLine(gap)
-    if iconBtn("mx_addroot", UI.Icons.Plus, "Add folder") then
-        addRootDialog()
-    end
-    UI.SameLine(gap)
-    if iconBtn("mx_settings", UI.Icons.Settings, "Settings") then
-        openSettings()
-    end
+    UI.EndBar()
 end
 
 local CHIPS = {
@@ -1145,17 +1115,26 @@ for mask = 0, 127 do
     POPCOUNT3[mask] = n
 end
 
-local function collChip(chip, k, on, size)
+-- A collection chip has no glyph — its content IS a colour — so it is drawn
+-- here rather than by the toolkit. It still asks the bar for its slot, so it
+-- sits at the same height and on the same rhythm as every neighbour, and it
+-- carries the same four states.
+local function collChip(chip, k, on)
+    local x, y, h = UI.BarSlot()
+    if not x then return false end
     local theme = UI.GetTheme()
-    local cx, cy = UI.GetCursorPos()
-    local bg = on and theme.colors.accent or theme.colors.button
-    local hov = Core_tk.MouseInRect(cx, cy, size, size) and not Core_tk.HasPopup()
-    if hov and not on then bg = theme.colors.button_hovered end
-    Core_tk.DrawRect(cx, cy, size, size, bg[1], bg[2], bg[3], bg[4] or 1)
+    local hov = Core_tk.MouseInRect(x, y, h, h) and not Core_tk.HasPopup()
+    local down = hov and Core_tk.MouseDown(1)
+    local c = theme.colors
+    local bg
+    if on then bg = c.accent
+    elseif down then bg = c.button_active
+    elseif hov then bg = c.button_hovered
+    else bg = c.button end
+    Core_tk.DrawRoundRectFilled(x, y, h, h, theme.rounding_small or 0,
+                                bg[1], bg[2], bg[3], bg[4] or 1)
     local col = COLL_COLORS[k]
-    UI.DrawCircle(cx + size / 2, cy + size / 2, size * 0.22,
-                  col[1], col[2], col[3], 1, true)
-    UI.Layout.AdvanceCursor(size, size)
+    UI.DrawCircle(x + h / 2, y + h / 2, h * 0.22, col[1], col[2], col[3], 1, true)
     if hov then UI.Tooltip(chip.tip) end
     return hov and Core_tk.MouseClicked(1)
 end
@@ -1198,18 +1177,25 @@ local function statusInfo()
     return status_cache
 end
 
+local SWAP_CAPTION = { color = nil }
+
 local function drawChips(theme)
-    local chip_h = theme.chip_h or theme.button_height
-    local gap    = theme.gap or 4
+    UI.BeginBar("chips")
+
+    -- The count / indexing / hot-swap caption is reserved from the right
+    -- before anything fills from the left, so it never gets pushed off by a
+    -- collection someone just created.
+    local st = statusInfo()
+    SWAP_CAPTION.color = state.swap_mode and theme.colors.accent or nil
+    UI.BarCaption(st.str, SWAP_CAPTION)
 
     for _, chip in ipairs(CHIPS) do
         local on = (state.chip == chip.key)
-        if iconToggle(chip.id, chip.icon, chip.tip, on, chip_h) then
+        if UI.BarToggle(chip.id, chip.icon, nil, on, chip.tip) then
             state.chip = chip.key
             invalidateViews()
             selectRow(1, { preview = false })
         end
-        UI.SameLine(gap)
     end
 
     -- Collection chips: shown once a collection has content (or is active).
@@ -1217,29 +1203,15 @@ local function drawChips(theme)
         local chip = COLL_CHIPS[k]
         local on = (state.chip == chip.key)
         if on or next(Model.collections[k]) ~= nil then
-            if collChip(chip, k, on, chip_h) then
+            if collChip(chip, k, on) then
                 state.chip = on and "tree" or chip.key  -- click again = back to tree
                 invalidateViews()
                 selectRow(1, { preview = false })
             end
-            UI.SameLine(gap)
         end
     end
 
-    -- Right side: status caption (indexing / counts / hot-swap banner).
-    local st = statusInfo()
-    local tm = state.swap_mode and theme.colors.accent
-               or theme.colors.text_mute or theme.colors.text_disabled
-    UI.SetFontCaption()
-    if st.w < 0 then
-        st.w, st.h = Core_tk.MeasureText(st.str)
-    end
-    local cx, cy = UI.GetCursorPos()
-    local right = cx + UI.GetAvailableWidth() - st.w - 4
-    Core_tk.DrawText(st.str, right, cy + math.floor((chip_h - st.h) / 2),
-                     tm[1], tm[2], tm[3], tm[4] or 1)
-    UI.SetFontBody()
-    UI.Spacing(0)  -- close the SameLine row without an extra blank line
+    UI.EndBar()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1931,41 +1903,42 @@ local function drawWave(theme)
     UI.Layout.AdvanceCursor(w, h)
 end
 
-local function drawTransport(theme)
-    local gap = theme.gap or 4
-    local btn = theme.button_height
-    local node = waveTarget()
+-- The transport is a command zone too: same height, same chips, same four
+-- states. It sits at the bottom because it acts on what the list above is
+-- pointing at, and the seam is what says so.
+local V_VOL   = { format = "%.2f", step = 0.05, integer = false, default = 1, w = 3 }
+local V_PITCH = { format = "%d st", step = 1, default = 0, w = 3 }
+local V_RATE  = { format = "%.2fx", step = 0.05, integer = false, default = 1, w = 3 }
 
-    -- Play / stop
+local function drawTransport(theme)
+    local node = waveTarget()
+    UI.BeginBar("transport")
+
+    -- Play / stop: one control, an icon pair, so the state is in the glyph.
     local playing = Preview.IsPlaying()
-    if iconBtn("mx_play", playing and UI.Icons.Stop or UI.Icons.Play,
-               playing and "Stop" or "Play selected") then
+    if UI.BarToggle("mx_play", "Stop", "Play", playing,
+                    playing and "Stop" or "Play selected") then
         if playing then Preview.Stop()
         elseif node then doPreview(node) end
     end
-    UI.SameLine(gap)
-
-    if iconToggle("mx_loop", UI.Icons.Loop, "Loop preview", Preview.loop, btn) then
+    if UI.BarToggle("mx_loop", "Loop", nil, Preview.loop, "Loop preview") then
         Preview.SetLoop(not Preview.loop)
         markDirty()
     end
-    UI.SameLine(gap)
-    if iconToggle("mx_autoplay", UI.Icons.Volume, "Autoplay on selection",
-                  opts.autoplay, btn) then
+    if UI.BarToggle("mx_autoplay", "Volume", nil, opts.autoplay,
+                    "Autoplay on selection") then
         opts.autoplay = not opts.autoplay
         markDirty()
     end
-    UI.SameLine(gap)
-    local sync_x, sync_y = UI.GetCursorPos()
-    if iconToggle("mx_sync", UI.Icons.Clock,
-                  "Tempo-match (right-click: ×0.5 / ×1 / ×2)",
-                  opts.tempo_sync, btn) then
+    if UI.BarToggle("mx_sync", "Clock", nil, opts.tempo_sync,
+                    "Tempo-match (right-click: x0.5 / x1 / x2)") then
         opts.tempo_sync = not opts.tempo_sync
         markDirty()
     end
-    -- Right-click cycles the ME-style multiplier.
-    if Core_tk.MouseInRect(sync_x, sync_y, btn, btn)
-       and Core_tk.MouseClicked(2) then
+    -- Right-click cycles the ME-style multiplier. Read off the item rect the
+    -- bar just laid down, so the hit area cannot drift from the chip.
+    local sx, sy, sw, sh = UI.GetLastItemRect()
+    if sw and Core_tk.MouseInRect(sx, sy, sw, sh) and Core_tk.MouseClicked(2) then
         if opts.sync_mult == 1.0 then opts.sync_mult = 2.0
         elseif opts.sync_mult == 2.0 then opts.sync_mult = 0.5
         else opts.sync_mult = 1.0 end
@@ -1974,34 +1947,28 @@ local function drawTransport(theme)
               or "Tempo-match ×1")
         markDirty()
     end
-    UI.SameLine(gap * 2)
+    UI.BarSep()
 
-    -- Volume
-    local vc, vv = UI.SliderDouble("mx_vol", "", Preview.volume, 0, 2, VOL_OPTS)
+    local vc, vv = UI.BarValue("mx_vol", "Vol", Preview.volume, 0, 2, false, V_VOL)
     if vc then
         Preview.SetVolume(vv)
         markDirty()
     end
-    UI.SameLine(gap)
-
-    -- Pitch (semitones). %.0f, not %d — drag interpolation yields floats
-    -- and Lua 5.3 %d hard-errors on them (see commit 37a9612).
-    local pc, pv = UI.NumberInput("mx_pitch", "", Preview.pitch, -24, 24, PITCH_OPTS)
+    local pc, pv = UI.BarValue("mx_pitch", nil, Preview.pitch, -24, 24, false, V_PITCH)
     if pc then
         Preview.SetPitch(pv)
         markDirty()
     end
-    UI.SameLine(gap)
-
-    -- Rate
-    local rc, rv = UI.NumberInput("mx_rate", "", Preview.rate, 0.25, 4, RATE_OPTS)
+    local rc, rv = UI.BarValue("mx_rate", nil, Preview.rate, 0.25, 4, false, V_RATE)
     if rc then
         Preview.SetRate(rv)
         markDirty()
     end
-    UI.SameLine(gap * 2)
 
-    -- Info / flash caption (right side)
+    UI.EndBar()
+
+    -- What is under the cursor, in the status zone — the app telling you
+    -- something, which is not the same zone as the things you act on.
     local text
     if state.flash_msg ~= "" and r.time_precise() < state.flash_until then
         text = state.flash_msg
@@ -2012,19 +1979,7 @@ local function drawTransport(theme)
     else
         text = ""
     end
-    if text ~= "" then
-        UI.SetFontCaption()
-        local tm = theme.colors.text_mute or theme.colors.text_disabled
-        local cx, cy = UI.GetCursorPos()
-        local avail = UI.GetAvailableWidth()
-        local tw, th = Core_tk.MeasureText(text)
-        local tx = cx + avail - tw - 4
-        if tx < cx then tx = cx end
-        Core_tk.DrawText(text, tx, cy + math.floor((btn - th) / 2),
-                         tm[1], tm[2], tm[3], tm[4] or 1)
-        UI.SetFontBody()
-    end
-    UI.NewLine()
+    UI.AppStatus(text)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2210,9 +2165,11 @@ local function frame(theme)
     drawToolbar(theme)
     drawChips(theme)
 
-    -- List fills everything above the preview bar.
-    local btn = theme.button_height
-    local bar_h = WAVE_H + btn + pad * 3
+    -- List fills everything above the waveform, the transport zone and the
+    -- status zone. The two zones are a fixed 30 and 20 now, which is the
+    -- point of a primitive: the height stops being a number each app carries.
+    local BAR_H, STATUS_H = 30, 20
+    local bar_h = WAVE_H + BAR_H + STATUS_H + pad * 2
     local list_h = math.max(100, UI.GetAvailableHeight() - bar_h - pad)
     drawList(theme, list_h)
 

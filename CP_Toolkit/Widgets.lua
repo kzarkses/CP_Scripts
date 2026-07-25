@@ -5366,6 +5366,10 @@ local bar = { open = false, x = 0, y = 0, w = 0, h = 0,
 -- never written to.
 local EMPTY_OPTS = {}
 
+-- Reused by BarInput to hand geometry down to InputText without building a
+-- table per frame.
+local BAR_INPUT_OPTS = { width = 0, height = 0, hint = nil }
+
 -- Pick a step. `want` is either an index into the ladder (an app saying "give
 -- me a wide one") or nil, in which case the text decides.
 local function barWidth(text_w, want)
@@ -5499,6 +5503,45 @@ end
 -- Back to filling from the left.
 function Widgets.BarLeft()
     bar.right = false
+end
+
+-- The escape hatch, for a control the toolkit has no business knowing about —
+-- a coloured collection swatch, a meter, a custom badge. It reserves a slot
+-- and hands back where to draw it, so a one-off still gets the zone's height
+-- and the zone's alignment instead of inventing both. Returns x, y, h (nil if
+-- the bar is full).
+function Widgets.BarSlot(w)
+    local x = barSlot(w or bar.ctl_h)
+    if not x then return nil end
+    return x, bar.cy, bar.ctl_h
+end
+
+-- What is left between the left cursor and the reserved right-hand group.
+-- Used to right-align a caption inside the zone without guessing.
+function Widgets.BarFree()
+    if not bar.open then return 0 end
+    return max(0, bar.rx - bar.cx)
+end
+
+-- A caption pinned to the RIGHT end of what is left. Reads as something the
+-- window tells you, so it is drawn in the muted text colour, never as a chip.
+-- It reserves from the right whatever mode the bar is in, then puts the mode
+-- back — the caller keeps filling from the left as if nothing happened.
+function Widgets.BarCaption(text, theme, opts)
+    if not text or text == "" then return end
+    Core.SetFontCaption()
+    local tw, th = Core.MeasureText(text)
+    local was = bar.right
+    bar.right = true
+    local x = barSlot(tw + 4)
+    bar.right = was
+    if x then
+        local c = (opts and opts.color)
+               or theme.colors.text_mute or theme.colors.text_disabled
+        Core.DrawText(text, x + 2, bar.cy + floor((bar.ctl_h - th) / 2),
+                      c[1], c[2], c[3], c[4] or 1)
+    end
+    Core.SetFontBody()
 end
 
 -- A group break inside the zone: the same seam, stood on end.
@@ -5805,6 +5848,42 @@ function Widgets.BarValue(id, label, value, min_val, max_val, disabled, theme, o
     if hovered and opts.label then Widgets.Tooltip(opts.label, theme) end
 
     return changed, v
+end
+
+-- A text field that TAKES THE REST of the bar. Call it after the right-hand
+-- group has been reserved: what is left between the two cursors is exactly the
+-- free space, which is why a search box can grow with the window instead of
+-- being given a number someone guessed once.
+--
+-- The field itself is the toolkit's InputText — focus, selection, clipboard,
+-- undo all live there and are not worth a second implementation. It is placed
+-- by moving the layout cursor onto the bar's slot for the duration of the call
+-- and putting it back afterwards, because the bar deliberately does not drive
+-- the layout cursor: everything else in it is positioned by the bar.
+-- Returns changed, text.
+function Widgets.BarInput(id, text, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local ctl_h = bar.ctl_h
+    local avail = bar.rx - bar.cx - BAR_GAP
+    local w = min(opts.max_w or 100000, avail)
+    if w < 40 then return false, text end
+    local x = barSlot(w)
+    if not x then return false, text end
+
+    local c = Core.CurrentContainer()
+    if not c then return false, text end
+    local sx, sy, sl = c.cursor_x, c.cursor_y, c.same_line
+    c.cursor_x = x - c.x
+    c.cursor_y = bar.cy - c.y
+    c.same_line = false
+
+    BAR_INPUT_OPTS.width  = w
+    BAR_INPUT_OPTS.height = ctl_h
+    BAR_INPUT_OPTS.hint   = opts.hint
+    local changed, out = Widgets.InputText(id, "", text, theme, BAR_INPUT_OPTS)
+
+    c.cursor_x, c.cursor_y, c.same_line = sx, sy, sl
+    return changed, out
 end
 
 -- ============================================================================
