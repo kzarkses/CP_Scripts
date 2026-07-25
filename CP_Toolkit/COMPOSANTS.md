@@ -352,17 +352,34 @@ et 34 px. Les valeurs 3 et 6 n'existent nulle part dans le thème.
 
 ## 10. Récapitulatif
 
-| Élément | Aujourd'hui | Cible |
-|---|---|---|
-| Peintures de « allumé » | **6** pour 5 contrôles | **1** |
-| Peintures de « ligne sélectionnée » | **6** | **1** |
-| Sémantiques du double-clic | **5** | **1** |
-| Sémantiques du clic droit | **4** | **2** |
-| Conversions de molette | **2 contradictoires** | **1** |
-| Protocoles de saisie de valeur | **3** | **1** |
-| Grammaires d'icône | **3** | **2** (transport plein / reste trait) |
-| Tailles de police distinctes | 4 pour **9 slots**, dont 2 paires identiques | **4 pour 4** |
-| Contrôles gérant le désactivé | **12 / 31** | **31 / 31** |
-| Contrôles enregistrant `SetHot` | **20 / 34** | **34 / 34** |
-| Anneau de focus | **0** | tous les focusables |
-| Jetons `meter_*` | **0** | 3 |
+État au 2026-07-25 après les vagues 1 et 2.
+
+| Élément | Au départ | Maintenant | Cible |
+|---|---|---|---|
+| Peintures de « allumé » | **6** pour 5 contrôles | 2 (fond accent / barre sur fond neutre) | 2 |
+| Peintures de « ligne sélectionnée » | **4** | **1** ✅ | 1 |
+| Sémantiques du double-clic | **5** | 1 (remise au défaut) ✅ | 1 |
+| Sémantiques du clic droit | **4** | 2 (saisie / menu) ✅ | 2 |
+| Contrôles de valeur avec molette | **1 / 3** | **3 / 3** ✅ | 3 / 3 |
+| Paramètres bipolaires lisibles | **0** | `opts.bipolar` ✅ | — |
+| Fichiers de dessin hors thème | `Layout.lua` entier | **0** ✅ | 0 |
+| Grammaires d'icône | **3** | 3 ⬜ | 2 (transport plein / reste trait) |
+| Tailles de police distinctes | 4 pour **9 slots** | 5 pour 9 ✅ | 5 pour 5 |
+| Contrôles gérant le désactivé | **12 / 31** | 12 / 31 ⬜ | 31 / 31 |
+| Contrôles enregistrant `SetHot` | **20 / 34** | 20 / 34 ⬜ | 34 / 34 |
+| Anneau de focus | **0** | 0 ⬜ | tous les focusables |
+| Jetons `meter_*` | **0** | 0 ⬜ | 3 |
+
+Une correction au §8 : les deux conversions de molette **ne sont pas
+contradictoires**. `wheel_notches` arrondit vers l'extérieur parce qu'une valeur
+ou un index est discret — un petit delta de trackpad doit bouger d'un pas ou
+rien n'arrive ; `wheel_to_px` reste fractionnaire parce que le défilement est
+continu. Les faire coïncider casserait le défilement fluide. Le vrai défaut
+était `NumberInput`, seul site à ignorer le **nombre** de crans, et il est
+corrigé.
+
+Et deux outils qui n'étaient pas dans la spec mais qui la rendent utilisable :
+l'**inspecteur** (pointer un pixel → le nom du jeton) et le **reveal**
+(survoler un jeton → les zones qu'il peint s'entourent, dans toutes les
+fenêtres). Une spec de soixante-cinq jetons sans moyen d'aller du pixel au nom
+et retour n'est pas praticable.

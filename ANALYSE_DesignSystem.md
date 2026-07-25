@@ -527,26 +527,50 @@ blanche — le défaut exact de `DEFAULT.lua`. Ils basculent le canvas aussi.
 
 **Vague 2 — la grammaire.**
 
-5. Un seul vocabulaire d'allumé ; une seule routine de ligne sélectionnée
-   (6 → 1).
-6. Module `Value` partagé : un geste = un sens, molette partout, `opts.bipolar`
-   — aucun paramètre bipolaire n'est lisible aujourd'hui.
-7. Icônes : transport plein / reste en trait, ancrage au centre partout, les
-   9 glyphes mixtes redessinés.
-8. Typo : le reste de l'échelle, `mono ≥ body`, et les centrages `- 6`
-   remplacés par une mesure. (`h2 ≠ body` est fait en vague 1.)
+5. ✅ **Une seule routine de ligne sélectionnée** (`00ddda3`). Il y en avait
+   quatre, dont trois hors d'atteinte du thème. Au passage : le zébrage
+   d'`InteractiveTable` était un lavis **blanc à 1,5 %** posé *après* l'état,
+   donc invisible sur un thème clair et disparaissant au survol ; et le clavier
+   et la souris étaient indistinguables dans le popup du combo, donc en
+   flèchant on ne savait pas ce qu'Entrée allait prendre.
+6. ✅ **Gestes et molette unifiés, `opts.bipolar`** (`46369a4`). Clic droit
+   tape partout, double-clic remet au défaut partout, molette sur les trois
+   contrôles de valeur. La poignée du slider était accent sur accent — même
+   faute d'invisibilité-sur-soi que la barre du toggle.
+7. ⬜ **Icônes.** Volontairement **pas** fait. Deux raisons, et la seconde est
+   la vraie : (a) l'« ancrage divergent » que l'audit signalait n'existe pas —
+   vérifié, les deux familles remplissent la même boîte ; (b) redessiner neuf
+   glyphes sans pouvoir les regarder, c'est exactement coder dans le vide.
+   Ce qui reste vrai et documenté : 14 glyphes pleins, 24 en trait, 9 mixtes,
+   57 Lucide. La règle à poser est *transport plein, reste en trait*, et les
+   9 mixtes sont le seul vrai défaut. À faire avec les yeux dessus.
+8. 🟡 **Typo, partiel.** `h2 ≠ body` (vague 1) et `ShowHelp` mesuré + renvoyé à
+   la ligne. **Reste** : les centrages `y + h * 0.5 - 6` dans les apps, où 6
+   est la moitié de `body = 12` — ils se décentrent dès qu'on grossit la police,
+   et le tweaker laisse monter `body` à 24.
 
 **Vague 3 — la structure.**
 
-9. **`UI.AppFrame`** (§4.4), puis migrer les huit fenêtres. Supprimer les trois
-   `iconBtn` locaux.
-10. **Brancher `Layout.lua` sur le thème** : scrollbars, splitter (créer le
-    jeton), et retirer le commentaire qui promet une clé inexistante.
-11. Désactivé sur les 31 contrôles, `SetHot` sur les 34, anneau de focus,
-    molette unifiée (deux conversions contradictoires aujourd'hui).
-12. **Rôles morts** : brancher `mute`, `solo`, `mod`, `value_normal`,
-    `close_btn` — ou les supprimer. Une clé morte et éditable est un contrôle
-    qui ment.
+9. ⬜ **`UI.AppFrame`** (§4.4), puis migrer les huit fenêtres. Supprimer les
+   trois `iconBtn` locaux. C'est le plus gros morceau restant.
+10. ✅ **`Layout.lua` branché sur le thème** (`0ea9f11`) : scrollbars, splitter
+    (jeton créé), et le commentaire qui promettait une clé inexistante retiré.
+11. ⬜ Désactivé sur les 31 contrôles, `SetHot` sur les 34, anneau de focus.
+    **Correction** : les « deux conversions de molette contradictoires » ne le
+    sont pas — le discret arrondit vers l'extérieur, le continu reste
+    fractionnaire, et les faire coïncider casserait le trackpad. Le vrai
+    défaut, `NumberInput` qui ignorait le nombre de crans, est corrigé.
+12. ⬜ **Rôles morts** : brancher `mute`, `solo`, `mod`, `value_normal`,
+    `close_btn` — ou les supprimer.
+
+**Hors plan, sur demande.**
+
+- ✅ **Inspecteur** (`dcdee2f`) : pointer un pixel dans n'importe quelle fenêtre
+  CP et obtenir le nom du jeton, avec les couleurs composées en alpha
+  identifiées (« Beat line, sur Row »). Pipette passée sur **E**.
+- ✅ **Reveal** (`665af2a`) : survoler une couleur entoure les zones qu'elle
+  peint, dans toutes les fenêtres ouvertes. C'est la réponse à la question
+  qu'on a vraiment devant une clé — *qu'est-ce que je vais repeindre ?*
 
 ---
 
