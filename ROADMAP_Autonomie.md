@@ -447,3 +447,93 @@ vers l'arrangeur) ; la migration UI elle-même (les 5 étapes du
 document, en attente de ses réponses sur les 3 choix) ; palette
 sémantique + sweep des couleurs en dur ; DnD-capture de modulation ;
 « ? » dans ME/ModLFO/FXC.
+
+---
+
+## Session 7 (2026-07-25 soir) — retours de test sur la grille
+
+Retours : pas de boutons play/stop/rec par case (« sinon je fais play
+comment ? »), les icônes doivent être anticrénelées **partout**
+(doctrine), le clic sur le contenu doit ouvrir l'éditeur sans toucher au
+play state, une cellule doit accepter **son OU MIDI** indifféremment, le
+switch de clip dans une colonne coupe la colonne, et « quels tracks sont
+considérés dans les colonnes ? ».
+
+- [x] **Boutons par cellule** (`c9e26bd`) : triangle / carré / rond,
+  tirés de la bibliothèque du toolkit (bake 4×, donc anticrénelés) —
+  plus un seul `gfx.triangle` brut, lanceur de scène compris. Rangée de
+  stop dédiée sous la grille, armement par piste dans l'en-tête, et
+  **enregistrement dans une cellule vide** d'une piste armée (quantisé,
+  auto-stop sur la longueur, capture dans la cellule).
+- [x] **File de commandes moteur** (`e6bdc5a`) : le JSFX ne lit qu'UNE
+  commande par bloc, depuis un emplacement unique. Deux commandes dans
+  la même frame = la première perdue — or un échange de clip en demande
+  deux, et une scène huit (sept perdues : une scène ne s'est jamais
+  lancée entièrement). File + accusé de réception côté JSFX.
+- [x] **Bouton séparé du contenu** (`e6bdc5a`) : bande de transport à
+  gauche (survol + état allumé), le reste de la cellule ouvre
+  CP_Editor. Regarder un clip ne change plus ce qui joue.
+- [x] **Cellules polymorphes** (`0311808`) : la rangée « A » figée
+  disparaît, un son est une cellule comme une autre, et l'exclusivité
+  vaut pour les deux types. Le son sort par la piste de la colonne (ses
+  FX s'appliquent) au lieu de la piste sélectionnée. Migration
+  automatique de l'ancienne rangée.
+- [x] **LE bug du switch** (`59c8a1d`) : ce n'était pas la Session. Le
+  JSFX **installé** dans `Effects/CP_Scripts/` datait d'avant les 8
+  lanes (`MAX_LANES = 4`) et rejetait toute commande visant la jumelle,
+  donc le Play était ignoré et le Stop passait. Le fichier n'était
+  recopié qu'au « Create engine » / « Reload ». La Session rafraîchit
+  désormais le moteur elle-même quand il annonce trop peu de lanes, avec
+  bandeau permanent en cas d'échec ; `ReloadEngine` préserve horloge,
+  arm et quantisation.
+- [x] **Routage des colonnes visible** (`59c8a1d`) : une colonne est une
+  lane, qui joue dans la piste vers laquelle elle est routée. Cliquer le
+  nom ouvre le choix (piste du projet / nouvelle piste / dérouter) ;
+  sans destination, la colonne affiche « no track » au lieu d'un
+  « Track 1 » imaginaire.
+
+### Décisions prises dans la discussion
+
+- **Knobs : option A** (34 px, libellé dessous) dans les panneaux ;
+  28 px réservé aux bandeaux denses.
+- **Toggles : icônes** qui représentent l'action, pas seulement une
+  couleur → d'où le chantier bibliothèque d'icônes.
+- **Icônes : portage VECTORIEL**, pas des PNG. Nos glyphes sont du code
+  Lua baké en 4× (anticrénelage, teinte par le thème, zéro fichier,
+  zéro accès disque) ; des PNG perdraient les trois. Source retenue :
+  **Lucide** (licence ISC, ~1500 icônes, style trait 24 px cohérent avec
+  le nôtre) ; équivalents acceptables : Tabler (MIT), Phosphor (MIT).
+  Cédric télécharge le dépôt, un convertisseur SVG → primitives `gfx`
+  génère le pack, seules les icônes utiles sont embarquées + la licence.
+- **Layout : colonne à gauche** (rail) pour CP_Editor, CP_Sampler,
+  CP_Session — vues horizontales ; barre haute conservée pour le Media
+  Explorer (vue verticale). Rail standardisé dans le toolkit, deux
+  largeurs (large / icônes seules), pliage mémorisé par app.
+- **CP_Looper devient un step sequencer** façon channel rack : il cesse
+  de dupliquer le piano roll de CP_Editor. Les LIGNES sont les **pads du
+  kit routé sur la lane** (détection automatique, une ligne par pad
+  chargé) ; un instrument qui n'est pas un kit CP retombe sur les notes
+  présentes dans la boucle. Le pas est une VUE du même clip (start,
+  durée, pitch, vélocité) — aucune conversion, le même clip s'ouvre en
+  pas ici et en piano roll dans CP_Editor. Les notes hors grille
+  s'affichent en demi-teinte plutôt que d'être quantisées de force.
+  Résolution réglable (1/8, 1/16, 1/32, triolets), nombre de pas suivant
+  la longueur.
+- **CP_Sampler et CP_Editor restent séparés** : le pont DnD suffit.
+  L'Editor fabrique et édite ce qui est joué ; les boutons « slices to
+  pads / sel to pad / to instrument » sont des EXPORTS vers le Sampler,
+  pas du sampling dans l'Editor.
+- **Mixer** : pas de console. Trois contrôles par piste dans la Session
+  (volume, mute, solo) — le reste vit dans le mixer de REAPER.
+
+### Reste à faire, dans l'ordre
+
+1. **Rail** dans le toolkit, puis Session → Sampler → Editor.
+2. **Icônes** : convertisseur SVG + pack Lucide + toggles à icônes.
+3. **Mixer minimal** Session (vol/mute/solo) + couleur de clip.
+4. **CP_Looper en step sequencer**.
+5. Session phases 2-6 : quantisation par clip, legato, **follow
+   actions**, tempo par scène, audio P4 (moteur sample-lock), capture
+   vers l'arrangeur.
+6. Fond de tiroir : palette sémantique + sweep des couleurs en dur,
+   DnD-capture de modulation, « ? » dans ME/ModLFO/FXC.
