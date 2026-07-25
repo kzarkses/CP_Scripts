@@ -67,6 +67,13 @@ local group_states = {}
 local save_name = "theme"
 local eyedropper_target = nil  -- color key to set when eyedropper picks
 
+-- The key whose areas are outlined in every open CP window this frame. Set by
+-- hovering a colour row, or held for as long as a "Pick" is armed — when you
+-- are about to replace a colour, seeing what it currently paints is the whole
+-- question.
+local reveal_key = nil
+local reveal_sent = nil
+
 -- Preview widget state (so values persist when interacting)
 local pv = {
     toggle1 = true,
@@ -302,6 +309,14 @@ UI.Run(function()
                     local label = UI.Theme.GetColorLabel(key)
                     local c = t.colors[key]
                     if c then
+                        -- Hovering a row REVEALS that colour in every open CP
+                        -- window: each area painted with it gets outlined. It
+                        -- answers the question you actually have with a key in
+                        -- front of you — "what am I about to repaint?" —
+                        -- which no amount of naming answers on its own.
+                        local rx, ry = UI.GetCursorPos()
+                        local row_w = UI.GetAvailableWidth()
+
                         local changed, new_c = UI.ColorPicker("twc_" .. key, label, c)
                         if changed then
                             t.colors[key] = { new_c[1], new_c[2], new_c[3], c[4] or 1 }
@@ -316,6 +331,10 @@ UI.Run(function()
                                 t.colors[key] = { color[1], color[2], color[3], c[4] or 1 }
                                 mark_dirty()
                             end)
+                        end
+
+                        if UI.Core.MouseInRect(rx, ry - 2, row_w, t.row_h + 4) then
+                            reveal_key = key
                         end
                     end
                 end
@@ -519,6 +538,16 @@ UI.Run(function()
         UI.EndGrid("tw_palette")
     end
 
+    -- Broadcast what to outline. A hovered row wins; otherwise an armed
+    -- "Pick" holds its own key lit, so while you are out hunting for a colour
+    -- the areas you are about to repaint stay marked.
+    local rk = reveal_key or (UI.IsEyedropperActive() and eyedropper_target)
+    if rk ~= reveal_sent then
+        UI.SetRevealColor(rk and t.colors[rk] or nil)
+        reveal_sent = rk
+    end
+    reveal_key = nil
+
     -- Throttled auto-save: bumps theme version → other running CP_ scripts
     -- pick up the change via UI.CheckThemeUpdates() within ~100ms.
     if dirty then
@@ -532,5 +561,7 @@ UI.Run(function()
 end)
 
 UI.OnClose(function()
+    -- Never leave the other windows outlined after this one closes.
+    UI.SetRevealColor(nil)
     if dirty then UI.SaveTheme("theme") end
 end)

@@ -473,8 +473,67 @@ local function _clip_rect(x, y, w, h)
     return x, y, x2 - x, y2 - y
 end
 
+-- ============================================================================
+-- REVEAL — "show me every place this colour is used"
+-- ============================================================================
+-- The inspector answers "what is this pixel?". This answers the opposite
+-- question, which is the one you have when you are about to CHANGE a key:
+-- what am I about to repaint? Without it, editing a theme is guesswork with a
+-- feedback loop of one edit per look.
+--
+-- Done at the drawing layer, by colour, not by instrumenting call sites: the
+-- eight applications need to know nothing, and a new widget is covered the day
+-- it is written. Cost when off is one boolean test per rectangle.
+local reveal_on = false
+local reveal_r, reveal_g, reveal_b = 0, 0, 0
+local reveal_rects = {}          -- flat x,y,w,h — never reallocated
+local reveal_n = 0
+local REVEAL_MAX = 400           -- a full window of rows, and a hard stop
+local REVEAL_EPS = 0.002         -- ~0.5/255: same colour, not "close"
+
+function Core.SetReveal(r, g, b)
+    if r then
+        reveal_on, reveal_r, reveal_g, reveal_b = true, r, g, b
+    else
+        reveal_on = false
+    end
+end
+
+function Core.IsRevealing() return reveal_on end
+
+-- Called once per frame, after the user's drawing. Outlines what matched.
+function Core.FlushReveal()
+    if reveal_on and reveal_n > 0 then
+        -- A dashed-looking double stroke: one dark, one bright, so the marks
+        -- read on top of whatever colour is being revealed — including on top
+        -- of itself, which is the whole difficulty here.
+        for i = 1, reveal_n, 4 do
+            local x, y, w, h = reveal_rects[i], reveal_rects[i + 1],
+                               reveal_rects[i + 2], reveal_rects[i + 3]
+            gfx.set(0, 0, 0, 0.85)
+            gfx.rect(x - 1, y - 1, w + 2, h + 2, 0)
+            gfx.set(1, 0.35, 0.1, 0.95)
+            gfx.rect(x, y, w, h, 0)
+        end
+    end
+    reveal_n = 0
+end
+
+local function reveal_record(x, y, w, h, r, g, b)
+    if reveal_n >= REVEAL_MAX * 4 then return end
+    if r < reveal_r - REVEAL_EPS or r > reveal_r + REVEAL_EPS then return end
+    if g < reveal_g - REVEAL_EPS or g > reveal_g + REVEAL_EPS then return end
+    if b < reveal_b - REVEAL_EPS or b > reveal_b + REVEAL_EPS then return end
+    reveal_rects[reveal_n + 1] = x
+    reveal_rects[reveal_n + 2] = y
+    reveal_rects[reveal_n + 3] = w
+    reveal_rects[reveal_n + 4] = h
+    reveal_n = reveal_n + 4
+end
+
 function Core.DrawRect(x, y, w, h, r, g, b, a, filled)
     _stats._draw_count = _stats._draw_count + 1
+    if reveal_on then reveal_record(x, y, w, h, r, g, b) end
     if filled ~= false then
         local cx, cy, cw, ch = _clip_rect(x, y, w, h)
         if not cx then return end

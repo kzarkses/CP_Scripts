@@ -125,16 +125,59 @@ function UI.SetWindowPadding(n)
     if UI._theme then UI._theme.window_padding = n end
 end
 
+-- Reveal is broadcast from the Theme Tweaker over an in-memory ExtState, so
+-- pointing at a colour lights it up in EVERY open CP window at once, not just
+-- the one you happen to be looking at. Parsed only when the string changes —
+-- this is read on every frame of every script.
+local _reveal_str, _reveal_r, _reveal_g, _reveal_b = "", nil, nil, nil
+local _reveal_tick = 0
+local REVEAL_POLL = 10   -- frames
+local function pollReveal()
+    -- Every tenth frame, not every frame: GetExtState hands back a NEW Lua
+    -- string on each call, and this runs in every open script. Six checks a
+    -- second is instant for a design-time tool and costs nothing measurable.
+    _reveal_tick = _reveal_tick + 1
+    if _reveal_tick >= REVEAL_POLL then
+        _reveal_tick = 0
+        local s = reaper.GetExtState("CP_Toolkit", "reveal")
+        if s ~= _reveal_str then
+            _reveal_str = s
+            if s == "" then
+                _reveal_r = nil
+            else
+                local r, g, b = s:match("^([%d%.]+),([%d%.]+),([%d%.]+)$")
+                _reveal_r, _reveal_g, _reveal_b = tonumber(r), tonumber(g), tonumber(b)
+            end
+        end
+    end
+    Core.SetReveal(_reveal_r, _reveal_g, _reveal_b)
+    -- A window sitting idle would never repaint, so the marks would only
+    -- appear on the window you happen to be moving the mouse over.
+    if _reveal_r then Core.RequestRedraw() end
+end
+
 function UI.Run(loop_fn)
     local root_opts = { scrollable = UI._scrollable }
     Core.Run(function()
+        pollReveal()
         Layout.Begin("root", UI._theme, root_opts)
         loop_fn(UI._theme)
         Layout.End()
         -- Update eyedropper if active (runs before tooltip layer in Core)
         Widgets.UpdateEyedropper(UI._theme)
         Widgets.UpdateInspector(UI._theme)
+        Core.FlushReveal()
     end)
+end
+
+-- Broadcast (nil clears). The tweaker calls this; nothing else should.
+function UI.SetRevealColor(c)
+    if c then
+        reaper.SetExtState("CP_Toolkit", "reveal",
+            string.format("%.5f,%.5f,%.5f", c[1], c[2], c[3]), false)
+    else
+        reaper.SetExtState("CP_Toolkit", "reveal", "", false)
+    end
 end
 
 function UI.OnClose(fn)

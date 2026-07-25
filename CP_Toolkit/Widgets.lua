@@ -1730,10 +1730,18 @@ function Widgets.ShowHelp(id, help_text, theme)
     Core.SetPopup(id, function()
                 local is_new = Core.IsPopupNewThisFrame()
                 local win_w, win_h = Core.GetWindowSize()
-                local lines = helpLines(help_text)
                 local pad = 14
-                local line_h = 16
                 local pw = min(480, win_w - 24)
+                -- Wrapped to the panel, not just split on newlines. A help
+                -- line longer than 480 px used to run straight out of the
+                -- panel and off the side of the window.
+                local lines = wrap_text(help_text, pw - pad * 2)
+                -- Measured, not a literal 16. The text is drawn in Body, and
+                -- Body is a theme setting the tweaker lets you take to 24 —
+                -- so a fixed step overlapped the lines the moment anyone
+                -- enlarged the type.
+                local _, glyph_h = Core.MeasureText("Mg")
+                local line_h = glyph_h + 2
                 local ph = min(#lines * line_h + pad * 2, win_h - 24)
                 local px = floor((win_w - pw) / 2)
                 local py = floor((win_h - ph) / 2)
