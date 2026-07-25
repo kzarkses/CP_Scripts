@@ -90,6 +90,10 @@ local opts = {
     -- uses. On by default: a sample being cut into a loop wants beats far more
     -- often than it wants samples, and the toggle is one click away.
     wave_snap  = cfg.wave_snap ~= false,
+    -- Transients are snap targets too, when there are any. On by default:
+    -- detecting them and then not being able to land on them would be an odd
+    -- thing to ask for. The grid still wins unless one is genuinely nearer.
+    snap_trans = cfg.snap_trans ~= false,
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -148,6 +152,7 @@ local function persistConfig()
     cfg.thru_track = opts.thru_track
     cfg.loop       = opts.loop
     cfg.wave_snap  = opts.wave_snap
+    cfg.snap_trans = opts.snap_trans
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -212,14 +217,78 @@ local function projToSrc(pt, rate, pos, soffs)
     return soffs + (pt - pos) * rate
 end
 
+-- Snap targets: the grid always, and the TRANSIENTS when there are any.
+--
+-- The grid has no distance limit (it is everywhere, so the nearest line is the
+-- answer); a transient only wins when it is BOTH nearer and within a few
+-- pixels — otherwise a marker on the far side of the view would yank the
+-- cursor across the screen because nothing else was closer.
+local SNAP_PX = 12
+
 local function waveSnap(t)
     if not opts.wave_snap then return t end
     local pt, rate, pos, soffs = srcToProj(t)
     local step = gridStepQN()
     local qn = math.floor(r.TimeMap2_timeToQN(0, pt) / step + 0.5) * step
-    local nt = projToSrc(r.TimeMap2_QNToTime(0, qn), rate, pos, soffs)
-    if nt < 0 then nt = 0 end
-    return nt
+    local best = projToSrc(r.TimeMap2_QNToTime(0, qn), rate, pos, soffs)
+    if best < 0 then best = 0 end
+    local bd = math.abs(best - t)
+
+    local m = state.markers
+    if opts.snap_trans and #m > 0 and wave.w > 0 then
+        local tol = SNAP_PX * span() / wave.w
+        for i = 1, #m do
+            local d = m[i] - t
+            if d < 0 then d = -d end
+            if d < bd and d <= tol then best, bd = m[i], d end
+        end
+    end
+    return best
+end
+
+-- ---------------------------------------------------------------------------
+-- Transient markers, as OBJECTS
+--
+-- Detection puts them there; from then on they are yours. The array stays
+-- sorted — the snap search, the split and the slice export all read it in
+-- order — so an insert finds its place and a drag is CLAMPED between its
+-- neighbours instead of being re-sorted behind your back.
+-- ---------------------------------------------------------------------------
+local MARK_MIN = 0.0005      -- closer than this and it is the same marker
+
+local function markerAdd(t)
+    if not state.src then return false end
+    if t < 0 then t = 0 elseif t > state.len then t = state.len end
+    local m = state.markers
+    local at = #m + 1
+    for i = 1, #m do
+        local d = m[i] - t
+        if d < 0 then d = -d end
+        if d < MARK_MIN then return false end
+        if m[i] > t then at = i break end
+    end
+    table.insert(m, at, t)
+    return true
+end
+
+-- Index of the marker within `tol` of t, nearest first.
+local function markerAt(t, tol)
+    local m, best, bd = state.markers, nil, nil
+    for i = 1, #m do
+        local d = m[i] - t
+        if d < 0 then d = -d end
+        if d <= tol and (not bd or d < bd) then best, bd = i, d end
+    end
+    return best
+end
+
+local function markerMove(i, t)
+    local m = state.markers
+    if not m[i] then return end
+    local lo = (i > 1) and (m[i - 1] + MARK_MIN) or 0
+    local hi = (i < #m) and (m[i + 1] - MARK_MIN) or state.len
+    if t < lo then t = lo elseif t > hi then t = hi end
+    m[i] = t
 end
 
 -- The grid choices, as a combo's two parallel arrays with entry 1 meaning
@@ -809,22 +878,36 @@ end
 -- ---------------------------------------------------------------------------
 -- Playback
 -- ---------------------------------------------------------------------------
--- Where the preview starts, and where a loop turns around. The selection when
--- there is one; the region otherwise — the item's extent, or the whole file.
-local function previewSpan()
-    local s = state.sel_a or state.cursor
-    local e = state.sel_b
-    if not e then
-        local a, b = targetRegion()
-        if b and b > a then
-            e = b
-            if s < a or s >= b then s = a end
-        end
-    end
-    return s, e
+-- Where the preview starts, where it stops, and where a LOOP turns back to.
+--
+-- REAPER's three starts, and the same keys:
+--   Space              — the edit cursor
+--   Shift+Space        — the start of the time selection
+--   Ctrl+Shift+Space   — the start of the material (its "project start")
+--
+-- The turnaround is NOT the start. Beginning at a cursor dropped in the middle
+-- and then looping on that point would repeat a fragment nobody asked for:
+-- a loop belongs to the PART being played — the selection when there is one,
+-- the whole material otherwise.
+local function previewSpan(from)
+    local a, b = targetRegion()
+    local has_sel = state.sel_a ~= nil
+
+    local loop_a = has_sel and state.sel_a or a
+    local e      = has_sel and state.sel_b or b
+
+    local s
+    if from == "sel" and has_sel then s = state.sel_a
+    elseif from == "start" then s = a
+    else s = state.cursor end
+    if s < a then s = a end
+    if e and s >= e then s = loop_a end
+
+    return s, e, loop_a
 end
 
-local function togglePlay()
+-- from: "cursor" (default) | "sel" | "start"
+local function togglePlay(from)
     if state.mode == "clip" then
         clipLaunch()   -- the clip plays in its origin engine (quantized)
         return
@@ -838,14 +921,15 @@ local function togglePlay()
         Audio.Stop()
         return
     end
-    local ps, pe = previewSpan()
+    local ps, pe, pl = previewSpan(from)
     PLAY_OPTS.start_s = ps
     -- A plain play runs to the end of the material; only a LOOP needs a
     -- turnaround, and without one there is nothing to bounce off (Audio
     -- enforces the section itself — CF_Preview's own B_LOOP would loop the
     -- whole source, not the part you are listening to).
-    PLAY_OPTS.loop  = opts.loop or nil
-    PLAY_OPTS.end_s = opts.loop and pe or state.sel_b
+    PLAY_OPTS.loop       = opts.loop or nil
+    PLAY_OPTS.end_s      = opts.loop and pe or state.sel_b
+    PLAY_OPTS.loop_start = opts.loop and pl or nil
     -- Reflect the take's non-destructive edits so the preview SOUNDS like
     -- the item (gain/normalize, pitch, rate, fades, repitch mode) — playing
     -- the raw file otherwise ignores every edit.
@@ -1042,6 +1126,18 @@ The RULER moves the edit cursor and nothing else, as REAPER's does:
 you place where the next action starts without losing the range you
 just selected. Drag in it to scrub.
 
+Where play starts, on REAPER's own keys:
+  Space              the edit cursor
+  Shift+Space        the start of the time selection
+  Ctrl+Shift+Space   the start of the sample
+A loop always turns back to the start of the PART being played — the
+selection, or the whole sample — never to the point you started from.
+
+TRANSIENTS are objects. Detect them, then: Ctrl+click adds one where
+you point, M adds one on the edit cursor, drag a flag to move it,
+Alt+click a flag (or Delete on the cursor) removes it. They are snap
+targets too, so a selection lands on a hit instead of near it.
+
 SNAP (the magnet) holds the selection and the cursor to the grid, and
 the grid is the SAME one the piano roll uses. A file has no position
 on the timeline, so its grid is read from the project's zero — which
@@ -1157,8 +1253,8 @@ local function barAudio(theme)
                     "Loop the played part (selection, else the whole region)") then
         opts.loop = not opts.loop
         markDirty()
-        local ps, pe = previewSpan()
-        Audio.SetLoop(opts.loop, pe, ps)
+        local _, pe, pl = previewSpan()
+        Audio.SetLoop(opts.loop, pe, pl)
     end
     if UI.BarIcon("zfit", "Maximize", "Fit to window") then fitView() end
     if UI.BarIcon("zin", "ZoomIn", "Zoom in") then
@@ -1442,7 +1538,12 @@ local function itemEdges()
     return xAtTime(a), xAtTime(b), a, b
 end
 
--- "fadein" | "fadeout" | "trim_a" | "trim_b" | "sel_a" | "sel_b" | nil
+-- "fadein" | "fadeout" | "trim_a" | "trim_b" | "sel_a" | "sel_b" | "mark", i
+--
+-- A transient is grabbed by its FLAG at the top, not by its line: the line
+-- runs the whole height and would swallow every selection drag that happened
+-- to start near one. The flag is a target you aim at, which is the whole
+-- difference between a handle and a trap.
 local function waveHit(mx, my)
     local top = my < wave.ry + HANDLE_BAND
     local bot = my > wave.ry + wave.rh - HANDLE_BAND
@@ -1450,6 +1551,10 @@ local function waveHit(mx, my)
         local fin_x, fout_x = fadeHandles()
         if fin_x and math.abs(mx - fin_x) < 7 then return "fadein" end
         if fout_x and math.abs(mx - fout_x) < 7 then return "fadeout" end
+        if #state.markers > 0 and wave.w > 0 then
+            local i = markerAt(timeAtX(mx), 5 * span() / wave.w)
+            if i then return "mark", i end
+        end
     end
     if bot then
         local xa, xb = itemEdges()
@@ -1512,17 +1617,31 @@ local function waveInput(theme)
     -- What is under the cursor, once, for the pointer AND for the drawing
     -- (which runs before this and reads state.whot). Skipped mid-pan so the
     -- middle-drag size_all cursor wins.
-    state.whot = nil
+    state.whot, state.whot_i = nil, nil
     if inside and not state.wpress and not Core_tk.MouseDown(64) then
-        state.whot = waveHit(mx, my)
-        UI.SetCursor(state.whot and "size_we" or "ibeam")
+        state.whot, state.whot_i = waveHit(mx, my)
+        if state.whot == "mark" then
+            UI.SetCursor(Core_tk.ModAlt() and "arrow" or "size_we")
+        else
+            UI.SetCursor(state.whot and "size_we" or "ibeam")
+        end
     end
 
-    -- press: handles first, then a fresh selection
+    -- press: handles first, then a fresh selection.
+    -- Ctrl+click PUTS a transient where you clicked, Alt+click on one removes
+    -- it — direct on the object, no tool to pick up and no mode to leave. The
+    -- editor has no tool palette anywhere else and should not grow one for two
+    -- gestures.
     if inside and Core_tk.MouseClicked(1) then
-        local k = waveHit(mx, my)
-        if k then
-            state.wpress = { kind = k }
+        local k, ki = waveHit(mx, my)
+        if k == "mark" and Core_tk.ModAlt() then
+            table.remove(state.markers, ki)
+            state.wpress = nil
+        elseif Core_tk.ModCtrl() and state.src and k ~= "mark" then
+            if markerAdd(waveSnap(timeAtX(mx))) then flash("Transient added") end
+            state.wpress = nil
+        elseif k then
+            state.wpress = { kind = k, i = ki }
         else
             state.wpress = { kind = "sel", x = mx, t = timeAtX(mx), moved = false }
         end
@@ -1552,6 +1671,11 @@ local function waveInput(theme)
                     state.sel_a, state.sel_b = state.sel_b, state.sel_a
                     wp.kind = (k == "sel_a") and "sel_b" or "sel_a"
                 end
+                UI.SetCursor("size_we")
+            elseif k == "mark" then
+                -- A dragged transient snaps like everything else, and is
+                -- clamped between its neighbours so the list stays in order.
+                markerMove(wp.i, waveSnap(t))
                 UI.SetCursor("size_we")
             elseif k == "trim_a" or k == "trim_b" then
                 -- The played part, resized by its edges — the same gesture as
@@ -1594,6 +1718,9 @@ local function waveInput(theme)
                 end
             elseif k == "trim_a" or k == "trim_b" then
                 Ops.CommitTrim()
+            elseif k == "mark" then
+                -- markers live in this window, not in the project: nothing to
+                -- commit, and no undo point to invent
             else
                 Ops.CommitFades()
             end
@@ -1603,17 +1730,29 @@ local function waveInput(theme)
 
     -- right-click context
     if inside and Core_tk.MouseClicked(2) then
+        local t = timeAtX(mx)
+        local mi = (#state.markers > 0 and wave.w > 0)
+                   and markerAt(t, 5 * span() / wave.w) or nil
         UI.NativeMenu({
             { label = "Fit (Home)", action = fitView },
             { label = "Zoom to selection", disabled = state.sel_a == nil,
               action = zoomSelection },
             { separator = true },
-            { label = "Clear selection", disabled = state.sel_a == nil,
-              action = function() state.sel_a, state.sel_b = nil, nil end },
-            { label = "Clear markers", disabled = #state.markers == 0,
+            { label = "Add transient here  (Ctrl+click, or M at the cursor)",
+              disabled = state.src == nil,
+              action = function() markerAdd(waveSnap(t)) end },
+            { label = "Remove this transient  (Alt+click)", disabled = mi == nil,
+              action = function() table.remove(state.markers, mi) end },
+            { label = "Clear all transients", disabled = #state.markers == 0,
               action = clearMarkers },
             { separator = true },
-            { label = "Snap to zero crossings", checked = opts.snap_zero,
+            { label = "Clear selection", disabled = state.sel_a == nil,
+              action = function() state.sel_a, state.sel_b = nil, nil end },
+            { separator = true },
+            { label = "Snap to transients", checked = opts.snap_trans,
+              action = function() opts.snap_trans = not opts.snap_trans markDirty() end },
+            { label = "Snap to zero crossings (when the grid is off)",
+              checked = opts.snap_zero,
               action = function() opts.snap_zero = not opts.snap_zero markDirty() end },
         })
     end
@@ -1796,15 +1935,24 @@ local function drawWave(theme, area_h)
         end
     end
 
-    -- transient markers
+    -- Transient markers. The FLAG is the handle — it lights and grows like
+    -- every other one — and the line is only the reading of where it sits.
+    local hot_i = (state.wpress and state.wpress.kind == "mark")
+                  and state.wpress.i
+                  or ((hot == "mark") and state.whot_i or nil)
     for i = 1, #state.markers do
         local t = state.markers[i]
         if t >= state.t0 and t <= state.t1 then
             local x = xAtTime(t)
+            local lit = (i == hot_i)
+            local g = handleGrow(lit, held == "mark" and lit)
             Core_tk.DrawRect(x, wave.ry, 1, wave.rh,
-                             col_mark[1], col_mark[2], col_mark[3], 0.7)
-            UI.DrawTriangle(x - 4, wave.ry, x + 4, wave.ry, x, wave.ry + 6,
-                            col_mark[1], col_mark[2], col_mark[3], 0.9)
+                             col_mark[1], col_mark[2], col_mark[3],
+                             lit and 1 or 0.7)
+            UI.DrawTriangle(x - 4 - g, wave.ry, x + 4 + g, wave.ry,
+                            x, wave.ry + 6 + g,
+                            col_mark[1], col_mark[2], col_mark[3],
+                            lit and 1 or 0.9)
         end
     end
 
@@ -2992,12 +3140,37 @@ local function handleKeys()
     local midi_edit = midi and not state.mdrag
 
     -- host navigation (all modes)
-    if char == Keys.SPACE then togglePlay(); UI.ConsumeChar(); return end
+    -- REAPER's three starts, on REAPER's three keys: the edit cursor, the
+    -- start of the time selection, the start of the material.
+    if char == Keys.SPACE then
+        local sh, ct = Core_tk.ModShift(), Core_tk.ModCtrl()
+        togglePlay((ct and sh) and "start" or (sh and "sel") or "cursor")
+        UI.ConsumeChar(); return
+    end
     if char == Keys.HOME then fitView(); UI.ConsumeChar(); return end
     if char == 43 then zoomAt(wave.x + wave.w / 2, 1 / 1.5); UI.ConsumeChar(); return end
     if char == 45 then zoomAt(wave.x + wave.w / 2, 1.5); UI.ConsumeChar(); return end
     if char == Keys.ESCAPE and not midi and state.sel_a then
         state.sel_a, state.sel_b = nil, nil; UI.ConsumeChar(); return
+    end
+
+    -- Audio: transients as objects. M puts one on the edit cursor — exact, and
+    -- it works while the sample is playing, which a click never is. Delete
+    -- removes the one under the cursor. (The mouse has the other two: Ctrl+
+    -- click adds where you point, Alt+click on a flag removes it.)
+    if not midi and state.src then
+        if char == 109 or char == 77 then          -- m / M
+            if markerAdd(state.cursor) then flash("Transient added") end
+            UI.ConsumeChar(); return
+        end
+        if char == Keys.DELETE and #state.markers > 0 and wave.w > 0 then
+            local i = markerAt(state.cursor, 5 * span() / wave.w)
+            if i then
+                table.remove(state.markers, i)
+                flash("Transient removed")
+                UI.ConsumeChar(); return
+            end
+        end
     end
 
     if not midi_edit then return end

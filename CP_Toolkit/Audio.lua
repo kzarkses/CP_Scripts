@@ -107,8 +107,10 @@ Audio.fade_in  = 0.003
 Audio.fade_out = 0.008
 
 -- opts (all optional):
---   { start_s, end_s, loop, rate, pitch, vol, fade_in, fade_out, ppitch,
---     out_track }
+--   { start_s, end_s, loop, loop_start, rate, pitch, vol, fade_in, fade_out,
+--     ppitch, out_track }
+-- loop_start defaults to start_s: give it when the loop must turn back
+-- somewhere other than where playback began.
 -- fade_in/fade_out override the declick defaults (an item's real fades, so
 -- the preview ramps like the arrange does — lengths only, no fade shapes).
 -- ppitch = 0 plays a rate change in repitch mode (default preserves pitch).
@@ -144,7 +146,11 @@ local function startPreview(src, path, opts)
     r.CF_Preview_Play(preview)
 
     cur          = preview
-    cur_start    = (opts and opts.start_s) or 0
+    -- Where the LOOP turns back to, which is not always where playback began.
+    -- Starting at a cursor dropped in the middle and then looping on that
+    -- point would repeat a fragment nobody asked for: the loop belongs to the
+    -- PART being played, so its owner names it.
+    cur_start    = (opts and (opts.loop_start or opts.start_s)) or 0
     cur_end      = opts and opts.end_s or nil
     cur_loop     = (opts and opts.loop) or false
     playing_path = path
