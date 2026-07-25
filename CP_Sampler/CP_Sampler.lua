@@ -117,7 +117,6 @@ do
     end
 end
 local CHOKE_STR   = { "1", "2", "3", "4", "5", "6", "7", "8" }
-local CHOKE_ITEMS = { "Off", "1", "2", "3", "4", "5", "6", "7", "8" }
 local PAGE_IDS    = { "pg1", "pg2", "pg3", "pg4" }
 local PAGE_LBL    = { "1", "2", "3", "4" }
 -- Role colour for the arm toggle, bound once. `record` is what the rest of the
@@ -147,11 +146,13 @@ local PITCH_KNOB_OPTS = {
     to_display   = function() return Kit.PadPitch(ent_note) or 0 end,
     from_display = function(st) return 0.5 + st / 48 end,   -- the knob window
 }
-local COMBO_OPTS  = { width = 58 }
 local ROOT_OPTS   = { step = 1, format = "%.0f", width = 50 }
 local PLAY_OPTS   = {}            -- pooled Audio.Play opts
 local GRID_GAP    = 6
-local CTRL_H      = 176           -- control strip reserve (grid gets the rest)
+-- Control strip reserve. It is the SAME whatever is selected: the strip draws
+-- its dials disabled rather than collapsing, so the grid never resizes under
+-- the cursor because a click landed on an empty pad.
+local CTRL_H      = 176
 local DRAG_PX     = 8             -- pad drag promotion threshold
 
 -- ---------------------------------------------------------------------------
@@ -987,82 +988,95 @@ end
 -- Waveform renders into an offscreen buffer only when the file or the
 -- width changes; a steady frame is one blit + overlay rects.
 -- ---------------------------------------------------------------------------
-local STRIP_H  = 44
-local WAVE_BUF = 905
+local STRIP_H   = 44     -- the MINIMUM; the strip takes whatever is left over
+local WAVE_BUF  = 905
 local strip = { path = nil, w = 0, h = 0 }   -- buffer content key
 
-local function drawRegionStrip(theme, note, pad)
+-- Which handle is under the cursor. The drawing has to know BEFORE the click:
+-- a handle that only answers once you have grabbed it is a handle you find by
+-- trial. Same names and same priority order as the drag — the envelope lives
+-- inside the region, so it is tested first or the region edge swallows it.
+local function stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop)
+    if ax and math.abs(mx - ax) <= 5 and my <= etop + 8 then return "a" end
+    if dx and math.abs(mx - dx) <= 5 and math.abs(my - sy2) <= 6 then return "d" end
+    if rxx and math.abs(mx - rxx) <= 5 and math.abs(my - sy2) <= 6 then return "r" end
+    if math.abs(mx - xs) <= 6 then return "s" end
+    if math.abs(mx - xe) <= 6 then return "e" end
+    if mx > xs and mx < xe then return "m" end
+    return nil
+end
+
+-- Rest / hover / grab, in one place. A handle answers by getting BIGGER and
+-- brighter, because on a 5-px target a colour change alone is not an answer.
+local function hgrow(hot, grabbed)
+    if grabbed then return 3, 1 end
+    if hot then return 2, 1 end
+    return 0, 0.9
+end
+
+-- Lighten toward white — the envelope has no `_hovered` companion in the
+-- theme, and inventing one for a single overlay is worse than a mix.
+local function lift(c, k)
+    return c[1] + (1 - c[1]) * k, c[2] + (1 - c[2]) * k, c[3] + (1 - c[3]) * k
+end
+
+local WAVE_OPTS = { lanes = false, scale = 0.47 }
+local EDGES = { "s", "e" }        -- region edges, in draw order
+local ENV_H = { "a", "d", "r" }   -- envelope handles, in draw order
+
+local function drawRegionStrip(theme, note, pad, h)
+    h = math.floor(h or STRIP_H)
+    if h < STRIP_H then h = STRIP_H end
     local x, y = UI.GetCursorPos()
     local aw = UI.GetAvailableWidth()
-    local h = STRIP_H
     local col_bg   = theme.colors.list_bg or theme.colors.window_bg
     local col_acc  = theme.colors.accent
     local col_bord = theme.colors.border
+    local col_env  = theme.colors.mod or col_acc
+    local SS = Peaks and Peaks.SS or 2
 
     local len = Audio.Meta(pad.path)
     local entry = nil
     if Peaks and len and len > 0 then
         local src = Audio.GetSource(pad.path)
         if src then
-            entry = Peaks.Read(src, pad.path, 0, len, aw, 0)
+            -- peaks at the SUPERSAMPLED width: the smoothness comes from
+            -- reading finer, not from blurring coarse data
+            entry = Peaks.Read(src, pad.path, 0, len, aw * SS, 0)
         end
     end
 
     if entry and (strip.path ~= pad.path or strip.w ~= aw or strip.h ~= h) then
         strip.path, strip.w, strip.h = pad.path, aw, h
         gfx.dest = WAVE_BUF
-        gfx.setimgdim(WAVE_BUF, aw, h)
-        gfx.muladdrect(0, 0, aw, h, 0, 0, 0, 0)  -- undefined after resize
+        gfx.setimgdim(WAVE_BUF, aw * SS, h * SS)
+        gfx.muladdrect(0, 0, aw * SS, h * SS, 0, 0, 0, 0)  -- undefined after resize
         gfx.set(col_bg[1], col_bg[2], col_bg[3], 1)
-        gfx.rect(0, 0, aw, h, 1)
-        gfx.set(col_acc[1], col_acc[2], col_acc[3], 0.8)
-        local mid, scale = h * 0.5, h * 0.47
-        local n, ch = entry.n, entry.ch
-        for px = 1, n do
-            local vmax, vmin = -1, 1
-            for c = 1, ch do
-                local v = entry.maxs[c][px] or 0
-                if v > vmax then vmax = v end
-                v = entry.mins[c][px] or 0
-                if v < vmin then vmin = v end
-            end
-            local y1 = mid - vmax * scale
-            local y2 = mid - vmin * scale
-            if y2 - y1 < 1 then y2 = y1 + 1 end
-            gfx.line(px - 1, y1, px - 1, y2)
-        end
+        gfx.rect(0, 0, aw * SS, h * SS, 1)
+        Peaks.Render(entry, aw * SS, h * SS,
+                     col_acc[1], col_acc[2], col_acc[3], 0.85, WAVE_OPTS)
         gfx.dest = -1
     end
 
-    if strip.path == pad.path and strip.w == aw then
+    if strip.path == pad.path and strip.w == aw and strip.h == h then
         gfx.dest = -1
-        gfx.a, gfx.mode = 1, 0
-        gfx.blit(WAVE_BUF, 1, 0, 0, 0, aw, h, x, y, aw, h)
+        gfx.a = 1
+        local om = gfx.mode
+        gfx.mode = 4                       -- filtered: the 2x bake downsamples smooth
+        gfx.blit(WAVE_BUF, 1, 0, 0, 0, aw * SS, h * SS, x, y, aw, h)
+        gfx.mode = om
     else
         Core_tk.DrawRect(x, y, aw, h, col_bg[1], col_bg[2], col_bg[3], 1)
         UI.RequestRedraw()   -- peaks still building
     end
 
-    -- region overlay (dim outside, accent edges + top handles)
+    -- geometry FIRST, then the hover, then the drawing: everything that can
+    -- light up has to know whether it is the thing under the cursor.
     local s = Kit.Param(note, Kit.P.SOFFS) or 0
     local e = Kit.Param(note, Kit.P.EOFFS) or 1
     local xs = x + s * aw
     local xe = x + e * aw
-    if xs > x then Core_tk.DrawRect(x, y, xs - x, h, 0, 0, 0, 0.55) end
-    if xe < x + aw then Core_tk.DrawRect(xe, y, x + aw - xe, h, 0, 0, 0, 0.55) end
-    Core_tk.DrawRect(xs, y, 1, h, col_acc[1], col_acc[2], col_acc[3], 1)
-    Core_tk.DrawRect(xe - 1, y, 1, h, col_acc[1], col_acc[2], col_acc[3], 1)
-    Core_tk.DrawRect(xs, y, 5, 8, col_acc[1], col_acc[2], col_acc[3], 1)
-    Core_tk.DrawRect(xe - 5, y, 5, 8, col_acc[1], col_acc[2], col_acc[3], 1)
-    Core_tk.DrawRect(x, y, aw, h,
-                     col_bord[1], col_bord[2], col_bord[3],
-                     (col_bord[4] or 1) * 0.6, false)
 
-    -- ADSR overlay: what the envelope does to THIS region, drawn in place
-    -- and manipulated in place. Attack ramps from the region start (the
-    -- fade-in), release ramps into the region end (the fade-out), the
-    -- decay knee carries the sustain level on its y axis. Times are read
-    -- as PLAIN values (ms) so pixels map to real milliseconds.
     local ax, dx, rxx, sy2, etop, ebot
     if len and len > 0 and xe - xs > 8 then
         local region_s = (e - s) * len
@@ -1077,33 +1091,77 @@ local function drawRegionStrip(theme, note, pad)
         ax  = math.min(xs + att_s * pps, xe)
         dx  = math.min(ax + dec_s * pps, xe)
         rxx = math.max(math.min(xe - rel_s * pps, xe), dx)
-        Core_tk.DrawLine(xs, ebot, ax, etop, 0.95, 0.72, 0.25, 0.9)
-        Core_tk.DrawLine(ax, etop, dx, sy2, 0.95, 0.72, 0.25, 0.9)
-        Core_tk.DrawLine(dx, sy2, rxx, sy2, 0.95, 0.72, 0.25, 0.75)
-        Core_tk.DrawLine(rxx, sy2, xe, ebot, 0.95, 0.72, 0.25, 0.9)
-        Core_tk.DrawRect(ax - 3, etop - 1, 6, 6, 0.95, 0.72, 0.25, 1)
-        Core_tk.DrawRect(dx - 3, sy2 - 3, 6, 6, 0.95, 0.72, 0.25, 1)
-        Core_tk.DrawRect(rxx - 3, sy2 - 3, 6, 6, 0.95, 0.72, 0.25, 1)
+    end
+
+    local mx, my = Core_tk.GetMousePos()
+    local inside = mx >= x and mx < x + aw and my >= y and my < y + h
+    local grab = (state.rdrag and state.rdrag.note == note) and state.rdrag.mode or nil
+    local hot = grab
+    if not hot and inside and not Core_tk.HasPopup() and not Core_tk.MouseDown(1) then
+        hot = stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop)
+    end
+
+    -- region overlay (dim outside, accent edges + grips that answer)
+    if xs > x then Core_tk.DrawRect(x, y, xs - x, h, 0, 0, 0, 0.55) end
+    if xe < x + aw then Core_tk.DrawRect(xe, y, x + aw - xe, h, 0, 0, 0, 0.55) end
+    local moving = (hot == "m")
+    if moving then
+        Core_tk.DrawRect(xs, y, xe - xs, h, 1, 1, 1, grab and 0.07 or 0.04)
+    end
+    for i = 1, 2 do
+        local ed  = EDGES[i]
+        local hx  = (ed == "s") and xs or xe
+        local lit = (hot == ed) or moving
+        local col = (grab == ed) and (theme.colors.accent_active or col_acc)
+                    or (lit and (theme.colors.accent_hovered or col_acc) or col_acc)
+        local g, a = hgrow(lit, grab == ed)
+        Core_tk.DrawRect((ed == "s") and hx or (hx - 1), y, 1, h,
+                         col[1], col[2], col[3], a)
+        local gw, gh = 5 + g, 8 + g
+        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y, gw, gh,
+                         col[1], col[2], col[3], 1)
+        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y + h - gh, gw, gh,
+                         col[1], col[2], col[3], 1)
+    end
+    Core_tk.DrawRect(x, y, aw, h,
+                     col_bord[1], col_bord[2], col_bord[3],
+                     (col_bord[4] or 1) * 0.6, false)
+
+    -- ADSR overlay: what the envelope does to THIS region, drawn in place
+    -- and manipulated in place. Attack ramps from the region start (the
+    -- fade-in), release ramps into the region end (the fade-out), the
+    -- decay knee carries the sustain level on its y axis. Times are read
+    -- as PLAIN values (ms) so pixels map to real milliseconds.
+    -- The colour is `mod`, the theme's envelope purple — it was defined for
+    -- exactly this and read by nobody.
+    if ax then
+        local er, eg, eb = col_env[1], col_env[2], col_env[3]
+        Core_tk.DrawLine(xs, ebot, ax, etop, er, eg, eb, 0.9)
+        Core_tk.DrawLine(ax, etop, dx, sy2, er, eg, eb, 0.9)
+        Core_tk.DrawLine(dx, sy2, rxx, sy2, er, eg, eb, 0.75)
+        Core_tk.DrawLine(rxx, sy2, xe, ebot, er, eg, eb, 0.9)
+        for i = 1, 3 do
+            local m = ENV_H[i]
+            local hx = (m == "a") and ax or ((m == "d") and dx or rxx)
+            local hy = (m == "a") and (etop - 1) or (sy2 - 3)
+            local g = hgrow(hot == m, grab == m)
+            local rr, gg, bb = er, eg, eb
+            if grab == m then rr, gg, bb = lift(col_env, 0.45)
+            elseif hot == m then rr, gg, bb = lift(col_env, 0.25) end
+            Core_tk.DrawRect(hx - 3 - g * 0.5, hy - g * 0.5,
+                             6 + g, 6 + g, rr, gg, bb, 1)
+        end
     end
 
     -- interaction (RangeSlider grammar on the waveform; envelope handles
     -- hit-test first — they live inside the region)
-    local mx, my = Core_tk.GetMousePos()
-    local inside = mx >= x and mx < x + aw and my >= y and my < y + h
     if not Core_tk.HasPopup() then
         if inside and Core_tk.MouseClicked(1) then
-            if ax and math.abs(mx - ax) <= 5 and my <= etop + 8 then
-                state.rdrag = { mode = "a", note = note }
-            elseif dx and math.abs(mx - dx) <= 5 and math.abs(my - sy2) <= 6 then
-                state.rdrag = { mode = "d", note = note }
-            elseif rxx and math.abs(mx - rxx) <= 5 and math.abs(my - sy2) <= 6 then
-                state.rdrag = { mode = "r", note = note }
-            elseif math.abs(mx - xs) <= 6 then
-                state.rdrag = { mode = "s", note = note }
-            elseif math.abs(mx - xe) <= 6 then
-                state.rdrag = { mode = "e", note = note }
-            elseif mx > xs and mx < xe then
+            local m = stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop)
+            if m == "m" then
                 state.rdrag = { mode = "m", note = note, grab = (mx - x) / aw - s }
+            elseif m then
+                state.rdrag = { mode = m, note = note }
             else
                 state.rdrag = { mode = (mx < xs) and "s" or "e", note = note }
             end
@@ -1149,17 +1207,30 @@ local function drawRegionStrip(theme, note, pad)
                 state.rdrag = nil
             end
         elseif inside then
-            UI.SetCursor((math.abs(mx - xs) <= 6 or math.abs(mx - xe) <= 6)
-                         and "size_we" or "arrow")
+            -- the cursor answers the same hit-test the drawing used, so the
+            -- pointer, the glow and the grab are never three opinions
+            UI.SetCursor(hot == "m" and "size_all"
+                         or (hot == "d" and "size_all")
+                         or (hot and "size_we" or "arrow"))
         end
     end
 
     UI.Layout.AdvanceCursor(aw, h)
 end
 
+-- A dial for a pad parameter. `note` is nil when nothing usable is selected:
+-- the dial is still DRAWN, at its default, disabled — a control strip that
+-- empties itself takes the layout with it, and the window jumps by a hundred
+-- pixels every time the selection moves.
 local function knob(id, label, note, pid, default)
-    local v = Kit.Param(note, pid)
-    if not v then return end
+    local v = note and Kit.Param(note, pid)
+    if not v then
+        UI.BeginDisabled()
+        UI.Knob(id, label, default or 0.5, default or 0.5, KNOB_OPTS)
+        UI.EndDisabled()
+        UI.SameLine()
+        return
+    end
     ent_note, ent_pid = note, pid          -- aim the entry conversions
     local changed, nv = UI.Knob(id, label, v, default or v, KNOB_OPTS)
     if changed then Kit.SetParam(note, pid, nv) end
@@ -1169,80 +1240,118 @@ local function knob(id, label, note, pid, default)
     UI.SameLine()
 end
 
-local function drawControls(theme)
+local CHOKE_LBL = { [0] = "Off", "1", "2", "3", "4", "5", "6", "7", "8" }
+local CHOKE_OPTS = { on = false,
+    tip = "Choke group — pads in the same group cut each other (click: choose, wheel: step)" }
+local LOOP_OPTS = { tip = "Loop the sample while the pad is held; release fades out" }
+
+local function drawControls(theme, avail_h)
     local note = state.sel
     local pad = note and Kit.pads[note]
-    if not pad then
-        UI.SetFontCaption()
-        UI.Text(Kit.Exists() and "Select a pad — drop samples from the Media Explorer or Windows"
-                              or "Create the kit bus, then drop samples on the pads",
-                { disabled = true })
-        UI.SetFontBody()
-        return
-    end
-    if not pad.fx then
-        UI.SetFontH2()
-        UI.Text("Pad " .. NOTE_NAMES[note])
-        UI.SetFontCaption()
-        UI.Text("Empty — drop a sample, or double-click to browse", { disabled = true })
-        UI.SetFontBody()
-        return
-    end
+    local live = (pad and pad.fx) and note or nil     -- nil ⇒ everything disabled
+
+    local _, y0 = UI.GetCursorPos()
 
     UI.SetFontH2()
-    UI.Text(pad.name)
+    UI.Text(pad and pad.name or "No pad selected")
     UI.SetFontCaption()
     UI.SameLine(10)
-    UI.Text(pad.path and metaLine(pad) or NOTE_NAMES[note], { disabled = true })
+    if live and pad and pad.path then
+        UI.Text(metaLine(pad), { disabled = true })
+    elseif pad then
+        UI.Text(NOTE_NAMES[note] .. "  ·  empty — drop a sample, or double-click to browse",
+                { disabled = true })
+    else
+        UI.Text(Kit.Exists() and "select a pad, or drop a sample on one"
+                              or "create the kit bus, then drop samples on the pads",
+                { disabled = true })
+    end
     UI.SetFontBody()
 
-    knob("k_vol", "Vol", note, Kit.P.VOL, Kit.DEFAULT_VOL)
-    knob("k_pan", "Pan", note, Kit.P.PAN, 0.5)
-    knob("k_tune", "Tune", note, Kit.P.TUNE, 0.5)
+    knob("k_vol", "Vol", live, Kit.P.VOL, Kit.DEFAULT_VOL)
+    knob("k_pan", "Pan", live, Kit.P.PAN, 0.5)
+    knob("k_tune", "Tune", live, Kit.P.TUNE, 0.5)
     do
         -- Pitch that keeps the length (ReaPitch, élastique) — Tune above is
         -- RS5K resample, the vinyl move: pitch and duration coupled.
         -- The knob spans ±24 st on ReaPitch's continuous full-range shift
         -- (SetPadPitch clamps into the param's real bounds); Shift = fine.
-        local st = Kit.PadPitch(note)
-        ent_note = note
-        local changed, nv = UI.Knob("k_rpitch", "Pitch", 0.5 + st / 48, 0.5,
-                                    PITCH_KNOB_OPTS)
-        if changed then Kit.SetPadPitch(note, (nv - 0.5) * 48) end
-        if UI.IsItemHovered() then
-            UI.Tooltip(string.format("%+.2f st — elastique pitch, length unchanged (Shift = fine, right-click = type)", st))
+        if live then
+            local st = Kit.PadPitch(live)
+            ent_note = live
+            local changed, nv = UI.Knob("k_rpitch", "Pitch", 0.5 + st / 48, 0.5,
+                                        PITCH_KNOB_OPTS)
+            if changed then Kit.SetPadPitch(live, (nv - 0.5) * 48) end
+            if UI.IsItemHovered() then
+                UI.Tooltip(string.format("%+.2f st — elastique pitch, length unchanged (Shift = fine, right-click = type)", st))
+            end
+        else
+            UI.BeginDisabled()
+            UI.Knob("k_rpitch", "Pitch", 0.5, 0.5, PITCH_KNOB_OPTS)
+            UI.EndDisabled()
         end
         UI.SameLine()
     end
-    knob("k_att", "A", note, Kit.P.ATTACK, Kit.DEFAULT_ATT)
-    knob("k_dec", "D", note, Kit.P.DECAY, Kit.DEFAULT_DEC)
-    knob("k_sus", "S", note, Kit.P.SUSTAIN, Kit.DEFAULT_SUS)
-    knob("k_rel", "R", note, Kit.P.RELEASE, Kit.DEFAULT_REL)
+    knob("k_att", "A", live, Kit.P.ATTACK, Kit.DEFAULT_ATT)
+    knob("k_dec", "D", live, Kit.P.DECAY, Kit.DEFAULT_DEC)
+    knob("k_sus", "S", live, Kit.P.SUSTAIN, Kit.DEFAULT_SUS)
+    knob("k_rel", "R", live, Kit.P.RELEASE, Kit.DEFAULT_REL)
 
-    -- choke + loop, stacked next to the knobs
-    local grp = Kit.Choke(note)
-    local changed, idx = UI.Combo("k_choke", "Choke", grp + 1, CHOKE_ITEMS, COMBO_OPTS)
-    if changed then Kit.SetChoke(note, idx - 1) end
+    -- Choke and Loop, in a DIAL'S FOOTPRINT. A labelled combo and a checkbox
+    -- next to eight dials read as two intruders from another window — same
+    -- row, three different heights and three different shapes. These are the
+    -- same 34 px box with the same caption line underneath, so the row is a
+    -- row again. The shape stays square: it says "not continuous".
+    local grp = live and Kit.Choke(live) or 0
+    CHOKE_OPTS.on = grp > 0
+    CHOKE_OPTS.disabled = not live
+    local ck, cd = UI.KnobChip("k_choke", "Choke", CHOKE_LBL[grp] or "Off", CHOKE_OPTS)
+    if live and cd ~= 0 then
+        local ng = grp + cd
+        if ng < 0 then ng = 0 elseif ng > 8 then ng = 8 end
+        if ng ~= grp then Kit.SetChoke(live, ng) end
+    elseif live and ck then
+        UI.NativeMenu(chokeMenuItems(live))
+    end
     UI.SameLine()
-    local lv = Kit.Param(note, Kit.P.LOOP) or 0
-    local ltog, lon = UI.Checkbox("k_loop", "Loop", lv >= 0.5)
+
+    local lv = live and (Kit.Param(live, Kit.P.LOOP) or 0) or 0
+    LOOP_OPTS.disabled = not live
+    local ltog, lon = UI.KnobToggle("k_loop", "Loop", "Repeat", lv >= 0.5, LOOP_OPTS)
     -- SetLoop, not SetParam: loop gates (obey note-offs) so the ADSR applies
     -- to every hit instead of only the first pass of an endless voice
-    if ltog then Kit.SetLoop(note, lon) end
-    if UI.IsItemHovered() then
-        UI.Tooltip("Loop the sample while the pad is held; release fades out")
+    if live and ltog then Kit.SetLoop(live, lon) end
+
+    -- Sample region (RS5K start/end offsets). It takes ALL the height the
+    -- control strip has left instead of a fixed 44 px with a dead band under
+    -- it — the waveform is the one thing here that gets better with room, and
+    -- a gap under it was the reserve nobody was using.
+    UI.Spacing(2)
+    local _, y1 = UI.GetCursorPos()
+    local strip_h = STRIP_H
+    if avail_h then
+        local rest = avail_h - (y1 - y0)
+        if rest > strip_h then strip_h = rest end
     end
 
-    -- sample region (RS5K start/end offsets) — waveform strip when the
-    -- peaks reader is available, plain range slider otherwise
-    UI.Spacing(2)
-    if Peaks and pad.path then
-        drawRegionStrip(theme, note, pad)
-    else
-        local s = Kit.Param(note, Kit.P.SOFFS) or 0
-        local e = Kit.Param(note, Kit.P.EOFFS) or 1
+    if live and Peaks and pad and pad.path then
+        drawRegionStrip(theme, live, pad, strip_h)
+    elseif live then
+        local s = Kit.Param(live, Kit.P.SOFFS) or 0
+        local e = Kit.Param(live, Kit.P.EOFFS) or 1
         local rchanged, ns, ne = UI.RangeSlider("k_region", "Region", s, e, 0, 1)
-        if rchanged then Kit.SetOffsets(note, ns, ne) end
+        if rchanged then Kit.SetOffsets(live, ns, ne) end
+    else
+        -- No pad: the strip's GROUND still holds its place, so the window has
+        -- the same shape whether or not something is selected.
+        local x, y = UI.GetCursorPos()
+        local aw = UI.GetAvailableWidth()
+        local bg = theme.colors.list_bg or theme.colors.window_bg
+        local bd = theme.colors.border
+        Core_tk.DrawRect(x, y, aw, strip_h, bg[1], bg[2], bg[3], 1)
+        Core_tk.DrawRect(x, y, aw, strip_h, bd[1], bd[2], bd[3],
+                         (bd[4] or 1) * 0.6, false)
+        UI.Layout.AdvanceCursor(aw, strip_h)
     end
 end
 
@@ -1250,6 +1359,7 @@ end
 -- Instrument (chromatic) view: one sample across the keyboard
 -- ---------------------------------------------------------------------------
 local INST_BUF   = 907
+local IWAVE_OPTS = { lanes = false, scale = 0.46 }
 local WHITE_STEP = { [0]=true,[2]=true,[4]=true,[5]=true,[7]=true,[9]=true,[11]=true }
 local istrip = { path = nil, w = 0, h = 0 }
 local KB_LO, KB_HI = 36, 84   -- C2..C6 mini keyboard range
@@ -1290,58 +1400,72 @@ local function instrWave(theme, x, y, w, h)
     local col_bord = theme.colors.border
     local len = instr.path and Audio.Meta(instr.path) or nil
     local entry = nil
+    local SS = Peaks and Peaks.SS or 2
     if Peaks and len and len > 0 then
         local src = Audio.GetSource(instr.path)
-        if src then entry = Peaks.Read(src, instr.path, 0, len, w, 0) end
+        if src then entry = Peaks.Read(src, instr.path, 0, len, w * SS, 0) end
     end
     if entry and (istrip.path ~= instr.path or istrip.w ~= w or istrip.h ~= h) then
         istrip.path, istrip.w, istrip.h = instr.path, w, h
         gfx.dest = INST_BUF
-        gfx.setimgdim(INST_BUF, w, h)
-        gfx.muladdrect(0, 0, w, h, 0, 0, 0, 0)
+        gfx.setimgdim(INST_BUF, w * SS, h * SS)
+        gfx.muladdrect(0, 0, w * SS, h * SS, 0, 0, 0, 0)
         gfx.set(col_bg[1], col_bg[2], col_bg[3], 1)
-        gfx.rect(0, 0, w, h, 1)
-        gfx.set(col_acc[1], col_acc[2], col_acc[3], 0.8)
-        local mid, scale = h * 0.5, h * 0.46
-        for px = 1, entry.n do
-            local vmax, vmin = -1, 1
-            for c = 1, entry.ch do
-                local v = entry.maxs[c][px] or 0
-                if v > vmax then vmax = v end
-                v = entry.mins[c][px] or 0
-                if v < vmin then vmin = v end
-            end
-            local y1 = mid - vmax * scale
-            local y2 = mid - vmin * scale
-            if y2 - y1 < 1 then y2 = y1 + 1 end
-            gfx.line(px - 1, y1, px - 1, y2)
-        end
+        gfx.rect(0, 0, w * SS, h * SS, 1)
+        Peaks.Render(entry, w * SS, h * SS,
+                     col_acc[1], col_acc[2], col_acc[3], 0.85, IWAVE_OPTS)
         gfx.dest = -1
     end
-    if istrip.path == instr.path and istrip.w == w and instr.path then
+    if istrip.path == instr.path and istrip.w == w and istrip.h == h and instr.path then
         gfx.dest = -1
-        gfx.a, gfx.mode = 1, 0
-        gfx.blit(INST_BUF, 1, 0, 0, 0, w, h, x, y, w, h)
+        gfx.a = 1
+        local om = gfx.mode
+        gfx.mode = 4
+        gfx.blit(INST_BUF, 1, 0, 0, 0, w * SS, h * SS, x, y, w, h)
+        gfx.mode = om
     else
         Core_tk.DrawRect(x, y, w, h, col_bg[1], col_bg[2], col_bg[3], 1)
         if instr.path then UI.RequestRedraw() end
     end
 
-    -- region overlay + drag (RS5K start/end offsets)
+    -- region overlay + drag (RS5K start/end offsets) — same grammar and the
+    -- same three states as the pad strip: a handle answers by growing.
     local s = Kit.InstrParam(Kit.P.SOFFS) or 0
     local e = Kit.InstrParam(Kit.P.EOFFS) or 1
     local xs, xe = x + s * w, x + e * w
+    local mx, my = Core_tk.GetMousePos()
+    local inside = mx >= x and mx < x + w and my >= y and my < y + h
+    local grab = (state.rdrag and state.rdrag.instr) and state.rdrag.mode or nil
+    local hot = grab
+    if not hot and inside and not Core_tk.HasPopup() and not Core_tk.MouseDown(1) then
+        if math.abs(mx - xs) <= 6 then hot = "s"
+        elseif math.abs(mx - xe) <= 6 then hot = "e"
+        elseif mx > xs and mx < xe then hot = "m" end
+    end
+
     if xs > x then Core_tk.DrawRect(x, y, xs - x, h, 0, 0, 0, 0.55) end
     if xe < x + w then Core_tk.DrawRect(xe, y, x + w - xe, h, 0, 0, 0, 0.55) end
-    Core_tk.DrawRect(xs, y, 1, h, col_acc[1], col_acc[2], col_acc[3], 1)
-    Core_tk.DrawRect(xe - 1, y, 1, h, col_acc[1], col_acc[2], col_acc[3], 1)
-    Core_tk.DrawRect(xs, y, 5, 8, col_acc[1], col_acc[2], col_acc[3], 1)
-    Core_tk.DrawRect(xe - 5, y, 5, 8, col_acc[1], col_acc[2], col_acc[3], 1)
+    if hot == "m" then
+        Core_tk.DrawRect(xs, y, xe - xs, h, 1, 1, 1, grab and 0.07 or 0.04)
+    end
+    for i = 1, 2 do
+        local ed  = EDGES[i]
+        local hx  = (ed == "s") and xs or xe
+        local lit = (hot == ed) or (hot == "m")
+        local col = (grab == ed) and (theme.colors.accent_active or col_acc)
+                    or (lit and (theme.colors.accent_hovered or col_acc) or col_acc)
+        local g, a = hgrow(lit, grab == ed)
+        Core_tk.DrawRect((ed == "s") and hx or (hx - 1), y, 1, h,
+                         col[1], col[2], col[3], a)
+        local gw, gh = 5 + g, 8 + g
+        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y, gw, gh,
+                         col[1], col[2], col[3], 1)
+        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y + h - gh, gw, gh,
+                         col[1], col[2], col[3], 1)
+    end
     Core_tk.DrawRect(x, y, w, h, col_bord[1], col_bord[2], col_bord[3],
                      (col_bord[4] or 1) * 0.6, false)
 
-    local mx, my = Core_tk.GetMousePos()
-    local inside = mx >= x and mx < x + w and my >= y and my < y + h
     if not Core_tk.HasPopup() then
         if inside and Core_tk.MouseClicked(1) then
             if math.abs(mx - xs) <= 6 then state.rdrag = { mode = "s", instr = true }
@@ -1372,8 +1496,7 @@ local function instrWave(theme, x, y, w, h)
                 state.rdrag = nil
             end
         elseif inside then
-            UI.SetCursor((math.abs(mx - xs) <= 6 or math.abs(mx - xe) <= 6)
-                         and "size_we" or "arrow")
+            UI.SetCursor(hot == "m" and "size_all" or (hot and "size_we" or "arrow"))
         end
     end
 end
@@ -1622,17 +1745,24 @@ local function frame(theme)
             state.press_midi = nil
         end
     else
-        -- Controls reserve tracks the selection: a loaded pad needs the full
-        -- strip, an empty one two lines — the grid gets everything else.
+        -- The controls reserve is FIXED, and the grid gets the rest. It used
+        -- to shrink to 56 px for an empty pad, so clicking an empty pad
+        -- resized the grid under the cursor — and the strip, sized for the
+        -- tallest case, left a dead band under the waveform the rest of the
+        -- time. Now the strip always claims CTRL_H and hands the leftover to
+        -- the waveform, which is the one thing here that gets better with it.
         local avail = body_h
-        local selpad = state.sel and Kit.pads[state.sel]
-        local ctrl_h = (selpad and selpad.fx) and CTRL_H or 56
+        local ctrl_h = CTRL_H
         local grid_h = avail - ctrl_h
         if grid_h < 120 then grid_h = math.max(80, avail - 60) end
+        local _, gy0 = UI.GetCursorPos()
         drawGrid(theme, grid_h)
 
         UI.Spacing(theme.pad_small or 4)
-        drawControls(theme)
+        -- what the grid ACTUALLY took (its rows round), so the strip fills
+        -- exactly what is left instead of trusting the reserve
+        local _, gy1 = UI.GetCursorPos()
+        drawControls(theme, body_h - (gy1 - gy0))
 
         handlePadDrag()
     end
@@ -1653,7 +1783,7 @@ local function frame(theme)
         elseif Kit.mode == "instrument" then
             msg = "click the keyboard to play · drop a sample to load it chromatically"
         elseif state.sel and Kit.pads[state.sel] and Kit.pads[state.sel].fx then
-            msg = "drag the ADSR handles on the waveform · right-click a pad for load / bake / choke"
+            msg = "drag the region edges or the ADSR handles on the waveform · right-click a pad for load / bake / choke"
         else
             msg = "drop a file or an arrange item on a pad · right-click for the pad menu"
         end
