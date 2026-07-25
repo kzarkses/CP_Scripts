@@ -1012,6 +1012,16 @@ la preview partirait sur-le-champ.
   rendu** : une sélection *est* déjà une région d'un fichier, et un item est un
   fichier plus un offset et une longueur — donc pas de fichier temporaire, pas
   de bake, et ce qui atterrit reste entièrement éditable.
+- [x] **La time selection n'est plus jamais ignorée.** On démarre dehors si on
+  veut, mais dès que la tête de lecture y **entre**, ses bords commandent :
+  boucle si la boucle est activée, arrêt à la fin si on a demandé ça (nouveau
+  réglage *Playback stops at the end of the time selection*, actif par défaut).
+  Armer la barrière **à l'arrivée** plutôt qu'à l'appui est ce qui permet à
+  « partir de n'importe où » et à « une plage respectée » d'être la même chose.
+  Une seule fonction décide quelle section est en vigueur et la réaffirme à
+  chaque frame — elle arme, elle relâche si la règle qui l'avait armée vient
+  d'être éteinte, et elle suit la sélection quand on la déplace en cours de
+  lecture.
 
 ### À FAIRE PLUS TARD — les raccourcis clavier réassignables
 
