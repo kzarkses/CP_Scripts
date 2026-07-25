@@ -135,6 +135,10 @@ function UI.Run(loop_fn)
         Layout.Begin("root", UI._theme, root_opts)
         loop_fn(UI._theme)
         Layout.End()
+        -- The window's contour, last: a canvas that fills its zone edge to
+        -- edge would paint over it if it were drawn first. A window has to own
+        -- a delimited area — that is what turns a stack of widgets into zones.
+        Widgets.DrawAppOutline(UI._theme)
         -- Update eyedropper if active (runs before tooltip layer in Core)
         Widgets.UpdateEyedropper(UI._theme)
         Widgets.UpdateInspector(UI._theme)
@@ -660,7 +664,50 @@ end
 function UI.RailBody(collapsed)
     return Widgets.RailBody(collapsed, UI._theme)
 end
+function UI.RailCombo(id, icon, label, current_index, items, opts)
+    return Widgets.RailCombo(id, icon, label, current_index, items, UI._theme, opts)
+end
+function UI.RailValue(id, icon, label, value, min_val, max_val, opts)
+    return Widgets.RailValue(id, icon, label, value, min_val, max_val, UI._theme, opts)
+end
 UI.EndRail = Widgets.EndRail
+
+-- ---------------------------------------------------------------------------
+-- App frame — the window's zones and the edges between them
+-- ---------------------------------------------------------------------------
+-- A window is a stack of zones, each delimited: title / command bar / content
+-- / status, separated by a SEAM (a pixel of shadow and a pixel of light) and
+-- enclosed by the window's own contour. Separation by design, not by palette.
+-- See the APP FRAME section in Widgets.lua for the whole rationale.
+function UI.BeginBar(id, opts)
+    return Widgets.BeginBar(id, UI._theme, opts)
+end
+UI.EndBar   = Widgets.EndBar
+UI.BarRight = Widgets.BarRight
+UI.BarLeft  = Widgets.BarLeft
+function UI.BarSep()               return Widgets.BarSep(UI._theme) end
+function UI.BarLabel(text, opts)   return Widgets.BarLabel(text, UI._theme, opts) end
+-- `label` and `disabled` are positional on purpose: they change from frame to
+-- frame, and writing them as opts fields would build a table per control per
+-- frame. `opts` is for the constants, and comes from a module-level table.
+function UI.BarIcon(id, icon, label, disabled, opts)
+    return Widgets.BarIcon(id, icon, label, disabled, UI._theme, opts)
+end
+function UI.BarToggle(id, icon, icon_off, is_on, label, disabled, opts)
+    return Widgets.BarToggle(id, icon, icon_off, is_on, label, disabled,
+                             UI._theme, opts)
+end
+function UI.BarCombo(id, current_index, items, disabled, opts)
+    return Widgets.BarCombo(id, current_index, items, disabled, UI._theme, opts)
+end
+function UI.BarValue(id, label, value, min_val, max_val, disabled, opts)
+    return Widgets.BarValue(id, label, value, min_val, max_val, disabled,
+                            UI._theme, opts)
+end
+function UI.AppStatus(text, opts)  return Widgets.AppStatus(text, UI._theme, opts) end
+function UI.SeamH(x, y, w)         return Widgets.SeamH(x, y, w, UI._theme) end
+function UI.SeamV(x, y, h)         return Widgets.SeamV(x, y, h, UI._theme) end
+UI.SetAppOutline = Widgets.SetAppOutline
 
 -- Help ("?") button + overlay
 function UI.HelpButton(id, help_text, opts)

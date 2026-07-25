@@ -1307,35 +1307,14 @@ end
 -- ============================================================================
 -- COMBO / DROPDOWN
 -- ============================================================================
-function Widgets.Combo(id, label, current_index, items, theme, opts)
-    opts = opts or {}
-    local x, y = Layout.GetCursorPos()
-    local avail_w = Layout.GetAvailableWidth()
-
-    -- Width handling. Default behavior = fill the remaining width after the
-    -- label. `opts.width = -1` is an explicit alias for "fill". A positive
-    -- number = fixed width.
-    local fixed_w = opts.width
-    if fixed_w == -1 then fixed_w = nil end
-
-    -- Empty label → no gap reserved
-    local tw, th = Core.MeasureText(label)
-    local has_label = label and label ~= ""
-    local label_gap = has_label and 8 or 0
-
-    -- Truncate label if combo would otherwise overflow.
-    local reserved_w = fixed_w or 50
-    local max_label_w = max(0, avail_w - reserved_w - label_gap)
-    if tw > max_label_w then
-        label, tw = Core.TruncateText(label, max_label_w)
-    end
-    -- Combo fills the remaining width by default. Total widget width never
-    -- exceeds avail_w (so it lines up edge-to-edge with neighbouring fill
-    -- widgets like Button(width=-1)).
-    local combo_w = fixed_w or max(20, avail_w - tw - label_gap)
-    local h = opts.height or theme.combo_height
-    local total_w = combo_w + (has_label and (tw + label_gap) or 0)
-
+-- Everything a combo DOES, with nothing about how it looks: the deferred
+-- selection, the wheel, the popup. Split out so a combo can wear the form of
+-- the zone it sits in — a chip in a bar, a full-width row in a rail — instead
+-- of dragging its own bordered box in and breaking the row it joined. That
+-- was the visible fault: a dropdown narrower than the toggle above it, in a
+-- different style, because the widget owned its geometry and the zone did not.
+-- Caller owns x/y/w/h; this owns behaviour. Returns selected, changed, hovered.
+local function comboBehaviour(id, cx, cy, cw, h, current_index, items, theme, disabled)
     -- Check for pending selection from popup (set on previous frame)
     local data = Core.GetWidgetSubData("combo", id)
     local selected = current_index
@@ -1347,14 +1326,9 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
         -- (data is already a reference to the stored table; mutation persists)
     end
 
-    -- Combo button area (no leading offset when label is empty)
-    local cx = x + (has_label and (tw + label_gap) or 0)
-    local cy = y
-
     -- Block when ANY popup is open (prevents click-through)
-    local disabled = opts.disabled or Core.IsDisabled()
     local hovered = (not disabled)
-        and Core.MouseInClippedRect(cx, cy, combo_w, h)
+        and Core.MouseInClippedRect(cx, cy, cw, h)
         and not Core.HasPopup()
 
     if hovered then
@@ -1383,7 +1357,7 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
         local popup_items = items
         local popup_x = cx
         local popup_y = cy + h + 1
-        local popup_w = combo_w
+        local popup_w = cw
         local item_h = h
         local popup_h = #items * item_h
         local popup_current = current_index
@@ -1515,6 +1489,47 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
             end
         end)
     end
+
+    return selected, changed, hovered
+end
+
+function Widgets.Combo(id, label, current_index, items, theme, opts)
+    opts = opts or {}
+    local x, y = Layout.GetCursorPos()
+    local avail_w = Layout.GetAvailableWidth()
+
+    -- Width handling. Default behavior = fill the remaining width after the
+    -- label. `opts.width = -1` is an explicit alias for "fill". A positive
+    -- number = fixed width.
+    local fixed_w = opts.width
+    if fixed_w == -1 then fixed_w = nil end
+
+    -- Empty label → no gap reserved
+    local tw, th = Core.MeasureText(label)
+    local has_label = label and label ~= ""
+    local label_gap = has_label and 8 or 0
+
+    -- Truncate label if combo would otherwise overflow.
+    local reserved_w = fixed_w or 50
+    local max_label_w = max(0, avail_w - reserved_w - label_gap)
+    if tw > max_label_w then
+        label, tw = Core.TruncateText(label, max_label_w)
+    end
+    -- Combo fills the remaining width by default. Total widget width never
+    -- exceeds avail_w (so it lines up edge-to-edge with neighbouring fill
+    -- widgets like Button(width=-1)).
+    local combo_w = fixed_w or max(20, avail_w - tw - label_gap)
+    local h = opts.height or theme.combo_height
+    local total_w = combo_w + (has_label and (tw + label_gap) or 0)
+
+    -- Combo button area (no leading offset when label is empty)
+    local cx = x + (has_label and (tw + label_gap) or 0)
+    local cy = y
+    local disabled = opts.disabled or Core.IsDisabled()
+
+    local selected, changed, hovered =
+        comboBehaviour(id, cx, cy, combo_w, h, current_index, items, theme, disabled)
+
 
     -- Draw combo button
     if Core.IsVisible(x, y, total_w, h) then
@@ -5182,6 +5197,560 @@ function Widgets.IconToggle(id, icon, is_on, theme, opts)
 end
 
 -- ============================================================================
+-- APP FRAME — the window's zones, and the edges between them
+-- ============================================================================
+-- A window is not a bag of widgets on one background. It is a stack of ZONES,
+-- each with one reason to exist and a real edge around it:
+--
+--   +--------------------------------------+  outline: the window owns its area
+--   | title                       [o][?][x]|  ZONE title   -- what this is
+--   +--------------------------------------+  seam
+--   | [i][i] | [combo]  [value]      [o][?]|  ZONE bar     -- what you can do
+--   +--------------------------------------+  seam
+--   |                                      |
+--   |               content                |  ZONE content -- the work
+--   |                                      |
+--   +--------------------------------------+  seam
+--   | status                               |  ZONE status  -- what happened
+--   +--------------------------------------+
+--
+-- THE EDGE IS A SEAM, NOT A LINE. One pixel of shadow, one of light. A single
+-- coloured rule only separates while the palette leaves it room: flatten the
+-- theme or go light and it vanishes, and the zones melt back into one another.
+-- A seam is LOCAL contrast — the shadow carries it on a light ground, the
+-- highlight on a dark one — so the structure survives any palette. That is the
+-- whole point: separation comes from the DESIGN, not from spending colours.
+--
+-- Before this existed, eight windows drew their own chrome: four shapes of
+-- command zone, four positions for Settings, four bar heights, and `iconBtn`
+-- written three times with two incompatible signatures. There was never a
+-- divergence to correct app by app — there was a missing primitive and eight
+-- workarounds.
+
+-- Relief, not palette. `seam_shadow` / `seam_light` are real theme keys so the
+-- inspector can name them and a theme can flatten the relief on purpose, but
+-- their defaults are black and white at fixed alpha precisely so they do not
+-- depend on where the ramp happens to sit.
+local SEAM_SHADOW = { 0, 0, 0, 0.45 }
+local SEAM_LIGHT  = { 1, 1, 1, 0.055 }
+
+local function seamColors(theme)
+    local c = theme.colors
+    return c.seam_shadow or SEAM_SHADOW, c.seam_light or SEAM_LIGHT
+end
+
+-- Horizontal seam: `y` is the first of the two pixels.
+function Widgets.SeamH(x, y, w, theme)
+    local s, l = seamColors(theme)
+    Core.DrawRect(x, y,     w, 1, s[1], s[2], s[3], s[4] or 0.45)
+    Core.DrawRect(x, y + 1, w, 1, l[1], l[2], l[3], l[4] or 0.055)
+end
+
+-- Vertical seam: `x` is the first of the two pixels. Same routine turned 90
+-- degrees, so a column edge and a row edge are the same physical fact.
+function Widgets.SeamV(x, y, h, theme)
+    local s, l = seamColors(theme)
+    Core.DrawRect(x,     y, 1, h, s[1], s[2], s[3], s[4] or 0.45)
+    Core.DrawRect(x + 1, y, 1, h, l[1], l[2], l[3], l[4] or 0.055)
+end
+
+-- The window's own contour. Drawn last, over everything, from UI.Run — a
+-- canvas that fills its zone edge to edge would otherwise paint over it.
+local app_outline = true
+function Widgets.SetAppOutline(on) app_outline = on and true or false end
+
+function Widgets.DrawAppOutline(theme)
+    if not app_outline then return end
+    local w, h = Core.GetWindowSize()
+    if w < 4 or h < 4 then return end
+    local c = theme.colors.border
+    local r, g, b, a = c[1], c[2], c[3], c[4] or 1
+    Core.DrawRect(0,     0,     w, 1, r, g, b, a)
+    Core.DrawRect(0,     h - 1, w, 1, r, g, b, a)
+    Core.DrawRect(0,     0,     1, h, r, g, b, a)
+    Core.DrawRect(w - 1, 0,     1, h, r, g, b, a)
+end
+
+-- ============================================================================
+-- COMMAND BAR — the horizontal command zone
+-- ============================================================================
+-- ONE height, ONE radius, and widths drawn from ONE ladder. A control inside a
+-- bar does not get to invent its geometry: the bar hands it out. That is the
+-- rule the screenshot broke — a dropdown narrower than the toggle above it, in
+-- a different style, because each widget sized itself from whatever width was
+-- left over.
+--
+-- What MAY differ is the fill, and only along one channel: a verb rises
+-- (`button`), a value sinks (`frame_bg`). Act versus hold. Nothing else.
+--
+-- Four states on every control, no exceptions:
+--   rest       the chip, so you can see it is a control at all
+--   hover      answers the mouse
+--   pressed    marks the instant of the click
+--   on         accent fill, glyph in `on_accent` -- the state is HELD
+--
+--   UI.BeginBar("top", { title = "CP Editor" })
+--       UI.BarToggle("snap", "Magnet", snap)
+--       UI.BarSep()
+--       UI.BarCombo("grid", idx, GRID_ITEMS, { w = 3 })
+--       UI.BarRight()                  -- from here, placed from the right edge
+--       UI.BarIcon("help", "Help")
+--       UI.BarIcon("settings", "Settings2")
+--   UI.EndBar()
+local BAR_CTL_H   = 22          -- the one height
+local BAR_PAD_Y   = 4           -- so a bar is 30 px tall, everywhere
+local BAR_PAD_X   = 6
+local BAR_GAP     = 4
+local BAR_SEP_W   = 13          -- 2 px of seam with 5 either side
+
+-- The width ladder. A control takes the first step that fits its content and
+-- never a pixel between two steps, so neighbours line up by construction
+-- instead of by luck. Step 1 is the square: an icon-only control.
+local BAR_W = { BAR_CTL_H, 54, 76, 104, 140 }
+
+local bar = { open = false, x = 0, y = 0, w = 0, h = 0,
+              cx = 0, rx = 0, right = false }
+
+-- Shared stand-in for a missing opts table. `opts = opts or {}` in a widget
+-- that runs every frame allocates every frame; this one never does, and it is
+-- never written to.
+local EMPTY_OPTS = {}
+
+-- Pick a step. `want` is either an index into the ladder (an app saying "give
+-- me a wide one") or nil, in which case the text decides.
+local function barWidth(text_w, want)
+    if want then
+        local n = BAR_W[want]
+        if n then return n end
+    end
+    local need = (text_w or 0) + BAR_PAD_X * 2
+    for i = 1, #BAR_W do
+        if BAR_W[i] >= need then return BAR_W[i] end
+    end
+    return BAR_W[#BAR_W]
+end
+
+-- Reserve the next slot. Returns x, or nil when the bar is full — a control
+-- that does not fit is NOT drawn half-way off the edge.
+local function barSlot(w)
+    if not bar.open then return nil end
+    if bar.right then
+        local x = bar.rx - w
+        if x < bar.cx then return nil end
+        bar.rx = x - BAR_GAP
+        return x
+    end
+    local x = bar.cx
+    if x + w > bar.rx then return nil end
+    bar.cx = x + w + BAR_GAP
+    return x
+end
+
+-- The four states, once, for everything that lives in a bar.
+-- `sunken` picks the value ramp instead of the verb ramp; `on` overrides both,
+-- because a held state is a different message and gets its own channel.
+local function barChip(x, y, w, h, theme, hovered, down, on, disabled, sunken, accent)
+    local c = theme.colors
+    local col
+    if on then
+        local a = accent or c.accent
+        if disabled then col = scaledColor(a, 0.55)
+        elseif down then col = scaledColor(a, 0.84)
+        elseif hovered then col = scaledColor(a, 1.12)
+        else col = a end
+    elseif sunken then
+        if down then col = c.frame_active
+        elseif hovered then col = c.frame_hovered
+        else col = c.frame_bg end
+    else
+        if down then col = c.button_active
+        elseif hovered then col = c.button_hovered
+        else col = c.button end
+    end
+    local rad = theme.rounding_small or 0
+    fillRound(x, y, w, h, rad, col[1], col[2], col[3], disabled and 0.45 or 1)
+end
+
+-- The glyph/text colour that goes with the chip above.
+local function barInk(theme, on, disabled)
+    local c = theme.colors
+    if disabled then return c.text_disabled end
+    if on then return c.on_accent or c.text end
+    return c.text
+end
+
+-- Open the zone: ground, seams, and the geometry every control inside reads.
+-- opts: title (string, placed as the leading element), height, no_top_seam.
+function Widgets.BeginBar(id, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local ctl_h = opts.control_height or BAR_CTL_H
+    local h = ctl_h + BAR_PAD_Y * 2
+    local win_w = Core.GetWindowSize()
+
+    local _, y = Layout.GetCursorPos()
+    local p = Core.CurrentContainer()
+    local pady = p and (p.pad_y or 0) or 0
+    -- The zone spans the whole window, not the padded content box, and it
+    -- starts at the window's own edge: a command strip that stopped at the
+    -- padding would read as a floating panel instead of an edge of the window.
+    -- Same reason the rail grounds itself from the parent box.
+    local y0 = opts.inset and y or (y - pady)
+
+    local bg = theme.colors.surface
+    Core.DrawRect(0, y0, win_w, h, bg[1], bg[2], bg[3], 1)
+    Widgets.SeamH(0, y0 + h, win_w, theme)
+
+    bar.open = true
+    bar.x, bar.y, bar.w, bar.h = 0, y0, win_w, h
+    bar.ctl_h = ctl_h
+    -- Controls centre in the strip's OWN box, not below the window padding —
+    -- otherwise they sit low by exactly the padding and the bar looks bottom
+    -- heavy for a reason nobody can name.
+    bar.cy = y0 + floor((h - ctl_h) / 2)
+    bar.cx = BAR_PAD_X
+    bar.rx = win_w - BAR_PAD_X
+    bar.right = false
+    bar.id = id
+    -- How far the cursor must move to clear the strip and its seam.
+    bar.advance = (y0 + h + 2) - y
+
+    if opts.title and opts.title ~= "" then
+        Core.SetFontBold()
+        local tw, th = Core.MeasureText(opts.title)
+        local tc = theme.colors.title_text or theme.colors.text
+        Core.DrawText(opts.title, bar.cx, bar.cy + floor((ctl_h - th) / 2),
+                      tc[1], tc[2], tc[3], tc[4] or 1)
+        Core.SetFontBody()
+        bar.cx = bar.cx + tw + BAR_GAP * 2
+    end
+end
+
+-- Close the zone and hand the cursor back below it.
+function Widgets.EndBar()
+    if not bar.open then return end
+    bar.open = false
+    -- Advance by the CONTAINER's width, not the window's: a bar draws edge to
+    -- edge but must not tell a horizontally scrolling parent that its content
+    -- is wider than it is.
+    Layout.AdvanceCursor(Layout.GetAvailableWidth(), max(0, bar.advance))
+end
+
+-- Everything after this is placed from the RIGHT edge, each control to the
+-- LEFT of the one before. Write the outermost first (Close, then Settings,
+-- then Help) — which is how you think about pinning to an edge anyway.
+--
+-- Claim the right-hand end BEFORE filling the left: when the window is too
+-- narrow for everything, whichever end was reserved first survives, and the
+-- controls that must never disappear are Settings and Help.
+function Widgets.BarRight()
+    bar.right = true
+end
+
+-- Back to filling from the left.
+function Widgets.BarLeft()
+    bar.right = false
+end
+
+-- A group break inside the zone: the same seam, stood on end.
+function Widgets.BarSep(theme)
+    local x = barSlot(BAR_SEP_W)
+    if not x then return end
+    Widgets.SeamV(x + 5, bar.cy + 2, bar.ctl_h - 4, theme)
+end
+
+-- Plain text on the bar's own ground, vertically centred like everything else.
+function Widgets.BarLabel(text, theme, opts)
+    opts = opts or {}
+    local tw, th = Core.MeasureText(text)
+    local x = barSlot(tw + 2)
+    if not x then return end
+    local c = opts.mute and (theme.colors.text_mute or theme.colors.text_disabled)
+                        or theme.colors.text
+    Core.DrawText(text, x + 1, bar.cy + floor((bar.ctl_h - th) / 2),
+                  c[1], c[2], c[3], c[4] or 1)
+end
+
+-- The shared body of every clickable chip in the bar. Returns clicked.
+--
+-- `label` and `disabled` are POSITIONAL, not fields of an opts table. In a bar
+-- they change from frame to frame — a Play button whose name flips to Stop, a
+-- Clear that greys out when there is nothing to clear — and writing them as
+-- `{ label = ..., disabled = ... }` at the call site would build a table on
+-- every frame of every control. Zero allocation in a draw path is not a style
+-- preference here; the target machine is a 2005 PC. `opts` survives for the
+-- things that genuinely are constants (accent, width, icon size) and comes
+-- from a module-level table at the call site.
+local function barButtonBody(id, icon, label, disabled, on, theme, opts, sunken)
+    local ctl_h = bar.ctl_h
+    local w
+    if opts and opts.w then
+        w = barWidth(0, opts.w)
+    else
+        w = ctl_h
+    end
+    local x = barSlot(w)
+    if not x then return false end
+    local y = bar.cy
+
+    disabled = disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, ctl_h) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
+    local clicked = false
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then clicked = true end
+    end
+
+    if Core.IsVisible(x, y, w, ctl_h) then
+        -- `opts.accent` is a ROLE colour (play green, record red, pending
+        -- amber), so it has to reach the lit fill — not just tint the glyph.
+        -- A record button that lights up in the generic accent is lying about
+        -- which role it belongs to.
+        -- Only when LIT. Hue is the semantic-state channel; painting the OFF
+        -- glyph green would spend that channel on a category ("this is
+        -- transport") while the state channel still has to say on or off, and
+        -- the two would be arguing on the same axis.
+        local accent = opts and opts.accent
+        barChip(x, y, w, ctl_h, theme, hovered, down, on, disabled, sunken, accent)
+        local ink = barInk(theme, on, disabled)
+        local isz = (opts and opts.icon_size) or (ctl_h - 6)
+        local draw = (type(icon) == "function") and icon or (Icons and Icons[icon])
+        if draw then
+            draw(x + floor((w - isz) / 2), y + floor((ctl_h - isz) / 2), isz,
+                 ink[1], ink[2], ink[3], 1)
+        elseif label then
+            -- No glyph for this name: fall back to the word rather than an
+            -- empty chip. A control you cannot see is worse than an ugly one.
+            local tw, th = Core.MeasureText(label)
+            Core.DrawText(label, x + floor((w - tw) / 2),
+                          y + floor((ctl_h - th) / 2), ink[1], ink[2], ink[3], 1)
+        end
+    end
+    -- The name lives in the tooltip. That is the trade an icon bar makes, and
+    -- it is only honest if EVERY icon carries one.
+    if hovered and label then Widgets.Tooltip(label, theme) end
+
+    return clicked
+end
+
+-- A verb. Icon only — in a bar the glyph is what you aim at, and the tooltip
+-- carries the name.
+function Widgets.BarIcon(id, icon, label, disabled, theme, opts)
+    return barButtonBody(id, icon, label, disabled, false, theme, opts, false)
+end
+
+-- A held state. `icon_off` gives OFF its own glyph, which says which way this
+-- is set without having to read a colour.
+-- Returns toggled, new_on.
+function Widgets.BarToggle(id, icon, icon_off, is_on, label, disabled, theme, opts)
+    local glyph = (not is_on and icon_off) or icon
+    local hit = barButtonBody(id, glyph, label, disabled, is_on and true or false,
+                              theme, opts, false)
+    if hit then return true, not is_on end
+    return false, is_on
+end
+
+-- A value you pick from a list. Same height, same radius, a width from the
+-- ladder — and sunken, because it holds something rather than doing something.
+function Widgets.BarCombo(id, current_index, items, disabled, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local ctl_h = bar.ctl_h
+    local w = barWidth(nil, opts.w)
+    if not opts.w then
+        local widest = 0
+        for i = 1, #items do
+            local iw = Core.MeasureText(items[i])
+            if iw > widest then widest = iw end
+        end
+        w = barWidth(widest + ctl_h)   -- + the chevron's square
+    end
+    local x = barSlot(w)
+    if not x then return false, current_index end
+    local y = bar.cy
+
+    disabled = disabled or Core.IsDisabled()
+    local selected, changed, hovered =
+        comboBehaviour(id, x, y, w, ctl_h, current_index, items, theme, disabled)
+
+    if Core.IsVisible(x, y, w, ctl_h) then
+        barChip(x, y, w, ctl_h, theme, hovered, Core.HasPopup(id), false,
+                disabled, true)
+        local ink = barInk(theme, false, disabled)
+        local val = items[changed and selected or current_index] or ""
+        local vw, vh = Core.MeasureText(val)
+        local region = max(8, w - ctl_h)
+        local tx = x + floor((region - vw) / 2)
+        if tx < x + 4 then tx = x + 4 end
+        Core.DrawText(val, tx, y + floor((ctl_h - vh) / 2),
+                      ink[1], ink[2], ink[3], 1)
+        if Icons then
+            local chev = Core.HasPopup(id) and Icons.ChevronUp or Icons.ChevronDown
+            if chev then
+                chev(x + w - ctl_h, y, ctl_h, ink[1], ink[2], ink[3], 0.6)
+            end
+        end
+    end
+    if hovered and opts.label then Widgets.Tooltip(opts.label, theme) end
+
+    return changed, selected
+end
+
+local function barCaret(sd, x, y, h, c)
+    if not sd.editing then return end
+    local elapsed = reaper.time_precise() - (sd.blink_time or 0)
+    if (elapsed % Core.BLINK_PERIOD) < Core.BLINK_ON then
+        Core.DrawRect(x, y, 1, h, c[1], c[2], c[3], 1)
+    end
+end
+
+-- A number you drag, wheel, type or reset. Sunken like the combo, because it
+-- is the same kind of thing: a value being held, not a verb.
+-- Returns changed, value.
+function Widgets.BarValue(id, label, value, min_val, max_val, disabled, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local ctl_h = bar.ctl_h
+    local w = barWidth(nil, opts.w or 3)
+    local x = barSlot(w)
+    if not x then return false, value end
+    local y = bar.cy
+
+    local sd = Core.GetWidgetSubData("barvalue", id)
+    disabled = disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, ctl_h) and not Core.HasPopup()
+    local changed = false
+    local v = value
+    local step = opts.step or 1
+    local span = max_val - min_val
+
+    -- Right-click types the value in place, double-click resets, drag and
+    -- wheel move it. The SAME four gestures as Knob, Slider and NumberInput —
+    -- a bar is not an excuse to invent a fifth vocabulary.
+    if hovered and not sd.editing and Core.MouseClicked(2) then
+        numEntryStart(sd, id, tostring(value))
+    end
+    local typed = numEntryUpdate(sd, id)
+    if typed then
+        local n = tonumber(typed)
+        if n then v = n end
+    end
+
+    if hovered and not sd.editing and Core.MouseClicked(1) then
+        Core.SetActive(id)
+    end
+    local active = Core.IsActive(id)
+    if active and not sd.editing then
+        if Core.MouseDown(1) then
+            local dx = Core.MouseDelta()
+            if dx ~= 0 then
+                local scale = (span > 0) and (span / max(40, w * 4)) or step
+                if Core.ModShift() then scale = scale * 0.2 end
+                v = v + dx * scale
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+    if hovered and not sd.editing and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            v = v + wheel_notches(wheel) * step
+            Core.ConsumeWheel()
+        end
+    end
+    if hovered and not sd.editing and Core.MouseDoubleClicked()
+       and opts.default then
+        v = opts.default
+    end
+    if v < min_val then v = min_val elseif v > max_val then v = max_val end
+    if opts.integer ~= false then v = floor(v + 0.5) end
+    if v ~= value then changed = true end
+    if hovered then Core.SetHot(id) end
+
+    if Core.IsVisible(x, y, w, ctl_h) then
+        barChip(x, y, w, ctl_h, theme, hovered, active, false, disabled, true)
+        -- The fill is the value: a bar control that shows a number AND how far
+        -- along it sits reads at a glance without being read.
+        if span > 0 then
+            local f = (v - min_val) / span
+            if f > 0 then
+                local fw = floor((w - 2) * f)
+                if fw > 0 then
+                    local a = opts.accent or theme.colors.accent
+                    fillRound(x + 1, y + 1, fw, ctl_h - 2,
+                              theme.rounding_small or 0, a[1], a[2], a[3], 0.22)
+                end
+            end
+        end
+        local ink = barInk(theme, false, disabled)
+        -- While typing, show what is being typed. A value control that keeps
+        -- painting its old number under your keystrokes is one nobody trusts.
+        -- The caret is a rect, not a "|" appended to the string: concatenating
+        -- per frame would allocate in a draw path.
+        local txt
+        if sd.editing then
+            txt = sd.edit_buf
+            ink = theme.colors.accent
+        else
+            txt = opts.format and string.format(opts.format, v) or tostring(v)
+        end
+        if label and label ~= "" then
+            local _, lh = Core.MeasureText(label)
+            local lc = theme.colors.text_mute or theme.colors.text_disabled
+            Core.DrawText(label, x + 5, y + floor((ctl_h - lh) / 2),
+                          lc[1], lc[2], lc[3], 1)
+            local vw, vh = Core.MeasureText(txt)
+            local vx, vy = x + w - vw - 5, y + floor((ctl_h - vh) / 2)
+            Core.DrawText(txt, vx, vy, ink[1], ink[2], ink[3], 1)
+            barCaret(sd, vx + vw + 1, vy, vh, ink)
+        else
+            local vw, vh = Core.MeasureText(txt)
+            local vx, vy = x + floor((w - vw) / 2), y + floor((ctl_h - vh) / 2)
+            Core.DrawText(txt, vx, vy, ink[1], ink[2], ink[3], 1)
+            barCaret(sd, vx + vw + 1, vy, vh, ink)
+        end
+    end
+    if hovered and opts.label then Widgets.Tooltip(opts.label, theme) end
+
+    return changed, v
+end
+
+-- ============================================================================
+-- STATUS ZONE — pinned to the bottom, with its own ground and seam
+-- ============================================================================
+-- The bottom zone. Anchored to the WINDOW's bottom edge, not to wherever the
+-- cursor happens to be: a status strip that floats a few pixels above the edge
+-- reads as a stray line of text, and the gap under it belongs to no zone.
+function Widgets.AppStatus(text, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local h = opts.height or 20
+    local win_w, win_h = Core.GetWindowSize()
+    local y0 = win_h - h
+    local p = Core.CurrentContainer()
+    local padx = p and (p.pad_x or 0) or 0
+
+    local bg = theme.colors.surface
+    Core.DrawRect(0, y0, win_w, h, bg[1], bg[2], bg[3], 1)
+    Widgets.SeamH(0, y0 - 2, win_w, theme)
+
+    if text and text ~= "" then
+        Core.SetFontCaption()
+        local tw, th = Core.MeasureText(text)
+        if tw > win_w - padx * 2 then
+            text = Core.TruncateText(text, win_w - padx * 2)
+        end
+        local c = theme.colors.text_mute or theme.colors.text_disabled
+        Core.DrawText(text, padx, y0 + floor((h - th) / 2), c[1], c[2], c[3], 1)
+        Core.SetFontBody()
+    end
+
+    -- Consume whatever is left so nothing else can be laid out underneath.
+    local _, y = Layout.GetCursorPos()
+    Layout.AdvanceCursor(Layout.GetAvailableWidth(), max(0, y0 - y))
+end
+
+-- ============================================================================
 -- RAIL — the left navigation column
 -- ============================================================================
 -- The rail holds what has a DURABLE STATE: which view, which tool, which mode.
@@ -5249,6 +5818,56 @@ function Widgets.RailGroup(_, theme)
     Layout.AdvanceCursor(rail.w, 8)
 end
 
+-- ----------------------------------------------------------------------------
+-- The rail's form, applied to controls that HOLD A VALUE
+-- ----------------------------------------------------------------------------
+-- A rail row is: full strip width, one height, icon at a fixed column, label
+-- at a fixed column. A control that joins the strip wears that, or it does not
+-- belong there. Dropping a plain Combo into a 126 px column is what produced
+-- the fault on screen — a dropdown narrower than the toggle above it, boxed
+-- while its neighbours were flat, because the widget sized itself from
+-- whatever width happened to be left.
+--
+-- The value is right-aligned in the same row. Nothing else moves.
+local RAIL_ICON_X, RAIL_ICON_SZ, RAIL_LABEL_GAP = 12, 16, 9
+
+-- Rest / hover / selected, exactly as RailItem paints them. One routine, so
+-- the two can never drift apart again.
+local function railRowBg(x, y, w, h, theme, hovered, selected, opts)
+    local rad = theme.rounding_small or 0
+    if selected then
+        local a = (opts and opts.accent) or theme.colors.accent
+        fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.13)
+        Core.DrawRect(x + 3, y + 1, 3, h - 2, a[1], a[2], a[3], 1)
+    elseif hovered then
+        fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, 0.07)
+    end
+end
+
+local function railInk(theme, hovered, selected, disabled, opts)
+    if disabled then return theme.colors.text_disabled end
+    if selected then return (opts and opts.accent) or theme.colors.accent end
+    if hovered then return theme.colors.text end
+    return theme.colors.text_mute or theme.colors.text_disabled
+end
+
+-- Draws icon + label in the rail's columns. Returns the x where a
+-- right-aligned value may start.
+local function railRowContent(x, y, w, h, icon, label, ink, bold)
+    local isz = RAIL_ICON_SZ
+    local ix = rail.slim and (x + floor((w - isz) / 2)) or (x + RAIL_ICON_X)
+    local draw = (type(icon) == "function") and icon or (Icons and Icons[icon])
+    if draw then draw(ix, y + floor((h - isz) / 2), isz, ink[1], ink[2], ink[3], 1) end
+    if not rail.slim and label and label ~= "" then
+        if bold then Core.SetFontBold() end
+        local _, lh = Core.MeasureText(label)
+        Core.DrawText(label, ix + isz + RAIL_LABEL_GAP, y + floor((h - lh) / 2),
+                      ink[1], ink[2], ink[3], 1)
+        if bold then Core.SetFontBody() end
+    end
+    return ix + isz + RAIL_LABEL_GAP
+end
+
 -- One entry. `selected` is the durable state the rail exists to show, so it
 -- is drawn as a held state (accent wash + a bar on the leading edge), not as
 -- a pressed button. Returns clicked.
@@ -5273,37 +5892,150 @@ function Widgets.RailItem(id, icon, label, selected, theme, opts)
         -- gave two frames that touched, and the eye read a table of cells
         -- instead of two states. A bar cannot do that: it never meets its
         -- neighbour.
-        local rad = theme.rounding_small or 0
-        if selected then
-            local a = opts.accent or theme.colors.accent
-            fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.13)
-            Core.DrawRect(x + 3, y + 1, 3, h - 2, a[1], a[2], a[3], 1)
-        elseif hovered then
-            fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, 0.07)
-        end
-        local tc
-        if disabled then tc = theme.colors.text_disabled
-        elseif selected then tc = opts.accent or theme.colors.accent
-        elseif hovered then tc = theme.colors.text
-        else tc = theme.colors.text_mute or theme.colors.text_disabled end
-        local isz = opts.icon_size or 16
-        local ix = rail.slim and (x + floor((w - isz) / 2)) or (x + 12)
-        local draw = (type(icon) == "function") and icon or (Icons and Icons[icon])
-        if draw then draw(ix, y + floor((h - isz) / 2), isz, tc[1], tc[2], tc[3], 1) end
-        if not rail.slim and label then
-            -- Selected reads in WEIGHT as well as colour. Same size, so
-            -- nothing around it moves — and it survives a flat theme.
-            if selected then Core.SetFontBold() end
-            local _, lh = Core.MeasureText(label)
-            Core.DrawText(label, ix + isz + 9, y + floor((h - lh) / 2),
-                          tc[1], tc[2], tc[3], 1)
-            if selected then Core.SetFontBody() end
-        end
+        --
+        -- Drawn through railRowBg/railInk/railRowContent, which RailCombo and
+        -- RailValue also use: the row's look now has ONE implementation, so a
+        -- toggle and a dropdown in the same strip cannot end up in different
+        -- styles again.
+        railRowBg(x, y, w, h, theme, hovered, selected, opts)
+        local tc = railInk(theme, hovered, selected, disabled, opts)
+        -- Selected reads in WEIGHT as well as colour. Same size, so nothing
+        -- around it moves — and it survives a flat theme.
+        railRowContent(x, y, w, h, icon, label, tc, selected)
     end
     if hovered and rail.slim and label then Widgets.Tooltip(label, theme) end
 
     Layout.AdvanceCursor(w, h)
     return clicked
+end
+
+-- A dropdown wearing the rail's form. Folded, there is no room for a value, so
+-- the caller gets `false` back and shows a RailItem opening a menu instead.
+-- Returns changed, selected.
+function Widgets.RailCombo(id, icon, label, current_index, items, theme, opts)
+    opts = opts or {}
+    local h = opts.height or RAIL_ITEM_H
+    local x, y = Layout.GetCursorPos()
+    local w = rail.w
+    local disabled = opts.disabled or Core.IsDisabled()
+
+    local selected, changed, hovered =
+        comboBehaviour(id, x, y, w, h, current_index, items, theme, disabled)
+
+    if Core.IsVisible(x, y, w, h) then
+        railRowBg(x, y, w, h, theme, hovered or Core.HasPopup(id), false, opts)
+        local ink = railInk(theme, hovered, false, disabled, opts)
+        railRowContent(x, y, w, h, icon, label, ink, false)
+        if not rail.slim then
+            local val = items[changed and selected or current_index] or ""
+            local vw, vh = Core.MeasureText(val)
+            local vc = disabled and theme.colors.text_disabled or theme.colors.text
+            local chev_w = 14
+            Core.DrawText(val, x + w - 10 - chev_w - vw,
+                          y + floor((h - vh) / 2), vc[1], vc[2], vc[3], 1)
+            if Icons then
+                local chev = Core.HasPopup(id) and Icons.ChevronUp or Icons.ChevronDown
+                if chev then
+                    chev(x + w - 10 - chev_w, y + floor((h - chev_w) / 2), chev_w,
+                         ink[1], ink[2], ink[3], 0.7)
+                end
+            end
+        end
+    end
+    if hovered and rail.slim and label then Widgets.Tooltip(label, theme) end
+
+    Layout.AdvanceCursor(w, h)
+    return changed, selected
+end
+
+-- A number wearing the rail's form: label on the left, value on the right, and
+-- the fill showing how far along it sits. Same four gestures as everywhere
+-- else — drag, wheel, right-click to type, double-click to reset.
+-- Returns changed, value.
+function Widgets.RailValue(id, icon, label, value, min_val, max_val, theme, opts)
+    opts = opts or {}
+    local h = opts.height or RAIL_ITEM_H
+    local x, y = Layout.GetCursorPos()
+    local w = rail.w
+    local sd = Core.GetWidgetSubData("railvalue", id)
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local v = value
+    local step = opts.step or 1
+    local span = max_val - min_val
+
+    if hovered and not sd.editing and Core.MouseClicked(2) then
+        numEntryStart(sd, id, tostring(value))
+    end
+    local typed = numEntryUpdate(sd, id)
+    if typed then
+        local n = tonumber(typed)
+        if n then v = n end
+    end
+    if hovered and not sd.editing and Core.MouseClicked(1) then Core.SetActive(id) end
+    local active = Core.IsActive(id)
+    if active and not sd.editing then
+        if Core.MouseDown(1) then
+            local dx = Core.MouseDelta()
+            if dx ~= 0 then
+                local scale = (span > 0) and (span / max(40, w * 3)) or step
+                if Core.ModShift() then scale = scale * 0.2 end
+                v = v + dx * scale
+            end
+        else
+            Core.ClearActive()
+        end
+    end
+    if hovered and not sd.editing and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            v = v + wheel_notches(wheel) * step
+            Core.ConsumeWheel()
+        end
+    end
+    if hovered and not sd.editing and Core.MouseDoubleClicked() and opts.default then
+        v = opts.default
+    end
+    if v < min_val then v = min_val elseif v > max_val then v = max_val end
+    if opts.integer ~= false then v = floor(v + 0.5) end
+    if hovered then Core.SetHot(id) end
+
+    if Core.IsVisible(x, y, w, h) then
+        -- The travel is drawn INSIDE the row, on the same inset as the hover
+        -- wash, so a value row is still a rail row and not a foreign object.
+        if span > 0 then
+            local f = (v - min_val) / span
+            if f > 0 then
+                local fw = floor((w - 6) * f)
+                if fw > 0 then
+                    local a = opts.accent or theme.colors.accent
+                    fillRound(x + 3, y, fw, h, theme.rounding_small or 0,
+                              a[1], a[2], a[3], 0.16)
+                end
+            end
+        end
+        railRowBg(x, y, w, h, theme, hovered or active, false, opts)
+        local ink = railInk(theme, hovered or active, false, disabled, opts)
+        railRowContent(x, y, w, h, icon, label, ink, false)
+        if not rail.slim then
+            local txt, tc
+            if sd.editing then
+                txt, tc = sd.edit_buf, theme.colors.accent
+            else
+                txt = opts.format and string.format(opts.format, v) or tostring(v)
+                tc = disabled and theme.colors.text_disabled or theme.colors.text
+            end
+            local vw, vh = Core.MeasureText(txt)
+            local vx, vy = x + w - 12 - vw, y + floor((h - vh) / 2)
+            Core.DrawText(txt, vx, vy, tc[1], tc[2], tc[3], 1)
+            barCaret(sd, vx + vw + 1, vy, vh, tc)
+        end
+    end
+    if hovered and rail.slim and label then Widgets.Tooltip(label, theme) end
+
+    Layout.AdvanceCursor(w, h)
+    return (v ~= value), v
 end
 
 -- Pins the collapse control to the BOTTOM of the strip, then moves into the

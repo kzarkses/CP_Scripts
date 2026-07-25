@@ -137,6 +137,17 @@ function Theme.Default()
             -- itself as a literal grey at half alpha, in every application.
             splitter        = { 0.300, 0.300, 0.300, 1.0 },
 
+            -- The SEAM between two zones of a window: one pixel of shadow,
+            -- one of light. Not a colour but a RELIEF, which is why the
+            -- defaults are pure black and pure white at fixed alpha instead of
+            -- steps on the ramp — a seam has to keep separating when the
+            -- palette goes flat, or light, or a user tweaks it into a corner.
+            -- A single coloured rule cannot promise that: it only shows while
+            -- the ramp leaves it room. Keys exist so the inspector can name
+            -- them and a theme can flatten the relief deliberately.
+            seam_shadow     = { 0.000, 0.000, 0.000, 0.45 },
+            seam_light      = { 1.000, 1.000, 1.000, 0.055 },
+
             scrollbar_bg    = { 0.176, 0.176, 0.176, 1.0 },
             scrollbar_grab  = { 0.380, 0.380, 0.380, 1.0 },
 
@@ -942,7 +953,8 @@ end
 -- every screen and reachable from nowhere.
 local COLOR_GROUPS = {
     { name = "Base",     keys = { "window_bg", "surface", "surface2", "title_bar",
-                                  "border", "border_soft", "separator", "splitter" } },
+                                  "border", "border_soft", "separator", "splitter",
+                                  "seam_shadow", "seam_light" } },
     { name = "Text",     keys = { "text", "title_text", "text_mute", "text_disabled",
                                   "value_normal", "value_modified", "value_negative" } },
     { name = "Accent",   keys = { "accent", "accent_hovered", "accent_active",
@@ -966,6 +978,7 @@ local COLOR_GROUPS = {
 local COLOR_LABELS = {
     window_bg = "Window BG", text = "Text", text_disabled = "Text Dim",
     border = "Border", separator = "Separator", splitter = "Splitter",
+    seam_shadow = "Zone edge shadow", seam_light = "Zone edge light",
     accent = "Accent", accent_hovered = "Accent Hover", accent_active = "Accent Active",
     accent_dim = "Accent Dim", on_accent = "Text on accent",
     surface = "Panel", surface2 = "Panel raised", border_soft = "Border soft",
