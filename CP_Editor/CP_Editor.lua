@@ -32,6 +32,7 @@ local Rows  = dofile(cp_root .. "CP_Engine/Rows.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
+local Insert = dofile(cp_root .. "CP_Engine/Insert.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Clip  = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Bus   = dofile(cp_root .. "CP_Engine/Bus.lua")
@@ -43,6 +44,7 @@ Roll.init(r)
 Tracks.init(r)
 Kit.init(r, Tracks)
 Audio.init(r)
+Insert.init(r)
 DragBus.init(r)
 Bus.init(r, DragBus, Clip)
 
@@ -225,8 +227,11 @@ end
 -- cursor across the screen because nothing else was closer.
 local SNAP_PX = 12
 
+-- SHIFT bypasses the snap. That is REAPER's rule everywhere, so it is this
+-- editor's rule everywhere too: dragging a selection edge, a transient, the
+-- ruler, or dropping a new marker — hold shift and you land where you point.
 local function waveSnap(t)
-    if not opts.wave_snap then return t end
+    if not opts.wave_snap or Core_tk.ModShift() then return t end
     local pt, rate, pos, soffs = srcToProj(t)
     local step = gridStepQN()
     local qn = math.floor(r.TimeMap2_timeToQN(0, pt) / step + 0.5) * step
@@ -891,19 +896,21 @@ end
 -- the whole material otherwise.
 local function previewSpan(from)
     local a, b = targetRegion()
-    local has_sel = state.sel_a ~= nil
 
-    local loop_a = has_sel and state.sel_a or a
-    local e      = has_sel and state.sel_b or b
+    -- The PART being played. ONLY Shift+Space plays the time selection —
+    -- plain Space plays the material and merely STARTS at the cursor, which
+    -- is the distinction the two keys exist for. Reading the selection here
+    -- for every start is what made Space ignore the cursor.
+    local pa, pb = a, b
+    if from == "sel" and state.sel_a then
+        pa, pb = state.sel_a, state.sel_b
+    end
 
-    local s
-    if from == "sel" and has_sel then s = state.sel_a
-    elseif from == "start" then s = a
-    else s = state.cursor end
-    if s < a then s = a end
-    if e and s >= e then s = loop_a end
+    local s = (from == "cursor" or from == nil) and state.cursor or pa
+    if s < pa then s = pa end
+    if pb and s >= pb then s = pa end
 
-    return s, e, loop_a
+    return s, pb, pa
 end
 
 -- from: "cursor" (default) | "sel" | "start"
@@ -921,15 +928,16 @@ local function togglePlay(from)
         Audio.Stop()
         return
     end
+    state.play_from = from or "cursor"
     local ps, pe, pl = previewSpan(from)
     PLAY_OPTS.start_s = ps
-    -- A plain play runs to the end of the material; only a LOOP needs a
-    -- turnaround, and without one there is nothing to bounce off (Audio
-    -- enforces the section itself — CF_Preview's own B_LOOP would loop the
-    -- whole source, not the part you are listening to).
+    -- The section is the played PART either way; the loop only decides whether
+    -- its end stops playback or turns it around. (Audio enforces the section
+    -- itself — CF_Preview's own B_LOOP would repeat the whole source, not the
+    -- part you are listening to.)
     PLAY_OPTS.loop       = opts.loop or nil
-    PLAY_OPTS.end_s      = opts.loop and pe or state.sel_b
-    PLAY_OPTS.loop_start = opts.loop and pl or nil
+    PLAY_OPTS.end_s      = pe
+    PLAY_OPTS.loop_start = pl
     -- Reflect the take's non-destructive edits so the preview SOUNDS like
     -- the item (gain/normalize, pitch, rate, fades, repitch mode) — playing
     -- the raw file otherwise ignores every edit.
@@ -1130,13 +1138,24 @@ Where play starts, on REAPER's own keys:
   Space              the edit cursor
   Shift+Space        the start of the time selection
   Ctrl+Shift+Space   the start of the sample
-A loop always turns back to the start of the PART being played — the
-selection, or the whole sample — never to the point you started from.
+Space plays the SAMPLE from wherever the cursor is; only Shift+Space
+plays the time selection. A loop turns back to the start of the part
+being played, never to the point you started from — and moving the
+selection while it loops changes what loops.
+
+A CLICK places the edit cursor and leaves the selection alone: only a
+DRAG changes a selection. SHIFT ignores the snap, everywhere.
 
 TRANSIENTS are objects. Detect them, then: Ctrl+click adds one where
 you point, M adds one on the edit cursor, drag a flag to move it,
 Alt+click a flag (or Delete on the cursor) removes it. They are snap
 targets too, so a selection lands on a hit instead of near it.
+
+CTRL+DRAG A SELECTION OUT of the window: an item follows the mouse
+into the arrange, and a CP window (a Sampler pad, a Session cell)
+takes the same region if you drop it there instead. Nothing is
+rendered — it is the same file with a start and a length — so what
+lands stays fully editable.
 
 SNAP (the magnet) holds the selection and the cursor to the grid, and
 the grid is the SAME one the piano roll uses. A file has no position
@@ -1532,6 +1551,86 @@ local function handleGrow(hot, held)
     return 0
 end
 
+-- ---------------------------------------------------------------------------
+-- Dragging the selection OUT — to the arrange, or to another CP window
+--
+-- The selection is already a region of a file; an item is a file plus a start
+-- offset and a length. So the drop needs no rendering, no temp file and no
+-- bake: it is the same source with a section on it, which is also why the
+-- result stays fully editable instead of arriving flattened.
+--
+-- Two destinations, one gesture. The arrange gets a REAL item that follows
+-- the mouse (Insert's ghost — the machine the Media Explorer already uses);
+-- a CP window gets the same region as a CPC1 clip over the bus, so a Sampler
+-- pad or a Session cell takes the drop too.
+-- ---------------------------------------------------------------------------
+local function selectionClip()
+    if not state.sel_a or state.path == "" then return nil end
+    local c = Clip.new("audio")
+    c.path = state.path
+    c.offs = state.sel_a
+    c.len  = state.sel_b - state.sel_a
+    c.name = (state.name ~= "" and state.name or "selection")
+    return c
+end
+
+local function startDragOut()
+    local c = selectionClip()
+    if not c then return end
+    state.adrag = { label = "+ " .. c.name,
+                    section = { offs = c.offs, len = c.len } }
+    Audio.Stop()                     -- a drag stays silent
+    Bus.BeginClip(c, BUS_ID)         -- CP windows can take it too (not us)
+end
+
+local function handleDragOut()
+    local d = state.adrag
+    if not d then return end
+    local sx, sy = r.GetMousePosition()
+
+    -- A CP window under the mouse takes priority: it consumes the drop, so
+    -- no ghost item is created behind it.
+    local on_cp = DragBus.HoverTarget and DragBus.HoverTarget(sx, sy)
+    local over, track, time
+    if on_cp then
+        Insert.GhostCancel()
+        r.TrackCtl_SetToolTip(d.label, sx + 16, sy + 12, true)
+    else
+        over, track, time = Insert.ArrangeHit(sx, sy)
+        if over then
+            r.TrackCtl_SetToolTip("", 0, 0, true)
+            -- the section is read ONCE, when the ghost is born
+            local ps = (not Insert.GhostActive()) and d or nil
+            Insert.GhostUpdate(state.path, track, time, ps)
+        else
+            Insert.GhostCancel()
+            r.TrackCtl_SetToolTip(d.label, sx + 16, sy + 12, true)
+        end
+    end
+    UI.SetCursor("hand")
+
+    if Core_tk.MouseReleased(1) then
+        state.adrag = nil
+        r.TrackCtl_SetToolTip("", 0, 0, true)
+        if on_cp then
+            if DragBus.Drop(sx, sy) then flash("Dropped: " .. d.label:sub(3)) end
+            DragBus.End()
+            return
+        end
+        DragBus.End()
+        if over then
+            local item = Insert.GhostCommit(state.path)
+            if not item and time then
+                item = Insert.AtArrange(state.path, track, time, d)
+            end
+            flash(item and "Selection dropped in the arrange"
+                        or "Drop failed")
+        else
+            Insert.GhostCancel()
+        end
+    end
+end
+
 local function itemEdges()
     if state.mode ~= "item" then return nil end
     local a, b = Ops.ItemRegion(state.item, state.take)
@@ -1620,8 +1719,13 @@ local function waveInput(theme)
     state.whot, state.whot_i = nil, nil
     if inside and not state.wpress and not Core_tk.MouseDown(64) then
         state.whot, state.whot_i = waveHit(mx, my)
+        local t = timeAtX(mx)
         if state.whot == "mark" then
             UI.SetCursor(Core_tk.ModAlt() and "arrow" or "size_we")
+        elseif Core_tk.ModCtrl() and state.sel_a and state.path ~= ""
+               and t > state.sel_a and t < state.sel_b then
+            -- the only cue that Ctrl in here drags the selection OUT
+            UI.SetCursor("hand")
         else
             UI.SetCursor(state.whot and "size_we" or "ibeam")
         end
@@ -1634,16 +1738,23 @@ local function waveInput(theme)
     -- gestures.
     if inside and Core_tk.MouseClicked(1) then
         local k, ki = waveHit(mx, my)
+        local t = timeAtX(mx)
+        local in_sel = state.sel_a and t > state.sel_a and t < state.sel_b
         if k == "mark" and Core_tk.ModAlt() then
             table.remove(state.markers, ki)
             state.wpress = nil
+        elseif Core_tk.ModCtrl() and in_sel and state.path ~= "" then
+            -- Ctrl INSIDE the selection is a pending drag-out; released
+            -- without moving it falls back to "add a transient here", which
+            -- is what Ctrl+click means everywhere else on this canvas.
+            state.wpress = { kind = "dragout", x = mx, y = my, t = t }
         elseif Core_tk.ModCtrl() and state.src and k ~= "mark" then
-            if markerAdd(waveSnap(timeAtX(mx))) then flash("Transient added") end
+            if markerAdd(waveSnap(t)) then flash("Transient added") end
             state.wpress = nil
         elseif k then
             state.wpress = { kind = k, i = ki }
         else
-            state.wpress = { kind = "sel", x = mx, t = timeAtX(mx), moved = false }
+            state.wpress = { kind = "sel", x = mx, t = t, moved = false }
         end
     end
 
@@ -1672,6 +1783,15 @@ local function waveInput(theme)
                     wp.kind = (k == "sel_a") and "sel_b" or "sel_a"
                 end
                 UI.SetCursor("size_we")
+            elseif k == "dragout" then
+                -- Promote once the mouse has really moved: below the
+                -- threshold this is still a click, and a click means
+                -- something else here.
+                local dx, dy = mx - wp.x, my - wp.y
+                if dx * dx + dy * dy > 25 then
+                    startDragOut()
+                    state.wpress = nil
+                end
             elseif k == "mark" then
                 -- A dragged transient snaps like everything else, and is
                 -- clamped between its neighbours so the list stays in order.
@@ -1705,8 +1825,12 @@ local function waveInput(theme)
             local k = wp.kind
             if k == "sel" then
                 if not wp.moved then
+                    -- A CLICK places the edit cursor and leaves the time
+                    -- selection alone — only a DRAG changes a selection, which
+                    -- is REAPER's rule. Losing a range you spent time on
+                    -- because you clicked somewhere to listen was the whole
+                    -- complaint. ESC still clears it.
                     state.cursor = waveSnap(wp.t)
-                    state.sel_a, state.sel_b = nil, nil
                 elseif zsnap then
                     state.sel_a = Ops.SnapZero(state.src, state.sel_a)
                     state.sel_b = Ops.SnapZero(state.src, state.sel_b)
@@ -1721,6 +1845,9 @@ local function waveInput(theme)
             elseif k == "mark" then
                 -- markers live in this window, not in the project: nothing to
                 -- commit, and no undo point to invent
+            elseif k == "dragout" then
+                -- never left the spot: it was a Ctrl+click after all
+                if markerAdd(waveSnap(wp.t)) then flash("Transient added") end
             else
                 Ops.CommitFades()
             end
@@ -3206,6 +3333,16 @@ local function frame(theme)
     pollTarget()
     Kit.Poll()
     Audio.Poll()
+    -- The section is RE-ASSERTED while it plays. Moving the time selection
+    -- with a loop running should change what loops — it was captured at the
+    -- press, so the first selection stayed stuck until you pressed play again.
+    if Audio.IsPlaying() and opts.loop then
+        local _, pe, pl = previewSpan(state.play_from)
+        Audio.SetLoop(true, pe, pl)
+    end
+    -- The drag-out lives OUTSIDE the window once it starts, so it is polled
+    -- from the frame rather than from the wave's input pass.
+    handleDragOut()
     -- live lane (clip mode): keep the engine link fresh and animate while
     -- it runs. reconnect() is cheap once attached (early return) — the 1 s
     -- throttle only matters for the track scan while the Looper is absent.
