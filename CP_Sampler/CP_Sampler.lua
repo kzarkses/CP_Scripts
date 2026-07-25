@@ -123,9 +123,29 @@ local PAGE_LBL    = { "1", "2", "3", "4" }
 local MODE_TABS   = { { key = "drum", id = "mode_drum", label = "Drum" },
                       { key = "instrument", id = "mode_instr", label = "Instr" } }
 local ICONBTN_OPTS = { width = 0, height = 0 }
-local KNOB_OPTS   = { size = 34 }
+-- Typing an exact value on a knob (right-click) needs the real unit, which
+-- only the plugin knows. The conversion pair is bound ONCE to these two
+-- upvalues and re-aimed before each knob call — closures built per frame
+-- would allocate in the draw loop, which is exactly what we don't do.
+local ent_note, ent_pid
+local KNOB_OPTS   = {
+    size = 34,
+    decimals = 2,
+    to_display   = function() return Kit.ParamPlain(ent_note, ent_pid) or 0 end,
+    from_display = function(v) return Kit.NormForPlain(ent_note, ent_pid, v) end,
+}
+local IKNOB_OPTS  = {
+    size = 34,
+    decimals = 2,
+    to_display   = function() return Kit.InstrParamPlain(ent_pid) or 0 end,
+    from_display = function(v) return Kit.InstrNormForPlain(ent_pid, v) end,
+}
 -- ±24 st over the knob travel: slower drag so one pixel stays sub-decimal
-local PITCH_KNOB_OPTS = { size = 34, sensitivity = 0.002 }
+local PITCH_KNOB_OPTS = {
+    size = 34, sensitivity = 0.002, decimals = 2,
+    to_display   = function() return Kit.PadPitch(ent_note) or 0 end,
+    from_display = function(st) return 0.5 + st / 48 end,   -- the knob window
+}
 local COMBO_OPTS  = { width = 58 }
 local ROOT_OPTS   = { step = 1, format = "%.0f", width = 50 }
 local PLAY_OPTS   = {}            -- pooled Audio.Play opts
@@ -1160,9 +1180,12 @@ end
 local function knob(id, label, note, pid, default)
     local v = Kit.Param(note, pid)
     if not v then return end
+    ent_note, ent_pid = note, pid          -- aim the entry conversions
     local changed, nv = UI.Knob(id, label, v, default or v, KNOB_OPTS)
     if changed then Kit.SetParam(note, pid, nv) end
-    if UI.IsItemHovered() then UI.Tooltip(Kit.ParamFmt(note, pid)) end
+    if UI.IsItemHovered() then
+        UI.Tooltip(Kit.ParamFmt(note, pid) .. "  (right-click: type)")
+    end
     UI.SameLine()
 end
 
@@ -1202,11 +1225,12 @@ local function drawControls(theme)
         -- The knob spans ±24 st on ReaPitch's continuous full-range shift
         -- (SetPadPitch clamps into the param's real bounds); Shift = fine.
         local st = Kit.PadPitch(note)
+        ent_note = note
         local changed, nv = UI.Knob("k_rpitch", "Pitch", 0.5 + st / 48, 0.5,
                                     PITCH_KNOB_OPTS)
         if changed then Kit.SetPadPitch(note, (nv - 0.5) * 48) end
         if UI.IsItemHovered() then
-            UI.Tooltip(string.format("%+.2f st — elastique pitch, length unchanged (Shift = fine)", st))
+            UI.Tooltip(string.format("%+.2f st — elastique pitch, length unchanged (Shift = fine, right-click = type)", st))
         end
         UI.SameLine()
     end
@@ -1253,9 +1277,12 @@ local KB_LO, KB_HI = 36, 84   -- C2..C6 mini keyboard range
 local function iknob(id, label, pid, default)
     local v = Kit.InstrParam(pid)
     if not v then return end
-    local changed, nv = UI.Knob(id, label, v, default or v, KNOB_OPTS)
+    ent_pid = pid          -- instrument knobs have no note: their own opts
+    local changed, nv = UI.Knob(id, label, v, default or v, IKNOB_OPTS)
     if changed then Kit.SetInstrParam(pid, nv) end
-    if UI.IsItemHovered() then UI.Tooltip(Kit.InstrParamFmt(pid)) end
+    if UI.IsItemHovered() then
+        UI.Tooltip(Kit.InstrParamFmt(pid) .. "  (right-click: type)")
+    end
     UI.SameLine()
 end
 

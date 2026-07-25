@@ -774,19 +774,18 @@ local function plainOf(tr, fx, pid)
     return ok and parsePlain(buf) or nil
 end
 
-local function plainSet(tr, fx, pid, v)
+-- Normalized position whose DISPLAY reads v — the inverse of plainAt.
+-- Pure query (FormatParamValueNormalized writes nothing), so it also
+-- serves surfaces that need the conversion without moving the param:
+-- typing "-6" into a knob has to become a position before anything is set.
+local function plainNorm(tr, fx, pid, v)
     -- endpoints may format as "-inf": probe just inside if an edge fails
     local f0 = plainAt(tr, fx, pid, 0) or plainAt(tr, fx, pid, 0.001)
     local f1 = plainAt(tr, fx, pid, 1) or plainAt(tr, fx, pid, 0.999)
-    if not (f0 and f1) or f0 == f1 then return false end
+    if not (f0 and f1) or f0 == f1 then return nil end
     local asc = f1 > f0
-    if v <= math.min(f0, f1) then
-        r.TrackFX_SetParamNormalized(tr, fx, pid, asc and 0 or 1)
-        return true
-    elseif v >= math.max(f0, f1) then
-        r.TrackFX_SetParamNormalized(tr, fx, pid, asc and 1 or 0)
-        return true
-    end
+    if v <= math.min(f0, f1) then return asc and 0 or 1 end
+    if v >= math.max(f0, f1) then return asc and 1 or 0 end
     -- Write a PROBED position, never the final midpoint: the bisection
     -- converges onto the boundary where the DISPLAY flips buckets, and on a
     -- stepped or coarsely-formatted param that boundary sits half a quantum
@@ -804,7 +803,13 @@ local function plainSet(tr, fx, pid, v)
         if d == 0 then break end          -- exact on the display: done
         if (fv < v) == asc then lo = mid else hi = mid end
     end
-    r.TrackFX_SetParamNormalized(tr, fx, pid, best or (lo + hi) * 0.5)
+    return best or (lo + hi) * 0.5
+end
+
+local function plainSet(tr, fx, pid, v)
+    local n = plainNorm(tr, fx, pid, v)
+    if not n then return false end
+    r.TrackFX_SetParamNormalized(tr, fx, pid, n)
     return true
 end
 
@@ -1153,6 +1158,20 @@ function Kit.InstrParamFmt(pid)
     return s
 end
 
+-- Real-unit access for the instrument, mirroring the pad side (same
+-- reason: RS5K's raw values are normalized whatever the display says).
+function Kit.InstrParamPlain(pid)
+    local instr = Kit.instr
+    if not instr or not instr.fx then return nil end
+    return parsePlain(Kit.InstrParamFmt(pid))
+end
+
+function Kit.InstrNormForPlain(pid, v)
+    local instr = Kit.instr
+    if not instr or not instr.fx then return nil end
+    return plainNorm(instr.track, instr.fx, pid, v)
+end
+
 function Kit.InstrPeak()
     local instr = Kit.instr
     if not instr or not instr.path or not valid(instr.track) then return 0 end
@@ -1356,6 +1375,15 @@ function Kit.SetParamPlain(note, pid, v)
     plainSet(pad.track, pad.fx, pid, v)   -- clamps into the real range
     pad.fmt[pid] = nil
     last_change = r.GetProjectStateChangeCount(0)
+end
+
+-- Where a real-world value SITS on the 0..1 axis, without moving anything.
+-- What a knob needs when the user types "-6": the widget speaks positions,
+-- the user speaks dB.
+function Kit.NormForPlain(note, pid, v)
+    local pad = Kit.Pad(note)
+    if not (pad and pad.fx) then return nil end
+    return plainNorm(pad.track, pad.fx, pid, v)
 end
 
 -- Current shift in semitones (0 while no ReaPitch exists — nothing is

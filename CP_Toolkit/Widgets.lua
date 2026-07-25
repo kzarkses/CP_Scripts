@@ -928,6 +928,61 @@ function Widgets.SliderDouble(id, label, value, min_val, max_val, theme, opts)
     return changed, new_val
 end
 
+-- ---------------------------------------------------------------------------
+-- Inline numeric entry — ONE interaction model, shared by every value
+-- widget (slider, knob, and whatever migrates to them later): the buffer
+-- accepts digits/./-, Enter or Tab commits, Esc cancels, losing the focus
+-- cancels silently, and the caret blink schedules its own wake-up so an
+-- idle window still blinks without burning frames.
+--
+-- st is the widget's own sub-data table ({ editing, edit_buf, blink_time }).
+-- Returns the committed STRING once, on the frame it is validated — the
+-- caller owns parsing and clamping, because only it knows the unit.
+-- ---------------------------------------------------------------------------
+local function numEntryStart(st, id, text)
+    st.editing = true
+    st.edit_buf = text or ""
+    st.blink_time = reaper.time_precise()
+    Core.SetFocus(id)
+    Core.ClearActive()  -- a double-click's first click may have started a drag
+end
+
+local function numEntryUpdate(st, id)
+    if not st.editing then return nil end
+    if not Core.IsFocused(id) then
+        st.editing = false          -- focus stolen (click elsewhere, Tab)
+        return nil
+    end
+    if not Keys then return nil end
+    local committed = nil
+    local char = Core.GetChar()
+    if char == Keys.ENTER or char == Keys.TAB then
+        committed = st.edit_buf
+        st.editing = false
+        Core.SetFocus(nil)
+        Core.ConsumeChar()
+    elseif char == Keys.ESCAPE then
+        st.editing = false
+        Core.SetFocus(nil)
+        Core.ConsumeChar()
+    elseif char == Keys.BACKSPACE then
+        if #st.edit_buf > 0 then
+            st.edit_buf = st.edit_buf:sub(1, -2)
+            st.blink_time = reaper.time_precise()
+        end
+        Core.ConsumeChar()
+    elseif char > 31 and char < 256 then
+        local c = string.char(char)
+        if c:match("[0-9%.%-]") then
+            st.edit_buf = st.edit_buf .. c
+            st.blink_time = reaper.time_precise()
+        end
+        Core.ConsumeChar()
+    end
+    if st.editing then Core.ScheduleBlinkRedraw(st.blink_time) end
+    return committed
+end
+
 function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int)
     opts = opts or {}
     local x, y = Layout.GetCursorPos()
@@ -970,50 +1025,17 @@ function Widgets._Slider(id, label, value, min_val, max_val, theme, opts, is_int
     -- losing focus cancels. Reuses the NumberInput interaction model.
     if hovered and not sd.editing
        and ((Core.ModCtrl() and Core.MouseClicked(1)) or Core.MouseDoubleClicked()) then
-        sd.editing = true
-        sd.edit_buf = is_int and tostring(floor(value + 0.5))
-                              or string.format("%.3f", value)
-        sd.blink_time = reaper.time_precise()
-        Core.SetFocus(id)
-        Core.ClearActive()  -- a double-click's first click may have started a drag
+        numEntryStart(sd, id, is_int and tostring(floor(value + 0.5))
+                                     or string.format("%.3f", value))
     end
 
-    if sd.editing then
-        if not Core.IsFocused(id) then
-            -- Focus stolen (click elsewhere, Tab) → cancel silently
-            sd.editing = false
-        elseif Keys then
-            local char = Core.GetChar()
-            if char == Keys.ENTER or char == Keys.TAB then
-                local num = tonumber(sd.edit_buf)
-                if num then
-                    if is_int then num = floor(num + 0.5) end
-                    new_value = max(min_val, min(max_val, num))
-                    if new_value ~= value then changed = true end
-                end
-                sd.editing = false
-                Core.SetFocus(nil)
-                Core.ConsumeChar()
-            elseif char == Keys.ESCAPE then
-                sd.editing = false
-                Core.SetFocus(nil)
-                Core.ConsumeChar()
-            elseif char == Keys.BACKSPACE then
-                if #sd.edit_buf > 0 then
-                    sd.edit_buf = sd.edit_buf:sub(1, -2)
-                    sd.blink_time = reaper.time_precise()
-                end
-                Core.ConsumeChar()
-            elseif char > 31 and char < 256 then
-                local c = string.char(char)
-                if c:match("[0-9%.%-]") then
-                    sd.edit_buf = sd.edit_buf .. c
-                    sd.blink_time = reaper.time_precise()
-                end
-                Core.ConsumeChar()
-            end
-            -- Keep the idle loop waking exactly at the next caret-blink edge
-            if sd.editing then Core.ScheduleBlinkRedraw(sd.blink_time) end
+    local typed = numEntryUpdate(sd, id)
+    if typed then
+        local num = tonumber(typed)
+        if num then
+            if is_int then num = floor(num + 0.5) end
+            new_value = max(min_val, min(max_val, num))
+            if new_value ~= value then changed = true end
         end
     end
 
@@ -1749,6 +1771,29 @@ end
 -- ============================================================================
 -- KNOB (rotary control — based on Meta Mixer DrawKnob)
 -- ============================================================================
+-- A knob's value is normalized 0..1: it has no idea what a "ms" is. Typing
+-- an exact value therefore needs the caller to bridge the two worlds —
+-- either a plain linear range (opts.min/opts.max, the 90 % case) or a pair
+-- of conversion functions for anything tapered (opts.to_display /
+-- opts.from_display). Without one of the two, entry stays off rather than
+-- letting someone type a number that means nothing.
+local function knobDisplay(opts, v01)
+    if opts.to_display then return opts.to_display(v01) end
+    if opts.min and opts.max then
+        return opts.min + (opts.max - opts.min) * v01
+    end
+    return nil
+end
+
+local function knobFromDisplay(opts, num)
+    if opts.from_display then return opts.from_display(num) end
+    if opts.min and opts.max and opts.max ~= opts.min then
+        local v = (num - opts.min) / (opts.max - opts.min)
+        return max(0, min(1, v))
+    end
+    return nil
+end
+
 function Widgets.Knob(id, label, value, default_value, theme, opts)
     opts = opts or {}
     local size = opts.size or 40
@@ -1759,6 +1804,7 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
 
     local changed = false
     local new_value = value
+    local kd = Core.GetWidgetSubData("knob", id)
 
     -- Hit area
     local hovered = Core.MouseInClippedRect(x, y, size, size + 14) and not Core.HasPopup()
@@ -1767,12 +1813,30 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         Core.SetHot(id)
     end
 
-    -- Drag interaction
-    if hovered and Core.MouseClicked(1) then
+    -- Type an exact value: RIGHT-click (double-click stays "reset to
+    -- default", the gesture that was already there).
+    local can_type = opts.to_display ~= nil or (opts.min ~= nil and opts.max ~= nil)
+    if hovered and can_type and not kd.editing and Core.MouseClicked(2) then
+        local d = knobDisplay(opts, value)
+        numEntryStart(kd, id, string.format("%." .. (opts.decimals or 2) .. "f", d or 0))
+    end
+
+    local typed = numEntryUpdate(kd, id)
+    if typed then
+        local num = tonumber(typed)
+        local v = num and knobFromDisplay(opts, num) or nil
+        if v then
+            new_value = max(0, min(1, v))
+            if new_value ~= value then changed = true end
+        end
+    end
+
+    -- Drag interaction (never while typing)
+    if hovered and not kd.editing and Core.MouseClicked(1) then
         Core.SetActive(id)
     end
 
-    if Core.IsActive(id) then
+    if Core.IsActive(id) and not kd.editing then
         if Core.MouseDown(1) then
             local _, dy = Core.MouseDelta()
             if dy ~= 0 then
@@ -1788,14 +1852,14 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
     end
 
     -- Double-click reset
-    if hovered and Core.MouseDoubleClicked() then
+    if hovered and not kd.editing and Core.MouseDoubleClicked() then
         new_value = default_value or 0.5
         changed = true
     end
 
     -- Mouse wheel: one notch = a small step of the 0..1 range (Ctrl = fine).
     -- Consumed so the parent container doesn't scroll the same tick.
-    if hovered and not Core.HasPopup() and not Core.IsWheelConsumed() then
+    if hovered and not kd.editing and not Core.HasPopup() and not Core.IsWheelConsumed() then
         local wheel = Core.GetState().mouse_wheel
         if wheel ~= 0 then
             local step = (opts.wheel_step or 0.02) * (Core.ModCtrl() and 0.25 or 1)
@@ -1859,6 +1923,26 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         end
 
         -- (no indicator — clean arc only)
+
+        -- Typing overlay: the buffer replaces the knob face, so the value
+        -- being entered is readable on a 34 px control.
+        if kd.editing then
+            local fb = theme.colors.frame_active or theme.colors.frame_bg
+            local tc = theme.colors.text
+            Core.SetFontCaption()
+            local bw, bh = Core.MeasureText(kd.edit_buf)
+            local boxh = bh + 4
+            local by = cy - floor(boxh / 2)
+            gfx.set(fb[1], fb[2], fb[3], 0.95)
+            gfx.rect(x, by, size, boxh, 1)
+            local bx = x + floor((size - bw) / 2)
+            Core.DrawText(kd.edit_buf, bx, by + 2, tc[1], tc[2], tc[3], tc[4])
+            local elapsed = reaper.time_precise() - kd.blink_time
+            if (elapsed % Core.BLINK_PERIOD) < Core.BLINK_ON then
+                Core.DrawRect(bx + bw + 1, by + 2, 1, bh, tc[1], tc[2], tc[3], tc[4])
+            end
+            Core.SetFontBody()
+        end
 
         -- Label below knob
         if label then
