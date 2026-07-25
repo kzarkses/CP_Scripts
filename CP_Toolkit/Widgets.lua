@@ -300,6 +300,34 @@ local function frameIt(x, y, w, h, rad, theme, a)
     strokeRound(x, y, w, h, rad, c[1], c[2], c[3], (c[4] or 1) * (a or 1))
 end
 
+-- ONE painting of a list row's state, for every list in the toolkit.
+--
+-- There were six. Table and ActionList read the list_* tokens; the combo's
+-- popup marked the current entry with a 3 px accent bar; InteractiveTable and
+-- ReorderableList ignored list_* entirely and washed the row with
+-- header_hovered at 0.3 and accent at 0.2. So "this row is selected" looked
+-- like four different statements in four lists of the same product, and three
+-- of them were unreachable from the theme.
+--
+-- Hover and selection are two different channels, as everywhere else: hover
+-- moves the VALUE by a step, selection changes the HUE to the tinted band.
+local function drawRowState(x, y, w, h, theme, hovered, selected)
+    local c
+    if selected then c = theme.colors.list_selected
+    elseif hovered then c = theme.colors.list_hover
+    else return end
+    Core.DrawRect(x, y, w, h, c[1], c[2], c[3], c[4] or 1)
+end
+
+-- Matching text colour. A row painted with the selection band needs the
+-- selection's own text colour, or the contrast the band was chosen for is
+-- thrown away at the last step.
+local function rowTextColor(theme, selected, disabled)
+    if disabled then return theme.colors.text_disabled end
+    if selected then return theme.colors.list_selected_text end
+    return theme.colors.list_text
+end
+
 local function draw_win32_bevel(x, y, w, h, theme, mode)
     if theme.widget_style ~= "windows" then return end
     local border = theme.colors.border
@@ -1414,17 +1442,24 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
                 local iy = popup_y + (vis - 1) * item_h
                 local item_hovered = Core.MouseInRect(popup_x, iy, popup_w, item_h)
 
-                if item_hovered or i == data.nav then
-                    local hc = theme.colors.header_hovered
-                    Core.DrawRect(popup_x + 1, iy, popup_w - 2, item_h, hc[1], hc[2], hc[3], hc[4])
+                -- Same row vocabulary as every list in the toolkit. The popup
+                -- used to mark the current entry with a 3 px accent bar while
+                -- the lists marked theirs with a filled band — two answers to
+                -- one question, in the same file.
+                local item_sel = (i == popup_current)
+                drawRowState(popup_x + 1, iy, popup_w - 2, item_h, theme,
+                             item_hovered or i == data.nav, item_sel)
+
+                -- Keyboard focus, when it differs from the pointer. A caret on
+                -- the leading edge: the two used to be painted identically, so
+                -- arrowing through the list looked exactly like hovering it
+                -- and you could not tell which one Enter would take.
+                if i == data.nav and not item_hovered then
+                    local kc = theme.colors.accent
+                    Core.DrawRect(popup_x + 1, iy, 2, item_h, kc[1], kc[2], kc[3], kc[4])
                 end
 
-                if i == popup_current then
-                    local ac = theme.colors.accent
-                    Core.DrawRect(popup_x + 1, iy, 3, item_h, ac[1], ac[2], ac[3], ac[4])
-                end
-
-                local tc = theme.colors.text
+                local tc = rowTextColor(theme, item_sel, false)
                 local item_text = popup_items[i]
                 -- Vertical centering uses the item text's own height, NOT
                 -- the label's th (which is 0 when the combo has no label).
@@ -3840,11 +3875,11 @@ function Widgets.Table(id, columns, rows, theme, opts)
 
         -- List color aliases (fallback to generic theme colors if list_* not set)
         local list_bg   = theme.colors.list_bg or theme.colors.frame_bg
-        local list_text = theme.colors.list_text or theme.colors.text
+        local list_text  = theme.colors.list_text
         local list_alt  = theme.colors.list_alt_bg
-        local list_sel  = theme.colors.list_selected or theme.colors.accent
-        local list_sel_t = theme.colors.list_selected_text or COLOR_WHITE
-        local list_hov  = theme.colors.list_hover or theme.colors.header_hovered
+        local list_sel   = theme.colors.list_selected
+        local list_sel_t = theme.colors.list_selected_text
+        local list_hov   = theme.colors.list_hover
         local list_grid = theme.colors.list_grid
 
         -- List background (behind all rows)
@@ -5908,11 +5943,11 @@ function Widgets.ActionList(id, items, actions, theme, opts)
         Core.DrawRect(x, y, w, h, list_bg[1], list_bg[2], list_bg[3], list_bg[4])
 
         -- Items
-        local list_text = theme.colors.list_text or theme.colors.text
+        local list_text  = theme.colors.list_text
         local list_alt  = theme.colors.list_alt_bg
-        local list_sel  = theme.colors.list_selected or theme.colors.accent
-        local list_sel_t = theme.colors.list_selected_text or COLOR_WHITE
-        local list_hov  = theme.colors.list_hover or theme.colors.header_hovered
+        local list_sel   = theme.colors.list_selected
+        local list_sel_t = theme.colors.list_selected_text
+        local list_hov   = theme.colors.list_hover
         local list_grid = theme.colors.list_grid
 
         local scroll_offset = floor(data.scroll)
@@ -6277,15 +6312,8 @@ function Widgets.ReorderableList(id, items, theme, opts)
             if not is_dragging then
                 local row_hovered = Core.MouseInClippedRect(x, iy, w, item_h) and not Core.HasPopup()
 
-                if row_hovered then
-                    local hc = theme.colors.header_hovered
-                    Core.DrawRect(x + 1, iy, w - 2, item_h, hc[1], hc[2], hc[3], 0.3)
-                end
-
-                if display_i == selected then
-                    local ac = theme.colors.accent
-                    Core.DrawRect(x + 1, iy, w - 2, item_h, ac[1], ac[2], ac[3], 0.2)
-                end
+                local row_sel = (display_i == selected)
+                drawRowState(x + 1, iy, w - 2, item_h, theme, row_hovered, row_sel)
 
                 -- Drag handle (left side)
                 local handle_w = 16
@@ -6294,7 +6322,7 @@ function Widgets.ReorderableList(id, items, theme, opts)
                     tc_dim[1], tc_dim[2], tc_dim[3], tc_dim[4])
 
                 -- Label
-                local tc = theme.colors.text
+                local tc = rowTextColor(theme, row_sel, false)
                 local _, lh = Core.MeasureText(label)
                 Core.DrawText(label, x + handle_w + 4, iy + floor((item_h - lh) / 2),
                     tc[1], tc[2], tc[3], tc[4])
@@ -6458,21 +6486,18 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
             local is_selected = (row_idx == selected_row)
             local row_hovered = Core.MouseInClippedRect(x, ry, avail_w, row_h) and not Core.HasPopup()
 
-            if row_hovered then
-                hovered_row = row_idx
-                local hc = theme.colors.header_hovered
-                Core.DrawRect(x, ry, avail_w, row_h, hc[1], hc[2], hc[3], 0.3)
-            end
+            if row_hovered then hovered_row = row_idx end
 
-            if is_selected then
-                local ac = theme.colors.accent
-                Core.DrawRect(x, ry, avail_w, row_h, ac[1], ac[2], ac[3], 0.15)
+            -- Zebra first, state on top: the alternation is a property of the
+            -- row's POSITION and must not disappear the moment the row is
+            -- pointed at. It also stops being a white wash at 1.5 % — a value
+            -- that cannot survive on a light theme, where white over white is
+            -- nothing at all — and becomes the token the other lists use.
+            if row_idx % 2 == 0 then
+                local zc = theme.colors.list_alt_bg
+                Core.DrawRect(x, ry, avail_w, row_h, zc[1], zc[2], zc[3], zc[4] or 1)
             end
-
-            -- Alternating row
-            if not is_selected and not row_hovered and row_idx % 2 == 0 then
-                Core.DrawRect(x, ry, avail_w, row_h, 1, 1, 1, 0.015)
-            end
+            drawRowState(x, ry, avail_w, row_h, theme, row_hovered, is_selected)
 
             -- Cells
             for i, col in ipairs(columns) do
