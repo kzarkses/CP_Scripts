@@ -21,3 +21,7 @@ Media Properties Toolbar/
 
 # Local backups
 *.bak
+
+# Vendored icon source (Lucide, ISC). Only the GENERATED Lua pack and the
+# licence are committed — 1754 SVGs are an input to the converter, not code.
+Lucide/

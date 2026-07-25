@@ -540,23 +540,31 @@ end
 -- ---------------------------------------------------------------------------
 local rec = nil   -- { t, s } while a capture is running
 
-local function armTrack(t)
-    Loop.SetArmedLane(liveLane(t))
-end
-
 -- Armed is a TRACK fact, not a lane one: the pair swaps buffers as clips
--- change, and the arm must not appear to move with it. (The engine always
--- monitors exactly one lane — it clamps anything out of range — so there is
--- no "nothing armed" state to offer; clicking moves the arm, never kills it.)
+-- change, and the arm must not appear to move with it.
 local function isArmed(t)
     local a = Loop.GetArmedLane()
     if not a then return false end
     return (floor(a + 0.5) % TRACKS) == t
 end
 
+-- A toggle, and only one track can hold it. Arming is what opens the live
+-- input path — the engine hands whatever you play to the armed track's
+-- instrument — so being unable to close it again was never defensible: it
+-- left every project monitoring something the user had not chosen.
+local function armTrack(t)
+    if isArmed(t) then
+        Loop.SetArmedLane(nil)
+        flash("Input off — nothing is monitored")
+    else
+        Loop.SetArmedLane(liveLane(t))
+        flash("Playing goes to " .. trackName(t) .. " · record into an empty slot")
+    end
+end
+
 local function recCell(t, s)
     local live = liveLane(t)
-    armTrack(t)
+    Loop.SetArmedLane(live)   -- on the half that will actually capture
     Loop.SetLaneTag(live, cellTag(t, s))   -- the take lands in THIS cell
     Loop.Rec(live)            -- quantized, auto-stops on the lane's length
     rec = { t = t, s = s }
@@ -580,6 +588,22 @@ local function pollRec()
         flash("Captured into " .. c.name)
     end
     rec = nil
+end
+
+-- Second click on a blinking record button, as in a session view: a take in
+-- progress is FINALIZED (pollRec keeps what was played), one that has not
+-- started yet is dropped. Without this the only way out of a capture you did
+-- not mean to start was to wait for its auto-stop.
+local function stopRec()
+    if not rec then return end
+    local live = liveLane(rec.t)
+    if floor(Loop.Mode(live) + 0.5) == 1 then
+        Loop.Stop(live)
+    else
+        Loop.Clear(live)
+        rec = nil
+        flash("Recording cancelled")
+    end
 end
 
 local function clearCell(t, s)
@@ -743,12 +767,23 @@ local function drawCell(theme, t, s, x, y, w, h)
     else
         playing = (mode == 3 or mode == 5)
     end
-    local capturing = (rec and rec.t == t and rec.s == s) or false
+    -- A capture ARMS first and turns into a take on the quantize boundary.
+    -- Painting both red made a recording that had not started look exactly
+    -- like one that had — so a cell could blink for a whole bar, capture
+    -- nothing, and give no clue why. They are told apart now.
+    local capturing, waiting = false, false
+    if rec and rec.t == t and rec.s == s then
+        capturing = floor(Loop.Mode(liveLane(t)) + 0.5) == 1
+        waiting   = not capturing
+    end
 
     local br, bg_, bb = 0.15, 0.15, 0.17
-    if capturing then
+    if capturing or waiting then
         local d = C.danger or C.accent
-        br, bg_, bb = d[1] * 0.5, d[2] * 0.3, d[3] * 0.3
+        local k = capturing and 1 or 0.4
+        br = 0.15 + (d[1] * 0.5 - 0.15) * k
+        bg_ = 0.15 + (d[2] * 0.3 - 0.15) * k
+        bb = 0.17 + (d[3] * 0.3 - 0.17) * k
     elseif playing then
         local a = C.accent
         br, bg_, bb = a[1] * 0.45, a[2] * 0.45, a[3] * 0.45
@@ -770,11 +805,13 @@ local function drawCell(theme, t, s, x, y, w, h)
         Core.DrawRoundRectFilled(x + 1, y + 1, bw - 1, h - 2,
                                  theme.rounding_small or 0, 1, 1, 1, 0.10)
     end
-    local lit = playing or capturing or pend == 1
-    if capturing then
-        local a = 0.5 + 0.5 * math.abs(sin(r.time_precise() * 5))
+    local lit = playing or capturing or waiting or pend == 1
+    if capturing or waiting then
+        -- waiting blinks slower and dimmer than a take in progress: the button
+        -- says "counting to the boundary", not "your playing is being kept"
+        local a = 0.5 + 0.5 * math.abs(sin(r.time_precise() * (capturing and 5 or 2)))
         local d = C.danger or C.accent
-        UI.Icons.Record(bx, by, BTN_W, d[1], d[2], d[3], a)
+        UI.Icons.Record(bx, by, BTN_W, d[1], d[2], d[3], capturing and a or a * 0.6)
         UI.RequestRedraw()
     elseif c then
         if playing or pend == 1 then
@@ -853,7 +890,9 @@ local function drawCell(theme, t, s, x, y, w, h)
         elseif btn_hot then
             -- transport strip
             if Core.MouseClicked(1) then
-                if c then
+                if capturing or waiting then
+                    stopRec()
+                elseif c then
                     launchCell(t, s)
                 elseif isArmed(t) then
                     recCell(t, s)

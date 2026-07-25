@@ -80,7 +80,7 @@ GMEM_CMD        = 0;    // edge command (1 rec, 2 stop-rec, 3 clear, 4 panic, 5 
 GMEM_CMD_LANE   = 1;
 GMEM_CMD_ARG    = 2;
 GMEM_FREERUN    = 3;    // 0 = follow host transport, 1 = free internal clock
-GMEM_ARMED      = 4;    // lane index that live input is monitored on (0..MAX_LANES-1)
+GMEM_ARMED      = 4;    // lane monitoring live input (0..MAX_LANES-1), or <0 for NOBODY
 GMEM_CMD_SEQ    = 5;
 GMEM_LAUNCH_Q   = 6;    // launch quantize in beats (0 = immediate) — Lua-owned
 GMEM_CMD_ACK    = 7;    // seq of the last command actually consumed
@@ -105,7 +105,16 @@ LAYOUT_VER = 6;
 // an older run keeps playing the old code until something notices — this is
 // what lets Loop.Ensure notice, and refresh WITHOUT marking the block cold
 // (the loops survive, which bumping LAYOUT_VER would not allow).
-BUILD_VER = 2;
+BUILD_VER = 3;
+
+// The channel the CP suite tags its own PREVIEW notes with (a sampler pad, an
+// editor audition). Those travel the virtual-keyboard queue, which is a
+// broadcast: it reaches this router as readily as the kit the user meant to
+// hear. A preview is not playing, so this engine ignores it outright —
+// neither monitored onto the armed lane nor captured into a recording one.
+// Mirror of Kit.UI_CHAN. Lanes use channels 1..MAX_LANES, so 16 stays clear.
+UI_CHAN = 15;
+
 MAGIC      = 8451000 + LAYOUT_VER;
 
 // Finalize the pending note of (cl, p): append a note object ending at endphase.
@@ -179,6 +188,9 @@ loop(MAX_LANES,
 // command, and the free clock must not jump back to 0 mid-jam.
 last_seq  = gmem[GMEM_CMD_SEQ];
 free_beat = cold ? 0 : gmem[GMEM_FREEBEAT];
+// A cold block is all zeros, and 0 is a valid lane index — so leaving it alone
+// would arm lane 0 by accident, which is the whole defect. Say "nobody".
+cold ? (gmem[GMEM_ARMED] = -1);
 prev_active = 0;
 prev_freerun = -1;   // -1 = no previous block yet (skip the first edge)
 last_pb = 0;
@@ -607,35 +619,48 @@ loop(MAX_LANES,
 );
 
 // ---- incoming MIDI: live thru (re-channeled to the armed lane) + capture ----
+// GMEM_ARMED < 0 means NOBODY monitors. There used to be no such value — an
+// out-of-range arm was clamped to lane 0 — so a fresh project monitored lane 0
+// whether or not the user had asked for it, and every preview note the suite
+// injected into the virtual keyboard came back out of lane 0's routed
+// instrument on top of the one it was meant for. Monitoring is now something
+// you ask for, as it is in a session view: arm a track, and only then.
 armed = gmem[GMEM_ARMED];
-(armed < 0 || armed >= MAX_LANES) ? (armed = 0);
+(armed < 0 || armed >= MAX_LANES) ? (armed = -1);
 while (midirecv(mofs, m1, m2, m3)) (
   hi = m1 & 0xF0;
-  // channel-voice messages are re-emitted on the armed lane's channel so live
-  // play is heard on that lane's routed instrument; system messages pass as-is
-  (hi >= 0x80 && hi < 0xF0) ? (
-    midisend(mofs, hi + armed, m2, m3);
+  vmsg = (hi >= 0x80 && hi < 0xF0);
+  (vmsg && (m1 & 0x0F) == UI_CHAN) ? (
+    // one of ours, and a preview is not playing: swallowed, so it can neither
+    // be heard through a lane nor land in a loop that happens to be recording
+    0;
   ) : (
-    midisend(mofs, m1, m2, m3);
-  );
-  (active && (hi == 0x90 || hi == 0x80)) ? (
-    ison = (hi == 0x90 && m3 > 0);
-    beat_o = pb + mofs / spb;
-    li = 0;
-    loop(MAX_LANES,
-      (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 5) ? (
-        Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
-        ph = beat_o - floor(beat_o / Lb) * Lb;
-        ison ? (
-          // a new note-on closes any pending note of the same pitch first
-          finalize_note(li, m2, ph, Lb, 0);
-          PEND_ST[li*128+m2] = ph;
-          PEND_VL[li*128+m2] = m3;
-        ) : (
-          finalize_note(li, m2, ph, Lb, 0);
+    vmsg ? (
+      // channel-voice messages are re-emitted on the armed lane's channel so
+      // live play is heard on that lane's routed instrument
+      armed >= 0 ? midisend(mofs, hi + armed, m2, m3);
+    ) : (
+      midisend(mofs, m1, m2, m3);   // system messages pass as-is
+    );
+    (active && (hi == 0x90 || hi == 0x80)) ? (
+      ison = (hi == 0x90 && m3 > 0);
+      beat_o = pb + mofs / spb;
+      li = 0;
+      loop(MAX_LANES,
+        (gmem[GMEM_LANE_STATE + li*8 + 0] == 1 || gmem[GMEM_LANE_STATE + li*8 + 0] == 5) ? (
+          Lb = max(gmem[GMEM_LANE_CTRL + li*8 + 0], 0.125) * max(ts_num, 1);
+          ph = beat_o - floor(beat_o / Lb) * Lb;
+          ison ? (
+            // a new note-on closes any pending note of the same pitch first
+            finalize_note(li, m2, ph, Lb, 0);
+            PEND_ST[li*128+m2] = ph;
+            PEND_VL[li*128+m2] = m3;
+          ) : (
+            finalize_note(li, m2, ph, Lb, 0);
+          );
         );
+        li += 1;
       );
-      li += 1;
     );
   );
 );

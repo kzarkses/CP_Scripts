@@ -50,6 +50,14 @@ local RS5K_ADD  = "ReaSamplOmatic5000 (Cockos)"
 local CHOKE_ADD = "JS:CP_Scripts/cp_kit_choke.jsfx"
 local CHOKE_VERSION = "CP Kit Choke v1"
 
+-- Bus → pad sends: take any source channel, deliver on channel 1. I_MIDIFLAGS
+-- is (src & 31) | (dest << 5), dest 1..16. Not load-bearing — the kit already
+-- sounds correctly on channels 1..8 when a looper lane is routed here, so the
+-- pads are demonstrably channel-blind — but pinning the destination keeps new
+-- sends deterministic now that previews carry a channel tag (Kit.UI_CHAN) and
+-- live play does not. Existing sends are left alone for the same reason.
+local MIDI_TO_CH1 = 1 << 5
+
 Kit.parent = nil       -- folder MediaTrack (validated on access)
 Kit.bus    = nil       -- "CP Kit MIDI" child track — the INPUT bus.
                        -- CRITICAL: MIDI fan-out sends must come from a
@@ -585,7 +593,7 @@ function Kit.EnsurePad(note)
     local s = r.CreateTrackSend(bus, tr)
     if s >= 0 then
         r.SetTrackSendInfo_Value(bus, 0, s, "I_SRCCHAN", -1)
-        r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", 0)
+        r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", MIDI_TO_CH1)
     end
 
     local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
@@ -1031,7 +1039,7 @@ function Kit.EnsureInstrument()
     local s = r.CreateTrackSend(bus, tr)
     if s >= 0 then
         r.SetTrackSendInfo_Value(bus, 0, s, "I_SRCCHAN", -1)
-        r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", 0)
+        r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", MIDI_TO_CH1)
     end
     local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
     if fx >= 0 then
@@ -1419,10 +1427,33 @@ function Kit.PadPeak(note)
     return a
 end
 
+-- Every note the suite plays for PREVIEW — a sampler pad, an editor audition,
+-- a dragged note in a piano roll — goes out on this channel, and nothing else
+-- does. StuffMIDIMessage is a BROADCAST: it reaches every armed, input-
+-- monitored track at once, and the suite deliberately arms two (this bus, so
+-- pads sound; the looper router, so you can record what you play). Nothing in
+-- the message said which of them was meant, so one pad click sounded the kit
+-- AND whatever instrument the looper's armed lane routed to. The channel is
+-- that missing word: the looper engine ignores it — neither monitored nor
+-- captured — so a preview reaches the kit and stops there.
+--
+-- Chosen as the last channel because the engine spends 1..MAX_LANES on its
+-- lanes; keep the two in sync if MAX_LANES ever reaches 16.
+Kit.UI_CHAN = 15                        -- MIDI channel 16, 0-based in the status byte
+
+-- I_RECINPUT values for the bus. ALL is the normal state; UI_ONLY (channel 16
+-- of the virtual keyboard) is what the looper narrows it to while it monitors
+-- an armed lane itself — see Loop.lua. Without that, playing a keyboard while
+-- a column routed HERE is armed hit the kit twice: once direct, once through
+-- the router.
+Kit.INPUT_ALL     = 4096 + (63 << 5)            -- MIDI, any channel, any input
+Kit.INPUT_UI_ONLY = 4096 + (Kit.UI_CHAN + 1) + (62 << 5)  -- MIDI, chan 16, VKB
+
 -- Pad trigger through the real engine: virtual-keyboard MIDI queue →
 -- armed MIDI bus → choke JSFX → sends → pad RS5Ks.
 function Kit.StuffNote(note, on, vel)
-    r.StuffMIDIMessage(0, on and 0x90 or 0x80, note, on and (vel or 100) or 0)
+    r.StuffMIDIMessage(0, (on and 0x90 or 0x80) + Kit.UI_CHAN, note,
+                       on and (vel or 100) or 0)
 end
 
 function Kit.Armed()
@@ -1517,7 +1548,7 @@ function Kit.Repair()
                 local s = r.CreateTrackSend(bus, pad.track)
                 if s >= 0 then
                     r.SetTrackSendInfo_Value(bus, 0, s, "I_SRCCHAN", -1)
-                    r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", 0)
+                    r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", MIDI_TO_CH1)
                 end
             end
         end

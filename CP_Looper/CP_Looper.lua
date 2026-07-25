@@ -557,7 +557,10 @@ local function enterEdit(strip)
     state.edrag = nil
     state.marquee = nil
     local lane = Loop.LiveLane(strip)
-    Loop.SetArmedLane(lane)          -- editing a lane arms it for live input
+    -- Opening the editor used to arm the lane. Arming is what routes live input
+    -- to an instrument, so doing it as a side effect of LOOKING at a loop meant
+    -- the monitored track moved on its own — which is what made the record
+    -- button appear and vanish for no visible reason. Arm on the label, only.
     Roll.SetBackend(makeLoopBackend(strip))
     roll_ver = Loop.EvtVersion(lane)
     fitEditRange(lane)
@@ -803,7 +806,8 @@ local function drawLane(theme, l, x, y, w, h)
     -- Arming is a TRACK fact: the engine monitors one lane, and the pair
     -- swaps under it — comparing the track keeps the light on the strip the
     -- user armed instead of making it hop to its twin.
-    local armed = (Loop.TrackOfLane(Loop.GetArmedLane()) == l)
+    local al = Loop.GetArmedLane()
+    local armed = (al ~= nil and Loop.TrackOfLane(al) == l)
     local lbl = LANE_LBL[l]
     local lblw = gfx.measurestr(lbl)
     local lr, lg, lb = C.text[1], C.text[2], C.text[3]
@@ -817,7 +821,9 @@ local function drawLane(theme, l, x, y, w, h)
         if mx >= x + pad and mx < x + pad + lblw + 46 and my >= y + 3 and my < y + 19
            and not Core.HasPopup() then
             UI.SetCursor("hand")
-            if Core.MouseClicked(1) then Loop.SetArmedLane(el) end
+            -- a toggle: nobody armed is a real state, and the only one in which
+            -- the suite's own preview notes reach nothing but their instrument
+            if Core.MouseClicked(1) then Loop.SetArmedLane(armed and nil or el) end
         end
     end
     -- status word (right)

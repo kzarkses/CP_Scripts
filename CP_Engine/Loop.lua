@@ -34,7 +34,7 @@ Loop.TRACKS = Loop.MAX_LANES // 2
 local G_CMD, G_CMD_LANE, G_CMD_ARG, G_CMD_SEQ = 0, 1, 2, 5
 local G_CMD_ACK    = 7     -- seq the JSFX last consumed (command pacing)
 local G_FREERUN    = 3     -- 0 = follow host transport, 1 = free internal clock
-local G_ARMED      = 4     -- lane index that live input is monitored on
+local G_ARMED      = 4     -- lane monitoring live input, or -1 for NOBODY
 local G_LAUNCH_Q   = 6     -- launch quantize in beats (0 = immediate)
 local G_LANE_CTRL  = 100   -- stride 8: +0 length_bars, +1 muted
 local G_LANE_STATE = 200   -- stride 8: +0 mode,+1 nev(shared),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
@@ -50,7 +50,7 @@ local G_VERSION    = 3099
 -- like Lua bugs (a shortened loop folding its later bars onto the first one
 -- was exactly that). Bumping this makes Loop.Ensure refresh the engine, which
 -- the loops survive; bumping the JSFX's LAYOUT_VER would wipe them.
-Loop.ENGINE_BUILD = 2
+Loop.ENGINE_BUILD = 3
 local G_NOTE_BASE  = 10000
 
 local GMEM_NAME  = "CP_MidiLooper"
@@ -478,7 +478,7 @@ function Loop.Setup()
     end
     r.Undo_EndBlock2(0, "CP Looper: set up", -1)
     Loop.SetFreeRun(true)
-    Loop.SetArmedLane(0)
+    Loop.SetArmedLane(nil)   -- nothing monitors until you arm something
     return router
 end
 
@@ -502,7 +502,7 @@ function Loop.ReloadEngine()
     r.TrackFX_Show(router, 0, 2); r.TrackFX_Show(router, 0, 0)
     r.Undo_EndBlock2(0, "CP Looper: reload engine", -1)
     Loop.SetFreeRun(fr)
-    Loop.SetArmedLane(arm or 0)
+    Loop.SetArmedLane(arm)
     Loop.SetLaunchQ(lq or 0)
     return true
 end
@@ -531,7 +531,14 @@ function Loop.Ensure(create)
     if Loop.EngineAlive()
        and (Loop.EngineLanes() < Loop.MAX_LANES
             or Loop.EngineBuild() < Loop.ENGINE_BUILD) then
-        if Loop.ReloadEngine() then return true, "Looper engine refreshed" end
+        -- Builds before 3 had no "nobody armed": the arm sitting in gmem right
+        -- now is the engine's own clamp, not a decision, and carrying it across
+        -- the reload would leave a lane monitoring in every project that ever
+        -- ran an older build. Upgrading is exactly when to drop it.
+        local stale_arm = Loop.EngineBuild() < 3
+        local ok = Loop.ReloadEngine()
+        if stale_arm then Loop.SetArmedLane(nil) end
+        if ok then return true, "Looper engine refreshed" end
         return false, "The loaded engine is out of date and would not reload."
     end
     return true, nil
@@ -641,8 +648,11 @@ function Loop.SetFreeRun(on) if attached then gwrite(G_FREERUN, on and 1 or 0) e
 function Loop.GetFreeRun()   return attached and gread(G_FREERUN) >= 0.5 end
 
 -- Armed lane: the lane whose routed instrument you hear while playing live (the
--- JSFX re-channels incoming MIDI onto that lane's channel).
-function Loop.SetArmedLane(lane) if attached then gwrite(G_ARMED, lane) end end
+-- JSFX re-channels incoming MIDI onto that lane's channel). NOBODY is a real
+-- state — pass nil. It has to be, because the alternative is what the engine
+-- used to do: clamp an unset arm to lane 0, so a project you had not touched
+-- still fed every note the suite previewed into lane 0's instrument.
+function Loop.SetArmedLane(lane) if attached then gwrite(G_ARMED, lane or -1) end end
 
 -- Live MIDI listening. The router is armed on ALL inputs and fans your playing
 -- out to each lane's instrument through channel-filtered sends — and a send
@@ -660,8 +670,13 @@ function Loop.GetListen()
     return r.GetMediaTrackInfo_Value(Loop.track, "I_RECARM") == 1
        and r.GetMediaTrackInfo_Value(Loop.track, "I_RECMON") > 0
 end
+-- nil when nothing is armed — callers must handle it rather than fall back to
+-- a lane, which is exactly the assumption that made the arm invisible.
 function Loop.GetArmedLane()
-    return attached and math.floor((gread(G_ARMED) or 0) + 0.5) or 0
+    if not attached then return nil end
+    local a = math.floor((gread(G_ARMED) or -1) + 0.5)
+    if a < 0 or a >= Loop.MAX_LANES then return nil end
+    return a
 end
 
 -- ---------------------------------------------------------------------------
@@ -806,8 +821,7 @@ end
 -- Throttled: routing changes are rare, half a second of lag is not visible,
 -- and the scan must not land on every frame of a note drag.
 local dest_chg, dest_t = -1, 0
-local function pollDests()
-    local c = r.GetProjectStateChangeCount(0)
+local function pollDests(c)
     if c == dest_chg then return end
     local now = r.time_precise()
     if now - dest_t < 0.5 then return end
@@ -815,12 +829,43 @@ local function pollDests()
     Loop.RefreshDests()
 end
 
+-- Exactly one thing may monitor live input. This router is armed on every input
+-- so a keyboard can be captured into a loop; the sampler's kit bus is armed so
+-- its pads sound. Both hear the same virtual-keyboard queue — so with a column
+-- routed to the kit, one key press reached it TWICE (direct, and again through
+-- this router's lane send). Two identical notes at the same sample offset sum
+-- coherently: the kit came out at exactly +6 dB, which is what made it visible.
+--
+-- The rule: while the router really monitors an armed lane, it is the one
+-- input, and the kit bus narrows to the suite's own preview channel. Drop the
+-- arm or close the engine and the bus widens back, so a sampler used on its own
+-- still plays from a keyboard. Values mirror Kit.INPUT_ALL / Kit.INPUT_UI_ONLY —
+-- kept literal here because this module deliberately does not depend on Kit.
+local KIT_INPUT_ALL = 4096 + (63 << 5)         -- MIDI, any channel, any input
+local KIT_INPUT_UI  = 4096 + 16 + (62 << 5)    -- MIDI, channel 16, virtual keyboard
+local kit_want, kit_chg = nil, -1
+local function pollKitInput(c)
+    local want = (Loop.GetListen() and Loop.GetArmedLane())
+                 and KIT_INPUT_UI or KIT_INPUT_ALL
+    -- arming writes gmem, not the project, so the change count alone would miss it
+    if want == kit_want and c == kit_chg then return end
+    kit_want, kit_chg = want, c
+    for i = 0, r.CountTracks(0) - 1 do
+        local tr = r.GetTrack(0, i)
+        if isInputBus(tr) and r.GetMediaTrackInfo_Value(tr, "I_RECINPUT") ~= want then
+            r.SetMediaTrackInfo_Value(tr, "I_RECINPUT", want)
+        end
+    end
+end
+
 function Loop.Poll()
     if not attached then return end
     r.gmem_attach(GMEM_NAME)
     Loop.PumpCmd()
     resolveLive()
-    pollDests()
+    local c = r.GetProjectStateChangeCount(0)
+    pollDests(c)
+    pollKitInput(c)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1017,8 +1062,8 @@ end
 
 function Loop.Serialize()
     if not attached then return "" end
-    local out = { "3",
-                  (Loop.GetFreeRun() and "1" or "0") .. "|" .. Loop.GetArmedLane()
+    local out = { "4",
+                  (Loop.GetFreeRun() and "1" or "0") .. "|" .. (Loop.GetArmedLane() or -1)
                   .. "|" .. num(Loop.GetLaunchQ()) }
     for lane = 0, Loop.MAX_LANES - 1 do
         local n = Loop.NoteCount(lane)
@@ -1048,7 +1093,7 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if ver ~= "1" and ver ~= "2" and ver ~= "3" then return false end
+    if ver ~= "1" and ver ~= "2" and ver ~= "3" and ver ~= "4" then return false end
     local v2 = (ver ~= "1")
 
     -- lane blocks start after the version, and after the global block in v2+
@@ -1058,7 +1103,12 @@ function Loop.Deserialize(str)
         if not fr then fr, arm = fields[2]:match("^([^|]*)|([^|]*)$") end
         if fr then
             Loop.SetFreeRun(fr == "1")
-            Loop.SetArmedLane(math.floor(tonumber(arm) or 0))
+            -- Before v4 the arm was not a choice: the engine clamped it to a
+            -- lane, so EVERY older save carries 0 whether or not anyone armed
+            -- anything. Restoring it would re-arm lane 0 in every existing
+            -- project — exactly the leak this replaced — so it is dropped.
+            local a = (ver == "4") and math.floor(tonumber(arm) or -1) or -1
+            Loop.SetArmedLane(a >= 0 and a or nil)
             if lq then Loop.SetLaunchQ(tonumber(lq) or 0) end
         end
     end
@@ -1151,7 +1201,10 @@ function Loop.LoadGlobals()
     if not fr then fr, arm = fields[2]:match("^([^|]*)|([^|]*)$") end
     if not fr then return false end
     Loop.SetFreeRun(fr == "1")
-    Loop.SetArmedLane(math.floor(tonumber(arm) or 0))
+    -- see Deserialize: an arm stored before v4 was the engine's clamp, not a
+    -- decision, and re-arming lane 0 from it would reopen the preview leak
+    local a = (fields[1] == "4") and math.floor(tonumber(arm) or -1) or -1
+    Loop.SetArmedLane(a >= 0 and a or nil)
     if lq then Loop.SetLaunchQ(tonumber(lq) or 0) end
     return true
 end
