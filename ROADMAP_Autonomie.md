@@ -312,3 +312,71 @@ Corrigé/livré (`35d4440`, `4ed5ee1`, `cc6361c`) :
   moteur JSFX sample-lock = P4) ; les **couleurs hardcodées** = la
   tranche "palette sémantique + tokens" d'ANALYSE_DesignSystem §4.1 (à
   faire : play/record/mod en tokens + sweep des littéraux d'apps).
+
+---
+
+## Session 5 (2026-07-25) — sampler cassé, parité clip, sync
+
+Retours : le sync tempo "ne correspond pas du tout au tempo" (hat loop
+en Follow), le sync doit être **par défaut** avec détection du BPM ; le
+CP_Editor en mode clip n'a "pas le curseur de progression, super
+important" ni de contrôle des bars — "il faut que ce soit complet, au
+moins aussi complet que le CP_Looper actuel", puisqu'à terme les clips
+de la Session ne seront éditables QUE là ; dans le Sampler les poignées
+ADSR "ne font rien visuellement", les knobs A/D/S/R "passent de 0 à 100
+sans transition", le knob Pitch reste figé alors que le plugin part de
+0 à +24. CP_Session : **session dédiée plus tard**, ne pas y toucher.
+
+**La cause unique des trois bugs sampler** : les paramètres des VST
+Cockos (RS5K, ReaPitch) exposent une valeur BRUTE **normalisée 0..1**,
+quelle que soit l'unité affichée. Le code les lisait comme des ms / dB /
+demi-tons (vrai pour les sliders JSFX, faux pour un VST). D'où des
+poignées larges de quelques pixels, des knobs qui saturent, un TUNE de
+sync visé au mauvais endroit.
+
+- [x] **Unités réelles auto-calibrées** (`cd31de5`) : lecture par valeur
+  FORMATÉE, écriture par dichotomie sur `FormatParamValueNormalized`
+  (pure requête) puis `SetParamNormalized` — aucune plage ni courbe
+  supposée. L'écriture pose un point SONDÉ (jamais le milieu final),
+  sinon elle atterrit sur la frontière d'affichage : sur le slider par
+  pas de ReaPitch, ça rendait la migration non idempotente (dérive d'un
+  demi-ton par session). `ParamPlain/SetParamPlain/PadPitch/SetPadPitch`
+  + la migration ReaPitch passent dessus ; parse mis en cache contre la
+  chaîne formatée (l'overlay ADSR en lit quatre par frame).
+- [x] **Sync par défaut** (`cd31de5`) : deux niveaux volontairement
+  inégaux — tempo DÉCLARÉ (nom de fichier) = confiance, à condition que
+  le fichier soit assez long pour ÊTRE une boucle à ce tempo (un 808
+  "120bpm" de 0.6 s ne l'est pas) ; tempo DÉDUIT de la longueur =
+  seulement si UN SEUL décompte de mesures tombe dans une bande étroite
+  autour du tempo projet (les fenêtres se recouvrent : 3 s = "4 temps à
+  80" ET "8 temps à 160") et si la correction reste sous ±2 demi-tons.
+  Activer le sync beat-matche IMMÉDIATEMENT. L'identité tempo (BPM +
+  drapeau) vit sur la piste et survivait au sample : purgée dès que la
+  matière change, avec `no_sync` (tranche, sélection, preset) et
+  `keep_sync` (bake du même matériau).
+- [x] **Parité clip dans CP_Editor** (`06eabe2`, `5372afa`) : curseur de
+  progression (phase du moteur, animé seulement quand la lane tourne),
+  groupe LOOP (mesures -/+ = moitié/double sur le clip ET la lane,
+  Play/Stop quantisé, états rec/armé affichés au lieu d'un bouton mort),
+  Espace = lancer/arrêter. Le lancement ÉCRIT la lane directement
+  (`Loop.ApplyClip`) : le message de bus ne touche qu'une application
+  ouverte, or le moteur doit entendre l'édition même sans fenêtre
+  Looper/Session — et une lane crue vide est promue "arrêtée avec
+  contenu" pour que le premier lancement parte. La vue se refait quand
+  la longueur change (sinon la moitié ajoutée restait hors écran).
+  `Loop` est initialisé paresseusement (son init resynchronise les sends
+  du routeur : un éditeur ouvert sur un item audio n'a rien à y faire).
+
+**Méthode** : le diff a été passé au crible par une revue multi-agents
+(3 lentilles — logique/Lua, sémantique API REAPER, intégration avec les
+appelants — puis vérification adverse de chaque point). 9 défauts
+confirmés dans mon propre code, tous corrigés avant le commit : écriture
+au milieu de dichotomie, BPM périmé au remplacement d'un sample,
+heuristique de longueur qui acceptait tout, preset dont le TUNE se
+faisait écraser, bouton Stop mort en overdub, dépendance à une appli
+tierce pour jouer, "-inf dB" lu comme une erreur, allocations par frame.
+
+- [ ] Reste ouvert (inchangé) : palette sémantique + sweep des couleurs
+  en dur, DnD-capture de modulation, "?" dans ME/ModLFO/FXC, maquettes
+  HTML design (avec lui), overflow §3.5, **CP_Session (sa session
+  dédiée)**, moteur audio P4 (JSFX sample-lock).
