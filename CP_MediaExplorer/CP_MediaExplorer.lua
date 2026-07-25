@@ -102,6 +102,11 @@ local opts = {
     wave_rows        = cfg.wave_rows == true,          -- FL "Samples view"
     swap_resize      = cfg.swap_resize == true,        -- hot-swap takes new length
     preview_track_guid = cfg.preview_track_guid or "", -- pinned preview track
+    -- What a double-click DOES. Opening the sample in CP_Editor is the
+    -- default: hearing a file and then wanting a closer look at it is the
+    -- normal next step, and the arrangement is one drag away — while a file
+    -- dropped in the arrange to be examined has to be found and deleted again.
+    dbl_editor       = cfg.dbl_editor ~= false,        -- default true
 }
 
 Preview.volume      = cfg.volume or 1.0
@@ -202,6 +207,7 @@ local function persistConfig()
         sync_mult        = opts.sync_mult,
         wave_rows        = opts.wave_rows,
         swap_resize      = opts.swap_resize,
+        dbl_editor       = opts.dbl_editor,
         preview_track_guid = opts.preview_track_guid,
         list_scroll      = list_scroll,
         volume = Preview.volume,
@@ -835,6 +841,12 @@ local function openSettings()
     UI.NativeMenu({
         { label = "Autoplay on selection", checked = opts.autoplay,
           action = function() opts.autoplay = not opts.autoplay; markDirty() end },
+        { label = "Double-click a file", children = {
+            { label = "Opens it in CP_Editor", checked = opts.dbl_editor,
+              action = function() opts.dbl_editor = true; markDirty() end },
+            { label = "Inserts it at the edit cursor", checked = not opts.dbl_editor,
+              action = function() opts.dbl_editor = false; markDirty() end },
+        } },
         { label = "Waveform rows (Samples view)", checked = opts.wave_rows,
           action = function() opts.wave_rows = not opts.wave_rows; markDirty() end },
         { label = "Accordion folders (auto-collapse siblings)", checked = opts.accordion,
@@ -927,6 +939,25 @@ local function openSettings()
     })
 end
 
+-- Open a file in CP_Editor, file mode. A Clip over the Engine Bus, which
+-- STARTS the editor when it is not running (Bus.OpenEditor) — a double-click
+-- that silently did nothing because a window was closed would be worse than
+-- no double-click at all. The strip's active section rides along, so the
+-- editor lands selected on what you were auditioning, not on the bare file.
+local function openInEditor(node)
+    local c = Clip.new("audio")
+    c.path = node.path
+    c.name = node.name
+    if state.wsel and state.wsel.path == node.path then
+        loadMeta(node)
+        if node.len and node.len > 0 then
+            c.offs = state.wsel.a * node.len
+            c.len  = (state.wsel.b - state.wsel.a) * node.len
+        end
+    end
+    Bus.OpenEditor(c)
+end
+
 -- ---------------------------------------------------------------------------
 -- Row context menu
 -- ---------------------------------------------------------------------------
@@ -989,23 +1020,7 @@ local function openRowMenu(node)
                 end
             end }
         items[#items + 1] = { label = "Open in Editor",
-            action = function()
-                -- A Clip over the Engine Bus — picked up by CP_Editor
-                -- when it runs (5s window). The strip's active section
-                -- rides along, so the editor lands selected on what you
-                -- were auditioning instead of the bare file.
-                local c = Clip.new("audio")
-                c.path = node.path
-                c.name = node.name
-                if state.wsel and state.wsel.path == node.path then
-                    loadMeta(node)
-                    if node.len and node.len > 0 then
-                        c.offs = state.wsel.a * node.len
-                        c.len  = (state.wsel.b - state.wsel.a) * node.len
-                    end
-                end
-                Bus.Send("editor:open", c)
-            end }
+            action = function() openInEditor(node) end }
         items[#items + 1] = { separator = true }
         items[#items + 1] = { label = Model.IsFavorite(node.path)
                                       and "★ Remove favorite" or "☆ Add to favorites",
@@ -1679,7 +1694,13 @@ local function drawList(theme, list_h)
     end
     if dbl_idx then
         local node = rows[dbl_idx]
-        if node and not node.is_dir then insertNode(node, false) end
+        if node and not node.is_dir then
+            -- CP_Editor's file mode is an AUDIO editor: a .mid has nothing to
+            -- open there, so it takes the other road whatever the setting says.
+            local midi = node.lo_name and node.lo_name:find("%.midi?$")
+            if opts.dbl_editor and not midi then openInEditor(node)
+            else insertNode(node, false) end
+        end
     end
     if rclick_idx then
         local node = rows[rclick_idx]
