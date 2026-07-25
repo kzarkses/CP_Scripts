@@ -682,9 +682,14 @@ a pad.
 
 ## Pad
 Vol / Pan / Tune (vinyl repitch) / Pitch (elastique, length kept) /
-ADSR. Drag the ADSR handles drawn on the waveform; trim with the
-region edges; Loop gates the sample while the pad is held. Choke
-groups cut each other. Shift = fine drag on every knob.
+ADSR. Loop gates the sample while the pad is held. Choke groups cut
+each other. Shift = fine drag on every knob.
+
+Two families, stacked, so they never fight over a click: the REGION
+lives in the band along the BOTTOM of the waveform — drag an edge to
+trim, drag between them to slide the whole thing — and the ENVELOPE
+handles live on the waveform itself. Every handle lights up under the
+cursor and grows while you hold it.
 
 ## Right-click a pad
 Load sample, Open in Editor (the trim lands selected), Bake: crop to
@@ -994,12 +999,22 @@ local strip = { path = nil, w = 0, h = 0 }   -- buffer content key
 
 -- Which handle is under the cursor. The drawing has to know BEFORE the click:
 -- a handle that only answers once you have grabbed it is a handle you find by
--- trial. Same names and same priority order as the drag — the envelope lives
--- inside the region, so it is tested first or the region edge swallows it.
-local function stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop)
-    if ax and math.abs(mx - ax) <= 5 and my <= etop + 8 then return "a" end
-    if dx and math.abs(mx - dx) <= 5 and math.abs(my - sy2) <= 6 then return "d" end
-    if rxx and math.abs(mx - rxx) <= 5 and math.abs(my - sy2) <= 6 then return "r" end
+-- trial. Same names and same priority order as the drag.
+--
+-- The REGION lives in a band along the BOTTOM — its edges, and the middle that
+-- slides it. The rest of the height belongs to the envelope. Two families
+-- stacked instead of two families competing: aiming at an ADSR handle can no
+-- longer move the region by accident, and there is no need to wash the region
+-- body in white to explain what a click there would do.
+local REGION_BAND = 12
+
+local function stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop, ybot)
+    if my < ybot - REGION_BAND then
+        if ax and math.abs(mx - ax) <= 5 and my <= etop + 8 then return "a" end
+        if dx and math.abs(mx - dx) <= 5 and math.abs(my - sy2) <= 6 then return "d" end
+        if rxx and math.abs(mx - rxx) <= 5 and math.abs(my - sy2) <= 6 then return "r" end
+        return nil
+    end
     if math.abs(mx - xs) <= 6 then return "s" end
     if math.abs(mx - xe) <= 6 then return "e" end
     if mx > xs and mx < xe then return "m" end
@@ -1086,28 +1101,29 @@ local function drawRegionStrip(theme, note, pad, h)
         local sus_db = Kit.ParamPlain(note, Kit.P.SUSTAIN) or 0
         local sus_l = 10 ^ (math.min(sus_db, 0) / 20)
         local pps = (xe - xs) / region_s
-        etop, ebot = y + 2, y + h - 2
+        -- The envelope lives ABOVE the region band. Without this, a sustain at
+        -- minimum puts its two handles at the very bottom — inside the band,
+        -- where the region answers first, and they become ungrabbable.
+        etop, ebot = y + 2, y + h - 2 - REGION_BAND
         sy2 = etop + (1 - sus_l) * (ebot - etop)
         ax  = math.min(xs + att_s * pps, xe)
         dx  = math.min(ax + dec_s * pps, xe)
         rxx = math.max(math.min(xe - rel_s * pps, xe), dx)
     end
 
+    local ybot = y + h
     local mx, my = Core_tk.GetMousePos()
-    local inside = mx >= x and mx < x + aw and my >= y and my < y + h
+    local inside = mx >= x and mx < x + aw and my >= y and my < ybot
     local grab = (state.rdrag and state.rdrag.note == note) and state.rdrag.mode or nil
     local hot = grab
     if not hot and inside and not Core_tk.HasPopup() and not Core_tk.MouseDown(1) then
-        hot = stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop)
+        hot = stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop, ybot)
     end
 
-    -- region overlay (dim outside, accent edges + grips that answer)
+    -- region overlay: dim outside, edges lit, grips along the bottom band
     if xs > x then Core_tk.DrawRect(x, y, xs - x, h, 0, 0, 0, 0.55) end
     if xe < x + aw then Core_tk.DrawRect(xe, y, x + aw - xe, h, 0, 0, 0, 0.55) end
     local moving = (hot == "m")
-    if moving then
-        Core_tk.DrawRect(xs, y, xe - xs, h, 1, 1, 1, grab and 0.07 or 0.04)
-    end
     for i = 1, 2 do
         local ed  = EDGES[i]
         local hx  = (ed == "s") and xs or xe
@@ -1117,10 +1133,8 @@ local function drawRegionStrip(theme, note, pad, h)
         local g, a = hgrow(lit, grab == ed)
         Core_tk.DrawRect((ed == "s") and hx or (hx - 1), y, 1, h,
                          col[1], col[2], col[3], a)
-        local gw, gh = 5 + g, 8 + g
-        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y, gw, gh,
-                         col[1], col[2], col[3], 1)
-        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y + h - gh, gw, gh,
+        local gw, gh = 5 + g, REGION_BAND + g
+        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), ybot - gh, gw, gh,
                          col[1], col[2], col[3], 1)
     end
     Core_tk.DrawRect(x, y, aw, h,
@@ -1157,12 +1171,14 @@ local function drawRegionStrip(theme, note, pad, h)
     -- hit-test first — they live inside the region)
     if not Core_tk.HasPopup() then
         if inside and Core_tk.MouseClicked(1) then
-            local m = stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop)
+            local m = stripHit(mx, my, xs, xe, ax, dx, rxx, sy2, etop, ybot)
             if m == "m" then
                 state.rdrag = { mode = "m", note = note, grab = (mx - x) / aw - s }
             elseif m then
                 state.rdrag = { mode = m, note = note }
-            else
+            elseif my >= ybot - REGION_BAND then
+                -- in the region band but outside the region: the nearest edge
+                -- comes to you, which is how a range behaves everywhere
                 state.rdrag = { mode = (mx < xs) and "s" or "e", note = note }
             end
         end
@@ -1433,11 +1449,13 @@ local function instrWave(theme, x, y, w, h)
     local s = Kit.InstrParam(Kit.P.SOFFS) or 0
     local e = Kit.InstrParam(Kit.P.EOFFS) or 1
     local xs, xe = x + s * w, x + e * w
+    local ybot = y + h
     local mx, my = Core_tk.GetMousePos()
-    local inside = mx >= x and mx < x + w and my >= y and my < y + h
+    local inside = mx >= x and mx < x + w and my >= y and my < ybot
     local grab = (state.rdrag and state.rdrag.instr) and state.rdrag.mode or nil
     local hot = grab
-    if not hot and inside and not Core_tk.HasPopup() and not Core_tk.MouseDown(1) then
+    if not hot and inside and my >= ybot - REGION_BAND
+       and not Core_tk.HasPopup() and not Core_tk.MouseDown(1) then
         if math.abs(mx - xs) <= 6 then hot = "s"
         elseif math.abs(mx - xe) <= 6 then hot = "e"
         elseif mx > xs and mx < xe then hot = "m" end
@@ -1445,9 +1463,6 @@ local function instrWave(theme, x, y, w, h)
 
     if xs > x then Core_tk.DrawRect(x, y, xs - x, h, 0, 0, 0, 0.55) end
     if xe < x + w then Core_tk.DrawRect(xe, y, x + w - xe, h, 0, 0, 0, 0.55) end
-    if hot == "m" then
-        Core_tk.DrawRect(xs, y, xe - xs, h, 1, 1, 1, grab and 0.07 or 0.04)
-    end
     for i = 1, 2 do
         local ed  = EDGES[i]
         local hx  = (ed == "s") and xs or xe
@@ -1457,17 +1472,16 @@ local function instrWave(theme, x, y, w, h)
         local g, a = hgrow(lit, grab == ed)
         Core_tk.DrawRect((ed == "s") and hx or (hx - 1), y, 1, h,
                          col[1], col[2], col[3], a)
-        local gw, gh = 5 + g, 8 + g
-        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y, gw, gh,
-                         col[1], col[2], col[3], 1)
-        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), y + h - gh, gw, gh,
+        local gw, gh = 5 + g, REGION_BAND + g
+        Core_tk.DrawRect((ed == "s") and hx or (hx - gw), ybot - gh, gw, gh,
                          col[1], col[2], col[3], 1)
     end
     Core_tk.DrawRect(x, y, w, h, col_bord[1], col_bord[2], col_bord[3],
                      (col_bord[4] or 1) * 0.6, false)
 
     if not Core_tk.HasPopup() then
-        if inside and Core_tk.MouseClicked(1) then
+        -- the region lives in the bottom band, as it does on a pad strip
+        if inside and my >= ybot - REGION_BAND and Core_tk.MouseClicked(1) then
             if math.abs(mx - xs) <= 6 then state.rdrag = { mode = "s", instr = true }
             elseif math.abs(mx - xe) <= 6 then state.rdrag = { mode = "e", instr = true }
             elseif mx > xs and mx < xe then
@@ -1783,7 +1797,7 @@ local function frame(theme)
         elseif Kit.mode == "instrument" then
             msg = "click the keyboard to play · drop a sample to load it chromatically"
         elseif state.sel and Kit.pads[state.sel] and Kit.pads[state.sel].fx then
-            msg = "drag the region edges or the ADSR handles on the waveform · right-click a pad for load / bake / choke"
+            msg = "drag the region by its edges along the BOTTOM · ADSR handles on the waveform itself · right-click a pad for load / bake / choke"
         else
             msg = "drop a file or an arrange item on a pad · right-click for the pad menu"
         end
