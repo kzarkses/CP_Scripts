@@ -55,6 +55,9 @@ end
 -- State
 local active_tab = 1
 local tabs = { "Presets", "Colors", "Layout", "Fonts", "Preview" }
+-- Widget ids, written out rather than built with ".. i" per frame: a concat in
+-- a draw path allocates, and this one would run five times a frame forever.
+local TAB_IDS = { "tw_tab_1", "tw_tab_2", "tw_tab_3", "tw_tab_4", "tw_tab_5" }
 
 -- The Macro tab is gone. It derived forty colours from six numbers, and it
 -- was a bad trade three times over: it never actually ran (no theme file on
@@ -86,10 +89,19 @@ local pv = {
     input = "Sample text",
 }
 
+-- The tab strip is the tweaker's command zone, so it lives in a bar like every
+-- other window's: same ground, same height, same seam underneath. A tab is a
+-- HELD state — this is the view you are in — which is the same message a lit
+-- chip carries everywhere else; what makes it a tab rather than a toggle is
+-- that only one can be lit, and that is enforced here, not drawn differently.
 UI.Run(function()
-    -- Tab bar
-    local tc, nt = UI.TabBar("tw_tabs", tabs, active_tab)
-    if tc then active_tab = nt end
+    UI.BeginBar("tw_tabs")
+    for i = 1, #tabs do
+        if UI.BarButton(TAB_IDS[i], tabs[i], false, i == active_tab) then
+            active_tab = i
+        end
+    end
+    UI.EndBar()
     UI.Spacing(4)
 
     local t = UI.GetTheme()
