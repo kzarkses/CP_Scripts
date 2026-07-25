@@ -528,10 +528,12 @@ considérés dans les colonnes ? ».
 
 ### Reste à faire, dans l'ordre
 
-1. **Rail** dans le toolkit, puis Session → Sampler → Editor.
-2. **Icônes** : convertisseur SVG + pack Lucide + toggles à icônes.
-3. **Mixer minimal** Session (vol/mute/solo) + couleur de clip.
-4. **CP_Looper en step sequencer**.
+1. ✅ **Rail** dans le toolkit, puis Session → Sampler → Editor. *(sessions 10-11 ;
+   CP_Editor est finalement repassé en barre haute sur son retour de test)*
+2. ✅ **Icônes** : convertisseur SVG + pack Lucide + toggles à icônes. *(session 9 ;
+   l'extension du pack à 200-400 glyphes attend son choix des familles)*
+3. ✅ **Mixer minimal** Session (vol/mute/solo) + couleur de clip. *(session 12)*
+4. **CP_Looper en step sequencer**. ← le prochain
 5. Session phases 2-6 : quantisation par clip, legato, **follow
    actions**, tempo par scène, audio P4 (moteur sample-lock), capture
    vers l'arrangeur.
@@ -804,8 +806,8 @@ suffit à en remplacer un sans toucher au code ; `SetHot` sur les 14 widgets
 muets ; l'anneau de focus (`RegisterFocusable`/`FocusNext`/`FocusPrev` existent
 et n'ont **aucun appelant**, et TAB est capturé comme touche de validation) ;
 les centrages `y + h * 0.5 - 6` dans les apps, où 6 est la moitié de `body = 12`
-alors que le tweaker laisse monter `body` à 24 ; et `mute` / `solo` / `mod`,
-trois jetons qui ne peignent encore rien.
+alors que le tweaker laisse monter `body` à 24 ; et `mod`, le dernier jeton qui
+ne peint encore rien (`mute` et `solo` sont branchés depuis la session 12).
 
 **Les scripts périphériques attendent, sur sa demande** : ChordLab, ColorPicker,
 Inspector, VideoKit, PaintSynth ne sont pas migrés sur les zones. « Le cœur
@@ -813,10 +815,65 @@ c'est ce qu'on travaille ici maintenant, on clarifie d'abord tout cela. »
 
 ---
 
-## PROCHAIN CHANTIER — le mixer dans CP_Session
+## Session 12 (2026-07-25) — le mixer dans CP_Session, et la couleur de clip
 
-Décidé le 2026-07-25 : c'est la suite. Ce que la roadmap en dit déjà (session
-9, « Reste, dans l'ordre ») : **mixer minimal Session + couleur de clip**.
+La décision de la session 7 tenait en une phrase : **« Mixer : pas de console.
+Trois contrôles par piste dans la Session (volume, mute, solo) — le reste vit
+dans le mixer de REAPER. »** C'est ce qui est livré, plus le vu-mètre, parce
+que trois contrôles muets ne disent pas quelle piste sonne trop fort.
+
+### Ce qui est fait
+
+- [x] **La bande, sous la grille** : par colonne, `M`, `S`, un fader et un
+  vu-mètre. Sa propre couture et son propre sol — une zone qui partage le sol
+  de sa voisine n'est pas une zone. Repliable (bascule à côté du « ? »,
+  mémorisée) : elle coûte 28 px de hauteur en permanence, ce qui sur une
+  fenêtre courte est la dernière rangée de la grille.
+- [x] **La cible est la piste vers laquelle la colonne est ROUTÉE** — donc
+  aussi le niveau de ce que CP_Sampler ou CP_Editor envoient là. Une colonne
+  sans destination n'a rien à mixer et le dit en étant **désactivée**, pas en
+  montrant un fader qui ne fait rien.
+- [x] **`mute` et `solo` peignent enfin.** Les deux jetons étaient définis dans
+  le thème et lus par personne depuis la refonte de la palette.
+- [x] **Silencieux pour deux raisons, une seule couleur.** Le niveau du fader
+  prend la teinte `mute` quand la colonne est muette **ou** quand quelqu'un
+  d'autre est en solo : « qu'est-ce que j'entends réellement » se lit d'un
+  coup d'œil au lieu de se déduire de quatre boutons.
+- [x] **Le solo est celui de REAPER**, donc l'arrangement se tait aussi. C'est
+  exactement ce que fait Ableton — il fallait juste que ce soit su, pas
+  découvert. Ctrl-clic = exclusif.
+- [x] **Couleur de clip.** Le champ `color` existait dans le descripteur CPC1
+  depuis le chantier 5 et **personne ne l'écrivait**. C'est un INDEX dans une
+  palette de 8 rangée dans `Clip.lua` (une seule couleur pour un clip, dans
+  toutes les fenêtres, sans que deux d'entre elles aient à s'accorder sur un
+  espace colorimétrique — et une palette se re-règle pour un thème clair, un
+  RGB stocké non). Clic droit sur une cellule → Color. La teinte est **douce**
+  (0,30) : dans cette suite la teinte est le canal de l'ÉTAT, et une cellule
+  peinte à saturation pleine dépenserait ce canal en identité.
+
+### Ce qui est monté d'un cran
+
+- **`CP_Engine/Mix.lua`** — la couche domaine : volume, mute, solo, vu-mètres,
+  et la courbe de fader. Deux segments droits en décibels, articulés à 0,8 :
+  un fader linéaire en dB de −60 à +6 mettrait l'unité à 0,91 de la course,
+  c'est-à-dire la zone où on mixe vraiment écrasée dans le dernier dixième.
+  Le vu-mètre partage cette échelle, donc l'unité est au même endroit sur les
+  deux. Un point d'annulation par geste, jamais par frame.
+- **Trois primitives de toolkit posées par un RECTANGLE** : `UI.ChipAt`,
+  `UI.FaderAt`, `UI.MeterAt` (`VMeter`/`HMeter` passent désormais par la
+  troisième). Une grille calcule sa propre géométrie, le curseur de flux n'a
+  rien à y dire — et c'est précisément là que chaque app avait recommencé à
+  écrire son bouton privé. `FaderAt` rend `changed, value, released` : le
+  relâchement est ce qui fait qu'un glisser est **un** point d'annulation.
+
+### Ce qui n'est pas fait, et pourquoi
+
+- **Pas de pan.** C'est le premier pas vers la console qu'on a refusée, et il
+  est à un clic dans le mixer de REAPER.
+- **Pas de sends, pas de FX, pas de hiérarchie de dossiers.** Même raison.
+- **Le stop par colonne existait déjà** (rangée de carrés sous la grille,
+  session 7) — c'est le seul élément de tranche que l'analyse Ableton
+  réclamait et il était en place.
 
 Les trois jetons de rôle `mute`, `solo` et `mod` attendent précisément ça —
 `mute` et `solo` sont le vocabulaire documenté des boutons M/S, et ils sont

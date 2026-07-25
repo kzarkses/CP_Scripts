@@ -29,10 +29,12 @@ local UI     = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Loop   = dofile(cp_root .. "CP_Engine/Loop.lua")
 local Clip   = dofile(cp_root .. "CP_Engine/Clip.lua")
+local Mix    = dofile(cp_root .. "CP_Engine/Mix.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Bus    = dofile(cp_root .. "CP_Engine/Bus.lua")
 Tracks.init(r)
 Loop.init(r, Tracks)
+Mix.init(r)
 DragBus.init(r)
 Bus.init(r, DragBus, Clip)
 
@@ -109,7 +111,9 @@ ANYWHERE ELSE in the cell opens it in CP_Editor (launched if needed) —
 looking at a clip never changes what is playing, and launching is never
 a side effect of wanting to edit. CP_Editor is the only place a cell is
 edited: notes, loop length, playhead and transport live there, and the
-edits come back here live. Right-click: edit / clear / stop.
+edits come back here live. Right-click: edit, rename, COLOR, clear,
+stop. A clip's colour is its own and travels with it — copy a cell and
+the copy keeps it.
 
 ## Sound or MIDI, same cell
 Any cell takes either. Drop a sound from the Media Explorer and it
@@ -119,6 +123,17 @@ plays through the engine. A track still plays ONE thing at a time,
 whichever kind — launching a sound stops the MIDI under it and the
 other way round. (Sounds use the interim preview engine; the
 sample-locked one comes later.)
+
+## The mixer strip
+The band under the grid (toggle it beside the "?") balances what you
+are launching: per column, VOLUME, M and S, and a meter. It acts on
+the track the column is routed to — so it is also the level of
+whatever CP_Sampler or CP_Editor sends there. Drag the fader,
+Shift for fine, double-click for 0 dB, wheel to step. Solo is
+REAPER's solo: the arrangement goes quiet too, exactly as in Ableton.
+Ctrl-click it for exclusive. Everything else a console has is a
+keystroke away in REAPER's own mixer, which is better than anything
+this window would draw.
 
 ## Clock
 Free = clips play without the transport. Follow = REAPER transport,
@@ -748,12 +763,33 @@ local function renameCell(t, s)
     cell_lbl[t * SCENES + s] = nil
 end
 
+-- The clip's colour is an index into the Engine's palette, so the cell, the
+-- editor and anything else that ever shows this clip agree without agreeing
+-- on anything. nil = none, which means "the theme's own ground", not black.
+local function setCellColor(t, s, i)
+    local c = cells[t][s]
+    if not c then return end
+    c.color = (i and i > 0) and i or nil
+    saveGrid()
+end
+
 local function cellMenu(t, s)
-    local has = cells[t][s] ~= nil
+    local c = cells[t][s]
+    local has = c ~= nil
+    local cur_col = has and c.color or nil
+    local cols = {}
+    for i = 1, #Clip.COLOR_NAMES do
+        cols[i] = { label = Clip.COLOR_NAMES[i], checked = (cur_col == i),
+                    action = function() setCellColor(t, s, i) end }
+    end
+    cols[#cols + 1] = { separator = true }
+    cols[#cols + 1] = { label = "None", checked = (cur_col == nil),
+                        action = function() setCellColor(t, s, nil) end }
     UI.NativeMenu({
         { label = "Edit in CP_Editor", action = function() editCell(t, s) end },
         { label = "Rename clip…", disabled = not has,
           action = function() renameCell(t, s) end },
+        { label = "Color", disabled = not has, children = cols },
         { label = "Stop this track", action = function() stopTrack(t) end },
         { separator = true },
         { label = "Clear cell", disabled = not has,
@@ -835,6 +871,11 @@ end
 -- raw gfx primitives.
 local BTN_W = 16
 
+-- How far a cell's ground is pulled toward the clip's own colour. See the
+-- comment at the mix itself: identity has to be visible without taking the
+-- channel that carries state.
+local CLIP_TINT = 0.30
+
 -- Countdown labels, precomputed. The waiting cell redraws every frame and a
 -- tostring() there would mint one string per frame for nothing.
 local CD_LBL = {}
@@ -900,6 +941,19 @@ local function drawCell(theme, t, s, x, y, w, h)
     -- (play / record / pending) stays the theme's to redefine.
     local base = c and C.canvas_row or C.canvas_row_dark
     local br, bg_, bb = base[1], base[2], base[3]
+    -- The clip's own colour, mixed GENTLY into that ground. Gently on purpose:
+    -- in this suite hue is the STATE channel (play, record, pending), and a
+    -- cell painted at full saturation would spend it on identity, leaving the
+    -- state nothing to speak with. At this strength eight clips are still told
+    -- apart at a glance, and a playing one still reads as playing — helped by
+    -- the two carriers state has besides the ground: the lit edge and the
+    -- button's own glyph.
+    local kr, kg, kb = Clip.ColorOf(c)
+    if kr then
+        br  = br  + (kr - br)  * CLIP_TINT
+        bg_ = bg_ + (kg - bg_) * CLIP_TINT
+        bb  = bb  + (kb - bb)  * CLIP_TINT
+    end
     local role, k
     if capturing then role, k = C.record, 0.42
     elseif waiting then role, k = C.pending, 0.30
@@ -1073,6 +1127,123 @@ local function drawCell(theme, t, s, x, y, w, h)
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- The mixer strip
+--
+-- Three controls per column and the meter that makes them readable. Not a
+-- console: what a session needs is to balance what it is launching, and
+-- everything else is one keystroke away in REAPER's own mixer, which is better
+-- than anything we would draw here.
+--
+-- A column mixes the track it is ROUTED TO — the same track its clips play
+-- into, so this is also the level of whatever CP_Sampler or CP_Editor sends
+-- there. A column with no destination has nothing to mix and says so by being
+-- disabled, not by showing a fader that quietly does nothing.
+-- ---------------------------------------------------------------------------
+local MIX_H     = 18       -- control height
+local MIX_PAD   = 4        -- so the zone is 26 px: the rhythm of a command bar
+local MIX_BTN   = 18
+local MIX_MET   = 7
+local MIX_GAP   = 3
+local MIX_MIN_F = 24       -- below this a fader is a decoration, not a control
+local MIX_ZONE  = 2 + MIX_PAD * 2 + MIX_H   -- seam + ground
+
+local mix_open  = Core.LoadPersistent("CP_Session", "mix", true)
+local mix_moved = false    -- did the fader gesture in flight change anything
+local mix_hot   = false    -- is any meter still above zero (so still falling)
+
+-- Ids are identity, and identity must not be rebuilt every frame.
+local mix_id = { v = {}, m = {}, s = {} }
+for t = 0, TRACKS - 1 do
+    mix_id.v[t] = "mixv" .. t
+    mix_id.m[t] = "mixm" .. t
+    mix_id.s[t] = "mixs" .. t
+end
+
+-- Shared option tables: every field is written on every call, so nothing
+-- stale survives — and no table is built in a draw path.
+local MIX_F_OPTS = { mark = Mix.UNITY, default = Mix.UNITY, text = nil,
+                     disabled = false, accent = nil }
+local MIX_M_OPTS = { accent = nil, tip = "Mute this column's track" }
+local MIX_S_OPTS = { accent = nil,
+    tip = "Solo — REAPER's solo, so the arrangement goes quiet too. Ctrl: exclusive" }
+
+local function drawMix(theme, t, x, y, w)
+    local C = theme.colors
+    local tr = Loop.GetLaneDest(t)
+    local live = Mix.Valid(tr)
+
+    -- Widths, dropped from the right as the column narrows: a control that no
+    -- longer fits is simply not placed, exactly as in a command bar.
+    local bw = MIX_BTN * 2 + 1
+    local fx = x + bw + MIX_GAP
+    local fw = w - bw - MIX_GAP
+    local mx
+    if fw - MIX_MET - MIX_GAP >= MIX_MIN_F then
+        fw = fw - MIX_MET - MIX_GAP
+        mx = x + w - MIX_MET
+    end
+    if fw < MIX_MIN_F then fw = 0 end
+
+    -- M and S. Letters, not glyphs: they are a PAIR, and the two universal
+    -- letters of every console read at 18 px where two different picture
+    -- families would only read as two different things.
+    -- The colour is the point — `mute` and `solo` have been sitting in the
+    -- theme since the palette work with nobody reading them.
+    MIX_M_OPTS.accent = C.mute
+    MIX_S_OPTS.accent = C.solo
+    local muted = live and Mix.IsMute(tr)
+    if UI.ChipAt(mix_id.m[t], x, y, MIX_BTN, MIX_H, nil, "M", muted, not live,
+                 MIX_M_OPTS) then
+        Mix.SetMute(tr, not muted)
+    end
+    local soloed = live and Mix.IsSolo(tr)
+    if UI.ChipAt(mix_id.s[t], x + MIX_BTN + 1, y, MIX_BTN, MIX_H, nil, "S",
+                 soloed, not live, MIX_S_OPTS) then
+        Mix.SetSolo(tr, not soloed, Core.ModCtrl())
+    end
+
+    if fw > 0 then
+        local n = Mix.GetNorm(tr)
+        MIX_F_OPTS.text = live and Mix.DbLabel(t, n) or nil
+        MIX_F_OPTS.disabled = not live
+        -- A column can be silent for two reasons, and the second one is not
+        -- on this column: its own mute, or somebody else's solo. The level
+        -- wears the mute colour either way, so "which of these do I actually
+        -- hear" is one glance rather than an audit of four buttons.
+        MIX_F_OPTS.accent = (live and (muted or (Mix.AnySolo() and not soloed)))
+                            and C.mute or nil
+        local ch, nv, rel = UI.FaderAt(mix_id.v[t], fx, y, fw, MIX_H, n,
+                                       MIX_F_OPTS)
+        if ch then
+            Mix.SetNorm(tr, nv)
+            mix_moved = true
+        end
+        -- One undo point per gesture, and only if the gesture did something:
+        -- a click that moved nothing should not enter the history.
+        if rel then
+            if mix_moved and live then Mix.CommitVol() end
+            mix_moved = false
+        end
+    end
+
+    if mx then
+        if live then
+            local ml, mr, hl, hr = Mix.Meter(t, tr)
+            -- A meter still above zero is a meter still FALLING, and it needs
+            -- frames to fall in. Without this the strip freezes lit the moment
+            -- the transport stops, which reads as "still playing".
+            if ml > 0 or mr > 0 or hl > 0 or hr > 0 then mix_hot = true end
+            UI.MeterAt(mx, y, MIX_MET, MIX_H, ml, mr, true, hl, hr)
+        else
+            -- Unrouted: clear rather than fade, so nothing is left showing a
+            -- level from a track this column no longer plays into.
+            Mix.ResetMeter(t)
+            UI.MeterAt(mx, y, MIX_MET, MIX_H, 0, 0, true)
+        end
+    end
+end
+
 local function frame(theme)
     local C = theme.colors
     if not (Loop.track and r.ValidatePtr2(0, Loop.track, "MediaTrack*")) then
@@ -1099,6 +1270,14 @@ local function frame(theme)
     UI.BarRight()
     if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
     UI.BarSep()
+    -- A view toggle, so it sits with the meta controls at the right end. The
+    -- strip costs 28 px of height permanently, which on a short window is the
+    -- last row of the grid: showing it has to stay a choice.
+    if UI.BarToggle("mix", "Sliders", nil, mix_open,
+                    "Mixer strip: volume, mute and solo per column") then
+        mix_open = not mix_open
+        Core.SavePersistent("CP_Session", "mix", mix_open)
+    end
     UI.BarLeft()
     if attached then
         local free = Loop.GetFreeRun()
@@ -1291,7 +1470,27 @@ local function frame(theme)
         end
     end
 
-    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 4)
+    -- ---- mixer zone. Its own ground and its own seam: it is not the grid,
+    -- and a zone that shares its neighbour's ground is not a zone.
+    local mix_h = 0
+    mix_hot = false
+    if mix_open then
+        mix_h = MIX_ZONE
+        local my = sy + sh + 4
+        local win_w = Core.GetWindowSize()
+        local surf = C.surface or C.frame_bg
+        UI.SeamH(0, my, win_w)
+        local zy = my + 2
+        Core.DrawRect(0, zy, win_w, MIX_PAD * 2 + MIX_H, surf[1], surf[2], surf[3], 1)
+        UI.SetFontCaption()
+        for t = 0, TRACKS - 1 do
+            local cx = x + scene_w + gap + t * (cell_w + gap)
+            drawMix(theme, t, cx, zy + MIX_PAD, cell_w)
+        end
+        UI.SetFontBody()
+    end
+
+    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 4 + mix_h)
 
     -- status zone
     local msg
@@ -1305,7 +1504,21 @@ local function frame(theme)
     if not msg then msg = statusLine() end
     UI.AppStatus(msg)
 
-    if Loop.Playing() then UI.RequestRedraw() end
+    -- A meter that only moves when the mouse does is worse than no meter, so
+    -- the strip asks for frames of its own whenever anything can be making
+    -- sound — the engine, the transport, or a sound cell (which plays through
+    -- CF_Preview and needs neither of the other two).
+    if Loop.Playing() or mix_hot then
+        UI.RequestRedraw()
+    elseif mix_open then
+        if (r.GetPlayState() & 1) == 1 then
+            UI.RequestRedraw()
+        else
+            for t = 0, TRACKS - 1 do
+                if aplay[t] then UI.RequestRedraw() break end
+            end
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------

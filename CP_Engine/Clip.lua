@@ -39,6 +39,45 @@ function Clip.new(kind)
     }
 end
 
+-- ---------------------------------------------------------------------------
+-- Clip colour
+--
+-- An INDEX into a fixed palette, not an RGB value. Three reasons, and they
+-- are the same three every time this choice comes up:
+--   · it serialises as one digit, and the descriptor travels over channels
+--     where every byte is a byte;
+--   · two windows showing the same clip show the same colour, forever,
+--     without either of them agreeing on a colour space first;
+--   · a palette can be RE-TUNED for a light theme one day; a stored RGB
+--     cannot be.
+-- The hues are chosen to survive a dark canvas AND to stay apart from each
+-- other at a 3-pixel band. 0 or nil = no colour, which is not "black" — it is
+-- the cell keeping the theme's own ground.
+Clip.COLORS = {
+    { 0.86, 0.32, 0.30 },   -- 1 red
+    { 0.90, 0.56, 0.24 },   -- 2 orange
+    { 0.87, 0.79, 0.28 },   -- 3 yellow
+    { 0.44, 0.76, 0.40 },   -- 4 green
+    { 0.30, 0.72, 0.70 },   -- 5 teal
+    { 0.38, 0.58, 0.88 },   -- 6 blue
+    { 0.62, 0.46, 0.86 },   -- 7 violet
+    { 0.88, 0.44, 0.68 },   -- 8 pink
+}
+
+Clip.COLOR_NAMES = { "Red", "Orange", "Yellow", "Green",
+                     "Teal", "Blue", "Violet", "Pink" }
+
+-- The three components of a clip's colour, or nil when it has none. Returning
+-- three numbers rather than the table keeps callers from holding a reference
+-- into the palette and painting with a stale one.
+function Clip.ColorOf(c)
+    local i = c and c.color
+    if not i or i < 1 then return nil end
+    local p = Clip.COLORS[i]
+    if not p then return nil end
+    return p[1], p[2], p[3]
+end
+
 -- Numeric identity for a grid cell, so an engine lane can record WHICH clip
 -- it is holding in a single gmem slot — no strings on a channel two scripts
 -- poll every frame. 0 = untagged (a plain Looper loop, which belongs to its
