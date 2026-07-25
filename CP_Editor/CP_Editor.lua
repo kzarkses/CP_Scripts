@@ -76,6 +76,11 @@ local opts = {
     midi_snap = cfg.midi_snap ~= false,   -- piano roll: snap to the grid
     grid_div  = cfg.grid_div,             -- editor grid (whole notes), nil = project
     note_names = cfg.note_names == true,  -- draw note names inside notes
+    -- Hear a note as you write or drag it. On by default: writing blind is
+    -- the exception, not the rule. Off matters when the instrument is loud,
+    -- when you are working against a running loop, or when the audition
+    -- reaches an instrument you did not mean (see the input-monitor note).
+    audition   = cfg.audition ~= false,
     thru_track = cfg.thru_track ~= false, -- preview through the item's track (its FX)
 }
 Audio.volume = cfg.vol or 1.0
@@ -131,6 +136,7 @@ local function persistConfig()
     cfg.last_vel  = state.last_vel
     cfg.grid_div  = opts.grid_div
     cfg.note_names = opts.note_names
+    cfg.audition   = opts.audition
     cfg.thru_track = opts.thru_track
     UI.SaveConfig(CONFIG_ID, cfg)
 end
@@ -1491,6 +1497,7 @@ local MROLL_BUF = 906 -- grid background buffer (905 = waveform)
 
 -- Audition through the CP_Sampler kit bus (armed bus hears the VKB).
 local function auditionNote(pitch, vel)
+    if not opts.audition then return end
     if state.aud_note then Kit.StuffNote(state.aud_note, false) end
     Kit.StuffNote(pitch, true, vel or state.last_vel)
     state.aud_note = pitch
@@ -1751,6 +1758,17 @@ local function drawMidiBar(theme)
         opts.note_names = non
         markDirty()
     end
+    UI.SameLine()
+    local atog, aon = UI.Checkbox("m_aud", "Listen", opts.audition)
+    if atog then
+        opts.audition = aon
+        -- a note may be sounding right now: do not strand it
+        if not aon and state.aud_note then
+            Kit.StuffNote(state.aud_note, false)
+            state.aud_note = nil
+        end
+        markDirty()
+    end
 
     -- EDIT cluster: default velocity + quantize + native escape hatch
     rowDiv(theme)
@@ -1841,7 +1859,9 @@ local GRID_TIER_A = RollUI.GRID_ALPHA
 local function gridLine(qn, tier, sp, w, h, gc)
     local t = qnToRoll(qn)
     if t < state.t0 or t > state.t1 then return end
-    local x = (t - state.t0) / sp * w
+    -- floored like the notes, so a note edge and its gridline share a column
+    -- instead of straddling two
+    local x = math.floor((t - state.t0) / sp * w)
     gfx.set(gc[1], gc[2], gc[3], GRID_TIER_A[tier])
     gfx.line(x, 0, x, h - 1)
 end
@@ -2486,8 +2506,14 @@ local function drawRoll(theme, area_h)
         if rowi then
             local t0n, t1n = Roll.starts[i], Roll.starts[i] + Roll.lens[i]
             if t1n > state.t0 and t0n < state.t1 then
-                local x0 = xAtTime(math.max(t0n, state.t0))
-                local x1 = xAtTime(math.min(t1n, state.t1))
+                -- Snap BOTH edges to the pixel grid before taking the width.
+                -- Rounded separately by gfx, two notes that touch end-to-start
+                -- landed 1 px apart or 2 px apart depending on where the
+                -- fraction fell — a row of 16ths visibly breathed. Flooring
+                -- first puts every note on the same lattice, so the gap is
+                -- always exactly one pixel.
+                local x0 = math.floor(xAtTime(math.max(t0n, state.t0)))
+                local x1 = math.floor(xAtTime(math.min(t1n, state.t1)))
                 if x1 - x0 < 2 then x1 = x0 + 2 end
                 local y = wave.ry + (rowi - 1) * row_h
                 local alpha = 0.35 + (Roll.vels[i] / 127) * 0.55
@@ -2512,7 +2538,7 @@ local function drawRoll(theme, area_h)
     for i = 1, Roll.count do
         local t0n = Roll.starts[i]
         if t0n >= state.t0 and t0n <= state.t1 then
-            local x = xAtTime(t0n)
+            local x = math.floor(xAtTime(t0n))   -- same lattice as the note
             local bh = (Roll.vels[i] / 127) * (VEL_H - 4)
             local sel = Roll.IsSel(i)
             local c = sel and col_sel or col_acc

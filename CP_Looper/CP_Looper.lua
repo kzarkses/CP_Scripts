@@ -1182,8 +1182,10 @@ local function drawEditor(theme)
     for i = 1, Roll.count do
         local yy = Rows.YOfPitch(rows, Roll.pitches[i], ry, rowh)
         if yy then
-            local nx = phaseToX(Roll.starts[i], rx, rw, L)
-            local nw = Roll.lens[i] / L * rw
+            -- both edges on the pixel lattice before taking the width: rounded
+            -- separately, touching notes sat 1 or 2 px apart at random
+            local nx = math.floor(phaseToX(Roll.starts[i], rx, rw, L))
+            local nw = math.floor(phaseToX(Roll.starts[i] + Roll.lens[i], rx, rw, L)) - nx
             if nw < 3 then nw = 3 end
             if nx + nw > rx + rw then nw = rx + rw - nx end
             local sel = Roll.IsSel(i)
