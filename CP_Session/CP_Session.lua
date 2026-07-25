@@ -67,11 +67,20 @@ end
 -- "?" overlay content (standard help affordance, one per app)
 local HELP_TEXT = [[
 ## CP Session
-A column per track, a row per scene, one clip per cell. Click a cell
-to launch it — QUANTIZED (the Q button), and whatever that track was
-playing stops by itself: a track only ever plays one clip. The square
-under a column stops that track; the triangle on the left launches a
-whole scene (tracks with no clip in that scene stop, as in Ableton).
+A column per track, a row per scene, one clip per cell. Every cell
+carries the button that says what a click does: TRIANGLE launches,
+SQUARE stops what is playing, CIRCLE records. Launching is QUANTIZED
+(the Q button) and whatever that track was playing stops by itself —
+a track only ever plays one clip.
+The row of squares under the grid stops one track (or all of them,
+the one on the left); the triangle beside a row launches that whole
+scene, and tracks with no clip in it stop, as in Ableton.
+
+## Recording into a cell
+Arm a track with the circle in its header (one at a time — the engine
+monitors one), then click any EMPTY cell of that track: capture starts
+quantized, stops by itself on the loop's length, and what you played
+lands in that cell.
 
 ## Editing
 DOUBLE-CLICK any cell — even an empty one — and it opens in CP_Editor,
@@ -360,6 +369,53 @@ local function applyEdit(ac)
     return false
 end
 
+-- ---------------------------------------------------------------------------
+-- Recording into a cell — the other half of a session view: an armed track
+-- captures into an empty slot, and what comes out lands in that cell.
+-- ---------------------------------------------------------------------------
+local rec = nil   -- { t, s } while a capture is running
+
+local function armTrack(t)
+    Loop.SetArmedLane(liveLane(t))
+end
+
+-- Armed is a TRACK fact, not a lane one: the pair swaps buffers as clips
+-- change, and the arm must not appear to move with it. (The engine always
+-- monitors exactly one lane — it clamps anything out of range — so there is
+-- no "nothing armed" state to offer; clicking moves the arm, never kills it.)
+local function isArmed(t)
+    local a = Loop.GetArmedLane()
+    if not a then return false end
+    return (floor(a + 0.5) % TRACKS) == t
+end
+
+local function recCell(t, s)
+    local live = liveLane(t)
+    armTrack(t)
+    Loop.Rec(live)            -- quantized, auto-stops on the lane's length
+    rec = { t = t, s = s }
+    cur[t] = s
+end
+
+-- The capture is the engine's business; we only watch for its end and keep
+-- what it produced. Recording finishes into "playing" (the loop rolls on).
+local function pollRec()
+    if not rec then return end
+    local live = liveLane(rec.t)
+    local m = floor(Loop.Mode(live) + 0.5)
+    if m == 1 or m == 4 then return end          -- still capturing / armed
+    if m == 0 then rec = nil return end          -- cleared under us
+    local c = Loop.LaneToClip(live)
+    if c then
+        c.cell = rec.t .. "," .. rec.s
+        c.name = trackName(rec.t) .. " · " .. (rec.s + 1)
+        cells[rec.t][rec.s] = c
+        saveGrid()
+        flash("Captured into " .. c.name)
+    end
+    rec = nil
+end
+
 local function clearCell(t, s)
     if not cells[t][s] then return end
     cells[t][s] = nil
@@ -487,6 +543,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Drawing
 -- ---------------------------------------------------------------------------
+-- Every cell carries its own transport button, the way a session view is
+-- meant to be read: a triangle to launch, a square to stop what is playing,
+-- a circle to capture into an empty slot of an armed track. Icons come from
+-- the toolkit (baked at 4x, so antialiased like everything else) — never
+-- raw gfx primitives.
+local BTN_W = 16
+
 local function drawCell(theme, t, s, x, y, w, h)
     local C = theme.colors
     local c = cells[t][s]
@@ -496,15 +559,40 @@ local function drawCell(theme, t, s, x, y, w, h)
     local mode = is_cur and floor(Loop.Mode(live) + 0.5) or 0
     local pend = is_cur and Loop.Pending(live) or 0
     local playing = is_cur and (mode == 3 or mode == 5)
+    local capturing = (rec and rec.t == t and rec.s == s) or false
 
     local br, bg_, bb = 0.15, 0.15, 0.17
-    if playing then
+    if capturing then
+        local d = C.danger or C.accent
+        br, bg_, bb = d[1] * 0.5, d[2] * 0.3, d[3] * 0.3
+    elseif playing then
         local a = C.accent
         br, bg_, bb = a[1] * 0.45, a[2] * 0.45, a[3] * 0.45
     elseif c then
         br, bg_, bb = 0.21, 0.21, 0.24
     end
     Core.DrawRoundRectFilled(x, y, w, h, rad, br, bg_, bb, 1)
+
+    -- the transport button: what it shows IS what a click does
+    local bx, by = x + 2, y + floor((h - BTN_W) / 2)
+    local tc = C.text
+    local mc = C.text_mute or C.text_disabled
+    if capturing then
+        local a = 0.5 + 0.5 * math.abs(sin(r.time_precise() * 5))
+        local d = C.danger or C.accent
+        UI.Icons.Record(bx, by, BTN_W, d[1], d[2], d[3], a)
+        UI.RequestRedraw()
+    elseif c then
+        if playing or pend == 1 then
+            UI.Icons.Stop(bx, by, BTN_W, tc[1], tc[2], tc[3], 0.9)
+        else
+            UI.Icons.Play(bx, by, BTN_W, tc[1], tc[2], tc[3], 0.75)
+        end
+    elseif isArmed(t) then
+        -- empty slot on the armed track: this is where a take lands
+        local d = C.danger or C.accent
+        UI.Icons.Record(bx, by, BTN_W, d[1], d[2], d[3], 0.55)
+    end
 
     if c then
         -- queued launch / stop blinks, exactly as in the Looper
@@ -524,13 +612,12 @@ local function drawCell(theme, t, s, x, y, w, h)
             end
             UI.RequestRedraw()
         end
-        local tc = C.text
         local nm = (c.name and c.name ~= "") and c.name or "clip"
-        Core.DrawText(cellLabel(t, s, nm, w - 10), x + 5, y + 3,
+        local tw = w - BTN_W - 8
+        Core.DrawText(cellLabel(t, s, nm, tw), x + BTN_W + 4, y + 3,
                       tc[1], tc[2], tc[3], 0.95)
         UI.SetFontCaption()
-        local mc = C.text_mute or C.text_disabled
-        Core.DrawText(barsLabel(cellBars(c)), x + 5, y + h - 13,
+        Core.DrawText(barsLabel(cellBars(c)), x + BTN_W + 4, y + h - 13,
                       mc[1], mc[2], mc[3], 0.85)
         UI.SetFontBody()
     end
@@ -540,7 +627,13 @@ local function drawCell(theme, t, s, x, y, w, h)
         if Core.MouseDoubleClicked() then
             editCell(t, s)
         elseif Core.MouseClicked(1) then
-            launchCell(t, s)
+            if c then
+                launchCell(t, s)
+            elseif isArmed(t) then
+                recCell(t, s)     -- empty + armed: the click records
+            else
+                flash("Empty cell — arm the track to record, or double-click to write")
+            end
         elseif Core.MouseClicked(2) then
             cellMenu(t, s)
         end
@@ -646,6 +739,7 @@ local function frame(theme)
     end
 
     syncBuffers()
+    pollRec()
 
     -- edits coming home from CP_Editor (own channel: see the editor's
     -- flushApply — a shared one would let CP_Looper consume our cells)
@@ -664,23 +758,25 @@ local function frame(theme)
     local cell_w = floor((w - scene_w - gap * TRACKS) / TRACKS)
     local cell_h = 30
 
-    -- ---- track headers: name + a stop square
+    -- ---- track headers: name + record arm (the engine monitors ONE track
+    -- at a time, so arming is exclusive — clicking the lit one disarms)
     UI.SetFontCaption()
     for t = 0, TRACKS - 1 do
         local cx = x + scene_w + gap + t * (cell_w + gap)
         local mc = C.text_mute or C.text_disabled
-        Core.DrawText(cellLabel(t, SCENES, trackName(t), cell_w - 20), cx + 2, y + 2,
+        Core.DrawText(cellLabel(t, SCENES, trackName(t), cell_w - 22), cx + 2, y + 2,
                       mc[1], mc[2], mc[3], 0.9)
-        -- stop square (a track-wide gesture, the Ableton column footer moved up)
-        local sq = 9
-        local sx2 = cx + cell_w - sq - 2
-        -- filled while the track plays (there is something to stop),
-        -- outlined when it is silent
-        local running = isRunning(liveLane(t))
-        Core.DrawRect(sx2, y + 4, sq, sq,
-                      mc[1], mc[2], mc[3], running and 0.85 or 0.35, running)
-        if Core.MouseInRect(sx2 - 2, y, sq + 4, head_h) and not Core.HasPopup() then
-            if Core.MouseClicked(1) then stopTrack(t) end
+        local ax = cx + cell_w - 16
+        local armed = isArmed(t)
+        local d = C.danger or C.accent
+        if armed then
+            UI.Icons.Record(ax, y + 1, 14, d[1], d[2], d[3], 0.95)
+        else
+            UI.Icons.Record(ax, y + 1, 14, mc[1], mc[2], mc[3], 0.4)
+        end
+        if Core.MouseInRect(ax - 2, y, 18, head_h) and not Core.HasPopup()
+           and Core.MouseClicked(1) then
+            armTrack(t)
         end
     end
     UI.SetFontBody()
@@ -696,8 +792,8 @@ local function frame(theme)
         Core.DrawRoundRectFilled(x, cy, scene_w, cell_h,
                                  theme.rounding_small or 0, 0.17, 0.19, 0.17, 1)
         local a = C.accent
-        UI.DrawTriangle(x + 8, cy + cell_h * 0.5 - 5, x + 8, cy + cell_h * 0.5 + 5,
-                        x + 17, cy + cell_h * 0.5, a[1], a[2], a[3], 0.85)
+        UI.Icons.Play(x + 5, cy + floor((cell_h - 14) / 2), 14,
+                      a[1], a[2], a[3], 0.85)
         if Core.MouseInRect(x, cy, scene_w, cell_h) and not Core.HasPopup() then
             Core.DrawRect(x, cy, scene_w, cell_h, 1, 1, 1, 0.06)
             if Core.MouseClicked(1) then sceneLaunch(s) end
@@ -708,8 +804,35 @@ local function frame(theme)
         end
     end
 
+    -- ---- stop row: one square per track, plus the global one on the left
+    -- (Ableton's "Stop Clips" footer — a big target, not a corner pixel)
+    local sy = gy + SCENES * (cell_h + gap) + 2
+    local sh = 16
+    do
+        local mc = C.text_mute or C.text_disabled
+        Core.DrawRoundRectFilled(x, sy, scene_w, sh, theme.rounding_small or 0,
+                                 0.17, 0.17, 0.19, 1)
+        UI.Icons.Stop(x + 5, sy + 1, 14, mc[1], mc[2], mc[3], 0.8)
+        if Core.MouseInRect(x, sy, scene_w, sh) and not Core.HasPopup() then
+            Core.DrawRect(x, sy, scene_w, sh, 1, 1, 1, 0.06)
+            if Core.MouseClicked(1) then stopAll() end
+        end
+        for t = 0, TRACKS - 1 do
+            local cx = x + scene_w + gap + t * (cell_w + gap)
+            local running = isRunning(liveLane(t))
+            Core.DrawRoundRectFilled(cx, sy, cell_w, sh, theme.rounding_small or 0,
+                                     0.17, 0.17, 0.19, 1)
+            UI.Icons.Stop(cx + floor(cell_w / 2) - 7, sy + 1, 14,
+                          mc[1], mc[2], mc[3], running and 0.9 or 0.35)
+            if Core.MouseInRect(cx, sy, cell_w, sh) and not Core.HasPopup() then
+                Core.DrawRect(cx, sy, cell_w, sh, 1, 1, 1, 0.06)
+                if Core.MouseClicked(1) then stopTrack(t) end
+            end
+        end
+    end
+
     -- ---- audio row (interim engine)
-    local ay = gy + SCENES * (cell_h + gap) + 6
+    local ay = sy + sh + 6
     local ah = 26
     UI.SetFontCaption()
     do
@@ -726,7 +849,7 @@ local function frame(theme)
         end
     end
     UI.SetFontBody()
-    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 6 + ah + 4)
+    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 6 + ah + 4)
 
     -- status
     UI.SetFontCaption()
@@ -737,7 +860,7 @@ local function frame(theme)
             state.flash_msg = ""
         end
     else
-        UI.Text("Click = launch (one clip per track) · double-click = edit in CP_Editor · triangle = scene",
+        UI.Text("Click = launch/stop · empty + armed = record · double-click = edit in CP_Editor · triangle = scene",
                 { disabled = true })
     end
     UI.SetFontBody()
