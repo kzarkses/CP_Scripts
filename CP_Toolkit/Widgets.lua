@@ -4667,6 +4667,121 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
 end
 
 -- ============================================================================
+-- ICON BUTTON / ICON TOGGLE
+-- ============================================================================
+-- A toggle should say WHAT IT DOES, not only change colour. Colour alone asks
+-- the user to remember which of two states the highlight means; a glyph PAIR
+-- (Eye/EyeOff, Lock/Unlock, PanelLeft/PanelLeftClose, VolumeUp/VolumeOff)
+-- states it outright. So `icon_off` is the interesting argument here, not an
+-- afterthought: pass one and the widget stops leaning on the accent to carry
+-- the meaning, and dims the background instead.
+--
+-- `icon` is a name in the Icons module ("Pencil") or a draw function with the
+-- icon signature (x, y, size, r, g, b, a). A name that does not resolve draws
+-- nothing rather than erroring: a glyph missing from the pack must never take
+-- a window down.
+--
+-- opts: width, height (default square at button_height), icon_size, label
+--       (text to the right of the glyph), flat (no background until hovered —
+--       for rails and dense toolbars), tooltip, disabled, accent (an rgba to
+--       tint the ON state with instead of theme accent — record red, etc).
+local function resolveIcon(icon)
+    if type(icon) == "function" then return icon end
+    if type(icon) == "string" and Icons then return Icons[icon] end
+    return nil
+end
+
+local function iconWidget(id, icon, icon_off, is_on, theme, opts, toggle)
+    opts = opts or {}
+    local fp_x = theme.frame_padding_x
+    local h = opts.height or theme.button_height
+    local label = opts.label
+    local lw, lh = 0, 0
+    if label then lw, lh = Core.MeasureText(label) end
+    local isz = opts.icon_size or floor(h * 0.62)
+    local w = opts.width
+    if not w then
+        w = label and (isz + lw + fp_x * 2 + 4) or h
+    elseif w == -1 then
+        w = Layout.GetAvailableWidth()
+    end
+
+    if Layout.IsWrapping() then Layout.WrapPreCheck(w) end
+    local x, y = Layout.GetCursorPos()
+
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h)
+        and not Core.HasPopup()
+    local fired = false
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then fired = true end
+    end
+    local on = toggle and ((fired and not is_on) or ((not fired) and is_on)) or false
+
+    if Core.IsVisible(x, y, w, h) then
+        local dim = disabled and 0.5 or 1
+        local rad = theme.widget_style ~= "windows" and theme.rounding or 0
+        -- With a glyph pair the state is already legible, so the fill only has
+        -- to answer "is this a control" — it stays quiet. With a single glyph
+        -- the fill IS the state, so it takes the accent.
+        local paired = (icon_off ~= nil)
+        local bg
+        if on and not paired then
+            bg = opts.accent or (hovered and theme.colors.accent_hovered or theme.colors.accent)
+        elseif opts.flat and not hovered and not on then
+            bg = nil
+        elseif on then
+            bg = theme.colors.button_active
+        elseif hovered then
+            bg = theme.colors.button_hovered
+        elseif opts.flat then
+            bg = nil
+        else
+            bg = theme.colors.button
+        end
+        if bg then
+            fillRound(x, y, w, h, rad, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
+            if not disabled and not opts.flat then
+                draw_win32_bevel(x, y, w, h, theme, on and "sunken" or "raised")
+            end
+        end
+
+        local tc
+        if disabled then tc = theme.colors.text_disabled
+        elseif on and not paired then tc = COLOR_WHITE
+        elseif on then tc = theme.colors.accent
+        else tc = theme.colors.text end
+        local a = (tc[4] or 1) * dim * ((hovered or on) and 1 or 0.82)
+
+        local draw = resolveIcon((on or not toggle) and icon or (icon_off or icon))
+        local ix = label and (x + fp_x) or (x + floor((w - isz) / 2))
+        if draw then draw(ix, y + floor((h - isz) / 2), isz, tc[1], tc[2], tc[3], a) end
+        if label then
+            Core.DrawText(label, ix + isz + 4, y + floor((h - lh) / 2),
+                          tc[1], tc[2], tc[3], a)
+        end
+    end
+
+    if hovered and opts.tooltip then Widgets.Tooltip(opts.tooltip, theme) end
+    Layout.AdvanceCursor(w, h)
+    return fired, on
+end
+
+-- Momentary. Returns clicked.
+function Widgets.IconButton(id, icon, theme, opts)
+    local clicked = iconWidget(id, icon, nil, false, theme, opts, false)
+    return clicked
+end
+
+-- Stateful. Returns toggled, new_on — same contract as ToggleButton.
+-- opts.icon_off gives the OFF state its own glyph (strongly preferred).
+function Widgets.IconToggle(id, icon, is_on, theme, opts)
+    return iconWidget(id, icon, (opts or {}).icon_off, is_on, theme, opts, true)
+end
+
+-- ============================================================================
 -- RANGE SLIDER (dual thumb for min/max)
 -- ============================================================================
 function Widgets.RangeSlider(id, label, val_min, val_max, range_min, range_max, theme, opts)

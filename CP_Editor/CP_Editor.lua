@@ -1729,6 +1729,9 @@ end
 -- Toolbar row (MIDI mode)
 -- ---------------------------------------------------------------------------
 local VEL_OPTS = { step = 1, format = "%.0f", width = 56 }
+-- Hoisted: a widget opts table built inline would allocate once per frame.
+local AUD_OPTS = { icon_off = "VolumeOff", label = "Listen",
+                   tooltip = "Hear notes as you draw and drag them" }
 
 local function drawMidiBar(theme)
     -- GRID cluster: snapping + grid division
@@ -1759,7 +1762,11 @@ local function drawMidiBar(theme)
         markDirty()
     end
     UI.SameLine()
-    local atog, aon = UI.Checkbox("m_aud", "Listen", opts.audition)
+    -- Icon pair rather than a tick: a speaker with and without sound says
+    -- which way this is set without reading the box, and it is the first
+    -- control migrated to the icon vocabulary (ANALYSE_Nomenclature).
+    local atog, aon = UI.IconToggle("m_aud", "VolumeUp", opts.audition,
+                                    AUD_OPTS)
     if atog then
         opts.audition = aon
         -- a note may be sounding right now: do not strand it

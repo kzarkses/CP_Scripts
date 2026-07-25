@@ -70,6 +70,24 @@ UI.Button(id, label, opts)              -- opts: {width, height}
 UI.ToggleButton(id, label, is_on, opts) -- opts: {width, height}
     -- width = -1 → fill (same semantic as Button)
 
+-- Icon versions. `icon` is a name in UI.Icons ("Pencil", "PanelLeft", ...) or
+-- a draw function (x, y, size, r, g, b, a). An unknown name draws nothing.
+UI.IconButton(id, icon, opts)           -- returns: clicked
+UI.IconToggle(id, icon, is_on, opts)    -- returns: toggled, new_state
+    -- opts: {icon_off, label, icon_size, width, height, flat, tooltip,
+    --        disabled, accent}
+    -- icon_off  GIVE THE OFF STATE ITS OWN GLYPH whenever a pair exists
+    --           (Eye/EyeOff, Lock/Unlock, VolumeUp/VolumeOff, PanelLeft/
+    --           PanelLeftClose). Colour alone makes the user remember which
+    --           state the highlight means; a pair says it outright. With a
+    --           pair the widget keeps a quiet background instead of taking
+    --           the accent.
+    -- label     drawn to the right of the glyph — icon AND word, when there
+    --           is room for both
+    -- flat      no background until hovered (rails, dense toolbars)
+    -- Hoist the opts table to a module local: built inline it allocates once
+    -- per frame.
+
 -- Checkbox (filled square). Returns: toggled, new_checked
 UI.Checkbox(id, label, checked)
 

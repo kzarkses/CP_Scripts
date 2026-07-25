@@ -608,6 +608,18 @@ function UI.ToggleButton(id, label, is_on, opts)
     return Widgets.ToggleButton(id, label, is_on, UI._theme, opts)
 end
 
+-- Icon Button / Icon Toggle. `icon` is a name in UI.Icons ("Pencil") or a
+-- draw function. For a toggle, prefer giving the OFF state its own glyph:
+--   UI.IconToggle("mon", "Eye", on, { icon_off = "EyeOff" })
+-- so the control says what it does instead of only lighting up.
+function UI.IconButton(id, icon, opts)
+    return Widgets.IconButton(id, icon, UI._theme, opts)
+end
+
+function UI.IconToggle(id, icon, is_on, opts)
+    return Widgets.IconToggle(id, icon, is_on, UI._theme, opts)
+end
+
 -- Help ("?") button + overlay
 function UI.HelpButton(id, help_text, opts)
     return Widgets.HelpButton(id, help_text, UI._theme, opts)
