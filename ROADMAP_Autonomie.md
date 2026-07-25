@@ -941,6 +941,34 @@ jamais en Free (transport arrêté ⇒ alignement jamais posé). On aligne le
 **départ**, puis on relâche — une fois la lecture réellement commencée, sinon
 la preview partirait sur-le-champ.
 
+### Deuxième passe (ses retours sur la première)
+
+- [x] **Le lavis sur la zone de sample disparaît**, et avec lui la raison qui
+  le rendait nécessaire : la **région descend dans une bande le long du bas**
+  (ses bords, et le milieu qui la fait glisser), l'enveloppe garde la forme
+  d'onde. Deux familles empilées au lieu de deux familles qui se disputent le
+  même clic — c'est le geste de CP_Editor, appliqué au Sampler comme demandé.
+  *Détail qui aurait mordu* : l'enveloppe s'arrête au-dessus de la bande, sinon
+  un sustain au minimum posait ses deux poignées dedans, où la région répond en
+  premier, et elles devenaient inattrapables.
+- [x] **La règle de CP_Editor place le curseur d'édition et rien d'autre**,
+  comme celle de REAPER : on place où commence la prochaine action sans perdre
+  la plage qu'on vient de sélectionner. Glisser dedans scrube.
+- [x] **La sélection audio se cale sur la grille**, la même que celle du piano
+  roll, avec les deux mêmes contrôles (aimant + résolution) — en mode fichier
+  **et** sur un item de l'arrangeur. Le domaine dessiné est celui de la source
+  et la grille est musicale : l'aller-retour passe par le TimeMap de REAPER, ce
+  qui honore une carte de tempo au lieu de la supposer absente. Un fichier nu
+  n'a pas de position, il est donc lu comme s'il commençait au zéro du projet.
+  La grille n'est **dessinée que quand elle est ce à quoi la souris obéit**, et
+  le calage sur passage par zéro ne s'applique plus que si elle est éteinte —
+  les deux se battraient.
+- [x] **ESC ne ferme plus l'éditeur.** La descente des couches (popup, focus)
+  est inchangée ; la dernière marche est devenue une option du toolkit,
+  `close_on_esc`, vraie par défaut. « Annuler ce que je fais » et « jeter ce sur
+  quoi je travaille » ne sont pas la même intention. **Une ligne suffit pour
+  l'appliquer aux autres fenêtres** le jour où ça se pose.
+
 Les trois jetons de rôle `mute`, `solo` et `mod` attendent précisément ça —
 `mute` et `solo` sont le vocabulaire documenté des boutons M/S, et ils sont
 définis dans le thème sans que rien ne les lise. Le mixer est ce qui les
