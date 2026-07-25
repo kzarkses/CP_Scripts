@@ -146,7 +146,14 @@ local PITCH_KNOB_OPTS = {
     to_display   = function() return Kit.PadPitch(ent_note) or 0 end,
     from_display = function(st) return 0.5 + st / 48 end,   -- the knob window
 }
-local ROOT_OPTS   = { step = 1, format = "%.0f", width = 50 }
+-- Instrument row: three controls that are not continuous, in a dial's box.
+local ROOT_OPTS   = { on = false,
+    tip = "Root note — the key the sample plays at its own pitch (click: choose, wheel: semitone, Ctrl+click a key)" }
+local VOICE_OPTS  = { on = false,
+    tip = "Voices — 1 is monophonic, so every note cuts the one before it (click: choose, wheel: step)" }
+local ILOOP_OPTS  = { tip = "Loop the sample while a note is held; release fades out" }
+local VOICE_LBL   = { "1", "2", "3", "4", "5", "6", "7", "8",
+                      "9", "10", "11", "12", "13", "14", "15", "16" }
 local PLAY_OPTS   = {}            -- pooled Audio.Play opts
 local GRID_GAP    = 6
 -- Control strip reserve. It is the SAME whatever is selected: the strip draws
@@ -601,16 +608,13 @@ local function openSettings()
             velocityItem(64), velocityItem(80), velocityItem(100),
             velocityItem(112), velocityItem(127),
         } },
-        { label = "Clicking a pad plays it",
-          checked = opts.play_on_select,
-          action = function()
-            opts.play_on_select = not opts.play_on_select
-            markDirty()
-            flash(opts.play_on_select and "Pad click plays"
-                                       or "Pad click selects only (Enter plays)")
-          end },
+        -- "Clicking a pad plays it" lives in the BAR now (the pointer chip):
+        -- it is answered several times a session, and a decision taken that
+        -- often has no business being two clicks deep in a menu.
         { separator = true },
-        { label = "Kit bus armed (MIDI input + pad clicks sound)",
+        { label = Kit.mode == "instrument"
+                  and "Instrument armed (MIDI input + key clicks sound)"
+                  or "Kit bus armed (MIDI input + pad clicks sound)",
           checked = Kit.Armed(),
           action = function() Kit.SetArmed(not Kit.Armed()) end },
         { label = "Create kit bus now", disabled = Kit.Exists(),
@@ -680,6 +684,19 @@ picks it; the other kits still play from the Looper's lanes. Drop
 files from the Media Explorer or drag an item from the arrange onto
 a pad.
 
+## Two instruments, two tracks
+DRUM (the pads) and INSTRUMENT (one sample across the keyboard) are
+two separate instruments on two separate tracks: both keep playing
+whatever is sent to them, and each has its own output to mix. The
+toolbar's Drum/Piano pair only says which one you are LOOKING at —
+and, with it, which one hears your keyboard and your clicks, since
+only one of them can (a click is a broadcast). Record arms the one
+on screen.
+
+The POINTER button says whether clicking a pad plays it. Off, a click
+only selects — the useful mode while a loop is running — and Enter
+plays the selection.
+
 ## Pad
 Vol / Pan / Tune (vinyl repitch) / Pitch (elastique, length kept) /
 ADSR. Loop gates the sample while the pad is held. Choke groups cut
@@ -691,13 +708,23 @@ trim, drag between them to slide the whole thing — and the ENVELOPE
 handles live on the waveform itself. Every handle lights up under the
 cursor and grows while you hold it.
 
+## Instrument
+One sample across the keyboard, pitched from a ROOT note (click the
+chip to choose one, wheel it by semitone, or Ctrl+click a key). VOICES
+is this instrument's choke: at 1 it is monophonic and every note cuts
+the one before it. Loop and the region band behave as they do on a pad.
+
 ## Right-click a pad
 Load sample, Open in Editor (the trim lands selected), Bake: crop to
 a new file, Sync to project tempo, choke group.
 ]]
 
-local ARM_ON  = "Kit bus armed: MIDI input and pad clicks play through the pads"
-local ARM_OFF = "Kit bus disarmed: pad clicks fall back to direct preview"
+local ARM_ON  = "Armed: MIDI input and clicks play through the pads"
+local ARM_OFF = "Disarmed: clicks fall back to direct preview"
+local IARM_ON  = "Armed: MIDI input and key clicks play through the instrument"
+local IARM_OFF = "Disarmed: key clicks fall back to direct preview"
+local CLICK_ON  = "Clicking a pad plays it"
+local CLICK_OFF = "Clicking a pad only selects it — Enter plays"
 local KIT_W   = { w = 4 }
 
 local function drawToolbar(theme)
@@ -725,10 +752,24 @@ local function drawToolbar(theme)
 
     -- Armed: a held state, so it lights. The role colour is `record`, which
     -- is what the rest of the suite already uses to mean "this is live".
+    -- It arms WHAT IS ON SCREEN — the pads or the instrument — because only
+    -- one of the two can hear the keyboard at a time (Kit.armTarget).
     local armed = Kit.Armed()
-    if UI.BarToggle("arm", "Record", nil, armed, armed and ARM_ON or ARM_OFF,
+    local inst = Kit.mode == "instrument"
+    if UI.BarToggle("arm", "Record", nil, armed,
+                    armed and (inst and IARM_ON or ARM_ON)
+                           or (inst and IARM_OFF or ARM_OFF),
                     false, R_REC) then
         Kit.SetArmed(not armed)
+    end
+
+    -- Does a click SOUND? The other half of the arm question, and one that is
+    -- answered several times a session — drumming on the pads, then dialling
+    -- knobs while a loop runs — so it belongs in the bar, not in a menu.
+    if UI.BarToggle("clickplay", "Pointer", nil, opts.play_on_select,
+                    opts.play_on_select and CLICK_ON or CLICK_OFF) then
+        opts.play_on_select = not opts.play_on_select
+        markDirty()
     end
     UI.BarSep()
 
@@ -1392,6 +1433,30 @@ local function iknob(id, label, pid, default)
     UI.SameLine()
 end
 
+-- Menus for the two chips (built on click, never per frame).
+local function rootMenuItems(cur)
+    local items = {}
+    for n = 12, 108, 12 do
+        local note = n
+        items[#items + 1] = { label = NOTE_NAMES[note], checked = note == cur,
+                              action = function() Kit.SetRoot(note) end }
+    end
+    return items
+end
+
+local VOICE_CHOICES = { 1, 2, 4, 8, 16 }
+
+local function voiceMenuItems(cur)
+    local items = {}
+    for i = 1, #VOICE_CHOICES do
+        local n = VOICE_CHOICES[i]
+        items[i] = { label = (n == 1) and "1  (mono)" or tostring(n),
+                     checked = n == cur,
+                     action = function() Kit.SetInstrVoices(n) end }
+    end
+    return items
+end
+
 local function instrNoteOn(note)
     local instr = Kit.instr
     if not instr or not instr.path then return end
@@ -1632,12 +1697,30 @@ local function drawInstrument(theme, avail_h)
     iknob("i_dec", "D", Kit.P.DECAY, Kit.DEFAULT_DEC)
     iknob("i_sus", "S", Kit.P.SUSTAIN, Kit.DEFAULT_SUS)
     iknob("i_rel", "R", Kit.P.RELEASE, Kit.DEFAULT_REL)
-    local rootv, nroot = UI.NumberInput("i_root", "Root", instr.root, 0, 127,
-                                        ROOT_OPTS)
-    if rootv then Kit.SetRoot(nroot) end
+
+    -- Root, Voices and Loop in a DIAL'S FOOTPRINT — the same move the pad
+    -- strip made for Choke and Loop, and for the same reason: a number box and
+    -- a checkbox parked at the end of a knob bank are two intruders from
+    -- another window. Same 34 px square, same caption line, one row.
+    -- Voices IS the instrument's choke: at 1 the RS5K is monophonic and every
+    -- note cuts the one before it, which is the only choke a single chromatic
+    -- instrument can have.
+    local rk, rd = UI.KnobChip("i_root", "Root", NOTE_NAMES[instr.root], ROOT_OPTS)
+    if rd ~= 0 then Kit.SetRoot(instr.root + rd)
+    elseif rk then UI.NativeMenu(rootMenuItems(instr.root)) end
     UI.SameLine()
+
+    local nv = Kit.InstrVoices()
+    VOICE_OPTS.on = nv <= 1
+    local vk, vd = UI.KnobChip("i_voices", "Voices", VOICE_LBL[nv] or "16",
+                               VOICE_OPTS)
+    if vd ~= 0 then Kit.SetInstrVoices(nv + vd)
+    elseif vk then UI.NativeMenu(voiceMenuItems(nv)) end
+    UI.SameLine()
+
     local lv = Kit.InstrParam(Kit.P.LOOP) or 0
-    local ltog, lon = UI.Checkbox("i_loop", "Loop", lv >= 0.5)
+    local ltog, lon = UI.KnobToggle("i_loop", "Loop", "Repeat", lv >= 0.5,
+                                    ILOOP_OPTS)
     if ltog then Kit.SetInstrParam(Kit.P.LOOP, lon and 1 or 0) end
 
     UI.Spacing(16)
