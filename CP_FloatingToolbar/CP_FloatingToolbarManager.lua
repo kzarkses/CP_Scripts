@@ -164,8 +164,26 @@ local function draw_layout_section(tb)
     local dir_changed, new_dir = UI.Combo("tb_dir", "Direction", cur_dir, direction_options, { width = 200 })
     if dir_changed then tb.layout.direction = direction_options[new_dir]; dirty() end
 
-    local cs, ns = UI.SliderInt("tb_icon_size", "Icon size", tb.layout.icon_size or 24, 12, 64)
-    if cs then tb.layout.icon_size = ns; dirty() end
+    -- Tie the icon size to the toolkit's control height, so the strip grows
+    -- and shrinks with every other CP window when the size is changed in the
+    -- Theme Tweaker. A toolbar that stays 30 px while the rest moves to 28
+    -- stops belonging to the same product.
+    local follow = (tb.layout.icon_size_mode == "theme")
+    local cf, nf = UI.Checkbox("tb_icon_follow", "Icon size follows the theme", follow)
+    if cf then
+        tb.layout.icon_size_mode = nf and "theme" or "custom"
+        dirty()
+    end
+    if follow then
+        local th = UI.GetTheme()
+        UI.SetFontCaption()
+        UI.Text("currently " .. (th and th.button_height or 24) .. " px (theme control height)",
+                { disabled = true })
+        UI.SetFontBody()
+    else
+        local cs, ns = UI.SliderInt("tb_icon_size", "Icon size", tb.layout.icon_size or 24, 12, 64)
+        if cs then tb.layout.icon_size = ns; dirty() end
+    end
 
     local cg, ng = UI.SliderInt("tb_spacing", "Spacing", tb.layout.spacing or 4, 0, 32)
     if cg then tb.layout.spacing = ng; dirty() end
@@ -187,8 +205,8 @@ local function draw_layout_section(tb)
     -- Keying makes the unpainted pixels of the window transparent AND
     -- click-through. It is what "chips" and "none" need to exist at all, and
     -- it is why the window's size stops mattering.
-    local ct, nt = UI.Checkbox("tb_transp", "Transparent background",
-        tb.layout.transparent ~= false)
+    local ct, nt = UI.Checkbox("tb_transp", "Transparent background (experimental)",
+        tb.layout.transparent == true)
     if ct then tb.layout.transparent = nt; dirty() end
 
     local style = tb.layout.style or "panel"
@@ -197,6 +215,16 @@ local function draw_layout_section(tb)
         local color = tb.layout.bg_color or { 0.12, 0.12, 0.14 }
         local cc, nc = UI.ColorPicker("tb_bg_color", "Panel color", color)
         if cc then tb.layout.bg_color = { nc[1], nc[2], nc[3] }; dirty() end
+        -- Pipette, like the Theme Tweaker has next to every colour. It is the
+        -- only practical way to make the strip match a REAPER theme: sample
+        -- the pixel instead of guessing three numbers.
+        UI.SameLine()
+        if UI.Button("tb_bg_pick", "Pick") then
+            UI.StartEyedropper(function(picked)
+                tb.layout.bg_color = { picked[1], picked[2], picked[3] }
+                dirty()
+            end)
+        end
 
         local cr, nr = UI.SliderInt("tb_bg_radius", "Panel corner",
             tb.layout.bg_radius or 0, 0, 24)
@@ -211,6 +239,13 @@ local function draw_layout_section(tb)
         local ccol = tb.layout.chip_color or UI.GetTheme().colors.button
         local ccc, ncc = UI.ColorPicker("tb_chip_color", "Chip color", ccol)
         if ccc then tb.layout.chip_color = { ncc[1], ncc[2], ncc[3] }; dirty() end
+        UI.SameLine()
+        if UI.Button("tb_chip_pick", "Pick") then
+            UI.StartEyedropper(function(picked)
+                tb.layout.chip_color = { picked[1], picked[2], picked[3] }
+                dirty()
+            end)
+        end
 
         local ccr, ncr = UI.SliderInt("tb_chip_radius", "Chip corner",
             tb.layout.chip_radius or 4, 0, 16)
@@ -223,7 +258,7 @@ local function draw_layout_section(tb)
 
     -- Only meaningful without the key: with it, "see-through" is the gaps
     -- being genuinely absent rather than the whole strip being faded.
-    if tb.layout.transparent == false then
+    if not tb.layout.transparent then
         local co, no = UI.SliderDouble("tb_opacity", "Opacity (whole strip)",
             tb.layout.opacity or 1, 0.2, 1)
         if co then tb.layout.opacity = no; dirty() end

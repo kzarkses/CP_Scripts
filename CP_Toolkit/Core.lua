@@ -1276,8 +1276,10 @@ function Core.SetFrameless()
 
     is_frameless = true
     -- gfx may not report the new client size for another frame or two; keep
-    -- asserting it until it agrees (see _assert_frameless_size).
-    _size_assert_until = reaper.time_precise() + 1.0
+    -- correcting until it agrees (see _assert_frameless_size). Two seconds:
+    -- the loop converges in one or two passes, and the extra head-room costs
+    -- nothing because it stops the moment the sizes match.
+    _size_assert_until = reaper.time_precise() + 2.0
     _size_assert_last = 0
     if Log then Log.Info("CORE", "Frameless mode enabled") end
     return true
@@ -1305,7 +1307,7 @@ function Core.SetSize(w, h)
         -- was born as, and a toolbar could never change its own length.
         init_w, init_h = w, h
         reaper.JS_Window_Resize(win_hwnd, w, h)
-        _size_assert_until = reaper.time_precise() + 1.0
+        _size_assert_until = reaper.time_precise() + 2.0
         _size_assert_last = 0
         return true
     end
@@ -2222,18 +2224,32 @@ local function _assert_frameless_size()
     if not is_frameless or not win_hwnd then return end
     local now = reaper.time_precise()
     if now > _size_assert_until then return end
-    if gfx.w == init_w and gfx.h == init_h then
+    local dw = init_w - gfx.w
+    local dh = init_h - gfx.h
+    if dw == 0 and dh == 0 then
         _size_assert_until = 0   -- it took; stop paying for the check
         return
     end
     if (now - _size_assert_last) < 0.05 then return end
     _size_assert_last = now
-    if reaper.JS_Window_SetPosition then
-        local ok, left, top = reaper.JS_Window_GetRect(win_hwnd)
+    if reaper.JS_Window_SetPosition and reaper.JS_Window_GetRect then
+        local ok, left, top, right, bottom = reaper.JS_Window_GetRect(win_hwnd)
         if ok then
-            reaper.JS_Window_SetPosition(win_hwnd, left, top, init_w, init_h,
-                                         "TOP", "NOZORDER,NOACTIVATE,FRAMECHANGED")
-            gfx.update()
+            -- CLOSED LOOP. Setting the outer rect to the client size we want
+            -- assumes outer == client, and it is not always so — a few pixels
+            -- of frame survive, and the strip ends up that much too wide with
+            -- the window showing through around it.
+            --
+            -- Correcting by the OBSERVED error instead converges whatever the
+            -- frame turns out to be: we know how far gfx's client is from the
+            -- target, so we move the outer rect by exactly that much.
+            local ow = (right - left) + dw
+            local oh = (bottom - top) + dh
+            if ow > 0 and oh > 0 then
+                reaper.JS_Window_SetPosition(win_hwnd, left, top, ow, oh,
+                                             "TOP", "NOZORDER,NOACTIVATE,FRAMECHANGED")
+                gfx.update()
+            end
         end
     end
     state._request_redraw = true

@@ -47,6 +47,10 @@ function Persistence.NewToolbar(name)
         },
         layout = {
             direction = "horizontal", -- horizontal | vertical
+            -- "custom" uses icon_size; "theme" ties it to the toolkit's own
+            -- control height, so the strip follows the Theme Tweaker along
+            -- with every other CP window.
+            icon_size_mode = "custom",
             icon_size = 24,
             spacing  = 4,
             padding  = 6,             -- inner padding around icon block
@@ -55,10 +59,16 @@ function Persistence.NewToolbar(name)
             --   "chips"  one rounded chip PER icon (detached buttons)
             --   "none"   nothing but the glyphs
             style = "panel",
-            -- transparent = true keys the window's unpainted pixels out, which
-            -- is what makes "chips" and "none" possible at all — and what
-            -- stops an oversized window from showing as an oversized panel.
-            transparent = true,
+            -- Colour keying: makes the window's unpainted pixels genuinely
+            -- transparent and click-through, so the strip floats instead of
+            -- sitting on a slab. OFF by default, and that is deliberate: when
+            -- it does not take (it depends on the window manager honouring a
+            -- layered colour key) the key colour shows on screen instead of
+            -- disappearing, which is a much worse failure than an opaque
+            -- background. Turn it on to try it; the strip is coherent either
+            -- way, because "chips" on an opaque ground is exactly what the
+            -- command bars in the rest of the suite look like.
+            transparent = false,
             bg_color  = { 0.12, 0.12, 0.14 },  -- the panel's colour
             bg_radius = 6,            -- panel corner (0 = sharp)
             bg_border = false,        -- thin border around the panel

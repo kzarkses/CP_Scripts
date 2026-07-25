@@ -34,9 +34,22 @@ end
 -- ---------------------------------------------------------------------------
 -- Layout helpers
 -- ---------------------------------------------------------------------------
+-- The icon's box. `icon_size_mode = "theme"` ties it to the toolkit's own
+-- control height, so the floating strip grows and shrinks with the rest of the
+-- suite when the size is changed in the Theme Tweaker — which is the point:
+-- a toolbar that stays 30 px while every window moves to 28 stops belonging.
+local function icon_size_of(tb)
+    if tb.layout.icon_size_mode == "theme" then
+        local t = UI.GetTheme and UI.GetTheme()
+        if t and t.button_height then return t.button_height end
+        return 24
+    end
+    return tb.layout.icon_size or 24
+end
+
 local function compute_window_size(tb)
     local n = #tb.actions
-    local s = tb.layout.icon_size
+    local s = icon_size_of(tb)
     local g = tb.layout.spacing
     local p = tb.layout.padding
     if tb.layout.direction == "vertical" then
@@ -47,7 +60,7 @@ local function compute_window_size(tb)
 end
 
 local function action_rect(tb, idx)
-    local s = tb.layout.icon_size
+    local s = icon_size_of(tb)
     local g = tb.layout.spacing
     local p = tb.layout.padding
     if tb.layout.direction == "vertical" then
@@ -117,6 +130,12 @@ local function anchor_opts(tb)
     }
 end
 
+-- The theme is only loaded by UI.Init, so an icon size that FOLLOWS the theme
+-- could not be known when the window was created. Re-assert it now that it can
+-- be; the size loop in Core converges it either way.
+win_w, win_h = compute_window_size(toolbar)
+UI.SetSize(win_w, win_h)
+
 UI.SetAnchor(anchor_opts(toolbar))
 
 -- A colour that no icon and no theme will ever contain, so keying it out
@@ -139,7 +158,9 @@ local KEY_COLOR = { 1, 0, 1 }
 -- wants the strip to read as a solid panel.
 local function apply_look(tb)
     local L = tb.layout
-    if L.transparent == false then
+    -- Absent means OFF. An existing config predates the key and must not
+    -- suddenly start clearing to a colour that may not be removed.
+    if not L.transparent then
         UI.SetColorKey(nil)
         UI.SetClearColor(L.bg_color)
         local o = L.opacity
@@ -174,7 +195,8 @@ local function toolbar_signature(tb)
         -- and the hot-reload would go quiet. `opacity` is new, so it is the
         -- one that would have been nil in every existing config.
         tb.layout.padding, tb.layout.opacity or 1,
-        tb.layout.style or "panel", tb.layout.transparent == false and 0 or 1,
+        tb.layout.icon_size_mode or "custom",
+        tb.layout.style or "panel", tb.layout.transparent and 1 or 0,
         tb.layout.bg_radius or 0, tb.layout.bg_border and 1 or 0,
         tb.layout.bg_color and table.concat(tb.layout.bg_color, ",") or "",
         tb.layout.chip_radius or -1, tb.layout.chip_border and 1 or 0,
