@@ -432,14 +432,16 @@ function Widgets.BeginWindow(title, theme, opts)
             Core.DrawRect(btn_x, 0, btn_size, h, hc[1], hc[2], hc[3], hc[4])
         end
 
-        -- X icon
+        -- The glyph reads `close_btn`, which until now was a key defined in
+        -- the theme, rewritten by two presets, and read by NOBODY: the cross
+        -- was drawn in title_text and the dedicated colour only ever appeared
+        -- through close_btn_hover. Setting it did nothing, in every theme.
+        local ic = btn_hovered and COLOR_WHITE or theme.colors.close_btn
         if Icons then
-            local ic = btn_hovered and COLOR_WHITE or theme.colors.title_text
             Icons.Close(btn_x, 0, btn_size, ic[1], ic[2], ic[3], ic[4])
         else
-            local xc = btn_hovered and COLOR_WHITE or theme.colors.title_text
             local xw = Core.MeasureText("X")
-            Core.DrawText("X", btn_x + floor((btn_size - xw) / 2), ty, xc[1], xc[2], xc[3], xc[4])
+            Core.DrawText("X", btn_x + floor((btn_size - xw) / 2), ty, ic[1], ic[2], ic[3], ic[4])
         end
 
         if btn_hovered and Core.MouseClicked(1) then
@@ -1502,7 +1504,11 @@ function Widgets.Combo(id, label, current_index, items, theme, opts)
 
     -- Draw combo button
     if Core.IsVisible(x, y, total_w, h) then
-        local tc = theme.colors.text
+        -- Disabled used only to cancel `hovered`, so a disabled combo was
+        -- painted strictly identically to a live one: same fill, same text
+        -- at full opacity. It looked perfectly normal and simply refused to
+        -- open, with nothing on screen explaining the refusal.
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
 
         -- Label baseline (only meaningful if a label is present)
         if has_label then
@@ -1612,7 +1618,9 @@ function Widgets.TabBar(id, tabs, active_tab, theme, opts)
             end
 
             -- Text
-            local tc = theme.colors.text
+            -- Same silent refusal as the combo: the tab looked live and
+            -- simply did not respond.
+            local tc = disabled and theme.colors.text_disabled or theme.colors.text
             local tx = tab_x + floor((tab_w - tw) / 2)
             local ty = y + floor((h - th) / 2)
             Core.DrawText(tab_label, tx, ty, tc[1], tc[2], tc[3], is_active and tc[4] or 0.7)
@@ -3276,7 +3284,7 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
     -- Draw
     if Core.IsVisible(x, y, total_w, h) then
         if tw > 0 then
-            local tc = theme.colors.text
+            local tc = disabled and theme.colors.text_disabled or theme.colors.text
             local ly = y + floor((h - th) / 2)
             Core.DrawText(label, x, ly, tc[1], tc[2], tc[3], tc[4])
         end
@@ -3307,7 +3315,8 @@ function Widgets.NumberInput(id, label, value, min_val, max_val, theme, opts)
         local dtw, dth = Core.MeasureText(display)
         local tx = ix + floor((input_w - dtw) / 2)
         local ty = iy + floor((h - dth) / 2)
-        local tc = theme.colors.text
+            -- Third of the three that cut interaction with no visual sign.
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
         Core.DrawText(display, tx, ty, tc[1], tc[2], tc[3], tc[4])
 
         -- Blinking cursor when editing
