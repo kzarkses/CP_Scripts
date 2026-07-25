@@ -8,7 +8,14 @@
 -- Indices below MUST stay identical to CP_JSFX/CP_MidiLooper.jsfx.
 
 local Loop = {}
-local r
+-- Bound at LOAD, not only in Loop.init. This module is initialised lazily on
+-- purpose — its init rescans the project and re-syncs the router's sends, and
+-- an editor opened on an audio item has no business doing that — but several
+-- of its queries need nothing more than the REAPER API (Loop.KitViewOfTrack
+-- reads track ext-state; it never touches gmem). Leaving `r` nil until init
+-- turned every one of those into a crash for a caller that had done nothing
+-- wrong. init still rebinds it, and still owns gmem and Tracks.
+local r = reaper
 
 -- ---------------------------------------------------------------------------
 -- Layout (mirror of the JSFX)
