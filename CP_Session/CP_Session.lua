@@ -66,7 +66,13 @@ end
 
 -- "?" overlay content (standard help affordance, one per app)
 local HELP_TEXT = [[
-## CP Session
+## What a column is
+A column is a LANE of the looper engine, and it plays into the REAPER
+track it is routed to — the same routing CP_Looper edits. Click a
+column's NAME to choose that track, make a new one, or unroute it. A
+column that says "no track" plays into nothing yet.
+
+## The grid
 A column per track, a row per scene, one clip per cell. Every cell
 carries the button that says what a click does: TRIANGLE launches,
 SQUARE stops what is playing, CIRCLE records. Launching is QUANTIZED
@@ -138,6 +144,10 @@ local bars_lbl   = {}   -- [bars] = "N bars"
 local cell_lbl   = {}   -- [t*SCENES+s] = { src = "name", w = width, s = "cut" }
 for t = 0, TRACKS - 1 do track_name[t] = { tr = false, s = "Track " .. (t + 1) } end
 
+-- A column is a LANE, and a lane plays into whatever track it is routed to
+-- (CP_Looper's routing, shared). Saying "Track 1" when nothing is routed
+-- would be a lie — an unrouted column plays into nothing, and the header
+-- has to admit it.
 local function trackName(t)
     local c = track_name[t]
     local tr = Loop.GetLaneDest(t) or false
@@ -145,12 +155,49 @@ local function trackName(t)
         c.tr = tr
         if tr then
             local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
-            c.s = (nm and nm ~= "") and nm or ("Track " .. (t + 1))
+            if nm and nm ~= "" then
+                c.s = nm
+            else
+                local n = math.floor(r.GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER"))
+                c.s = "Track " .. n
+            end
         else
-            c.s = "Track " .. (t + 1)
+            c.s = "no track"
         end
     end
     return c.s
+end
+
+-- Route this column: pick any project track, or make one. This is the same
+-- routing CP_Looper edits — one truth, two windows.
+local function trackMenu(t)
+    local items = {}
+    local n = r.CountTracks(0)
+    local cur_tr = Loop.GetLaneDest(t)
+    for i = 0, n - 1 do
+        local tr = r.GetTrack(0, i)
+        local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+        items[#items + 1] = {
+            label = (i + 1) .. ": " .. ((nm and nm ~= "") and nm or "(unnamed)"),
+            checked = (tr == cur_tr),
+            action = function()
+                Loop.SetLaneDest(t, tr)
+                track_name[t].tr = false   -- force the cached name to refresh
+            end,
+        }
+    end
+    if #items > 0 then items[#items + 1] = { separator = true } end
+    items[#items + 1] = { label = "New track for this column", action = function()
+        Loop.NewDestTrack(t)
+        track_name[t].tr = false
+    end }
+    if cur_tr then
+        items[#items + 1] = { label = "Unroute", action = function()
+            Loop.SetLaneDest(t, nil)
+            track_name[t].tr = false
+        end }
+    end
+    UI.NativeMenu(items)
 end
 
 local function barsLabel(bars)
@@ -739,12 +786,24 @@ local function frame(theme)
         return
     end
 
-    -- The grid needs two lanes per track. A project whose chain still holds
-    -- an older engine would swallow every write to the upper lanes, so say
-    -- so ONCE instead of failing silently.
-    if Loop.EngineLanes() < TRACKS * 2 and not state.engine_warned then
-        state.engine_warned = true
-        flash("Engine is older than this grid — click Reload in CP_Looper")
+    -- The grid needs two lanes per track. An engine loaded before the lanes
+    -- grew simply DROPS every command aimed at the upper half — a clip swap
+    -- would stop the outgoing clip and never start the incoming one, which
+    -- looks exactly like "the column stops". Refresh it instead of warning
+    -- about it: the loops live in gmem and survive the swap.
+    local short = Loop.EngineLanes() < TRACKS * 2
+    if short and not state.engine_reloaded then
+        state.engine_reloaded = true
+        if Loop.ReloadEngine() then
+            flash("Engine refreshed (it was older than this grid)")
+        end
+        short = Loop.EngineLanes() < TRACKS * 2
+    end
+    if short then
+        UI.SetFontCaption()
+        UI.TextWrapped("This project's looper engine is older than the grid and ignores half its lanes — open CP_Looper and click \"Reload engine\".")
+        UI.SetFontBody()
+        UI.Spacing(2)
     end
 
     Loop.PumpCmd()   -- one queued engine command leaves per frame
@@ -774,8 +833,9 @@ local function frame(theme)
     for t = 0, TRACKS - 1 do
         local cx = x + scene_w + gap + t * (cell_w + gap)
         local mc = C.text_mute or C.text_disabled
+        local routed = Loop.GetLaneDest(t) ~= nil
         Core.DrawText(cellLabel(t, SCENES, trackName(t), cell_w - 22), cx + 2, y + 2,
-                      mc[1], mc[2], mc[3], 0.9)
+                      mc[1], mc[2], mc[3], routed and 0.9 or 0.45)
         local ax = cx + cell_w - 16
         local armed = isArmed(t)
         local d = C.danger or C.accent
@@ -787,6 +847,12 @@ local function frame(theme)
         if Core.MouseInRect(ax - 2, y, 18, head_h) and not Core.HasPopup()
            and Core.MouseClicked(1) then
             armTrack(t)
+        end
+        -- the name itself opens the routing: which track this column plays
+        -- into should never be a mystery
+        if Core.MouseInRect(cx, y, cell_w - 20, head_h) and not Core.HasPopup() then
+            Core.DrawRect(cx, y, cell_w - 20, head_h, 1, 1, 1, 0.05)
+            if Core.MouseClicked(1) or Core.MouseClicked(2) then trackMenu(t) end
         end
     end
     UI.SetFontBody()

@@ -445,7 +445,11 @@ end
 -- which invalidates the block on purpose.
 function Loop.ReloadEngine()
     local router = Loop.track
-    if not valid(router) then return end
+    if not valid(router) then return false end
+    -- The loops themselves live in gmem and survive the swap; these three
+    -- settings do not, so carry them across instead of resetting the user's
+    -- clock and arm every time the engine is refreshed.
+    local fr, arm, lq = Loop.GetFreeRun(), Loop.GetArmedLane(), Loop.GetLaunchQ()
     installJSFX()
     r.Undo_BeginBlock2(0)
     local old = findLooperFX(router)
@@ -454,8 +458,10 @@ function Loop.ReloadEngine()
     if fx > 0 then r.TrackFX_CopyToTrack(router, fx, router, 0, true); fx = 0 end
     r.TrackFX_Show(router, 0, 2); r.TrackFX_Show(router, 0, 0)
     r.Undo_EndBlock2(0, "CP Looper: reload engine", -1)
-    Loop.SetFreeRun(true)
-    Loop.SetArmedLane(0)
+    Loop.SetFreeRun(fr)
+    Loop.SetArmedLane(arm or 0)
+    Loop.SetLaunchQ(lq or 0)
+    return true
 end
 
 -- ---------------------------------------------------------------------------
