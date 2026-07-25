@@ -692,3 +692,57 @@ minimal Session + couleur de clip, CP_Looper en step sequencer, phases 2-6
 
 **Ouvert, noté pendant la session** : enregistrer par-dessus une cellule
 pleine (Ableton le permet), et un métronome / décompte audible.
+
+## Session 10 (2026-07-25) — le système visuel, puis les zones
+
+Tout le détail est dans `ANALYSE_DesignSystem.md` (l'analyse et le plan) et
+`CP_Toolkit/COMPOSANTS.md` (la grammaire, à côté du code). Ici, seulement l'état.
+
+**Point de départ**, son constat : « on perd le cap pour le theming ». Le
+diagnostic n'était pas celui qu'on croyait — ce n'était pas un problème de
+contraste mais de **lumière**, et sous ça une cause bête : `Theme.Default()`
+était un brouillon que le système de macros réécrivait à sa dernière ligne, donc
+l'apparence réelle du produit était le contenu de `CP_Config/theme.lua`, resté
+le thème de debug.
+
+- [x] **Vague 1 — l'identité** (`852c5a3`) : 65 couleurs écrites en dur, macros
+  supprimées (dormantes, inertes au chargement, destructrices quand elles
+  tiraient), sauvegarde en **diff** (les nouvelles clés arrivent donc dans les
+  anciens thèmes), et sept collisions où deux états rendaient la même couleur.
+- [x] **Vague 2 — la grammaire** (`00ddda3`, `46369a4`) : une seule façon de
+  dire « cette ligne est sélectionnée » (il y en avait quatre, dont trois hors
+  d'atteinte du thème) ; clic droit tape une valeur partout, double-clic remet
+  au défaut partout, molette sur les trois contrôles de valeur.
+- [x] **Inspecteur + Reveal** (`dcdee2f`, `665af2a`, `4f70123`), sur demande :
+  pointer un pixel dans n'importe quelle fenêtre CP et obtenir le nom du jeton ;
+  survoler une couleur entoure les zones qu'elle peint, dans **toutes** les
+  fenêtres ouvertes. Pipette passée sur **E**.
+- [x] **Le knob** (`e8a0fe9`) : son bug. L'aiguille était à 90° de son propre
+  arc — `gfx.arc` mesure depuis le haut dans le sens horaire, `cos`/`sin` depuis
+  la droite dans l'autre sens, et le pointeur prenait directement l'angle donné
+  à l'arc. L'arc a toujours été juste ; c'est l'aiguille qui mentait, et sur un
+  cadran de 34 px c'est elle qu'on lit.
+- [x] **Vague 3 — les ZONES** (`2bc22cc` → `7aa7d12`). Sa demande : « une
+  fenêtre doit avoir son contour, c'est sa zone… de la séparation et du
+  contraste non pas en palette, mais en design ». Livré : `BeginBar`/`EndBar`,
+  `AppStatus`, le contour de fenêtre, et une **couture** (un pixel d'ombre, un
+  de lumière) au lieu d'un trait coloré — un trait ne sépare que tant que la
+  palette lui laisse la place, une couture est un contraste local et survit à
+  n'importe quel thème.
+  **Sept fenêtres migrées** (Editor, Sampler, Looper, Session, MediaExplorer,
+  FXBrowser, ThemeTweaker) ; les trois `iconBtn` privés supprimés ; les quatre
+  états (repos / survol / enfoncé / allumé) sur tout ce qui se clique, dix
+  contrôles n'ayant pas d'état enfoncé.
+  **CP_Editor repasse en barre haute** sur son retour de test : le rail coûtait
+  126 px de largeur en permanence, une barre coûte 30 px de hauteur une fois.
+  Son verdict après test : « les zones, on les voit clairement, les icônes,
+  l'alignement, c'est génial ».
+
+**Reste sur le chantier visuel** : les 9 glyphes mixtes (mi-pleins, mi-trait) —
+à faire en les regardant, et un PNG déposé dans `CP_Toolkit/IconOverrides/`
+suffit à en remplacer un sans toucher au code ; `SetHot` sur les 14 widgets
+muets ; l'anneau de focus (`RegisterFocusable`/`FocusNext`/`FocusPrev` existent
+et n'ont **aucun appelant**, et TAB est capturé comme touche de validation) ;
+les centrages `y + h * 0.5 - 6` dans les apps, où 6 est la moitié de `body = 12`
+alors que le tweaker laisse monter `body` à 24 ; et `mute` / `solo` / `mod`,
+trois jetons qui ne peignent encore rien.

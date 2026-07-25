@@ -33,6 +33,19 @@ Trois phrases.
    ce fichier est aujourd'hui le thème de DEBUG (texte rouge pur, fond
    turquoise). **C'est la faute mère : tout le reste en découle.**
 
+**Quatrième phrase, ajoutée le 2026-07-25 au soir** — elle ne remplace pas les
+trois autres, elle les complète, et sur le rendu final elle pèse autant :
+
+4. **Une fenêtre n'était pas une structure, c'était un sac de widgets sur un
+   fond.** Le toolkit n'exposait aucune primitive de chrome, donc chaque
+   application inventait la sienne : quatre formes de zone de commande, quatre
+   positions pour Settings, quatre hauteurs de barre, `iconBtn` écrit trois
+   fois. Et parce que chaque widget se dimensionnait sur la largeur restante,
+   des voisins immédiats n'avaient ni la même hauteur ni la même largeur ni le
+   même style. **La séparation qu'on cherchait dans la palette manquait en
+   réalité dans le design** : ce sont des zones délimitées par une arête réelle
+   qui la donnent, pas un pas de plus sur la rampe. Corrigé — voir §7.9.
+
 ---
 
 ## 1. Ce que dit le thème que Cédric aime (mesuré)
@@ -551,15 +564,62 @@ blanche — le défaut exact de `DEFAULT.lua`. Ils basculent le canvas aussi.
 
 **Vague 3 — la structure.**
 
-9. ⬜ **`UI.AppFrame`** (§4.4), puis migrer les huit fenêtres. Supprimer les
-   trois `iconBtn` locaux. C'est le plus gros morceau restant.
+9. ✅ **La primitive de chrome** (`2bc22cc` … `7aa7d12`), le 2026-07-25 au soir.
+   Pas `UI.AppFrame` en un bloc comme prévu, mais **des zones** :
+   `BeginBar`/`EndBar` + `AppStatus` + le contour de fenêtre, séparés par une
+   **couture** — un pixel d'ombre, un de lumière — plutôt que par un trait
+   coloré. Grammaire complète dans `CP_Toolkit/COMPOSANTS.md` §0 bis.
+
+   La couture vient de sa demande, et elle est juste : *« une fenêtre doit avoir
+   son contour, c'est sa zone… ça va permettre d'avoir de la séparation et du
+   contraste non pas en palette, mais en design »*. Un trait coloré ne sépare
+   que tant que la palette lui laisse la place ; une couture est un contraste
+   **local** et survit à n'importe quel thème, clair, sombre ou aplati.
+
+   **Sept fenêtres migrées** : Editor, Sampler, Looper, Session, MediaExplorer,
+   FXBrowser, ThemeTweaker. CP_ModLFO ne l'est pas, et c'est correct — c'est un
+   panneau embarqué, pas une fenêtre. Les **trois `iconBtn` privés** et
+   l'`iconToggle` du Media Explorer sont supprimés.
+
+   Le défaut qu'il a pointé — *« un dropdown moins large, pas dans le même style
+   que le toggle d'au-dessus »* — avait une cause unique : **chaque widget se
+   dimensionnait sur la largeur qui restait**. La zone distribue maintenant la
+   géométrie (une hauteur, un rayon, une échelle de largeurs) ; le widget obéit.
+
+   **CP_Editor repasse en barre haute** sur son retour de test. Le rail existe
+   toujours et il est réparé au passage (`RailCombo`, `RailValue` portent enfin
+   la forme d'une rangée de rail), mais il coûtait 126 px de largeur en
+   permanence là où une barre coûte 30 px de hauteur une fois — et la largeur
+   est ce dont un piano roll est fait. Son verdict après test : *« les zones, on
+   les voit clairement, les icônes, l'alignement, c'est génial »*.
 10. ✅ **`Layout.lua` branché sur le thème** (`0ea9f11`) : scrollbars, splitter
     (jeton créé), et le commentaire qui promettait une clé inexistante retiré.
-11. 🟡 **Partiel** (`058ce8e`). Les trois contrôles qui coupaient l'interaction
-    **sans aucun signe visuel** — `Combo`, `TabBar`, `NumberInput` — le
-    montrent. **Reste** : les 19 qui ne coupent rien du tout, `SetHot` sur les
-    14 muets (ils ne peuvent structurellement pas porter d'infobulle), et
-    l'anneau de focus.
+11. ✅ **Les quatre états** (`6e7f04f`). Sa règle : *« chaque élément, icône,
+    bouton, tout doit toujours avoir un état hover, highlighted, active »*. En
+    comptant, **dix contrôles n'avaient pas d'état enfoncé** — Checkbox,
+    CollapsingHeader, HelpButton, TreeNode, RadioGroup, MenuBar,
+    CollapsiblePanel, les items de menu contextuel, les rangées de Table et
+    celles du rail (la dernière était de moi, écrite le soir même).
+
+    Un contrôle qui répond au survol mais pas à l'appui laisse **le clic
+    lui-même sans accusé de réception** : on ne distingue pas un clic qui a
+    porté d'un clic qui a manqué. Sur une liste, l'appui est même le seul moment
+    qui dit *quelle* rangée on a attrapée.
+
+    Une seule routine, `pickState(repos, survol, enfoncé, …)`. Les triplets
+    existaient déjà dans le thème — c'est la troisième marche qui n'était lue
+    nulle part. Pour les rangées, l'appui passe par `drawRowState`, le point de
+    passage unique de toutes les listes, donc popup de combo, `ReorderableList`
+    et `InteractiveTable` l'ont ensemble.
+
+    **Désactivé** branché en plus sur `CollapsingHeader`, `HelpButton` et
+    `TreeNode`. **Restent sans désactivé** : `ImageButton`, `ColorPicker`,
+    `TextEdit`, `RangeSlider`, `ValueRangeSlider`, `Canvas` et les deux tables —
+    aucun appelant ne le leur demande aujourd'hui, et poser l'apparence d'un
+    état que personne n'atteint est du travail inventé.
+
+    **Reste** : `SetHot` sur les 14 muets (ils ne peuvent structurellement pas
+    porter d'infobulle) et l'anneau de focus.
     **Correction** : les « deux conversions de molette contradictoires » ne le
     sont pas — le discret arrondit vers l'extérieur, le continu reste
     fractionnaire, et les faire coïncider casserait le trackpad. Le vrai

@@ -51,6 +51,159 @@ et c'est le seul endroit où elle est justifiée.
 
 ---
 
+## 0 bis. La fenêtre est une pile de ZONES
+
+*(écrit le 2026-07-25 au soir, après le retour de test sur CP_Editor)*
+
+Avant, le toolkit n'exposait **aucune primitive de chrome de fenêtre**. Huit
+fenêtres dessinaient donc la leur, et on avait quatre formes de zone de
+commande, quatre positions pour Settings, quatre hauteurs de barre, et `iconBtn`
+écrit **trois fois** avec deux signatures incompatibles. Ce n'étaient pas huit
+divergences à corriger : c'était une primitive manquante et huit contournements.
+
+```
++----------------------------------------+  contour : la fenêtre possède sa zone
+| [i][i] | [combo]  [valeur]     [o][?]  |  ZONE barre    — ce qu'on peut faire
++----------------------------------------+  couture
+|                                        |
+|               contenu                  |  ZONE contenu  — le travail
+|                                        |
++----------------------------------------+  couture
+| statut                                 |  ZONE statut   — ce qui vient d'arriver
++----------------------------------------+
+```
+
+### La couture, pas le trait
+
+Une arête de zone se dessine avec **un pixel d'ombre et un pixel de lumière**
+(`Widgets.SeamH` / `SeamV`), jamais avec un trait coloré.
+
+Un trait coloré ne sépare que **tant que la palette lui laisse la place**.
+Aplatis le thème, passe en clair, pousse un curseur du tweaker un peu trop
+loin : il disparaît, et les zones se recollent. Une couture est un contraste
+**local** — l'ombre porte sur fond clair, la lumière porte sur fond sombre —
+donc la structure survit à n'importe quelle palette.
+
+C'est ça, **la séparation par le design et non par la palette**. Deux jetons
+existent (`seam_shadow`, `seam_light`) pour que l'inspecteur sache les nommer et
+qu'aplatir le relief reste une décision possible, mais leurs valeurs par défaut
+sont du noir et du blanc à alpha fixe, **pas des marches de la rampe** : une
+arête qui dépend de la rampe est une arête qu'on peut faire disparaître par
+accident.
+
+### La zone distribue la géométrie, pas le widget
+
+**C'est la règle qui manquait, et le défaut se voyait à l'écran :** dans le
+rail, un dropdown moins large que le toggle du dessus, encadré alors que ses
+voisins étaient plats. Cause : chaque widget se dimensionnait sur ce qui restait
+de largeur.
+
+| | Règle |
+|---|---|
+| **Hauteur** | une seule, celle de la zone (`BAR_CTL_H` = 22, zone = 30) |
+| **Rayon** | un seul, `rounding_small` |
+| **Largeur** | une marche de l'échelle `{ 22, 54, 76, 104, 140 }`, **jamais un pixel entre deux** |
+| **Débordement** | un contrôle qui ne rentre plus n'est **pas** placé — pas de moitié dépassant du bord |
+
+Un contrôle prend la première marche qui contient son contenu. Les voisins
+s'alignent **par construction**, pas par chance.
+
+Ce qui a le droit de différer, c'est le **remplissage**, sur un seul canal :
+
+- un **verbe** se lève → `button` / `button_hovered` / `button_active`
+- une **valeur** s'enfonce → `frame_bg` / `frame_hovered` / `frame_active`
+
+Agir contre tenir. Rien d'autre.
+
+### Les quatre états, sans exception
+
+| État | Ce qu'il dit | Comment |
+|---|---|---|
+| repos | « c'est un contrôle » | la puce, visible |
+| survol | « la souris est dessus » | un pas plus clair |
+| enfoncé | « ce clic-là a porté » | un pas plus sombre |
+| allumé | « cet état est **tenu** » | fond accent, glyphe en `on_accent` |
+
+Sa règle, mot pour mot : *« chaque élément, icône, bouton, tout doit toujours
+avoir un état hover, highlighted, active »*. En comptant, **dix contrôles
+n'avaient pas d'état enfoncé** — Checkbox, CollapsingHeader, HelpButton,
+TreeNode, RadioGroup, MenuBar, CollapsiblePanel, les items de menu contextuel,
+les rangées de Table et celles du rail.
+
+Un contrôle qui répond au survol mais pas à l'appui laisse **le clic lui-même
+sans accusé de réception** : on ne distingue pas un clic qui a porté d'un clic
+qui a manqué. Sur une liste c'est pire — l'appui est le seul moment qui dit
+*quelle* rangée on a attrapée. Et sur une machine lente c'est la différence
+entre « ça n'a pas pris » et « il travaille ».
+
+Une seule routine choisit désormais dans un triplet du thème :
+`pickState(repos, survol, enfoncé, hovered, down, disabled)`. Les trois couleurs
+sont **passées**, pas déduites d'un nom de base : `base .. "_active"`
+construirait une chaîne à chaque frame de chaque contrôle.
+
+La couleur de rôle (`play`, `record`, `pending`) atteint le **remplissage
+allumé**, pas seulement le glyphe — un bouton d'enregistrement qui s'allume dans
+l'accent générique ment sur son rôle. Et elle ne teinte **que** l'état allumé :
+la teinte est le canal de l'état ; la dépenser sur une catégorie ferait discuter
+deux messages sur le même axe (§0).
+
+### Le vocabulaire
+
+| Appel | Pour quoi |
+|---|---|
+| `UI.BeginBar(id, opts)` / `UI.EndBar()` | ouvre la zone ; `opts.title` met le nom **dans** la barre |
+| `UI.BarIcon(id, icon, label, disabled)` | un verbe, icône seule, nom en infobulle |
+| `UI.BarButton(id, label, disabled, on)` | un verbe qui a besoin de **mots** |
+| `UI.BarToggle(id, icon, icon_off, on, label, disabled, opts)` | un état tenu |
+| `UI.BarCombo(id, idx, items, disabled, opts)` | un choix parmi une liste |
+| `UI.BarValue(id, label, v, min, max, disabled, opts)` | un nombre (glisser / molette / clic droit / double-clic) |
+| `UI.BarInput(id, text, opts)` | un champ qui prend **tout le reste** |
+| `UI.BarCaption(text, opts)` | un texte calé à droite |
+| `UI.BarSep()` | une rupture de groupe (la couture, debout) |
+| `UI.BarRight()` / `UI.BarLeft()` | remplir depuis le bord droit, puis revenir |
+| `UI.BarSlot(w)` | l'échappatoire : réserve un créneau, rend `x, y, h` |
+| `UI.AppStatus(text)` | la zone du bas, ancrée au bord de la **fenêtre** |
+
+**`label` et `disabled` sont positionnels**, pas des champs d'`opts`. Ils
+changent d'une frame à l'autre (un Play qui devient Stop, un Clear qui se grise)
+et les écrire en champs construirait une table par contrôle et par frame. `opts`
+reste pour ce qui est vraiment constant (accent, largeur, taille d'icône) et
+vient d'une table de niveau module.
+
+**Réserver le bord droit EN PREMIER.** Quand la fenêtre est trop étroite, le
+bout réservé le premier survit — et les contrôles qui ne doivent jamais
+disparaître sont Settings et Help.
+
+### Rail ou barre ?
+
+Le rail existe toujours (`UI.BeginRail`), avec `RailCombo` et `RailValue` qui
+portent enfin la forme d'une rangée de rail. Mais **CP_Editor est repassé en
+barre haute** sur son retour de test, et l'argument est mesurable : le rail
+coûtait **126 px de largeur en permanence**, et la largeur est ce dont une forme
+d'onde et un piano roll sont faits. Une barre coûte **30 px de hauteur, une
+fois**.
+
+L'autre moitié de l'échange : la barre se dégrade toute seule. Un contrôle qui
+ne rentre plus n'est pas placé, donc une fenêtre étroite perd des outils **par
+le milieu** au lieu qu'il faille un drapeau de repli pour le lui dire.
+
+### Ce qui est fait
+
+| Fenêtre | Zone de commande | Statut |
+|---|---|---|
+| CP_Editor | barre, icônes | ✅ |
+| CP_Sampler | barre, icônes | ✅ |
+| CP_Looper | barre + titre dedans | ✅ |
+| CP_Session | barre + titre dedans | ✅ |
+| CP_MediaExplorer | 3 zones (recherche / chips / transport) | ✅ |
+| CP_FXBrowser | barre + champ extensible | ✅ |
+| CP_ThemeTweaker | barre d'onglets | ✅ |
+| CP_ModLFO | — | panneau, pas une fenêtre |
+
+Les trois `iconBtn` privés et l'`iconToggle` du Media Explorer sont supprimés.
+
+---
+
 ## 1. Le bouton
 
 **Règle.** Un bouton *fait* quelque chose. Il n'a pas d'état persistant. Ses
