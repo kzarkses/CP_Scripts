@@ -269,7 +269,7 @@ local function setClipBars(bars)
         Loop.SetLengthBars(state.clip_lane, bars)
     end
     scheduleApply()   -- other consumers (Session grid) hear the new length
-    clampView()
+    fitView()         -- the canvas changed size: show the whole loop again
     UI.RequestRedraw()
 end
 
@@ -2442,7 +2442,7 @@ local function frame(theme)
                and lb ~= math.floor((state.clip.bars or 4) + 0.5) then
                 state.clip.bars = lb
                 state.len = lb * clipTsNum()
-                clampView()
+                fitView()
                 UI.RequestRedraw()
             end
         end
