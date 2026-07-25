@@ -1579,8 +1579,16 @@ function Widgets.HelpButton(id, help_text, theme, opts)
         tc[1], tc[2], tc[3], hovered and 1 or 0.8)
     if hovered then
         Core.SetHot(id)
-        if Core.MouseClicked(1) then
-            Core.SetPopup(id, function()
+        if Core.MouseClicked(1) then Widgets.ShowHelp(id, help_text, theme) end
+    end
+    Layout.AdvanceCursor(w, h)
+end
+
+-- The overlay on its own, so any affordance can raise it — a rail entry, a
+-- menu item — instead of the "?" button being the only door to it.
+function Widgets.ShowHelp(id, help_text, theme)
+    local tc = theme.colors.text
+    Core.SetPopup(id, function()
                 local is_new = Core.IsPopupNewThisFrame()
                 local win_w, win_h = Core.GetWindowSize()
                 local lines = helpLines(help_text)
@@ -1626,10 +1634,7 @@ function Widgets.HelpButton(id, help_text, theme, opts)
                 if not is_new and Core.MouseClicked(1) then
                     Core.ClearPopup(id)
                 end
-            end)
-        end
-    end
-    Layout.AdvanceCursor(w, h)
+    end)
 end
 
 -- ============================================================================
