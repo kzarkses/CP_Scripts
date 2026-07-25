@@ -13,7 +13,13 @@ local r
 -- ---------------------------------------------------------------------------
 -- Layout (mirror of the JSFX)
 -- ---------------------------------------------------------------------------
-Loop.MAX_LANES   = 4
+-- 8 lanes. The Session view spends them two per track (a playing buffer and
+-- a silent twin) so a clip change lands exactly on the quantize boundary —
+-- see ANALYSE_Ableton_Session.md §3.2. Verified to fit the gmem layout as
+-- is: LANE_CTRL 100 + 8*8 = 164 < 200, LANE_STATE 200 + 8*8 = 264 < 3000,
+-- notes 10000 + 8*1024*4 = 42768. Going past 8 would need those bases moved
+-- AND the layout signature bumped.
+Loop.MAX_LANES   = 8
 Loop.MAX_NOTES   = 1024
 Loop.NOTE_STRIDE = 4       -- start, length, pitch, vel (all in beats/0..127)
 
@@ -25,6 +31,7 @@ local G_LANE_CTRL  = 100   -- stride 8: +0 length_bars, +1 muted
 local G_LANE_STATE = 200   -- stride 8: +0 mode,+1 nev(shared),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 local G_TRANSPORT  = 3000  -- +0 tempo,+1 play_state,+2 beat,+3 spb,+4 ts_num,+5 ts_denom,+6 srate
 local G_INIT_COUNT = 3095  -- incremented by the JSFX @init: counts engine resets
+local G_ENG_LANES  = 3097  -- lanes the LOADED JSFX actually serves
 local G_VERSION    = 3099
 local G_NOTE_BASE  = 10000
 
@@ -585,6 +592,17 @@ function Loop.Beat()    return attached and gread(G_TRANSPORT + 2) or 0 end
 function Loop.TsNum()   local v = attached and gread(G_TRANSPORT + 4) or 4; return v > 0 and v or 4 end
 -- non-zero once the JSFX has run its @init at least once (engine alive)
 function Loop.EngineAlive() return attached and gread(G_VERSION) >= 1 end
+
+-- How many lanes the RUNNING JSFX serves. A project loaded before the
+-- engine grew still has the old binary in its chain until it is reloaded,
+-- and writing to a lane it doesn't scan would be silent nonsense — callers
+-- that need more than four lanes must ask first. 0 = unknown (pre-8 build).
+function Loop.EngineLanes()
+    if not attached then return 0 end
+    local n = gread(G_ENG_LANES) or 0
+    if n >= 1 then return math.floor(n + 0.5) end
+    return Loop.EngineAlive() and 4 or 0
+end
 
 -- How many times the engine has been reset (REAPER re-runs @init on transport
 -- start, samplerate change, FX reload…). The loops survive it now, but the UI

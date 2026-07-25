@@ -69,9 +69,13 @@ local FIELDS = {
     { "gain", "n" }, { "pitch", "n" }, { "rate", "n" },
     { "bars", "n" },
     { "q", "s" }, { "lmode", "s" },
-    -- where the clip came from ("looper:2", "session:1:3"…) — the
-    -- editor:apply consumer routes the edited clip home with it
+    -- where the clip came from ("looper:2") — the editor:apply consumer
+    -- routes the edited clip home with it, and the editor uses it to talk
+    -- to the live lane (playhead, launch)
     { "origin", "s" },
+    -- session grid coordinates ("track,scene") when the clip lives in a
+    -- cell: origin says which lane PLAYS it, cell says where it is STORED
+    { "cell", "s" },
 }
 local FIELD_KIND = {}
 for _, f in ipairs(FIELDS) do FIELD_KIND[f[1]] = f[2] end

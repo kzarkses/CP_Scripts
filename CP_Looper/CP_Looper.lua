@@ -61,7 +61,11 @@ Bus.init(r, DragBus, Clip)
 -- ---------------------------------------------------------------------------
 local CONFIG_ID = "CP_Looper"   -- window geometry persists automatically via UI.Init
 
-local LANES    = Loop.MAX_LANES
+-- The engine now serves 8 lanes, but the Looper keeps showing FOUR: the
+-- upper half is the Session view's swap space (one silent twin per track,
+-- see ANALYSE_Ableton_Session.md §3.2), not something to record into by
+-- hand. Raising this is a deliberate decision, not a consequence.
+local LANES    = math.min(4, Loop.MAX_LANES)
 local LEN_OPTS = { 1, 2, 4, 8 }        -- bar lengths cycled by the Len button
 local SNAP_OPTS = {                    -- grid snap for the note editor (in beats)
     { label = "1/4",  beats = 1.0 },

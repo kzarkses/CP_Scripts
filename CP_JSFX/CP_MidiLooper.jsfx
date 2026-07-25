@@ -57,7 +57,10 @@ options:gmem=CP_MidiLooper
 
 @init
 
-MAX_LANES   = 4;
+// 8 lanes: the Session view spends two per track (playing buffer + silent
+// twin) so a clip swap lands on the quantize boundary. Verified against the
+// gmem map below — LANE_CTRL and LANE_STATE still clear each other at 8.
+MAX_LANES   = 8;
 MAX_NOTES   = 1024;
 NOTE_STRIDE = 4;           // start, length, pitch, vel
 
@@ -84,6 +87,8 @@ GMEM_LANE_CTRL  = 100;  // stride 8: +0 length_bars, +1 muted   (Lua -> JSFX)
 GMEM_LANE_STATE = 200;  // stride 8: +0 mode,+1 nev(SHARED),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 GMEM_TRANSPORT  = 3000;
 GMEM_INIT_COUNT = 3095;
+GMEM_ENG_LANES  = 3097; // lanes THIS binary serves (a host with an older
+                        // engine still loaded must not write past them)
 GMEM_FREEBEAT   = 3096; // free clock position, mirrored so a reset doesn't warp it
 GMEM_MAGIC      = 3098; // layout signature — its absence means "cold gmem"
 GMEM_VERSION    = 3099;
@@ -169,6 +174,7 @@ prev_active = 0;
 prev_freerun = -1;   // -1 = no previous block yet (skip the first edge)
 last_pb = 0;
 gmem[GMEM_VERSION]    = LAYOUT_VER;
+gmem[GMEM_ENG_LANES]  = MAX_LANES;
 gmem[GMEM_INIT_COUNT] = gmem[GMEM_INIT_COUNT] + 1;
 
 @block

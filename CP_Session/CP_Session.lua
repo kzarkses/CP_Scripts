@@ -1,16 +1,22 @@
--- @description Session (CP) — clip-grid view over the CP Looper engine
--- @version 0.1 (P1)
+-- @description Session (CP) — Ableton-style clip grid over the CP Looper engine
+-- @version 0.2 (tracks × scenes)
 -- @author Cedric Pamalio
 -- @about
---   The Ableton-style session grid, phase 1: one column per Looper lane,
---   one clip cell each. Cells launch and stop QUANTIZED through the same
---   engine the Looper drives (gmem CP_MidiLooper) — this window adds no
---   engine of its own, it is another face on loops that already run.
---   Click a cell to launch/stop; right-click for Edit-in-CP_Editor, mute,
---   clear; the scene button fires every non-empty lane together.
+--   The session grid: one COLUMN per track, one ROW per scene, one clip per
+--   cell. A track plays exactly one clip at a time — launching a cell stops
+--   whatever that track was playing, which is the whole feel of a session
+--   view (see ANALYSE_Ableton_Session.md).
 --
---   Needs the Looper engine to exist (open CP_Looper once and "Create
---   looper engine"); after that this window reconnects on its own.
+--   The engine (gmem CP_MidiLooper) is untouched: each track owns TWO lanes,
+--   a playing one and a silent twin. Launching writes the clip into the twin
+--   (inaudible, so timing doesn't matter) then asks the engine for Play+Stop
+--   — both quantized — so the swap lands exactly on the boundary.
+--
+--   Cells are edited ONLY in CP_Editor (double-click, or right-click → Edit):
+--   they are stored as CPC1 descriptors in the project, and edits come back
+--   live over the bus.
+--
+--   Needs the Looper engine (open CP_Looper once and "Create looper engine").
 
 local r = reaper
 
@@ -30,15 +36,27 @@ DragBus.init(r)
 Bus.init(r, DragBus, Clip)
 
 local Core = UI.Core
+local sin, floor = math.sin, math.floor
 
-local LANES = Loop.MAX_LANES
+-- One track = two engine lanes (playing + silent twin). Track t owns lane t
+-- and lane t + TRACKS; the low half is what CP_Looper shows, so a track's
+-- "A" buffer is also its Looper lane.
+local TRACKS = floor(Loop.MAX_LANES / 2)
+if TRACKS > 4 then TRACKS = 4 end
+local SCENES = 8
+
+local cells = {}     -- [t][s] = clip descriptor or nil
+local cur   = {}     -- [t] = scene whose clip is loaded, or nil
+local buf   = {}     -- [t] = 0 | 1, which lane of the pair is the live one
+for t = 0, TRACKS - 1 do cells[t] = {}; buf[t] = 0 end
 
 local state = {
     flash_msg = "", flash_until = 0,
     recalled = false,      -- one-shot auto-recall after the first attach
     registered = false,    -- DragBus target registration
-    lrow = nil,            -- lane-cell row geometry (drop hit-testing)
+    grid = nil,            -- grid geometry (drop hit-testing)
     arow = nil,            -- audio-cell row geometry
+    engine_warned = false,
 }
 
 local function flash(msg)
@@ -49,42 +67,73 @@ end
 -- "?" overlay content (standard help affordance, one per app)
 local HELP_TEXT = [[
 ## CP Session
-The clip grid over the Looper engine: one column per lane. Click a
-cell to launch or stop it QUANTIZED (the Q button; the cell blinks
-while queued). DOUBLE-CLICK any cell — even empty — and it opens in
-CP_Editor (launched if needed); edits come back live. The triangle
-launches every full cell together. Right-click: edit / mute / clear.
+A column per track, a row per scene, one clip per cell. Click a cell
+to launch it — QUANTIZED (the Q button), and whatever that track was
+playing stops by itself: a track only ever plays one clip. The square
+under a column stops that track; the triangle on the left launches a
+whole scene (tracks with no clip in that scene stop, as in Ableton).
+
+## Editing
+DOUBLE-CLICK any cell — even an empty one — and it opens in CP_Editor,
+launched if needed. That is the ONLY way to edit a cell: notes, loop
+length, playhead and transport all live there, and edits come back
+here live. Right-click a cell for edit / clear / stop.
 
 ## Audio row (A)
 Drop an audio file from the Media Explorer on an A cell: click loops
-it TEMPO-MATCHED (native stretch), measure-aligned when the
-transport runs, through the selected track's FX. Interim engine —
-the sample-locked one comes later.
+it TEMPO-MATCHED (native stretch), measure-aligned when the transport
+runs, through the selected track's FX. Interim engine — the
+sample-locked one comes later.
 
 ## Clock
 Free = clips play without the transport. Follow = REAPER transport,
-locks to an external MIDI clock when slaved. Record and route lanes
-in CP_Looper — both windows are faces on the same engine.
+locks to an external MIDI clock when slaved. Record loops in
+CP_Looper — it shows the same tracks' live lanes.
 ]]
 
 -- ---------------------------------------------------------------------------
--- Per-lane display caches (zero allocation per frame: strings rebuilt only
--- when the underlying fact changes)
+-- Lane pairing
 -- ---------------------------------------------------------------------------
-local lane_name = {}   -- [lane] = { tr = track_ptr_or_false, s = "name" }
-local bars_lbl  = {}   -- [bars] = "N bars"
-for l = 0, LANES - 1 do lane_name[l] = { tr = false, s = "Lane " .. (l + 1) } end
+local function liveLane(t) return t + buf[t] * TRACKS end
+local function twinLane(t) return t + (1 - buf[t]) * TRACKS end
 
-local function laneName(lane)
-    local c = lane_name[lane]
-    local tr = Loop.GetLaneDest(lane) or false
+local function isRunning(lane)
+    local m = floor(Loop.Mode(lane) + 0.5)
+    return m == 3 or m == 5 or m == 1
+end
+
+-- The engine is the truth: whichever twin is playing (or queued) IS the
+-- live buffer. Re-deriving it every frame means an outside launch (from
+-- CP_Editor, from CP_Looper) can never desync the grid.
+local function syncBuffers()
+    for t = 0, TRACKS - 1 do
+        local la, lb = t, t + TRACKS
+        local a_on = isRunning(la) or Loop.Pending(la) == 1
+        local b_on = isRunning(lb) or Loop.Pending(lb) == 1
+        if b_on and not a_on then buf[t] = 1
+        elseif a_on and not b_on then buf[t] = 0 end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Display caches (zero allocation per frame: strings rebuilt only when the
+-- underlying fact changes)
+-- ---------------------------------------------------------------------------
+local track_name = {}   -- [t] = { tr = ptr|false, s = "name" }
+local bars_lbl   = {}   -- [bars] = "N bars"
+local cell_lbl   = {}   -- [t*SCENES+s] = { src = "name", w = width, s = "cut" }
+for t = 0, TRACKS - 1 do track_name[t] = { tr = false, s = "Track " .. (t + 1) } end
+
+local function trackName(t)
+    local c = track_name[t]
+    local tr = Loop.GetLaneDest(t) or false
     if tr ~= c.tr then
         c.tr = tr
         if tr then
             local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
-            c.s = (nm and nm ~= "") and nm or ("Lane " .. (lane + 1))
+            c.s = (nm and nm ~= "") and nm or ("Track " .. (t + 1))
         else
-            c.s = "Lane " .. (lane + 1)
+            c.s = "Track " .. (t + 1)
         end
     end
     return c.s
@@ -97,6 +146,18 @@ local function barsLabel(bars)
         bars_lbl[bars] = s
     end
     return s
+end
+
+-- Truncation allocates, so the cut string is cached against (name, width).
+local function cellLabel(t, s, name, w)
+    local k = t * SCENES + s
+    local c = cell_lbl[k]
+    if not c then c = {}; cell_lbl[k] = c end
+    if c.src ~= name or c.w ~= w then
+        c.src, c.w = name, w
+        c.s = (Core.TruncateText(name, w))
+    end
+    return c.s
 end
 
 -- Launch-quantize label, cached on the raw q value (same cycle as the
@@ -130,21 +191,190 @@ local function cycleQ()
 end
 
 -- ---------------------------------------------------------------------------
--- Cell actions
+-- The grid, stored with the project (CPC1 per cell, one per line — the
+-- descriptor escapes newlines, so the split is safe)
 -- ---------------------------------------------------------------------------
--- The universal edit gesture: even an empty cell opens (as a blank clip)
--- in CP_Editor — Bus.OpenEditor LAUNCHES the editor if it isn't running.
-local function editInEditor(lane)
-    local c = Loop.LaneToClip(lane)
+local function saveGrid()
+    local out = {}
+    for t = 0, TRACKS - 1 do
+        for s = 0, SCENES - 1 do
+            local c = cells[t][s]
+            if c then
+                out[#out + 1] = t .. ":" .. s .. ":" .. Clip.serialize(c)
+            end
+        end
+    end
+    r.SetProjExtState(0, "CP_Session", "grid", table.concat(out, "\n"))
+end
+
+local function loadGrid()
+    local _, blob = r.GetProjExtState(0, "CP_Session", "grid")
+    if not blob or blob == "" then return end
+    for line in blob:gmatch("[^\n]+") do
+        local t, s, body = line:match("^(%d+):(%d+):(.*)$")
+        t, s = tonumber(t), tonumber(s)
+        if t and s and t < TRACKS and s < SCENES and body then
+            local c = Clip.deserialize(body)
+            if c then cells[t][s] = c end
+        end
+    end
+end
+
+local function cellBars(c)
+    local b = c and c.bars or 4
+    if not b or b < 1 then b = 4 end
+    return floor(b + 0.5)
+end
+
+local function cellNotes(c)
+    local n = c and c.notes
+    return (n and n.s and #n.s) or 0
+end
+
+-- ---------------------------------------------------------------------------
+-- Launching — the heart of the thing
+-- ---------------------------------------------------------------------------
+-- Write a clip into a lane WITHOUT playing it (the lane is the silent twin,
+-- so the write timing is free) and leave it "stopped with content", which is
+-- the state the engine can launch from.
+local function armLane(lane, c)
+    Loop.ApplyClip(lane, c)
+    Loop.SetLengthBars(lane, cellBars(c))
+    if cellNotes(c) > 0 and floor(Loop.Mode(lane) + 0.5) == 0 then
+        Loop.SetMode(lane, 2)
+    end
+end
+
+local function stopTrack(t)
+    local lane = liveLane(t)
+    local m = floor(Loop.Mode(lane) + 0.5)
+    if m == 3 or m == 5 then Loop.StopClip(lane)
+    elseif Loop.Pending(lane) == 1 then Loop.StopClip(lane) end  -- cancel queue
+end
+
+-- Launch cell (t, s). Re-launching the cell that is already playing stops it
+-- (Ableton's toggle on the same clip); launching a different one swaps the
+-- buffers so the change happens on the boundary instead of mid-loop.
+local function launchCell(t, s)
+    local c = cells[t][s]
+    if not c or cellNotes(c) == 0 then
+        flash("Empty cell — double-click to write something in it")
+        return
+    end
+    local live = liveLane(t)
+    local busy = isRunning(live) or Loop.Pending(live) == 1
+    if cur[t] == s then
+        if busy then stopTrack(t) return end
+        armLane(live, c)
+        Loop.Play(live)
+        return
+    end
+    if not busy then
+        -- nothing to swap: load the live lane directly. This also keeps
+        -- ordinary use on the low lanes — the ones CP_Looper shows.
+        armLane(live, c)
+        Loop.Play(live)
+        cur[t] = s
+        return
+    end
+    local twin = twinLane(t)
+    armLane(twin, c)
+    Loop.Play(twin)         -- queued to the next boundary…
+    Loop.StopClip(live)     -- …and the outgoing one leaves on the same one
+    buf[t] = 1 - buf[t]
+    cur[t] = s
+end
+
+-- A whole scene lands together: every track with a clip launches, every
+-- track without one STOPS (Ableton's default — a scene is a full picture).
+local function sceneLaunch(s)
+    for t = 0, TRACKS - 1 do
+        if cells[t][s] and cellNotes(cells[t][s]) > 0 then
+            launchCell(t, s)
+        else
+            stopTrack(t)
+        end
+    end
+end
+
+local function stopAll()
+    for t = 0, TRACKS - 1 do stopTrack(t) end
+end
+
+-- ---------------------------------------------------------------------------
+-- Editing — CP_Editor only, and it must be able to PLAY what it edits
+-- ---------------------------------------------------------------------------
+-- A cell that is currently playing is edited THROUGH its live lane, so the
+-- edits are heard as they are made. Any other cell is loaded into the silent
+-- twin first: the editor then has a real lane to drive (playhead, launch)
+-- without disturbing what is playing.
+local function editCell(t, s)
+    local c = cells[t][s]
     if not c then
         c = Clip.new("midi")
         c.notes = { s = {}, l = {}, p = {}, v = {} }
-        c.bars = Loop.GetLengthBars(lane)
+        c.bars = 4
+        cells[t][s] = c
+        saveGrid()
+    end
+    local lane
+    if cur[t] == s and isRunning(liveLane(t)) then
+        lane = liveLane(t)
+    else
+        lane = twinLane(t)
+        armLane(lane, c)
     end
     c.origin = "looper:" .. lane
-    c.name = laneName(lane)
+    c.cell = t .. "," .. s
+    c.name = (c.name and c.name ~= "") and c.name
+             or (trackName(t) .. " · scene " .. (s + 1))
     Bus.OpenEditor(c)
     flash("Cell opened in CP_Editor")
+end
+
+-- Edits coming home. The cell coordinates travel with the clip, so the
+-- descriptor lands back in the right cell even if the lanes have swapped
+-- since; the live lane is refreshed too when that cell is the one playing.
+local function applyEdit(ac)
+    local t, s
+    if ac.cell then t, s = ac.cell:match("^(%d+),(%d+)$") end
+    t, s = tonumber(t), tonumber(s)
+    if t and s and t < TRACKS and s < SCENES then
+        cells[t][s] = ac
+        saveGrid()
+        if cur[t] == s then
+            local live = liveLane(t)
+            Loop.ApplyClip(live, ac)
+            if ac.bars and ac.bars > 0 then Loop.SetLengthBars(live, ac.bars) end
+        end
+        return true
+    end
+    -- no cell tag: a plain lane edit (CP_Looper's own clips)
+    local ln = ac.origin and tonumber(ac.origin:match("^looper:(%d+)"))
+    if ln and ln >= 0 and ln < Loop.MAX_LANES then
+        Loop.ApplyClip(ln, ac)
+        return true
+    end
+    return false
+end
+
+local function clearCell(t, s)
+    if not cells[t][s] then return end
+    cells[t][s] = nil
+    saveGrid()
+    if cur[t] == s then
+        stopTrack(t)
+        cur[t] = nil
+    end
+end
+
+local function cellMenu(t, s)
+    UI.NativeMenu({
+        { label = "Edit in CP_Editor", action = function() editCell(t, s) end },
+        { label = "Stop this track", action = function() stopTrack(t) end },
+        { separator = true },
+        { label = "Clear cell", action = function() clearCell(t, s) end },
+    })
 end
 
 -- ---------------------------------------------------------------------------
@@ -209,16 +439,16 @@ local function acellToggle(i)
     c.prev = prev
 end
 
--- restore the cells saved with the project
+-- restore what was saved with the project
 for i = 1, ACELLS do
     local _, p = r.GetProjExtState(0, "CP_Session", "audio" .. i)
     if p and p ~= "" then acellLoad(i, p) end
 end
+loadGrid()
 
 -- ---------------------------------------------------------------------------
--- DragBus: drops from the Media Explorer / other CP windows. An audio
--- file over the audio row loads that cell; a MIDI clip over a lane cell
--- loads that lane.
+-- DragBus: an audio file over the A row loads that cell; a MIDI clip over
+-- a grid cell fills that cell (it does NOT launch — dropping is not playing).
 -- ---------------------------------------------------------------------------
 local function busConsume()
     if not state.registered then
@@ -231,134 +461,96 @@ local function busConsume()
     local ar = state.arow
     if clip.kind == "audio" and clip.path and ar
        and cy >= ar.y and cy < ar.y + ar.h and cx >= ar.x0 then
-        local i = math.floor((cx - ar.x0) / (ar.cw + ar.gap)) + 1
+        local i = floor((cx - ar.x0) / (ar.cw + ar.gap)) + 1
         if i >= 1 and i <= ACELLS then
             acellLoad(i, clip.path)
             flash("Audio cell " .. i .. ": " .. (acell[i].name or "?"))
-            return
         end
+        return
     end
-    local lr = state.lrow
-    if clip.kind == "midi" and clip.notes and lr
-       and cy >= lr.y and cy < lr.y + lr.h and cx >= lr.x0 then
-        local l = math.floor((cx - lr.x0) / (lr.cw + lr.gap))
-        if l >= 0 and l < LANES then
-            Loop.ClipToLane(l, clip)
-            flash("Clip -> " .. laneName(l))
+    local g = state.grid
+    if clip.kind == "midi" and clip.notes and g
+       and cx >= g.x0 and cy >= g.y0 then
+        local t = floor((cx - g.x0) / (g.cw + g.gap))
+        local s = floor((cy - g.y0) / (g.ch + g.gap))
+        if t >= 0 and t < TRACKS and s >= 0 and s < SCENES then
+            clip.cell = t .. "," .. s
+            cells[t][s] = clip
+            saveGrid()
+            flash("Clip -> " .. trackName(t) .. " / scene " .. (s + 1))
         end
-    end
-end
-
-local function cellMenu(lane)
-    UI.NativeMenu({
-        { label = "Edit in CP_Editor", action = function() editInEditor(lane) end },
-        { label = "Mute", checked = Loop.GetMute(lane),
-          action = function() Loop.SetMute(lane, not Loop.GetMute(lane)) end },
-        { separator = true },
-        { label = "Clear cell", action = function() Loop.Clear(lane) end },
-    })
-end
-
--- Scene: launch every non-empty stopped lane (they land together on the
--- next quantize boundary); the stop square halts every playing one.
-local function sceneLaunch()
-    for l = 0, LANES - 1 do
-        if Loop.HasContent(l) and Loop.Mode(l) == 2 then Loop.Play(l) end
-    end
-end
-
-local function sceneStop()
-    for l = 0, LANES - 1 do
-        local m = Loop.Mode(l)
-        if m == 3 or m == 5 then Loop.StopClip(l) end
     end
 end
 
 -- ---------------------------------------------------------------------------
--- Frame
+-- Drawing
 -- ---------------------------------------------------------------------------
-local sin, floor = math.sin, math.floor
-
-local function drawCell(theme, lane, x, y, w, h)
+local function drawCell(theme, t, s, x, y, w, h)
     local C = theme.colors
-    local mode = Loop.Mode(lane)        -- 0 empty 1 rec 2 stopped 3 play 4 armed 5 overdub
-    local has  = Loop.HasContent(lane)
-    local pend = Loop.Pending(lane)     -- 0 none 1 play 2 stop 3 rec 4 stoprec 5 ovr
-    local muted = Loop.GetMute(lane)
-    local rad = theme.rounding or 0
+    local c = cells[t][s]
+    local rad = theme.rounding_small or theme.rounding or 0
+    local live = liveLane(t)
+    local is_cur = (cur[t] == s)
+    local mode = is_cur and floor(Loop.Mode(live) + 0.5) or 0
+    local pend = is_cur and Loop.Pending(live) or 0
+    local playing = is_cur and (mode == 3 or mode == 5)
 
-    -- surface by state
-    local br, bg_, bb, ba = 0.16, 0.16, 0.18, 1
-    if mode == 1 or mode == 5 then
-        local d = C.danger
-        br, bg_, bb = d[1] * 0.55, d[2] * 0.35, d[3] * 0.35
-    elseif mode == 3 then
+    local br, bg_, bb = 0.15, 0.15, 0.17
+    if playing then
         local a = C.accent
         br, bg_, bb = a[1] * 0.45, a[2] * 0.45, a[3] * 0.45
-    elseif has then
+    elseif c then
         br, bg_, bb = 0.21, 0.21, 0.24
     end
-    Core.DrawRoundRectFilled(x, y, w, h, rad, br, bg_, bb, ba)
+    Core.DrawRoundRectFilled(x, y, w, h, rad, br, bg_, bb, 1)
 
-    -- pending blink frame (queued launch/stop — same language as the Looper)
-    if pend > 0 then
-        local a = 0.45 + 0.55 * math.abs(sin(r.time_precise() * 5))
-        local pc = (pend == 2 or pend == 4) and C.text or C.accent
-        Core.DrawRect(x, y, w, h, pc[1], pc[2], pc[3], a, false)
+    if c then
+        -- queued launch / stop blinks, exactly as in the Looper
+        if pend == 1 or pend == 2 then
+            local a = 0.45 + 0.55 * math.abs(sin(r.time_precise() * 5))
+            local pc = (pend == 2) and C.text or C.accent
+            Core.DrawRect(x, y, w, h, pc[1], pc[2], pc[3], a, false)
+            UI.RequestRedraw()
+        end
+        if playing then
+            local ph = Loop.Phase(live)
+            local L  = Loop.LenBeats(live)
+            local a = C.accent
+            if L > 0 then
+                Core.DrawRect(x + 2, y + h - 4, (w - 4) * (ph / L), 2,
+                              a[1], a[2], a[3], 0.9)
+            end
+            UI.RequestRedraw()
+        end
+        local tc = C.text
+        local nm = (c.name and c.name ~= "") and c.name or "clip"
+        Core.DrawText(cellLabel(t, s, nm, w - 10), x + 5, y + 3,
+                      tc[1], tc[2], tc[3], 0.95)
+        UI.SetFontCaption()
+        local mc = C.text_mute or C.text_disabled
+        Core.DrawText(barsLabel(cellBars(c)), x + 5, y + h - 13,
+                      mc[1], mc[2], mc[3], 0.85)
+        UI.SetFontBody()
     end
 
-    -- phase sweep while playing / capturing
-    if mode == 3 or mode == 1 or mode == 5 then
-        local ph = Loop.Phase(lane)
-        local a = C.accent
-        Core.DrawRect(x + 2, y + h - 5, (w - 4) * ph, 3, a[1], a[2], a[3], 0.9)
-    end
-
-    -- labels: name + length (or state word)
-    local tc = C.text
-    -- parens: TruncateText returns (text, width) — only the text goes here
-    Core.DrawText((Core.TruncateText(laneName(lane), w - 12)), x + 6, y + 5,
-                  tc[1], tc[2], tc[3], muted and 0.4 or 0.95)
-    UI.SetFontCaption()
-    local sub
-    if mode == 1 then sub = "REC"
-    elseif mode == 5 then sub = "OVER"
-    elseif mode == 4 then sub = "ARM"
-    elseif has then sub = barsLabel(Loop.GetLengthBars(lane))
-    else sub = "empty" end
-    local mc = C.text_mute or C.text_disabled
-    Core.DrawText(sub, x + 6, y + 21, mc[1], mc[2], mc[3], 0.9)
-    if muted then
-        Core.DrawText("M", x + w - 16, y + 5, tc[1], tc[2], tc[3], 0.5)
-    end
-    UI.SetFontBody()
-
-    -- pending blink and phase sweep move on their own — keep drawing
-    if pend > 0 or mode == 1 or mode == 3 or mode == 5 then
-        UI.RequestRedraw()
-    end
-
-    -- interaction: click = launch/stop, double-click = THE editor
     if Core.MouseInRect(x, y, w, h) and not Core.HasPopup() then
         Core.DrawRect(x, y, w, h, 1, 1, 1, 0.05)
         if Core.MouseDoubleClicked() then
-            editInEditor(lane)
+            editCell(t, s)
         elseif Core.MouseClicked(1) then
-            if has or mode == 3 or mode == 5 then
-                Loop.ToggleClip(lane)
-            end
+            launchCell(t, s)
         elseif Core.MouseClicked(2) then
-            cellMenu(lane)
+            cellMenu(t, s)
         end
     end
 end
 
--- Audio cell: name + rate tag, phase sweep, click = loop/stop.
+-- Audio cell: name + phase sweep, click = loop/stop.
 local function drawAudioCell(theme, i, x, y, w, h)
     local C = theme.colors
     local c = acell[i]
     local playing = c.prev ~= nil
-    local rad = theme.rounding or 0
+    local rad = theme.rounding_small or theme.rounding or 0
     local br, bg_, bb = 0.15, 0.15, 0.17
     if playing then
         local a = C.accent
@@ -370,7 +562,7 @@ local function drawAudioCell(theme, i, x, y, w, h)
     local tc = C.text
     local mc = C.text_mute or C.text_disabled
     if c.path then
-        Core.DrawText((Core.TruncateText(c.name or "?", w - 12)), x + 6, y + 4,
+        Core.DrawText(cellLabel(TRACKS + i, 0, c.name or "?", w - 10), x + 5, y + 4,
                       tc[1], tc[2], tc[3], 0.9)
         if playing then
             local ok, rv, pos = pcall(r.CF_Preview_GetValue, c.prev, "D_POSITION")
@@ -383,7 +575,7 @@ local function drawAudioCell(theme, i, x, y, w, h)
             UI.RequestRedraw()
         end
     else
-        Core.DrawText("drop audio", x + 6, y + 4, mc[1], mc[2], mc[3], 0.7)
+        Core.DrawText("drop audio", x + 5, y + 4, mc[1], mc[2], mc[3], 0.7)
     end
     if Core.MouseInRect(x, y, w, h) and not Core.HasPopup() then
         Core.DrawRect(x, y, w, h, 1, 1, 1, 0.05)
@@ -391,8 +583,7 @@ local function drawAudioCell(theme, i, x, y, w, h)
             acellToggle(i)
         elseif Core.MouseClicked(2) and c.path then
             UI.NativeMenu({
-                { label = "Clear cell",
-                  action = function() acellLoad(i, nil) end },
+                { label = "Clear cell", action = function() acellLoad(i, nil) end },
             })
         end
     end
@@ -411,7 +602,7 @@ local function frame(theme)
     if attached and not state.recalled then
         state.recalled = true
         local empty = true
-        for l = 0, LANES - 1 do
+        for l = 0, Loop.MAX_LANES - 1 do
             if Loop.HasContent(l) then empty = false break end
         end
         if empty and Loop.HasSavedState() then Loop.LoadState(false) end
@@ -429,7 +620,7 @@ local function frame(theme)
         UI.SameLine()
         if UI.Button("q", qLabel()) then cycleQ() end
         UI.SameLine()
-        if UI.Button("stopall", "Stop all") then sceneStop() end
+        if UI.Button("stopall", "Stop all") then stopAll() end
         UI.SameLine()
         if UI.Button("panic", "Panic") then Loop.Panic() end
         UI.SameLine()
@@ -444,56 +635,79 @@ local function frame(theme)
         return
     end
 
-    -- edits coming home from CP_Editor (a cell opened there): apply
-    -- without touching the lane's mode, so a playing loop keeps playing.
-    -- Whoever of Looper/Session reads the mail first applies it — both
-    -- UIs refresh off the same engine version counters.
-    local ac = Bus.Recv("editor:apply")
-    if ac and ac.origin then
-        local ln = tonumber(ac.origin:match("^looper:(%d+)"))
-        if ln and ln >= 0 and ln < LANES then Loop.ApplyClip(ln, ac) end
+    -- The grid needs two lanes per track. A project whose chain still holds
+    -- an older engine would swallow every write to the upper lanes, so say
+    -- so ONCE instead of failing silently.
+    if Loop.EngineLanes() < TRACKS * 2 and not state.engine_warned then
+        state.engine_warned = true
+        flash("Engine is older than this grid — click Reload in CP_Looper")
     end
+
+    syncBuffers()
+
+    -- edits coming home from CP_Editor
+    local ac = Bus.Recv("editor:apply")
+    if ac then applyEdit(ac) end
 
     -- drops from the Media Explorer / other CP windows
     busConsume()
 
-    -- grid: one scene row of lane cells + one row of audio cells (P1+P3)
+    -- ---- geometry
     local x, y = UI.GetCursorPos()
     local w = UI.GetAvailableWidth()
-    local gap = 4
-    local scene_w = 26
-    local cell_w = floor((w - scene_w - gap * LANES) / LANES)
-    local cell_h = 64
+    local gap = 3
+    local scene_w = 24
+    local head_h = 18
+    local cell_w = floor((w - scene_w - gap * TRACKS) / TRACKS)
+    local cell_h = 30
 
-    -- scene button: fire the whole row together
-    local sy = y
-    Core.DrawRoundRectFilled(x, sy, scene_w, cell_h, theme.rounding or 0,
-                             0.18, 0.20, 0.18, 1)
-    do
+    -- ---- track headers: name + a stop square
+    UI.SetFontCaption()
+    for t = 0, TRACKS - 1 do
+        local cx = x + scene_w + gap + t * (cell_w + gap)
+        local mc = C.text_mute or C.text_disabled
+        Core.DrawText(cellLabel(t, SCENES, trackName(t), cell_w - 20), cx + 2, y + 2,
+                      mc[1], mc[2], mc[3], 0.9)
+        -- stop square (a track-wide gesture, the Ableton column footer moved up)
+        local sq = 9
+        local sx2 = cx + cell_w - sq - 2
+        -- filled while the track plays (there is something to stop),
+        -- outlined when it is silent
+        local running = isRunning(liveLane(t))
+        Core.DrawRect(sx2, y + 4, sq, sq,
+                      mc[1], mc[2], mc[3], running and 0.85 or 0.35, running)
+        if Core.MouseInRect(sx2 - 2, y, sq + 4, head_h) and not Core.HasPopup() then
+            if Core.MouseClicked(1) then stopTrack(t) end
+        end
+    end
+    UI.SetFontBody()
+
+    local gy = y + head_h
+    state.grid = state.grid or {}
+    state.grid.x0, state.grid.y0 = x + scene_w + gap, gy
+    state.grid.cw, state.grid.ch, state.grid.gap = cell_w, cell_h, gap
+
+    -- ---- scene launchers + cells
+    for s = 0, SCENES - 1 do
+        local cy = gy + s * (cell_h + gap)
+        Core.DrawRoundRectFilled(x, cy, scene_w, cell_h,
+                                 theme.rounding_small or 0, 0.17, 0.19, 0.17, 1)
         local a = C.accent
-        UI.DrawTriangle(x + 8, sy + cell_h / 2 - 7, x + 8, sy + cell_h / 2 + 7,
-                        x + 20, sy + cell_h / 2, a[1], a[2], a[3], 0.9)
-        if Core.MouseInRect(x, sy, scene_w, cell_h) and not Core.HasPopup() then
-            Core.DrawRect(x, sy, scene_w, cell_h, 1, 1, 1, 0.05)
-            if Core.MouseClicked(1) then sceneLaunch() end
+        UI.DrawTriangle(x + 8, cy + cell_h * 0.5 - 5, x + 8, cy + cell_h * 0.5 + 5,
+                        x + 17, cy + cell_h * 0.5, a[1], a[2], a[3], 0.85)
+        if Core.MouseInRect(x, cy, scene_w, cell_h) and not Core.HasPopup() then
+            Core.DrawRect(x, cy, scene_w, cell_h, 1, 1, 1, 0.06)
+            if Core.MouseClicked(1) then sceneLaunch(s) end
+        end
+        for t = 0, TRACKS - 1 do
+            local cx = x + scene_w + gap + t * (cell_w + gap)
+            drawCell(theme, t, s, cx, cy, cell_w, cell_h)
         end
     end
 
-    -- drop hit-testing geometry (client coords, rebuilt each frame)
-    state.lrow = state.lrow or {}
-    state.lrow.x0, state.lrow.y = x + scene_w + gap, y
-    state.lrow.cw, state.lrow.gap, state.lrow.h = cell_w, gap, cell_h
-
-    for l = 0, LANES - 1 do
-        local cx = x + scene_w + gap + l * (cell_w + gap)
-        drawCell(theme, l, cx, y, cell_w, cell_h)
-    end
-
-    -- audio row (interim engine): drop a file on a cell, click to loop it
-    local ay = y + cell_h + gap
-    local ah = 34
-    Core.DrawRoundRectFilled(x, ay, scene_w, ah, theme.rounding or 0,
-                             0.15, 0.16, 0.15, 1)
+    -- ---- audio row (interim engine)
+    local ay = gy + SCENES * (cell_h + gap) + 6
+    local ah = 26
     UI.SetFontCaption()
     do
         local mc = C.text_mute or C.text_disabled
@@ -502,13 +716,14 @@ local function frame(theme)
     state.arow = state.arow or {}
     state.arow.x0, state.arow.y = x + scene_w + gap, ay
     state.arow.cw, state.arow.gap, state.arow.h = cell_w, gap, ah
-
     for i = 1, ACELLS do
         local cx = x + scene_w + gap + (i - 1) * (cell_w + gap)
-        drawAudioCell(theme, i, cx, ay, cell_w, ah)
+        if i <= TRACKS then
+            drawAudioCell(theme, i, cx, ay, cell_w, ah)
+        end
     end
     UI.SetFontBody()
-    UI.Layout.AdvanceCursor(w, cell_h + gap + ah + 4)
+    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 6 + ah + 4)
 
     -- status
     UI.SetFontCaption()
@@ -519,7 +734,7 @@ local function frame(theme)
             state.flash_msg = ""
         end
     else
-        UI.Text("Click = launch/stop (quantized) · double-click = edit in CP_Editor · drop audio on the A row",
+        UI.Text("Click = launch (one clip per track) · double-click = edit in CP_Editor · triangle = scene",
                 { disabled = true })
     end
     UI.SetFontBody()
@@ -530,7 +745,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Boot
 -- ---------------------------------------------------------------------------
-UI.Init("CP Session", 560, 190, {
+UI.Init("CP Session", 580, 400, {
     persist    = "CP_Session",
     scrollable = false,
 })
