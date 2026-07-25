@@ -969,6 +969,48 @@ la preview partirait sur-le-champ.
   quoi je travaille » ne sont pas la même intention. **Une ligne suffit pour
   l'appliquer aux autres fenêtres** le jour où ça se pose.
 
+### Troisième passe
+
+- [x] **Les trois départs de lecture de REAPER**, sur les trois mêmes touches :
+  `Space` = le curseur d'édition, `Shift+Space` = le début de la sélection,
+  `Ctrl+Shift+Space` = le début du sample. C'était « la sélection, sinon le
+  curseur » — donc le curseur d'édition ne servait à rien dès qu'une sélection
+  existait.
+- [x] **La boucle ne reboucle plus sur le point de départ.** Partir d'un curseur
+  posé au milieu puis boucler dessus répéterait un fragment que personne n'a
+  demandé : le retour appartient à la **partie jouée** (la sélection, sinon le
+  sample entier). `Audio` prend un `loop_start` distinct de `start_s`.
+- [x] **Les transitoires sont des objets** : `Ctrl+clic` en ajoute un où l'on
+  pointe, `M` en ajoute un sur le curseur (exact, et ça marche pendant que ça
+  joue), glisser un fanion le déplace, `Alt+clic` (ou `Delete` sur le curseur)
+  le supprime. Même chose dans le menu contextuel, raccourci écrit à côté.
+  *Pas d'outil modal* : on attrape le fanion en haut, pas la ligne — la ligne
+  traverse toute la hauteur et avalerait chaque glisser de sélection qui
+  commence près d'un transitoire. Et cet éditeur n'a de palette d'outils nulle
+  part ailleurs ; ce n'est pas pour deux gestes qu'il faut lui en donner une.
+- [x] **Ils sont aussi des cibles de snap.** La grille n'a pas de limite de
+  distance (elle est partout) ; un transitoire ne gagne que s'il est à la fois
+  plus proche **et** à quelques pixels, sinon un marqueur à l'autre bout de la
+  vue tirerait le curseur en travers de l'écran faute de concurrent.
+
+### À FAIRE PLUS TARD — les raccourcis clavier réassignables
+
+Demandé explicitement le 2026-07-26, **repoussé volontairement**. À terme, les
+raccourcis de **chaque programme** doivent être modifiables depuis ses Settings.
+
+Ce que ça suppose, pour que le chantier soit fait une fois et pas cinq :
+- une **table de commandes** par app (`id`, libellé, action), et le clavier qui
+  la consulte au lieu de comparer des codes en dur dans une cascade de `if` ;
+- un **binding** `id → (char, modificateurs)` rangé dans le config de l'app,
+  donc un simple diff par rapport aux valeurs d'usine ;
+- un **widget de capture** dans le toolkit (« appuyez sur la combinaison ») et
+  la détection des collisions, qui est la partie qui fait vraiment le travail ;
+- l'aide (`HELP_TEXT`) qui lit les bindings **effectifs** au lieu d'énoncer des
+  touches écrites à la main, sinon elle mentira dès la première réassignation.
+
+C'est le même chantier pour les cinq fenêtres : le faire dans le toolkit, pas
+dans une app.
+
 Les trois jetons de rôle `mute`, `solo` et `mod` attendent précisément ça —
 `mute` et `solo` sont le vocabulaire documenté des boutons M/S, et ils sont
 définis dans le thème sans que rien ne les lise. Le mixer est ce qui les
