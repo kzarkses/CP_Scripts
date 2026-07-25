@@ -993,6 +993,26 @@ la preview partirait sur-le-champ.
   plus proche **et** à quelques pixels, sinon un marqueur à l'autre bout de la
   vue tirerait le curseur en travers de l'écran faute de concurrent.
 
+### Quatrième passe — cinq règles de REAPER que l'éditeur n'appliquait pas
+
+- [x] **Shift ignore le snap, partout** : bord de sélection, transitoire,
+  règle, marqueur déposé. Une ligne, dans `waveSnap`, parce que c'est le seul
+  endroit qui décide.
+- [x] **Un clic ne touche plus à la sélection.** Il place le curseur, point ;
+  seul un *glisser* change une sélection.
+- [x] **Space part vraiment du curseur.** La partie jouée se lisait sur la
+  sélection quel que soit le départ, donc le curseur était poussé sur le début
+  de la sélection dès qu'il tombait après elle — et les trois touches donnaient
+  le même résultat. Seul `Shift+Space` lit la sélection maintenant.
+- [x] **La section est réaffirmée pendant que ça joue** : bouger la sélection
+  en cours de boucle ne changeait rien jusqu'au prochain play.
+- [x] **Ctrl+glisser la sélection dehors** — vers l'arrangeur (un vrai item
+  suit la souris : la machine à fantôme d'`Insert`, celle du Media Explorer) ou
+  vers une fenêtre CP (la même région en clip CPC1 sur le bus). **Rien n'est
+  rendu** : une sélection *est* déjà une région d'un fichier, et un item est un
+  fichier plus un offset et une longueur — donc pas de fichier temporaire, pas
+  de bake, et ce qui atterrit reste entièrement éditable.
+
 ### À FAIRE PLUS TARD — les raccourcis clavier réassignables
 
 Demandé explicitement le 2026-07-26, **repoussé volontairement**. À terme, les
