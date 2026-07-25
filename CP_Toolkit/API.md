@@ -88,6 +88,16 @@ UI.IconToggle(id, icon, is_on, opts)    -- returns: toggled, new_state
     -- Hoist the opts table to a module local: built inline it allocates once
     -- per frame.
 
+-- RAIL — the left navigation column (Editor, Sampler). Holds what has a
+-- DURABLE STATE: which view, which tool, which mode. Verbs stay in a bar.
+-- Two widths; the glyphs do not move when it folds, only the labels go.
+UI.BeginRail(id, collapsed, opts)   -- opts: {width, slim_width, gap}
+UI.RailGroup(label)                 -- section label; a hairline when folded
+UI.RailItem(id, icon, label, selected, opts)  -- returns: clicked
+                                    -- opts: {height, icon_size, accent, disabled}
+collapsed = UI.RailBody(collapsed)  -- collapse control, then enter the pane
+UI.EndRail()
+
 -- Checkbox (filled square). Returns: toggled, new_checked
 UI.Checkbox(id, label, checked)
 

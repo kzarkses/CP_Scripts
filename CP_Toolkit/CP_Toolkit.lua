@@ -620,6 +620,22 @@ function UI.IconToggle(id, icon, is_on, opts)
     return Widgets.IconToggle(id, icon, is_on, UI._theme, opts)
 end
 
+-- Rail — the left navigation column. Holds durable STATE (view, tool, mode);
+-- verbs stay in a bar. See Widgets.BeginRail for the shape of a call.
+function UI.BeginRail(id, collapsed, opts)
+    return Widgets.BeginRail(id, collapsed, UI._theme, opts)
+end
+function UI.RailGroup(label)
+    return Widgets.RailGroup(label, UI._theme)
+end
+function UI.RailItem(id, icon, label, selected, opts)
+    return Widgets.RailItem(id, icon, label, selected, UI._theme, opts)
+end
+function UI.RailBody(collapsed)
+    return Widgets.RailBody(collapsed, UI._theme)
+end
+UI.EndRail = Widgets.EndRail
+
 -- Help ("?") button + overlay
 function UI.HelpButton(id, help_text, opts)
     return Widgets.HelpButton(id, help_text, UI._theme, opts)

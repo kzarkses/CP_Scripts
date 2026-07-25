@@ -1794,20 +1794,42 @@ local function knobFromDisplay(opts, num)
     return nil
 end
 
+-- 34 px with the caption tucked under it: the size settled on in session 7 for
+-- panels. `opts.label_right` puts the caption beside the dial instead, for the
+-- dense bars where a second line of text costs more than it explains.
+Widgets.KNOB_SIZE = 34
+local KNOB_LABEL_H = 11        -- caption line under the dial, tight on purpose
+
 function Widgets.Knob(id, label, value, default_value, theme, opts)
     opts = opts or {}
-    local size = opts.size or 40
-    if Layout.IsWrapping() then Layout.WrapPreCheck(size) end
+    local size = opts.size or Widgets.KNOB_SIZE
+    local kd = Core.GetWidgetSubData("knob", id)
+    local has_label = label and label ~= ""
+    local right = opts.label_right and has_label
+    local lw = 0
+    if right then
+        -- measured once per label string: a caption font switch every frame,
+        -- on every knob of a bar, is not worth five letters
+        if kd.lbl ~= label then
+            Core.SetFontCaption()
+            kd.lbl, kd.lblw = label, (Core.MeasureText(label))
+            Core.SetFontBody()
+        end
+        lw = kd.lblw + 5
+    end
+    local box_w = size + lw
+    local box_h = right and size or (size + (has_label and KNOB_LABEL_H or 0))
+
+    if Layout.IsWrapping() then Layout.WrapPreCheck(box_w) end
     local x, y = Layout.GetCursorPos()
     local radius = size / 2
     local sensitivity = opts.sensitivity or 0.004
 
     local changed = false
     local new_value = value
-    local kd = Core.GetWidgetSubData("knob", id)
 
     -- Hit area
-    local hovered = Core.MouseInClippedRect(x, y, size, size + 14) and not Core.HasPopup()
+    local hovered = Core.MouseInClippedRect(x, y, box_w, box_h) and not Core.HasPopup()
 
     if hovered then
         Core.SetHot(id)
@@ -1875,7 +1897,7 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
     -- Draw. Strict visibility: the knob renders through gfx.blit/gfx.arc
     -- which bypass the software clip — a partially scrolled knob would
     -- bleed over its container's neighbours (audit B3 companion fix).
-    if Core.IsFullyVisible(x, y, size, size + 14) then
+    if Core.IsFullyVisible(x, y, box_w, box_h) then
         local cx, cy = x + radius, y + radius
         local display_val = changed and new_value or value
 
@@ -1922,7 +1944,25 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
             end
         end
 
-        -- (no indicator — clean arc only)
+        -- Value pointer. The arc alone is genuinely hard to read at 28-34 px,
+        -- and it is the only cue that survives for someone who cannot separate
+        -- the accent from the track — position is readable when hue is not.
+        -- Drawn INSIDE the track so it never collides with the arc; the two
+        -- perpendicular half-alpha passes give it weight without a polygon.
+        do
+            local ca, sa = cos(angle_val), sin(angle_val)
+            local r0, r1 = radius * 0.30, ar - tw - 1.5
+            if r1 > r0 then
+                local pc = theme.colors.text
+                gfx.set(pc[1], pc[2], pc[3], 0.85)
+                gfx.line(cx + ca * r0, cy + sa * r0, cx + ca * r1, cy + sa * r1, 1)
+                gfx.set(pc[1], pc[2], pc[3], 0.35)
+                gfx.line(cx + ca * r0 - sa, cy + sa * r0 + ca,
+                         cx + ca * r1 - sa, cy + sa * r1 + ca, 1)
+                gfx.line(cx + ca * r0 + sa, cy + sa * r0 - ca,
+                         cx + ca * r1 + sa, cy + sa * r1 - ca, 1)
+            end
+        end
 
         -- Typing overlay: the buffer replaces the knob face, so the value
         -- being entered is readable on a 34 px control.
@@ -1944,19 +1984,23 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
             Core.SetFontBody()
         end
 
-        -- Label below knob
-        if label then
+        if has_label then
             Core.SetFontCaption()
-            local lw = Core.MeasureText(label)
-            local lx = x + floor((size - lw) / 2)
-            local ly = y + size + 1
             local lc = theme.colors.text_disabled
-            Core.DrawText(label, lx, ly, lc[1], lc[2], lc[3], lc[4])
+            if right then
+                local _, lh = Core.MeasureText(label)
+                Core.DrawText(label, x + size + 5, y + floor((size - lh) / 2),
+                              lc[1], lc[2], lc[3], lc[4])
+            else
+                local w2 = Core.MeasureText(label)
+                Core.DrawText(label, x + floor((size - w2) / 2), y + size,
+                              lc[1], lc[2], lc[3], lc[4])
+            end
             Core.SetFontBody()
         end
     end
 
-    Layout.AdvanceCursor(size, size + 14)
+    Layout.AdvanceCursor(box_w, box_h)
     return changed, new_value
 end
 
@@ -4779,6 +4823,140 @@ end
 -- opts.icon_off gives the OFF state its own glyph (strongly preferred).
 function Widgets.IconToggle(id, icon, is_on, theme, opts)
     return iconWidget(id, icon, (opts or {}).icon_off, is_on, theme, opts, true)
+end
+
+-- ============================================================================
+-- RAIL — the left navigation column
+-- ============================================================================
+-- The rail holds what has a DURABLE STATE: which view, which tool, which mode.
+-- Verbs stay in a bar. You never hunt for "Quantize" in the rail, nor for
+-- "which tool am I holding" in a menu — each zone gets one reason to exist,
+-- which is the whole point of moving them apart.
+--
+-- It sits on the LEFT because the views it serves are wide and short: a clip
+-- grid, a bank of pads, a piano roll. A top bar spends the scarce dimension;
+-- a left column spends the abundant one. A VERTICAL view wants the opposite,
+-- which is why the Media Explorer keeps its top bar.
+--
+-- Two widths, one real difference between them: the label. The glyphs do not
+-- move by a pixel when it folds, so collapsing never relocates anything the
+-- eye has already memorised.
+--
+--   UI.BeginRail("nav", collapsed)
+--       UI.RailGroup("View")
+--       if UI.RailItem("grid", "LayoutGrid", "Grid", view == "grid") then … end
+--   collapsed = UI.RailBody(collapsed)      -- collapse control, then the pane
+--       … the app's content …
+--   UI.EndRail()
+local RAIL_W_WIDE, RAIL_W_SLIM = 126, 40
+local RAIL_ITEM_H = 26
+local rail = { slim = false, w = RAIL_W_WIDE }
+
+function Widgets.BeginRail(id, collapsed, theme, opts)
+    opts = opts or {}
+    rail.slim = collapsed and true or false
+    rail.w = rail.slim and (opts.slim_width or RAIL_W_SLIM)
+                        or (opts.width or RAIL_W_WIDE)
+    -- Ground the strip BEFORE the columns open, from the parent's box: a
+    -- column container starts inside the window padding, and a rail that
+    -- stopped at the padding would read as a floating panel instead of an
+    -- edge of the window.
+    local p = Core.CurrentContainer()
+    if p then
+        local px, py = Layout.GetCursorPos()
+        local pad, pady = p.pad_x or 0, p.pad_y or 0
+        local x0, w0 = px - pad, rail.w + pad * 2
+        local y0 = py - pady
+        local h0 = p.y + p.h - y0
+        local bg = theme.colors.surface1 or theme.colors.header
+        Core.DrawRect(x0, y0, w0, h0, bg[1], bg[2], bg[3], 1)
+        local ln = theme.colors.border_soft or theme.colors.border
+        Core.DrawRect(x0 + w0 - 1, y0, 1, h0, ln[1], ln[2], ln[3], ln[4] or 1)
+    end
+    Layout.BeginColumns(id, { rail.w, 1.0 }, { gap = opts.gap or 12 })
+end
+
+-- Section label. Collapsed it becomes a hairline: the grouping survives even
+-- when there is no room to name it.
+function Widgets.RailGroup(label, theme)
+    Layout.Spacing(6)
+    local x, y = Layout.GetCursorPos()
+    if rail.slim then
+        local ln = theme.colors.border_soft or theme.colors.border
+        Core.DrawRect(x + 9, y + 3, rail.w - 18, 1, ln[1], ln[2], ln[3], (ln[4] or 1) * 0.9)
+        Layout.AdvanceCursor(rail.w, 7)
+    else
+        Core.SetFontCaption()
+        local c = theme.colors.text_mute or theme.colors.text_disabled
+        Core.DrawText(label, x + 4, y, c[1], c[2], c[3], 0.85)
+        local _, h = Core.MeasureText(label)
+        Core.SetFontBody()
+        Layout.AdvanceCursor(rail.w, h + 2)
+    end
+end
+
+-- One entry. `selected` is the durable state the rail exists to show, so it
+-- is drawn as a held state (accent wash + a bar on the leading edge), not as
+-- a pressed button. Returns clicked.
+function Widgets.RailItem(id, icon, label, selected, theme, opts)
+    opts = opts or {}
+    local h = opts.height or RAIL_ITEM_H
+    local x, y = Layout.GetCursorPos()
+    local w = rail.w
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local clicked = false
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then clicked = true end
+    end
+
+    if Core.IsVisible(x, y, w, h) then
+        local rad = theme.rounding_small or 0
+        if selected then
+            local a = opts.accent or theme.colors.accent
+            fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.18)
+            Core.DrawRect(x + 3, y + 3, 2, h - 6, a[1], a[2], a[3], 0.95)
+        elseif hovered then
+            fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, 0.055)
+        end
+        local tc
+        if disabled then tc = theme.colors.text_disabled
+        elseif selected then tc = opts.accent or theme.colors.accent
+        elseif hovered then tc = theme.colors.text
+        else tc = theme.colors.text_mute or theme.colors.text_disabled end
+        local isz = opts.icon_size or 16
+        local ix = rail.slim and (x + floor((w - isz) / 2)) or (x + 12)
+        local draw = (type(icon) == "function") and icon or (Icons and Icons[icon])
+        if draw then draw(ix, y + floor((h - isz) / 2), isz, tc[1], tc[2], tc[3], 1) end
+        if not rail.slim and label then
+            local _, lh = Core.MeasureText(label)
+            Core.DrawText(label, ix + isz + 9, y + floor((h - lh) / 2),
+                          tc[1], tc[2], tc[3], 1)
+        end
+    end
+    if hovered and rail.slim and label then Widgets.Tooltip(label, theme) end
+
+    Layout.AdvanceCursor(w, h)
+    return clicked
+end
+
+-- Pins the collapse control to the BOTTOM of the strip, then moves into the
+-- content column. Returns the new collapsed state, so the app can persist it.
+function Widgets.RailBody(collapsed, theme)
+    local rest = Layout.GetAvailableHeight() - RAIL_ITEM_H
+    if rest > 0 then Layout.Spacing(rest) end
+    local hit = Widgets.RailItem("__rail_fold",
+        collapsed and "PanelLeftOpen" or "PanelLeftClose",
+        collapsed and nil or "Collapse", false, theme)
+    Layout.NextColumn()
+    if hit then return not collapsed end
+    return collapsed
+end
+
+function Widgets.EndRail()
+    Layout.EndColumns()
 end
 
 -- ============================================================================

@@ -77,6 +77,20 @@ function Theme.Default()
             accent_dim      = { 0.25, 0.42, 0.58, 1.0 },  -- selected row bg, primary btn bg
             danger          = { 0.78, 0.32, 0.32, 1.0 },  -- delete / clear
             bypass          = { 0.78, 0.62, 0.32, 1.0 },  -- amber for bypassed FX
+
+            -- ROLE colours. Not decoration: these say what a lit control is
+            -- DOING, and they are the only place the apps may take a hue from
+            -- for transport state. Everything else uses the single accent —
+            -- if every toggle is coloured, colour stops meaning anything, and
+            -- the place it has to read at a glance is the clip grid, not Snap.
+            -- Kept as theme tokens rather than literals copied into each app
+            -- (ANALYSE_DesignSystem §4.1): a theme can restyle them once.
+            play            = { 0.31, 0.75, 0.42, 1.0 },  -- playing / running
+            record          = { 0.82, 0.34, 0.35, 1.0 },  -- capturing / armed to capture
+            pending         = { 0.85, 0.65, 0.25, 1.0 },  -- queued, waiting for the boundary
+            mute            = { 0.44, 0.48, 0.55, 1.0 },  -- silenced on purpose
+            solo            = { 0.90, 0.80, 0.30, 1.0 },  -- the only one you hear
+            mod             = { 0.62, 0.47, 0.86, 1.0 },  -- modulation source / depth
         },
 
         -- Font settings (sizes are scaled)
