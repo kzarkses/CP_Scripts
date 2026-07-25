@@ -665,5 +665,30 @@ marche vient de sa règle de la session 3 (« refonte graphique avant, pour
 minimal Session + couleur de clip, CP_Looper en step sequencer, phases 2-6
 (follow actions d'abord), fond de tiroir.
 
+- [x] **L'enregistrement, pour de bon** (`4652dff`). Retour : « la case rouge
+  une fois sur deux », « les notes sont enregistrées mais ça ne crée pas de
+  clip ». **Le même défaut**, dans `pollRec` : une commande ne prend pas effet
+  à la frame où on l'émet (le moteur en consomme une par bloc), donc pendant
+  quelques frames la lane est encore en mode 0 — la cellule était vide — et
+  `pollRec` lisait ce 0 comme « effacé sous nos pieds ». Selon le timing, la
+  case devenait rouge ou pas ; et quand l'état était lâché, la prise tournait
+  quand même, les notes étaient capturées (l'éditeur les montrait) mais plus
+  personne n'attendait le résultat. `pollRec` attend maintenant d'avoir **vu**
+  le moteur prendre la commande. Deux défauts de la même famille corrigés
+  avec : il suivait « la lane vivante » au lieu de celle visée, et `laneBusy`
+  ignorait ARMÉ et REC-EN-ATTENTE. Enfin, enregistrer dans une cellule vide
+  envoyait REC à la moitié vivante — qui pouvait jouer un autre clip de la
+  piste, que REC efface : la prise va dans la jumelle, comme `launchCell`.
+- [x] **Le comportement, aligné sur Ableton** (même commit) : quantisation de
+  lancement à **une mesure par défaut** (zéro rendait le double tampon A/B
+  inutile et démarrait une prise en plein milieu de mesure) ; la case
+  **décompte les temps** avant le départ ; en Follow transport arrêté elle
+  affiche PLAY sans déclencher le transport à sa place ; **pas de pre-roll**,
+  comme Ableton en session — la quantisation EST le pre-roll ; la **durée de
+  prise** devient un réglage annoncé (`Rec: N bars`) puisque notre moteur
+  ferme la prise tout seul, contrairement à l'enregistrement session
+  d'Ableton qui reste ouvert ; barre de progression pendant la prise ; l'aide
+  dit les trois étapes et ce qui rentre.
+
 **Ouvert, noté pendant la session** : enregistrer par-dessus une cellule
-pleine, et un décompte visible avant le départ d'une prise.
+pleine (Ableton le permet), et un métronome / décompte audible.
