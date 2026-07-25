@@ -86,6 +86,10 @@ local opts = {
     -- region when there is none). Off by default: an audition that will not
     -- stop is a surprise, a loop you asked for is a tool.
     loop       = cfg.loop == true,
+    -- Snap the audio selection and the edit cursor to the same grid the roll
+    -- uses. On by default: a sample being cut into a loop wants beats far more
+    -- often than it wants samples, and the toggle is one click away.
+    wave_snap  = cfg.wave_snap ~= false,
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -143,6 +147,7 @@ local function persistConfig()
     cfg.audition   = opts.audition
     cfg.thru_track = opts.thru_track
     cfg.loop       = opts.loop
+    cfg.wave_snap  = opts.wave_snap
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -166,6 +171,76 @@ end
 local function xAtTime(t)
     return wave.x + (t - state.t0) / span() * wave.w
 end
+
+-- ONE grid for the whole editor: the piano roll and the waveform snap to the
+-- same division, and it is the project's own until you say otherwise.
+-- Whole notes → quarter notes, because every snap below works in QN.
+local function gridStepQN()
+    local division = opts.grid_div
+    if not division then
+        local _, d = r.GetSetProjectGrid(0, false)
+        division = d
+    end
+    if not division or division <= 0 then division = 0.25 end
+    return division * 4
+end
+
+-- ---------------------------------------------------------------------------
+-- Waveform snap
+--
+-- The waveform is drawn in the SOURCE domain and the grid is musical, so the
+-- round trip is source → project → QN → back. Going through REAPER's TimeMap
+-- rather than doing the arithmetic ourselves means a tempo MAP is honoured
+-- instead of assumed away.
+--
+-- An item is anchored by its own position on the timeline. A bare file has no
+-- position at all, so it is read as if it started at the project's zero —
+-- which is exactly what makes a loop's beats land on the grid.
+-- ---------------------------------------------------------------------------
+local function srcToProj(t)
+    if state.mode == "item" and state.item and state.take then
+        local soffs = r.GetMediaItemTakeInfo_Value(state.take, "D_STARTOFFS")
+        local rate  = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
+        if rate <= 0 then rate = 1 end
+        local pos = r.GetMediaItemInfo_Value(state.item, "D_POSITION")
+        return pos + (t - soffs) / rate, rate, pos, soffs
+    end
+    return t, 1, 0, 0
+end
+
+local function projToSrc(pt, rate, pos, soffs)
+    return soffs + (pt - pos) * rate
+end
+
+local function waveSnap(t)
+    if not opts.wave_snap then return t end
+    local pt, rate, pos, soffs = srcToProj(t)
+    local step = gridStepQN()
+    local qn = math.floor(r.TimeMap2_timeToQN(0, pt) / step + 0.5) * step
+    local nt = projToSrc(r.TimeMap2_QNToTime(0, qn), rate, pos, soffs)
+    if nt < 0 then nt = 0 end
+    return nt
+end
+
+-- The grid choices, as a combo's two parallel arrays with entry 1 meaning
+-- "follow the project". Built once at load — a combo needs a plain list of
+-- strings, and rebuilding one per frame would allocate for nothing. Up here
+-- with the grid itself, because BOTH bars offer them now.
+local GRID_CHOICES = {
+    { "1/1", 1 }, { "1/2", 0.5 }, { "1/4", 0.25 }, { "1/8", 0.125 },
+    { "1/16", 0.0625 }, { "1/32", 0.03125 }, { "1/64", 0.015625 },
+    { "1/8 T", 1 / 12 }, { "1/16 T", 1 / 24 },
+}
+local GRID_ITEMS, GRID_VALS = { "Grid: project" }, { false }
+for i = 1, #GRID_CHOICES do
+    GRID_ITEMS[i + 1] = "Grid " .. GRID_CHOICES[i][1]
+    GRID_VALS[i + 1]  = GRID_CHOICES[i][2]
+end
+local GRID_BAR_OPTS = { w = 3 }
+
+-- "Grid 1/16" display label, cached until the division changes (read per
+-- frame — no concat in the frame path)
+local grid_lbl = { div = -1, s = "" }
 
 local function clampView()
     local sp = span()
@@ -963,6 +1038,16 @@ the way the Sampler's region works. A selection's own edges resize it
 instead of starting a new one. Every handle lights up under the
 cursor and grows while you hold it.
 
+The RULER moves the edit cursor and nothing else, as REAPER's does:
+you place where the next action starts without losing the range you
+just selected. Drag in it to scrub.
+
+SNAP (the magnet) holds the selection and the cursor to the grid, and
+the grid is the SAME one the piano roll uses. A file has no position
+on the timeline, so its grid is read from the project's zero — which
+is what makes a loop's beats land where you expect. Turn snap off and
+the zero-crossing snap takes over instead (Settings).
+
 LOOP (next to Play) repeats the played part — the selection when
 there is one, the whole region otherwise — and takes effect on what
 is already playing. The play cursor is REAPER's own colour and shows
@@ -1084,6 +1169,29 @@ local function barAudio(theme)
     end
     UI.BarSep()
 
+    -- The SAME grid the roll uses, on the same two controls. A file has no
+    -- position on the timeline, so its grid is read from the project's zero —
+    -- which is what makes a loop's beats fall where you expect them.
+    if UI.BarToggle("w_snap", "Magnet", nil, opts.wave_snap,
+                    "Snap the selection and the cursor to the grid") then
+        opts.wave_snap = not opts.wave_snap
+        markDirty()
+    end
+    local widx = 1
+    for i = 2, #GRID_ITEMS do
+        if opts.grid_div and math.abs(opts.grid_div - GRID_VALS[i]) < 1e-9 then
+            widx = i break
+        end
+    end
+    local wch, wgi = UI.BarCombo("w_grid", widx, GRID_ITEMS, not opts.wave_snap,
+                                 GRID_BAR_OPTS)
+    if wch then
+        opts.grid_div = (wgi == 1) and nil or GRID_VALS[wgi]
+        grid_lbl.div = -1
+        markDirty()
+    end
+    UI.BarSep()
+
     local nomark = #state.markers == 0
 
     if state.mode ~= "item" then
@@ -1187,8 +1295,47 @@ local function rulerBuild()
 end
 
 -- ---------------------------------------------------------------------------
--- Waveform buffer (re-rendered only when the view/audio changes)
+-- The musical grid over the waveform, cached exactly like the ruler's ticks:
+-- rebuilt only when the view, the width or the division moves. Walking the
+-- TimeMap per line per frame would be a few hundred API calls for a picture
+-- that does not change between them.
 -- ---------------------------------------------------------------------------
+local wgrid = { t0 = -1, t1 = -1, w = 0, step = -1, mode = "", n = 0,
+                xs = {}, bar = {} }
+local WGRID_MAX = 400   -- denser than this says nothing: it is a grey wash
+
+local function wgridBuild()
+    local step = gridStepQN()
+    if wgrid.t0 == state.t0 and wgrid.t1 == state.t1 and wgrid.w == wave.w
+       and wgrid.step == step and wgrid.mode == (state.mode or "") then
+        return
+    end
+    wgrid.t0, wgrid.t1, wgrid.w = state.t0, state.t1, wave.w
+    wgrid.step, wgrid.mode = step, state.mode or ""
+    wgrid.n = 0
+
+    local p0, rate, pos, soffs = srcToProj(state.t0)
+    local p1 = srcToProj(state.t1)
+    if p1 <= p0 then return end
+    local q0 = r.TimeMap2_timeToQN(0, p0)
+    local q1 = r.TimeMap2_timeToQN(0, p1)
+    if (q1 - q0) / step > WGRID_MAX then return end
+
+    local n = 0
+    local q = math.ceil(q0 / step - 0.0001) * step
+    while q <= q1 and n < WGRID_MAX do
+        local pt = r.TimeMap2_QNToTime(0, q)
+        n = n + 1
+        wgrid.xs[n] = xAtTime(projToSrc(pt, rate, pos, soffs))
+        -- beats WITHIN the measure, so a bar line is one that sits at 0 —
+        -- or, float being float, a hair short of the measure's own length
+        local beats, _, cml = r.TimeMap2_timeToBeats(0, pt)
+        wgrid.bar[n] = (beats < 0.002
+                        or (cml and cml > 0 and beats > cml - 0.002)) and true or false
+        q = q + step
+    end
+    wgrid.n = n
+end
 local wb = { src = nil, t0 = -1, t1 = -1, w = 0, h = 0, gen = -1 }
 local SS = Peaks.SS or 2       -- supersampling factor: bake big, blit filtered
 local WOPTS = { lanes = true, scale = 0.47, vol = 1,
@@ -1322,6 +1469,25 @@ local function waveInput(theme)
                and my >= wave.ry and my < wave.ry + wave.rh
     if Core_tk.HasPopup() then inside = false end
 
+    -- The RULER moves the edit cursor and nothing else, exactly as REAPER's
+    -- does. That is the whole point of it: you place where the next action
+    -- starts without losing the range you just spent time selecting. Dragging
+    -- in it scrubs the cursor along.
+    local in_ruler = (not Core_tk.HasPopup())
+        and mx >= wave.x and mx < wave.x + wave.w
+        and my >= wave.y and my < wave.y + RULER_H
+    if in_ruler then UI.SetCursor("arrow") end
+    if in_ruler and Core_tk.MouseClicked(1) then state.rdrag_ruler = true end
+    if state.rdrag_ruler then
+        if Core_tk.MouseDown(1) then
+            local t = timeAtX(mx)
+            if t < 0 then t = 0 elseif t > state.len then t = state.len end
+            state.cursor = waveSnap(t)
+        else
+            state.rdrag_ruler = nil
+        end
+    end
+
     -- wheel = zoom at mouse
     if inside then
         local wheel = Core_tk.GetState().mouse_wheel
@@ -1371,15 +1537,16 @@ local function waveInput(theme)
             if k == "sel" then
                 if wp.moved or math.abs(mx - wp.x) > 3 then
                     wp.moved = true
-                    if t < wp.t then
-                        state.sel_a, state.sel_b = t, wp.t
-                    else
-                        state.sel_a, state.sel_b = wp.t, t
-                    end
+                    -- Snapped live, both ends, so the range you see while
+                    -- dragging is the range you get on release.
+                    local a, b = waveSnap(wp.t), waveSnap(t)
+                    if b < a then a, b = b, a end
+                    state.sel_a, state.sel_b = a, b
                 end
             elseif k == "sel_a" or k == "sel_b" then
                 -- Resize an existing selection instead of throwing it away and
                 -- redrawing it. Crossing over swaps the ends, as any range does.
+                t = waveSnap(t)
                 if k == "sel_a" then state.sel_a = t else state.sel_b = t end
                 if state.sel_a > state.sel_b then
                     state.sel_a, state.sel_b = state.sel_b, state.sel_a
@@ -1407,17 +1574,21 @@ local function waveInput(theme)
             end
         else
             -- release
+            -- Zero-crossing snap only when the GRID is off: the two would
+            -- fight, and a selection nudged off the beat it was just snapped
+            -- to is worse than either rule on its own.
+            local zsnap = opts.snap_zero and not opts.wave_snap and state.src
             local k = wp.kind
             if k == "sel" then
                 if not wp.moved then
-                    state.cursor = wp.t
+                    state.cursor = waveSnap(wp.t)
                     state.sel_a, state.sel_b = nil, nil
-                elseif opts.snap_zero and state.src then
+                elseif zsnap then
                     state.sel_a = Ops.SnapZero(state.src, state.sel_a)
                     state.sel_b = Ops.SnapZero(state.src, state.sel_b)
                 end
             elseif k == "sel_a" or k == "sel_b" then
-                if opts.snap_zero and state.src then
+                if zsnap then
                     state.sel_a = Ops.SnapZero(state.src, state.sel_a)
                     state.sel_b = Ops.SnapZero(state.src, state.sel_b)
                 end
@@ -1517,6 +1688,23 @@ local function drawWave(theme, area_h)
                          col_mute[1], col_mute[2], col_mute[3], 1)
     end
     UI.SetFontBody()
+
+    -- The musical grid, shown only when it is what the mouse obeys — a grid
+    -- drawn while snapping is off is a promise the editor does not keep.
+    -- Two weights: the bar carries, the division follows.
+    if opts.wave_snap then
+        wgridBuild()
+        for i = 1, wgrid.n do
+            local x = wgrid.xs[i]
+            Core_tk.DrawRect(x, wave.ry, 1, wave.rh,
+                             col_mute[1], col_mute[2], col_mute[3],
+                             wgrid.bar[i] and 0.28 or 0.11)
+            if wgrid.bar[i] then
+                Core_tk.DrawRect(x, gy + RULER_H - 8, 1, 8,
+                                 col_mute[1], col_mute[2], col_mute[3], 0.6)
+            end
+        end
+    end
 
     -- Which handle is lit. `whot` is the hover the input pass found LAST
     -- frame; `wpress` is the one being held. Drawing runs before input, so a
@@ -1670,17 +1858,9 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Project-grid snap (QN domain — tempo changes respected)
+-- `gridStepQN` lives with the view helpers now: the waveform snaps to the same
+-- grid as the roll, and it is drawn much earlier in this file.
 -- ---------------------------------------------------------------------------
-local function gridStepQN()
-    local division = opts.grid_div
-    if not division then
-        local _, d = r.GetSetProjectGrid(0, false)
-        division = d
-    end
-    if not division or division <= 0 then division = 0.25 end
-    return division * 4   -- whole notes → quarter notes
-end
-
 local function itemPos()
     if not state.item then return 0 end   -- clip/file mode: no item
     return r.GetMediaItemInfo_Value(state.item, "D_POSITION")
@@ -1789,9 +1969,6 @@ local midiCtx = {
     end,
 }
 
--- "Grid 1/16" display label, cached until the division changes (read per
--- frame — no concat in the frame path)
-local grid_lbl = { div = -1, s = "" }
 local function gridLabel()
     local division = gridStepQN() / 4
     if grid_lbl.div ~= division then
@@ -1806,21 +1983,6 @@ local function gridLabel()
         end
     end
     return grid_lbl.s
-end
-
-local GRID_CHOICES = {
-    { "1/1", 1 }, { "1/2", 0.5 }, { "1/4", 0.25 }, { "1/8", 0.125 },
-    { "1/16", 0.0625 }, { "1/32", 0.03125 }, { "1/64", 0.015625 },
-    { "1/8 T", 1 / 12 }, { "1/16 T", 1 / 24 },
-}
-
--- The same choices as a combo's two parallel arrays, entry 1 being "follow
--- the project". Built once at load: a combo needs a plain list of strings and
--- rebuilding one per frame would allocate for nothing.
-local GRID_ITEMS, GRID_VALS = { "Grid: project" }, { false }
-for i = 1, #GRID_CHOICES do
-    GRID_ITEMS[i + 1] = "Grid " .. GRID_CHOICES[i][1]
-    GRID_VALS[i + 1]  = GRID_CHOICES[i][2]
 end
 
 -- ---------------------------------------------------------------------------
@@ -1885,7 +2047,6 @@ end
 -- keeps a dropdown the same width as the one three controls along.
 local BARS_ITEMS  = { "1 bar", "2 bars", "4 bars", "8 bars", "16 bars", "32 bars" }
 local BARS_VALS   = { 1, 2, 4, 8, 16, 32 }
-local GRID_BAR_OPTS = { w = 3 }
 
 -- MIDI / clip bar. GRID and VIEW hold state, EDIT holds the two gestures used
 -- often enough to deserve a permanent home; everything rarer lives in the
@@ -2987,6 +3148,11 @@ end
 UI.Init("Editor", 780, 420, {
     persist    = CONFIG_ID,
     scrollable = false,
+    -- ESC already means something here: clear the selection, leave a mode. A
+    -- second press must do NOTHING rather than close the window — "cancel what
+    -- I am doing" and "throw away what I am working on" are not the same
+    -- intention, and one of them costs the whole view.
+    close_on_esc = false,
 })
 
 -- Advertise this script's registered action so any CP app can LAUNCH the
