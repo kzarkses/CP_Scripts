@@ -264,6 +264,8 @@ local function launchCell(t, s)
     local live = liveLane(t)
     local busy = isRunning(live) or Loop.Pending(live) == 1
     if cur[t] == s then
+        -- clicking the clip that is already queued to STOP takes it back
+        if Loop.Pending(live) == 2 then Loop.Play(live) return end
         if busy then stopTrack(t) return end
         armLane(live, c)
         Loop.Play(live)
@@ -645,8 +647,9 @@ local function frame(theme)
 
     syncBuffers()
 
-    -- edits coming home from CP_Editor
-    local ac = Bus.Recv("editor:apply")
+    -- edits coming home from CP_Editor (own channel: see the editor's
+    -- flushApply — a shared one would let CP_Looper consume our cells)
+    local ac = Bus.Recv("editor:apply:cell")
     if ac then applyEdit(ac) end
 
     -- drops from the Media Explorer / other CP windows

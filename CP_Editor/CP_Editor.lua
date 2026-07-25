@@ -251,7 +251,12 @@ local function flushApply()
         if state.clip_lane and Loop.IsAttached() then
             Loop.ApplyClip(state.clip_lane, state.clip)
         end
-        Bus.Send("editor:apply", state.clip)
+        -- Addressed by DESTINATION: bus messages are delete-on-read, so a
+        -- session cell's edit sent on the shared channel could be eaten by
+        -- CP_Looper — the lane would sound right and the stored cell would
+        -- silently keep the old notes.
+        Bus.Send(state.clip.cell and "editor:apply:cell" or "editor:apply",
+                 state.clip)
     end
     state.apply_t = nil
 end
