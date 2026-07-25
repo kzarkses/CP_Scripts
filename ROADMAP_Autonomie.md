@@ -537,3 +537,83 @@ considérés dans les colonnes ? ».
    vers l'arrangeur.
 6. Fond de tiroir : palette sémantique + sweep des couleurs en dur,
    DnD-capture de modulation, « ? » dans ME/ModLFO/FXC.
+
+---
+
+## Session 8 — un seul moteur, et une grille qui se lit
+
+Retour de test : « le CP_Editor n'est pas toujours sync avec CP_Session…
+des fois il affiche bien le MIDI d'un clip en cours et pourtant son
+curseur d'avancement n'est pas présent… le son ne sort pas toujours…
+c'est comme si CP_Editor et CP_Session avaient deux logiques différentes
+et pas un même moteur commun. »
+
+Diagnostic mené sur les cinq fichiers concernés (audit multi-agents,
+27 défauts confirmés). Il n'y avait pas un bug mais **une erreur de
+modèle**, dont tout le reste découlait.
+
+### L'erreur de modèle
+
+Une piste de Session, c'est **deux lanes** du moteur : celle qu'on
+entend et une jumelle silencieuse dans laquelle on prépare le clip
+suivant, pour que l'échange tombe sur la frontière de quantisation.
+Cette paire n'existait que dans la tête de CP_Session. Conséquences :
+
+- **Le routage était par lane.** Router une colonne ne câblait que la
+  moitié basse ; dès que l'échange basculait sur la jumelle, le MIDI
+  partait sur un canal que rien ne transportait → *le son ne sort pas
+  toujours*, une fois sur deux, selon la parité des lancements.
+- **CP_Editor mémorisait un numéro de lane** au moment de l'ouverture.
+  Le clip changeait de moitié sous lui : plus de curseur, état
+  play/stop faux, et surtout des éditions écrites dans le clip qu'on
+  n'éditait pas.
+- **CP_Looper adressait les lanes brutes 0-3.** Une piste jouant sur sa
+  jumelle disparaissait de sa vue.
+- **Le compteur de commandes était local à chaque script** alors que la
+  case gmem est partagée : deux fenêtres finissaient par écrire un
+  numéro déjà vu, et le moteur ignorait la commande sans trace.
+- **`cur[t]`** (quelle cellule joue) n'était déduit de rien : à la
+  réouverture de la fenêtre, la grille montrait du silence sur des
+  boucles audibles.
+
+### Ce qui a été fait
+
+`CP_Engine/Loop.lua` expose désormais des **pistes**, plus des lanes :
+
+- `Loop.TRACKS`, `Loop.LiveLane(t)`, `Loop.TwinLane(t)`,
+  `Loop.TrackOfLane(lane)` — la moitié vivante est **redérivée du moteur
+  à chaque frame**, jamais mémorisée.
+- **Étiquette d'occupation** par lane (`Loop.SetLaneTag` /
+  `Loop.LaneOfTag`), dans une case gmem libre : une lane dit quelle
+  cellule elle tient, donc n'importe quelle fenêtre retrouve un clip
+  après un échange — et sait se taire quand le moteur ne le tient plus
+  (nil, pas un repli hasardeux).
+- `Loop.Poll()` : **un seul appel par frame** dans chaque fenêtre —
+  gmem resélectionné, une commande en attente qui part, moitiés vivantes
+  redérivées. Les trois vues lisent la même image.
+- `Loop.SetLaneDest` **câble les deux moitiés** ; `SyncSends` répare les
+  projets routés avant la paire.
+- `Loop.Ensure(create)` : **n'importe quelle fenêtre** crée ou rafraîchit
+  le moteur. Plus besoin d'ouvrir CP_Looper d'abord.
+- File de commandes : le compteur avance depuis gmem et la garde attend
+  l'acquittement **de la case**, pas de ses propres envois.
+
+Les trois fenêtres ont été converties : CP_Session perd sa logique de
+paire privée, CP_Editor garde une piste + une étiquette (le numéro de
+lane est résolu chaque frame), CP_Looper adresse des pistes.
+
+### La grille
+
+Quatre poids — **mesure > temps > croche > plus fin** — partagés par les
+deux piano rolls (`RollUI.GRID_ALPHA`). Dessinés en **passes
+superposées, du plus faible au plus fort** plutôt que par
+classification : une barre de mesure n'a plus besoin de tomber sur le
+pas de grille pour exister (carte de tempo, mesures composées), et une
+grille en triolets continue de dessiner des triolets. Le temps suit la
+vraie métrique en mode item (6/8 se hiérarchise sur ses croches) et la
+convention du moteur en mode clip.
+
+### Reste à faire
+
+Inchangé — rail, icônes, mixer minimal, step sequencer, phases 2-6 —
+voir la liste de la session 7.

@@ -348,4 +348,19 @@ function RollUI.TransformMenu(ctx)
     return items
 end
 
+-- ---------------------------------------------------------------------------
+-- Grid line weight — shared so both rolls read the same
+-- ---------------------------------------------------------------------------
+-- A grid drawn at one intensity is a wall of identical lines: at 1/16 you
+-- cannot see where beat 3 is. Ranking measure > beat > eighth > finer puts the
+-- pulse back in the picture. Both hosts index this table so a barline looks
+-- like a barline whichever roll you are in.
+--
+-- Hosts DRAW it in passes, weakest first — subdivisions, eighths, beats,
+-- barlines — and let each pass overwrite the previous where lines coincide.
+-- Layering rather than classifying is what keeps odd meters and tempo maps
+-- honest: a barline never has to land on the subdivision lattice to appear,
+-- and a triplet grid keeps drawing triplets.
+RollUI.GRID_ALPHA = { 0.45, 0.26, 0.15, 0.085 }
+
 return RollUI

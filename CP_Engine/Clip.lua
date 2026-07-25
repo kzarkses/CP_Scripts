@@ -39,6 +39,31 @@ function Clip.new(kind)
     }
 end
 
+-- Numeric identity for a grid cell, so an engine lane can record WHICH clip
+-- it is holding in a single gmem slot — no strings on a channel two scripts
+-- poll every frame. 0 = untagged (a plain Looper loop, which belongs to its
+-- track rather than to any cell).
+-- Takes either the stored "track,scene" string or the two numbers directly;
+-- the numeric form allocates nothing, which is why the grid can call it per
+-- cell per frame. ONE formula, so the two ends always agree.
+function Clip.CellTag(cell, scene)
+    local t, s = cell, scene
+    if type(cell) ~= "number" then
+        if type(cell) ~= "string" then return 0 end
+        local a, b = cell:match("^(%d+),(%d+)$")
+        t, s = tonumber(a), tonumber(b)
+    end
+    if not t or not s then return 0 end
+    return t * 1000 + s + 1
+end
+
+-- Inverse: tag -> track, scene. Nil when the lane holds nothing tagged.
+function Clip.CellOfTag(tag)
+    if not tag or tag <= 0 then return nil end
+    local k = math.floor(tag + 0.5) - 1
+    return k // 1000, k % 1000
+end
+
 -- ---------------------------------------------------------------------------
 -- Serialization: "CPC1|key=value|key=value|…". Values are %-escaped so a
 -- path containing the separator survives; numbers go through %.14g (times

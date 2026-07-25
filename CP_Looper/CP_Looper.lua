@@ -77,7 +77,9 @@ local SNAP_OPTS = {                    -- grid snap for the note editor (in beat
 
 local state = {
     flash_msg = "", flash_until = 0,
-    edit_lane = nil,      -- lane index currently open in the note editor, or nil
+    edit_lane = nil,      -- STRIP (track) open in the note editor, or nil —
+                          -- its engine lane is resolved per use, see editLane()
+    engine_checked = false,   -- one-shot "is the loaded engine current" probe
     snap_idx  = 3,        -- SNAP_OPTS index (1/16)
     edrag     = nil,      -- active note drag { note, kind, grab, start0 }
     ed_lo     = 48, ed_hi = 78,   -- editor pitch range (melodic window)
@@ -104,9 +106,15 @@ end
 -- A Roll backend that reads/writes the gmem note list of one lane (cache unit
 -- is beats). sort/undo are no-ops: gate playback and identity-sync don't need
 -- ordering, and gmem loops aren't part of REAPER's undo.
-local function makeLoopBackend(lane)
+-- `strip` is a TRACK, and its two lanes swap under the editor as clips
+-- change. Every closure resolves the lane at the moment it writes, so a swap
+-- mid-edit moves the pen with the clip instead of leaving it on the one that
+-- just left.
+local function makeLoopBackend(strip)
+    local LL = Loop.LiveLane
     return {
         readAll = function()
+            local lane = LL(strip)
             local n = Loop.NoteCount(lane)
             for i = 1, n do
                 local s, l, p, v = Loop.GetNote(lane, i - 1)
@@ -115,6 +123,7 @@ local function makeLoopBackend(lane)
             return n
         end,
         insertNote = function(t, pitch, len, vel)
+            local lane = LL(strip)
             local n = Loop.NoteCount(lane)
             if n >= Loop.MAX_NOTES then return end
             Loop.PutNote(lane, n, t, len, pitch, vel)
@@ -122,6 +131,7 @@ local function makeLoopBackend(lane)
             Loop.BumpVer(lane)
         end,
         deleteNote = function(i)                     -- 1-based
+            local lane = LL(strip)
             local n = Loop.NoteCount(lane)
             for k = i - 1, n - 2 do                  -- shift the tail down (0-based)
                 local s, l, p, v = Loop.GetNote(lane, k + 1)
@@ -131,6 +141,7 @@ local function makeLoopBackend(lane)
             Loop.BumpVer(lane)
         end,
         setNote = function(i, t, len, pitch, vel)    -- 1-based, nil = keep
+            local lane = LL(strip)
             local s, l, p, v = Loop.GetNote(lane, i - 1)
             if t     ~= nil then s = t end
             if len   ~= nil then l = len end
@@ -155,8 +166,13 @@ local persist_dirty = false
 -- allocation in the frame loop); note bars (bo start / bd length / bn pitch /
 -- bv velocity) are refilled only when the lane's notes or length change.
 local ev = {}
+-- "Lane N" is drawn every frame for every strip: build the strings once, or
+-- the label alone allocates four times per frame forever.
+local LANE_LBL = {}
 for l = 0, LANES - 1 do
-    ev[l] = { bo = {}, bd = {}, bn = {}, bv = {}, bc = 0, ver = -1, lenB = -1, lo = 48, hi = 72 }
+    ev[l] = { bo = {}, bd = {}, bn = {}, bv = {}, bc = 0, ver = -1, lenB = -1,
+              lane = -1, lo = 48, hi = 72 }
+    LANE_LBL[l] = "Lane " .. (l + 1)
 end
 
 -- ---------------------------------------------------------------------------
@@ -182,14 +198,18 @@ end
 
 -- Refill the note-bar cache when the lane's notes or length changed. Storage
 -- is already note objects (start, len, pitch, vel) — no pairing needed.
-local function refreshLane(l)
+-- `l` is the strip (track) the cache belongs to; `el` the engine lane it
+-- currently reads. The lane is part of the key: a swap can land on a version
+-- number the cache already saw, and the strip would keep drawing the notes
+-- of the clip that just left.
+local function refreshLane(l, el)
     local e = ev[l]
-    local ver  = Loop.EvtVersion(l)
-    local lenB = Loop.LenBeats(l)
-    if ver == e.ver and lenB == e.lenB then return end
-    e.ver, e.lenB = ver, lenB
+    local ver  = Loop.EvtVersion(el)
+    local lenB = Loop.LenBeats(el)
+    if ver == e.ver and lenB == e.lenB and el == e.lane then return end
+    e.ver, e.lenB, e.lane = ver, lenB, el
 
-    e.bc = Loop.ReadNotes(l, e.bo, e.bd, e.bn, e.bv)   -- start, len, pitch, vel
+    e.bc = Loop.ReadNotes(el, e.bo, e.bd, e.bn, e.bv)  -- start, len, pitch, vel
 
     -- pitch range for the mini-roll
     local lo, hi = 127, 0
@@ -467,8 +487,15 @@ end
 -- loop's cache unit is BEATS, so every amount here is in beats.
 -- Bar length in beats, derived from the lane itself (loop beats / loop bars) so
 -- it stays exact whatever the meter; TsNum is the fallback before a lane is open.
+-- state.edit_lane names the STRIP being edited; this is the engine lane it
+-- currently maps to. Always go through it — never through the raw field.
+local function editLane()
+    local t = state.edit_lane
+    return t and Loop.LiveLane(t) or nil
+end
+
 local function barBeats()
-    local lane = state.edit_lane
+    local lane = editLane()
     if lane then
         local bars = Loop.GetLengthBars(lane)
         local bts  = Loop.LenBeats(lane)
@@ -493,10 +520,11 @@ local loopCtx = {
     -- the lane is a fixed canvas: a duplicate that would land past its end grows
     -- the loop instead of silently wrapping on top of the original
     fitLen    = function()
-        return state.edit_lane and Loop.LenBeats(state.edit_lane) or nil
+        local lane = editLane()
+        return lane and Loop.LenBeats(lane) or nil
     end,
     grow      = function(need)
-        local lane = state.edit_lane
+        local lane = editLane()
         if not lane then return false end
         local b = barBeats(); if b <= 0 then return false end
         local want = math.ceil(need / b - 1e-6)
@@ -524,12 +552,13 @@ local function pickVel()
     if sel and sel > 0 and presets[sel] then state.vel = presets[sel] end
 end
 
-local function enterEdit(lane)
-    state.edit_lane = lane
+local function enterEdit(strip)
+    state.edit_lane = strip          -- the STRIP; the lane is resolved per use
     state.edrag = nil
     state.marquee = nil
+    local lane = Loop.LiveLane(strip)
     Loop.SetArmedLane(lane)          -- editing a lane arms it for live input
-    Roll.SetBackend(makeLoopBackend(lane))
+    Roll.SetBackend(makeLoopBackend(strip))
     roll_ver = Loop.EvtVersion(lane)
     fitEditRange(lane)
 end
@@ -693,22 +722,26 @@ local function drawUnattached()
     UI.SetFontBody()
 end
 
-local function drawViz(theme, l, x, y, w, h, mode)
+-- `l` names the strip (its note cache), `el` the engine lane it reads.
+local function drawViz(theme, l, el, x, y, w, h, mode)
     local C = theme.colors
     local e = ev[l]
     -- backdrop
     Core.DrawRect(x, y, w, h, 0.11, 0.11, 0.12, 1)
 
-    local lenB  = Loop.LenBeats(l)
+    local lenB  = Loop.LenBeats(el)
     local tsnum = Loop.TsNum()
 
-    -- beat / bar gridlines
+    -- beat / bar gridlines, same ranking and colour as the note editor (this
+    -- strip is too short for subdivisions, so it stops at the first two tiers)
+    local A = RollUI.GRID_ALPHA
+    local gcol = C.text_mute or C.text_disabled
     local nb = math.floor(lenB + 0.5)
     if nb < 1 then nb = 1 end
     for b = 0, nb do
         local gx = x + (b / lenB) * w
-        local strong = (b % tsnum) == 0
-        Core.DrawLine(gx, y, gx, y + h, C.border[1], C.border[2], C.border[3], strong and 0.55 or 0.18)
+        Core.DrawLine(gx, y, gx, y + h, gcol[1], gcol[2], gcol[3],
+                      A[(b % tsnum) == 0 and 1 or 2])
     end
 
     -- note bars
@@ -727,7 +760,7 @@ local function drawViz(theme, l, x, y, w, h, mode)
 
     -- playhead (while the clip is playing — overdub plays too)
     if mode == 3 or mode == 5 then
-        local ph = Loop.Phase(l)
+        local ph = Loop.Phase(el)
         local px = x + (ph / lenB) * w
         Core.DrawLine(px, y, px, y + h, 1, 1, 1, 0.65)
     end
@@ -749,20 +782,29 @@ end
 
 local function drawLane(theme, l, x, y, w, h)
     local C = theme.colors
-    refreshLane(l)
-    local mode  = math.floor(Loop.Mode(l) + 0.5)   -- 0 empty,1 rec,2 stopped,3 playing,4 armed
-    local muted = Loop.GetMute(l)
-    local nev   = math.floor(Loop.NEv(l) + 0.5)
-    local pend  = Loop.Pending(l)                  -- 0 none,1 play,2 stop,3 rec,4 stop-rec
+    -- A strip here is a TRACK, and the engine gives a track TWO lanes: the
+    -- one you hear and a silent twin the Session stages clips through. Which
+    -- is which changes under us, so it is asked for — every frame, from the
+    -- engine — instead of assumed. That is why this window now shows the
+    -- clip the grid is actually playing.
+    local el = Loop.LiveLane(l)
+    refreshLane(l, el)
+    local mode  = math.floor(Loop.Mode(el) + 0.5)   -- 0 empty,1 rec,2 stopped,3 playing,4 armed
+    local muted = Loop.GetMute(el)
+    local nev   = math.floor(Loop.NEv(el) + 0.5)
+    local pend  = Loop.Pending(el)                  -- 0 none,1 play,2 stop,3 rec,4 stop-rec
 
     -- panel
     Core.DrawRect(x, y, w, h, C.surface[1], C.surface[2], C.surface[3], 1)
     Core.DrawRect(x, y, w, h, C.border[1], C.border[2], C.border[3], C.border[4] or 0.5, false)
 
     local pad = 6
-    -- header: the "Lane N" label doubles as the arm-for-live-input control
-    local armed = (Loop.GetArmedLane() == l)
-    local lbl = "Lane " .. (l + 1)
+    -- header: the "Lane N" label doubles as the arm-for-live-input control.
+    -- Arming is a TRACK fact: the engine monitors one lane, and the pair
+    -- swaps under it — comparing the track keeps the light on the strip the
+    -- user armed instead of making it hop to its twin.
+    local armed = (Loop.TrackOfLane(Loop.GetArmedLane()) == l)
+    local lbl = LANE_LBL[l]
     local lblw = gfx.measurestr(lbl)
     local lr, lg, lb = C.text[1], C.text[2], C.text[3]
     if armed then lr, lg, lb = C.accent[1], C.accent[2], C.accent[3] end
@@ -775,7 +817,7 @@ local function drawLane(theme, l, x, y, w, h)
         if mx >= x + pad and mx < x + pad + lblw + 46 and my >= y + 3 and my < y + 19
            and not Core.HasPopup() then
             UI.SetCursor("hand")
-            if Core.MouseClicked(1) then Loop.SetArmedLane(l) end
+            if Core.MouseClicked(1) then Loop.SetArmedLane(el) end
         end
     end
     -- status word (right)
@@ -812,34 +854,34 @@ local function drawLane(theme, l, x, y, w, h)
     -- click while a rec is queued = cancel the queue)
     if pend == 3 then
         if tinyBtn(bx, cy, 46, bh, "REC", 0.85, 0.65, 0.25, theme) then
-            Loop.Rec(l); flash("Lane " .. (l + 1) .. ": queued rec cancelled")
+            Loop.Rec(el); flash("Lane " .. (l + 1) .. ": queued rec cancelled")
         end
     elseif pend == 5 then
         if tinyBtn(bx, cy, 46, bh, "OVR", 0.85, 0.65, 0.25, theme) then
-            Loop.Overdub(l); flash("Lane " .. (l + 1) .. ": queued overdub cancelled")
+            Loop.Overdub(el); flash("Lane " .. (l + 1) .. ": queued overdub cancelled")
         end
     elseif mode == 1 then
         if tinyBtn(bx, cy, 46, bh, "REC", C.danger[1], C.danger[2], C.danger[3], theme) then
-            Loop.Stop(l)
+            Loop.Stop(el)
         end
     elseif mode == 5 then
         -- overdubbing: click punches out (finalize, keep playing)
         if tinyBtn(bx, cy, 46, bh, "OVR", C.danger[1], C.danger[2], C.danger[3], theme) then
-            Loop.Overdub(l); flash("Lane " .. (l + 1) .. ": overdub off")
+            Loop.Overdub(el); flash("Lane " .. (l + 1) .. ": overdub off")
         end
     elseif mode == 4 then
         if tinyBtn(bx, cy, 46, bh, "ARM", 0.72, 0.55, 0.20, theme) then
-            Loop.Stop(l); flash("Lane " .. (l + 1) .. ": arm cancelled")
+            Loop.Stop(el); flash("Lane " .. (l + 1) .. ": arm cancelled")
         end
     else
         -- Shift+click on a lane with content = OVERDUB (layer into the loop);
         -- plain click = the destructive re-record
         if tinyBtn(bx, cy, 46, bh, "REC", 0.30, 0.30, 0.32, theme) then
             if Core.ModShift() and nev > 0 and (Loop.GetFreeRun() or Loop.Playing()) then
-                Loop.SetArmedLane(l); Loop.Overdub(l)
+                Loop.SetArmedLane(el); Loop.Overdub(el)
                 flash("Lane " .. (l + 1) .. ": overdub - play over the loop")
             else
-                Loop.SetArmedLane(l); Loop.Rec(l)
+                Loop.SetArmedLane(el); Loop.Rec(el)
                 -- with the clock stopped the engine arms instead of wiping the lane
                 if Loop.GetFreeRun() or Loop.Playing() then
                     flash("Lane " .. (l + 1)
@@ -856,17 +898,17 @@ local function drawLane(theme, l, x, y, w, h)
     -- button cancels: the engine treats the opposite command as the cancel.
     if pend == 1 then
         if tinyBtn(bx, cy, 46, bh, "Play", 0.85, 0.65, 0.25, theme) then
-            Loop.StopClip(l); flash("Lane " .. (l + 1) .. ": launch cancelled")
+            Loop.StopClip(el); flash("Lane " .. (l + 1) .. ": launch cancelled")
         end
     elseif pend == 2 then
         if tinyBtn(bx, cy, 46, bh, "Stop", 0.85, 0.65, 0.25, theme) then
-            Loop.Play(l); flash("Lane " .. (l + 1) .. ": stop cancelled")
+            Loop.Play(el); flash("Lane " .. (l + 1) .. ": stop cancelled")
         end
     elseif mode == 3 or mode == 5 then
-        if tinyBtn(bx, cy, 46, bh, "Stop", 0.28, 0.66, 0.38, theme) then Loop.StopClip(l) end
+        if tinyBtn(bx, cy, 46, bh, "Stop", 0.28, 0.66, 0.38, theme) then Loop.StopClip(el) end
     elseif mode == 2 then
         if tinyBtn(bx, cy, 46, bh, "Play", 0.22, 0.30, 0.24, theme) then
-            Loop.Play(l)
+            Loop.Play(el)
             flash("Lane " .. (l + 1)
                   .. ((Loop.GetLaunchQ() > 0 and (Loop.GetFreeRun() or Loop.Playing()))
                       and ": launch queued" or ": play"))
@@ -882,23 +924,23 @@ local function drawLane(theme, l, x, y, w, h)
     local clr = nev > 0
     if tinyBtn(bx, cy, 44, bh, "Clr",
                clr and 0.30 or 0.20, clr and 0.20 or 0.20, clr and 0.20 or 0.21, theme) then
-        Loop.Clear(l); flash("Lane " .. (l + 1) .. " cleared")
+        Loop.Clear(el); flash("Lane " .. (l + 1) .. " cleared")
     end
     bx = bx + 48
 
     -- MUTE
     if tinyBtn(bx, cy, 42, bh, "Mute",
                muted and 0.85 or 0.24, muted and 0.65 or 0.24, muted and 0.25 or 0.26, theme) then
-        Loop.SetMute(l, not muted)
+        Loop.SetMute(el, not muted)
     end
     bx = bx + 46
 
     -- LENGTH
-    local bars = math.floor(Loop.GetLengthBars(l) + 0.5)
+    local bars = math.floor(Loop.GetLengthBars(el) + 0.5)
     if bars < 1 then bars = 1 end
     if tinyBtn(bx, cy, 54, bh, bars .. (bars > 1 and " bars" or " bar"),
                0.20, 0.22, 0.26, theme) then
-        Loop.SetLengthBars(l, nextLen(bars))
+        Loop.SetLengthBars(el, nextLen(bars))
     end
     bx = bx + 58
 
@@ -926,7 +968,7 @@ local function drawLane(theme, l, x, y, w, h)
     local vx, vy = x + pad, y + 46
     local vw, vh = w - 2 * pad, (y + h - 5) - vy
     if vh > 8 then
-        drawViz(theme, l, vx, vy, vw, vh, mode)
+        drawViz(theme, l, el, vx, vy, vw, vh, mode)
         local mx, my = Core.GetMousePos()
         if mx >= vx and mx < vx + vw and my >= vy and my < vy + vh and not Core.HasPopup() then
             UI.SetCursor("hand")
@@ -938,13 +980,16 @@ local function drawLane(theme, l, x, y, w, h)
                 if Core.ModAlt() then
                     enterEdit(l)
                 else
-                    local c = Loop.LaneToClip(l)
+                    local c = Loop.LaneToClip(el)
                     if not c then
                         c = Clip.new("midi")
                         c.notes = { s = {}, l = {}, p = {}, v = {} }
-                        c.bars = Loop.GetLengthBars(l)
+                        c.bars = Loop.GetLengthBars(el)
                     end
+                    -- the TRACK, not the lane: which half holds the clip is
+                    -- the engine's answer and the editor asks it per frame
                     c.origin = "looper:" .. l
+                    c.name = LANE_LBL[l]
                     Bus.OpenEditor(c)
                 end
             end
@@ -961,7 +1006,8 @@ end
 -- ---------------------------------------------------------------------------
 local function drawEditor(theme)
     local C = theme.colors
-    local lane = state.edit_lane
+    local strip = state.edit_lane
+    local lane = Loop.LiveLane(strip)   -- resolved per frame: the pair swaps
     local L = Loop.LenBeats(lane)
     local tsnum = Loop.TsNum()
 
@@ -980,7 +1026,7 @@ local function drawEditor(theme)
     local hx, hy = x, y
     if tinyBtn(hx, hy, 60, hbh, "< Lanes", 0.24, 0.26, 0.32, theme) then exitEdit() return end
     hx = hx + 64
-    local lnlbl = "Lane " .. (lane + 1)
+    local lnlbl = LANE_LBL[strip] or "Lane"
     Core.DrawText(lnlbl, hx, hy + 4, C.text[1], C.text[2], C.text[3], 1)
 
     -- right-anchored controls: Snap, Length, Play/Stop
@@ -1005,13 +1051,15 @@ local function drawEditor(theme)
     local dbx = hx + gfx.measurestr(lnlbl) + 12
     local dbw = (pxx - 8) - dbx
     if dbw >= 50 then
-        local dst = Loop.GetLaneDest(lane)
+        -- routing is a TRACK fact (both halves of the pair go to the same
+        -- instrument), so it is addressed by the strip
+        local dst = Loop.GetLaneDest(strip)
         local dn
         if dst then local _, nm = r.GetTrackName(dst); dn = "→ " .. (nm ~= "" and nm or "track")
         else dn = "→ no track" end
         if tinyBtn(dbx, hy, dbw, hbh, truncPix(dn, dbw - 8),
                    dst and 0.20 or 0.30, dst and 0.24 or 0.20, dst and 0.22 or 0.20, theme) then
-            pickLaneDest(lane)
+            pickLaneDest(strip)
         end
     end
 
@@ -1100,21 +1148,33 @@ local function drawEditor(theme)
         end
     end
 
-    -- vertical grid: snap subdivisions (faint) + beats/bars
+    -- Vertical grid, drawn weakest-first so the strongest weight wins wherever
+    -- lines coincide: subdivisions, eighths, then beats and barlines together.
+    -- Ranked through the shared RollUI table, so a barline looks like a
+    -- barline in this roll and in CP_Editor alike. The loop axis is beats and
+    -- phase 0 is bar-aligned by construction, so all of it is arithmetic.
+    local A = RollUI.GRID_ALPHA
+    -- text_mute, the same key CP_Editor's roll reads: these two used to pull
+    -- from different colours, so a barline changed shade between windows
+    local gcol = C.text_mute or C.text_disabled
+    local br, bgc, bbc = gcol[1], gcol[2], gcol[3]
     local s = snapBeats()
-    if s > 0 then
-        local t = 0
-        while t < L - 1e-6 do
-            local gx = phaseToX(t, rx, rw, L)
-            Core.DrawLine(gx, ry, gx, ry + grid_h, C.border[1], C.border[2], C.border[3], 0.10)
-            t = t + s
+    if s > 0 and s < 1 then                      -- the snap's own subdivisions
+        for i = 0, math.floor(L / s + 1e-6) do
+            local gx = phaseToX(i * s, rx, rw, L)
+            Core.DrawLine(gx, ry, gx, ry + grid_h, br, bgc, bbc, A[4])
         end
     end
-    local nb = math.floor(L + 0.5); if nb < 1 then nb = 1 end
-    for b = 0, nb do
+    if s > 0 and s <= 0.5 + 1e-9 then            -- eighths, once we work that fine
+        for i = 0, math.floor(L * 2 + 1e-6) do
+            local gx = phaseToX(i * 0.5, rx, rw, L)
+            Core.DrawLine(gx, ry, gx, ry + grid_h, br, bgc, bbc, A[3])
+        end
+    end
+    for b = 0, math.floor(L + 1e-6) do           -- beats, barlines stronger
         local gx = phaseToX(b, rx, rw, L)
-        local strong = (b % tsnum) == 0
-        Core.DrawLine(gx, ry, gx, ry + grid_h, C.border[1], C.border[2], C.border[3], strong and 0.55 or 0.22)
+        Core.DrawLine(gx, ry, gx, ry + grid_h, br, bgc, bbc,
+                      A[(b % tsnum) == 0 and 1 or 2])
     end
 
     -- notes
@@ -1406,7 +1466,7 @@ local function editorKeys()
     if not char or char <= 0 then return end
     if Core.GetState().focus then return end
     if RollUI.HandleKey(char, loopCtx) then
-        roll_ver = Loop.EvtVersion(state.edit_lane)
+        roll_ver = Loop.EvtVersion(editLane())
         Core.ConsumeChar()
         return
     end
@@ -1492,7 +1552,18 @@ local function frame(theme)
         Loop.reconnect()
     end
     local attached = Loop.IsAttached()
-    Loop.PumpCmd()   -- one queued engine command leaves per frame
+    -- Once per window: an engine loaded before this build silently drops
+    -- every command aimed at the lanes it does not scan. The loops live in
+    -- gmem and survive the refresh.
+    if attached and not state.engine_checked then
+        state.engine_checked = true
+        local _, note = Loop.Ensure(false)
+        if note then flash(note) end
+    end
+    -- one call: gmem re-selected, one queued command out, and the live half
+    -- of each lane pair re-derived. Everything below reads one picture — the
+    -- same one the Session grid and CP_Editor read.
+    Loop.Poll()
 
     -- The engine resets more often than it looks (REAPER re-inits a JSFX on
     -- transport start, samplerate change, FX reload). The loops now survive it,
@@ -1517,9 +1588,16 @@ local function frame(theme)
         local ac = Bus.Recv("editor:apply")
         if ac and ac.origin then
             local ln = tonumber(ac.origin:match("^looper:(%d+)"))
-            if ln and ln >= 0 and ln < LANES and Loop.ApplyClip(ln, ac) then
-                ev[ln].ver = -1
-                roll_ver = -1
+            if ln then
+                -- origin names a track (older descriptors named a raw lane;
+                -- lane 5 has always meant track 1). The edit goes to the half
+                -- actually HOLDING the clip, so it never lands on the twin.
+                local st = Loop.TrackOfLane(ln)
+                local el = Loop.LaneOfTag(st, Clip.CellTag(ac.cell))
+                if el and st < LANES and Loop.ApplyClip(el, ac) then
+                    ev[st].ver = -1
+                    roll_ver = -1
+                end
             end
         end
     end

@@ -16,7 +16,8 @@
 --   they are stored as CPC1 descriptors in the project, and edits come back
 --   live over the bus.
 --
---   Needs the Looper engine (open CP_Looper once and "Create looper engine").
+--   The engine is shared, and this window can create it: no other script has
+--   to be opened first.
 
 local r = reaper
 
@@ -38,17 +39,17 @@ Bus.init(r, DragBus, Clip)
 local Core = UI.Core
 local sin, floor = math.sin, math.floor
 
--- One track = two engine lanes (playing + silent twin). Track t owns lane t
--- and lane t + TRACKS; the low half is what CP_Looper shows, so a track's
--- "A" buffer is also its Looper lane.
-local TRACKS = floor(Loop.MAX_LANES / 2)
-if TRACKS > 4 then TRACKS = 4 end
+-- One track = two engine lanes (playing + silent twin). That pairing is the
+-- ENGINE's, not this window's: Loop.LiveLane / Loop.TwinLane answer for it,
+-- so CP_Looper and CP_Editor see the same picture without a copy of the
+-- rule living here to drift out of date.
+local TRACKS = Loop.TRACKS
 local SCENES = 8
 
 local cells = {}     -- [t][s] = clip descriptor or nil
 local cur   = {}     -- [t] = scene whose clip is loaded, or nil
-local buf   = {}     -- [t] = 0 | 1, which lane of the pair is the live one
-for t = 0, TRACKS - 1 do cells[t] = {}; buf[t] = 0 end
+local cdrag = nil    -- { t, s } source cell while a Ctrl-drag copy is in flight
+for t = 0, TRACKS - 1 do cells[t] = {} end
 
 local state = {
     flash_msg = "", flash_until = 0,
@@ -56,7 +57,7 @@ local state = {
     registered = false,    -- DragBus target registration
     grid = nil,            -- grid geometry (drop hit-testing)
     arow = nil,            -- audio-cell row geometry
-    engine_warned = false,
+    engine_checked = false,   -- one-shot "is the loaded engine current" probe
 }
 
 local function flash(msg)
@@ -107,32 +108,35 @@ sample-locked one comes later.)
 
 ## Clock
 Free = clips play without the transport. Follow = REAPER transport,
-locks to an external MIDI clock when slaved. Record loops in
-CP_Looper — it shows the same tracks' live lanes.
+locks to an external MIDI clock when slaved.
+
+## One engine
+This grid, CP_Looper and CP_Editor drive the SAME engine and read the
+same state — a clip launched in one shows as playing in the others.
+CP_Looper's lane N is this grid's column N, and CP_Editor's playhead is
+that clip's own. Whichever window you opened first can create the
+engine.
 ]]
 
 -- ---------------------------------------------------------------------------
--- Lane pairing
+-- Lane pairing — resolved by the engine (Loop.Poll re-derives it each frame)
 -- ---------------------------------------------------------------------------
-local function liveLane(t) return t + buf[t] * TRACKS end
-local function twinLane(t) return t + (1 - buf[t]) * TRACKS end
+local liveLane  = Loop.LiveLane
+local twinLane  = Loop.TwinLane
+local isRunning = Loop.IsRunning
 
-local function isRunning(lane)
-    local m = floor(Loop.Mode(lane) + 0.5)
-    return m == 3 or m == 5 or m == 1
-end
+-- Every cell carries a numeric identity, so the lane holding it can say so
+-- and any window can find that clip again after the halves swapped. Numeric
+-- form: no allocation, callable per cell per frame.
+local cellTag = Clip.CellTag
 
--- The engine is the truth: whichever twin is playing (or queued) IS the
--- live buffer. Re-deriving it every frame means an outside launch (from
--- CP_Editor, from CP_Looper) can never desync the grid.
-local function syncBuffers()
-    for t = 0, TRACKS - 1 do
-        local la, lb = t, t + TRACKS
-        local a_on = isRunning(la) or Loop.Pending(la) == 1
-        local b_on = isRunning(lb) or Loop.Pending(lb) == 1
-        if b_on and not a_on then buf[t] = 1
-        elseif a_on and not b_on then buf[t] = 0 end
-    end
+-- Which scene of track t a lane is holding, straight from the engine's tag.
+-- This is how the grid follows a launch fired from CP_Looper or CP_Editor
+-- instead of arguing with it.
+local function sceneOfLane(lane, t)
+    local tt, ss = Clip.CellOfTag(Loop.GetLaneTag(lane))
+    if tt ~= t then return nil end
+    return ss
 end
 
 -- ---------------------------------------------------------------------------
@@ -176,15 +180,19 @@ local function trackMenu(t)
     local cur_tr = Loop.GetLaneDest(t)
     for i = 0, n - 1 do
         local tr = r.GetTrack(0, i)
-        local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
-        items[#items + 1] = {
-            label = (i + 1) .. ": " .. ((nm and nm ~= "") and nm or "(unnamed)"),
-            checked = (tr == cur_tr),
-            action = function()
-                Loop.SetLaneDest(t, tr)
-                track_name[t].tr = false   -- force the cached name to refresh
-            end,
-        }
+        -- the router hosts the engine and sends nothing to itself: offering
+        -- it would look like a choice and silently unroute the column
+        if tr ~= Loop.track then
+            local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+            items[#items + 1] = {
+                label = (i + 1) .. ": " .. ((nm and nm ~= "") and nm or "(unnamed)"),
+                checked = (tr == cur_tr),
+                action = function()
+                    Loop.SetLaneDest(t, tr)      -- routes BOTH halves of the pair
+                    track_name[t].tr = false     -- force the cached name to refresh
+                end,
+            }
+        end
     end
     if #items > 0 then items[#items + 1] = { separator = true } end
     items[#items + 1] = { label = "New track for this column", action = function()
@@ -317,8 +325,17 @@ local function audioPlay(t, s, c)
     if (r.GetPlayState() & 1) == 1 then
         r.CF_Preview_SetValue(prev, "D_MEASUREALIGN", 1)
     end
-    -- route through the track this column stands for, so its FX apply
-    local tr = Loop.GetLaneDest(t) or r.GetSelectedTrack(0, 0)
+    -- Route through the track this column stands for, so its FX apply — but
+    -- NOT when that track hosts a virtual instrument: a VSTi replaces its
+    -- input with its own output, so the sound would simply vanish into it.
+    -- And no falling back to "whatever track happens to be selected": that
+    -- put a sound through an unrelated chain depending on where the user had
+    -- last clicked.
+    local tr = Loop.GetLaneDest(t)
+    if tr and r.TrackFX_GetInstrument then
+        local ok, ins = pcall(r.TrackFX_GetInstrument, tr)
+        if ok and ins and ins >= 0 then tr = nil end
+    end
     if tr and r.CF_Preview_SetOutputTrack then
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
@@ -345,9 +362,13 @@ end
 -- Write a clip into a lane WITHOUT playing it (the lane is the silent twin,
 -- so the write timing is free) and leave it "stopped with content", which is
 -- the state the engine can launch from.
-local function armLane(lane, c)
+local function armLane(lane, c, t, s)
     Loop.ApplyClip(lane, c)
     Loop.SetLengthBars(lane, cellBars(c))
+    -- stamp WHICH cell this lane now holds: it is how CP_Editor finds the
+    -- clip again after a swap moved it to the other half, and how it knows
+    -- to stop writing when the lane got reused for something else
+    Loop.SetLaneTag(lane, cellTag(t, s))
     if cellNotes(c) > 0 and floor(Loop.Mode(lane) + 0.5) == 0 then
         Loop.SetMode(lane, 2)
     end
@@ -380,30 +401,57 @@ local function launchCell(t, s)
         flash("Empty cell — click the cell to write something in it")
         return
     end
+    -- The lane holding THIS cell — which is the SILENT half while its launch
+    -- is still queued. Asking the engine for it, instead of assuming the
+    -- track's live lane, is what makes a second click cancel the right thing
+    -- rather than cancel the outgoing clip's stop and leave two playing.
+    local mine = Loop.LaneOfTag(t, cellTag(t, s))
+    if mine then
+        -- A queued swap arms BOTH halves: the outgoing one is queued to stop
+        -- and the incoming one to play, on the same boundary. Cancelling one
+        -- alone leaves the other's queue to fire — two clips on one track, or
+        -- none. So every cancel here reconciles the pair.
+        local twin = (mine == t) and (t + TRACKS) or t
+        local p = Loop.Pending(mine)
+        if p == 1 then                                  -- cancel the queued launch
+            if Loop.Pending(twin) == 2 then Loop.Play(twin) end   -- …and keep the outgoing clip
+            Loop.StopClip(mine)
+            return
+        end
+        if p == 2 then                                  -- take the queued stop back
+            if Loop.Pending(twin) == 1 then Loop.StopClip(twin) end -- …and drop the incoming one
+            Loop.Play(mine)
+            return
+        end
+        if isRunning(mine) then                         -- playing: this click stops it
+            audioStop(t)
+            Loop.StopClip(mine)
+            return
+        end
+    end
+
     audioStop(t)   -- this track was playing a sound: it leaves
     local live = liveLane(t)
+    -- a launch queued on the other half loses: a track plays ONE clip, and
+    -- this click is what chose which
+    local other = (live == t) and (t + TRACKS) or t
+    if Loop.Pending(other) == 1 then Loop.StopClip(other) end
     local busy = isRunning(live) or Loop.Pending(live) == 1
-    if cur[t] == s then
-        -- clicking the clip that is already queued to STOP takes it back
-        if Loop.Pending(live) == 2 then Loop.Play(live) return end
-        if busy then stopTrack(t) return end
-        armLane(live, c)
-        Loop.Play(live)
-        return
-    end
     if not busy then
         -- nothing to swap: load the live lane directly. This also keeps
         -- ordinary use on the low lanes — the ones CP_Looper shows.
-        armLane(live, c)
+        armLane(live, c, t, s)
         Loop.Play(live)
         cur[t] = s
         return
     end
     local twin = twinLane(t)
-    armLane(twin, c)
+    armLane(twin, c, t, s)
     Loop.Play(twin)         -- queued to the next boundary…
     Loop.StopClip(live)     -- …and the outgoing one leaves on the same one
-    buf[t] = 1 - buf[t]
+    -- which half is live is re-derived from the engine (Loop.Poll), not
+    -- flipped here: a launch fired from CP_Editor or CP_Looper would
+    -- otherwise leave this window pointing at the wrong lane.
     cur[t] = s
 end
 
@@ -439,14 +487,17 @@ local function editCell(t, s)
         cells[t][s] = c
         saveGrid()
     end
-    local lane
-    if cur[t] == s and isRunning(liveLane(t)) then
-        lane = liveLane(t)
-    else
-        lane = twinLane(t)
-        armLane(lane, c)
+    -- If the engine already holds this cell (playing, or staged by an
+    -- earlier edit) keep that lane: writing anywhere else would edit one
+    -- clip and hear another. Otherwise stage it in the silent half, so the
+    -- editor gets a real lane to drive without disturbing what is playing.
+    local tag = cellTag(t, s)
+    if not Loop.LaneOfTag(t, tag) then
+        armLane(twinLane(t), c, t, s)
     end
-    c.origin = "looper:" .. lane
+    -- The descriptor names the TRACK. WHICH half holds the clip changes
+    -- under it as clips swap, so it is asked for again — never stored.
+    c.origin = "looper:" .. t
     c.cell = t .. "," .. s
     c.name = (c.name and c.name ~= "") and c.name
              or (trackName(t) .. " · scene " .. (s + 1))
@@ -464,10 +515,12 @@ local function applyEdit(ac)
     if t and s and t < TRACKS and s < SCENES then
         cells[t][s] = ac
         saveGrid()
-        if cur[t] == s then
-            local live = liveLane(t)
-            Loop.ApplyClip(live, ac)
-            if ac.bars and ac.bars > 0 then Loop.SetLengthBars(live, ac.bars) end
+        -- refresh the lane that HOLDS this cell — playing or merely staged —
+        -- and not whatever the track happens to be playing right now
+        local lane = Loop.LaneOfTag(t, cellTag(t, s))
+        if lane then
+            Loop.ApplyClip(lane, ac)
+            if ac.bars and ac.bars > 0 then Loop.SetLengthBars(lane, ac.bars) end
         end
         return true
     end
@@ -503,6 +556,7 @@ end
 local function recCell(t, s)
     local live = liveLane(t)
     armTrack(t)
+    Loop.SetLaneTag(live, cellTag(t, s))   -- the take lands in THIS cell
     Loop.Rec(live)            -- quantized, auto-stops on the lane's length
     rec = { t = t, s = s }
     cur[t] = s
@@ -529,20 +583,67 @@ end
 
 local function clearCell(t, s)
     if not cells[t][s] then return end
+    -- empty the lane that holds it too (and only that one), or the engine
+    -- would keep playing a clip the grid no longer has
+    local lane = Loop.LaneOfTag(t, cellTag(t, s))
     cells[t][s] = nil
     saveGrid()
+    if lane then Loop.Clear(lane) end
     if cur[t] == s then
-        stopTrack(t)
+        audioStop(t)
         cur[t] = nil
     end
 end
 
+-- Deep copy of a clip descriptor: the copy must own its notes, or editing one
+-- cell would silently rewrite every cell it was ever duplicated from.
+local function copyCell(c)
+    local d = {}
+    for k, v in pairs(c) do d[k] = v end
+    local nt = c.notes
+    if nt then
+        local s, l, p, v = {}, {}, {}, {}
+        for i = 1, #(nt.s or {}) do
+            s[i], l[i], p[i], v[i] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+        end
+        d.notes = { s = s, l = l, p = p, v = v }
+    end
+    d.cell, d.origin = nil, nil   -- it belongs to wherever it lands, not here
+    return d
+end
+
+-- Drop a copy into (t, s), replacing what was there.
+local function pasteCell(t, s, c)
+    local d = copyCell(c)
+    d.cell = t .. "," .. s
+    if cells[t][s] then clearCell(t, s) end
+    cells[t][s] = d
+    saveGrid()
+end
+
+local function renameCell(t, s)
+    local c = cells[t][s]
+    if not c then return end
+    local ok, v = r.GetUserInputs("Rename clip", 1, "Name:,extrawidth=180",
+                                  c.name or "")
+    if not ok then return end
+    v = v:gsub("^%s+", ""):gsub("%s+$", "")
+    c.name = (v ~= "") and v or nil
+    saveGrid()
+    -- the label cache is keyed on the old text
+    cell_lbl[t * SCENES + s] = nil
+end
+
 local function cellMenu(t, s)
+    local has = cells[t][s] ~= nil
     UI.NativeMenu({
         { label = "Edit in CP_Editor", action = function() editCell(t, s) end },
+        { label = "Rename clip…", disabled = not has,
+          action = function() renameCell(t, s) end },
         { label = "Stop this track", action = function() stopTrack(t) end },
         { separator = true },
-        { label = "Clear cell", action = function() clearCell(t, s) end },
+        { label = "Clear cell", disabled = not has,
+          action = function() clearCell(t, s) end },
     })
 end
 
@@ -614,17 +715,32 @@ local function drawCell(theme, t, s, x, y, w, h)
     local C = theme.colors
     local c = cells[t][s]
     local rad = theme.rounding_small or theme.rounding or 0
-    local live = liveLane(t)
     local audio = isAudio(c)
-    local is_cur = (cur[t] == s)
-    local mode = (is_cur and not audio) and floor(Loop.Mode(live) + 0.5) or 0
-    local pend = (is_cur and not audio) and Loop.Pending(live) or 0
+    -- A cell reads ITS OWN lane, located by the tag the engine holds — not
+    -- "the track's live lane". While a launch is queued those are two
+    -- different clips, and reading the live one blinks the wrong cell.
+    -- Nil means the engine is not holding this clip at all: stopped, and
+    -- honestly so.
+    local lane
+    if c and not audio then
+        lane = Loop.LaneOfTag(t, cellTag(t, s))
+        if not lane and cur[t] == s and Loop.GetLaneTag(liveLane(t)) == 0 then
+            -- Untagged engine state: loops recalled from a project saved
+            -- before lanes carried their cell. Nothing claims that lane, so
+            -- trusting the grid's own memory cannot point at someone else's
+            -- clip — and it keeps a set recalled from an old project visible
+            -- instead of showing a silent grid over audible loops.
+            lane = liveLane(t)
+        end
+    end
+    local mode = lane and floor(Loop.Mode(lane) + 0.5) or 0
+    local pend = lane and Loop.Pending(lane) or 0
     local playing
     if audio then
         local a = aplay[t]
         playing = (a ~= nil and a.s == s)
     else
-        playing = is_cur and (mode == 3 or mode == 5)
+        playing = (mode == 3 or mode == 5)
     end
     local capturing = (rec and rec.t == t and rec.s == s) or false
 
@@ -694,9 +810,9 @@ local function drawCell(theme, t, s, x, y, w, h)
                 if ok and rv and ok2 and rv2 and len and len > 0 then
                     prog = (pos % len) / len
                 end
-            else
-                local L = Loop.LenBeats(live)
-                if L > 0 then prog = Loop.Phase(live) / L end
+            elseif lane then
+                local L = Loop.LenBeats(lane)
+                if L > 0 then prog = Loop.Phase(lane) / L end
             end
             if prog then
                 Core.DrawRect(x + 2, y + h - 4, (w - 4) * prog, 2,
@@ -714,8 +830,26 @@ local function drawCell(theme, t, s, x, y, w, h)
         UI.SetFontBody()
     end
 
+    -- Ctrl-drag copy: the cell being dragged FROM stays lit, the one under the
+    -- cursor shows where it would land.
+    if cdrag then
+        if cdrag.t == t and cdrag.s == s then
+            Core.DrawRect(x, y, w, h, C.accent[1], C.accent[2], C.accent[3], 0.5, false)
+        elseif Core.MouseInRect(x, y, w, h) then
+            Core.DrawRect(x, y, w, h, C.accent[1], C.accent[2], C.accent[3], 0.18)
+            Core.DrawRect(x, y, w, h, C.accent[1], C.accent[2], C.accent[3], 0.9, false)
+        end
+    end
+
     if Core.MouseInRect(x, y, w, h) and not Core.HasPopup() then
-        if btn_hot then
+        -- Alt+click deletes, anywhere on the cell. It is destructive but
+        -- unambiguous, and the modifier keeps it out of the way of the two
+        -- plain clicks (launch on the strip, edit on the content).
+        if Core.ModAlt() and Core.MouseClicked(1) then
+            clearCell(t, s)
+        elseif Core.ModCtrl() and c and Core.MouseClicked(1) then
+            cdrag = { t = t, s = s }
+        elseif btn_hot then
             -- transport strip
             if Core.MouseClicked(1) then
                 if c then
@@ -779,35 +913,52 @@ local function frame(theme)
     end
     UI.Spacing(4)
 
+    -- The engine belongs to the suite, not to CP_Looper: this window creates
+    -- it on ask, like any other. Creating tracks is never done behind the
+    -- user's back, so it takes a click — but it takes it HERE.
     if not attached then
         UI.SetFontCaption()
-        UI.TextWrapped("No looper engine in this project yet. Open CP_Looper once and click \"Create looper engine\" — this window reconnects by itself.")
+        UI.TextWrapped("No looper engine in this project yet.")
         UI.SetFontBody()
+        UI.Spacing(2)
+        if UI.Button("mkengine", "Create looper engine") then
+            local ok, note = Loop.Ensure(true)
+            flash(note or (ok and "Engine ready" or "Could not create the engine"))
+        end
         return
     end
 
-    -- The grid needs two lanes per track. An engine loaded before the lanes
-    -- grew simply DROPS every command aimed at the upper half — a clip swap
-    -- would stop the outgoing clip and never start the incoming one, which
-    -- looks exactly like "the column stops". Refresh it instead of warning
-    -- about it: the loops live in gmem and survive the swap.
-    local short = Loop.EngineLanes() < TRACKS * 2
-    if short and not state.engine_reloaded then
-        state.engine_reloaded = true
-        if Loop.ReloadEngine() then
-            flash("Engine refreshed (it was older than this grid)")
-        end
-        short = Loop.EngineLanes() < TRACKS * 2
+    -- An engine loaded before the lanes grew DROPS every command aimed at the
+    -- upper half — a clip swap would stop the outgoing clip and never start
+    -- the incoming one, which looks exactly like "the column stops". Ensure
+    -- refreshes it; the loops live in gmem and survive the swap.
+    -- Once per window, never on a retry loop: if the refresh did not take,
+    -- reloading the engine on every frame would be far worse than the banner
+    -- below, which says so plainly and leaves the user in charge.
+    if not state.engine_checked then
+        state.engine_checked = true
+        local _, note = Loop.Ensure(false)
+        if note then flash(note) end
     end
-    if short then
+    if Loop.EngineLanes() < Loop.MAX_LANES then
         UI.SetFontCaption()
         UI.TextWrapped("This project's looper engine is older than the grid and ignores half its lanes — open CP_Looper and click \"Reload engine\".")
         UI.SetFontBody()
         UI.Spacing(2)
     end
 
-    Loop.PumpCmd()   -- one queued engine command leaves per frame
-    syncBuffers()
+    -- one call: gmem re-selected, one queued command out, live halves
+    -- re-derived. Everything below reads a coherent picture.
+    Loop.Poll()
+    -- Follow the engine rather than argue with it: a launch fired from
+    -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
+    -- know. (Sound cells are this window's own business — skip those.)
+    for t = 0, TRACKS - 1 do
+        if not aplay[t] then
+            local s = sceneOfLane(liveLane(t), t)
+            if s and s ~= cur[t] then cur[t] = s end
+        end
+    end
     pollRec()
 
     -- edits coming home from CP_Editor (own channel: see the editor's
@@ -878,6 +1029,21 @@ local function frame(theme)
             local cx = x + scene_w + gap + t * (cell_w + gap)
             drawCell(theme, t, s, cx, cy, cell_w, cell_h)
         end
+    end
+
+    -- Ctrl-drag copy lands here: the grid geometry is known, so the target is
+    -- read straight off the cursor. Releasing anywhere else just drops it.
+    if cdrag and not Core.MouseDown(1) then
+        local src = cells[cdrag.t] and cells[cdrag.t][cdrag.s]
+        local mx, my = Core.GetMousePos()
+        local dt = floor((mx - (x + scene_w + gap)) / (cell_w + gap))
+        local ds = floor((my - gy) / (cell_h + gap))
+        if src and dt >= 0 and dt < TRACKS and ds >= 0 and ds < SCENES
+           and not (dt == cdrag.t and ds == cdrag.s) then
+            pasteCell(dt, ds, src)
+            flash("Copied to " .. trackName(dt) .. " / scene " .. (ds + 1))
+        end
+        cdrag = nil
     end
 
     -- ---- stop row: one square per track, plus the global one on the left

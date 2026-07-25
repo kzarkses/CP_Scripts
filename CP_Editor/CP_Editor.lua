@@ -55,6 +55,10 @@ local function loopInit()
     if loop_ready then return end
     loop_ready = true
     Loop.init(r, Tracks)
+    -- an engine older than this build silently drops commands aimed at the
+    -- lanes it does not scan; refresh it rather than misbehave. Never
+    -- CREATES one — an editor must not conjure tracks into a project.
+    Loop.Ensure(false)
 end
 
 local Core_tk = UI.Core
@@ -228,9 +232,18 @@ end
 -- committed gesture publishes the clip back over the Bus (editor:apply), so
 -- the origin engine hears the edit live.
 -- ---------------------------------------------------------------------------
--- Beats per bar for the clip grid: the project's time signature (the same
--- basis the Looper uses for its lanes).
+-- Beats per bar for the clip grid, asked of the ENGINE rather than of the
+-- edit cursor: a clip has no position in the timeline, so "the meter where
+-- the cursor happens to sit" was an arbitrary answer that could disagree with
+-- the bar count the lane is actually looping. The cursor stays the fallback
+-- for an editor with no engine attached.
+-- (state.loop_att is the once-per-frame attach probe; calling IsAttached here
+-- would walk the router's FX chain from inside the draw path.)
 local function clipTsNum()
+    if state.loop_att then
+        local n = Loop.TsNum()
+        if n and n > 0 then return n end
+    end
     local tsn = r.TimeMap_GetTimeSigAtTime(0, r.GetCursorPosition())
     return (tsn and tsn > 0) and tsn or 4
 end
@@ -284,8 +297,7 @@ end
 -- believes is empty is promoted to "stopped with content" first, so the
 -- very first launch of a freshly written clip takes instead of no-oping.
 local function clipLaunch()
-    local lane = state.clip_lane
-    if not lane then
+    if not state.clip_track then
         flash("Clip has no live engine (open it from the Looper or Session)")
         return
     end
@@ -294,8 +306,38 @@ local function clipLaunch()
         return
     end
     flushApply()   -- the engine must play what is on screen
+    local lane = state.clip_lane
+    if not lane then
+        -- The engine no longer holds this clip. Stage it in the track's
+        -- SILENT half — exactly what the Session does — so launching from
+        -- here never yanks the clip that is currently playing.
+        if Roll.count <= 0 then flash("Empty clip") return end
+        lane = Loop.TwinLane(state.clip_track)
+        Loop.ApplyClip(lane, state.clip)
+        if state.clip.bars and state.clip.bars > 0 then
+            Loop.SetLengthBars(lane, state.clip.bars)
+        end
+        Loop.SetLaneTag(lane, state.clip_tag)
+        Loop.SetMode(lane, 2)
+        state.clip_lane = lane
+        -- the outgoing clip leaves on the same boundary the new one arrives
+        local live = Loop.LiveLane(state.clip_track)
+        if live ~= lane and (Loop.IsRunning(live) or Loop.Pending(live) == 1) then
+            Loop.StopClip(live)
+        end
+        Loop.Play(lane)
+        return
+    end
+    -- The track's other half. A queued swap arms BOTH — one to stop, one to
+    -- play, on the same boundary — so anything that cancels or launches here
+    -- has to answer for the pair, or the Session grid (which enforces
+    -- one clip per track) and what you hear stop agreeing.
+    local other = (lane == state.clip_track) and (state.clip_track + Loop.TRACKS)
+                   or state.clip_track
     local p = Loop.Pending(lane)
     if p == 1 or p == 2 then
+        if p == 1 and Loop.Pending(other) == 2 then Loop.Play(other) end
+        if p == 2 and Loop.Pending(other) == 1 then Loop.StopClip(other) end
         Loop.ToggleClip(lane)   -- cancels the queued launch / stop
         return
     end
@@ -308,6 +350,13 @@ local function clipLaunch()
         if m == 0 then
             if Roll.count <= 0 then flash("Empty clip") return end
             Loop.SetMode(lane, 2)   -- it has content now: launchable
+        end
+        -- A track plays ONE clip: whatever its other half held leaves on the
+        -- same boundary this arrives on — whether it is sounding OR merely
+        -- queued to start (a queued one is invisible to IsRunning and would
+        -- come in on top).
+        if Loop.IsRunning(other) or Loop.Pending(other) == 1 then
+            Loop.StopClip(other)
         end
         Loop.Play(lane)
     end
@@ -364,6 +413,7 @@ local function setItem(item)
     if not take then return false end
     flushApply()
     state.clip, state.clip_lane = nil, nil
+    state.clip_track, state.clip_tag = nil, 0
     if r.TakeIsMIDI(take) then
         dropOwnSource()
         state.mode, state.item, state.take = "midi", item, take
@@ -400,6 +450,7 @@ end
 local function setFile(path)
     flushApply()
     state.clip, state.clip_lane = nil, nil
+    state.clip_track, state.clip_tag = nil, 0
     local src = r.PCM_Source_CreateFromFile(path)
     if not src then
         flash("Cannot open: " .. path)
@@ -425,13 +476,21 @@ local function setClip(c)
     Roll.Detach()
     state.mode, state.item, state.take = "clip", nil, nil
     state.clip = c
-    -- origin "looper:N" → the live lane this clip mirrors: playhead,
-    -- play/stop and bars talk to the engine through Loop
-    state.clip_lane = nil
+    -- origin "looper:N" → the engine TRACK this clip belongs to. The lane is
+    -- deliberately NOT kept: a track owns two lanes and its clips move
+    -- between them as they swap, so a remembered lane number goes stale and
+    -- takes the playhead, the transport button and — worst — the edits with
+    -- it. The tag says which lane holds THIS clip; it is asked for again
+    -- every frame.
+    state.clip_track, state.clip_tag, state.clip_lane = nil, 0, nil
     local ln = c.origin and c.origin:match("^looper:(%d+)")
     if ln then
-        state.clip_lane = tonumber(ln)
         loopInit()
+        -- old descriptors stored a raw lane (0..7); lane 5 has always meant
+        -- track 1, so the migration is free
+        state.clip_track = Loop.TrackOfLane(tonumber(ln))
+        state.clip_tag   = Clip.CellTag(c.cell)
+        state.clip_lane  = Loop.LaneOfTag(state.clip_track, state.clip_tag)
     end
     c.notes = c.notes or { s = {}, l = {}, p = {}, v = {} }
     state.name = (c.name and c.name ~= "") and c.name or "Clip"
@@ -465,6 +524,7 @@ local function clearTarget()
     Roll.Detach()
     state.mode, state.item, state.take = nil, nil, nil
     state.clip, state.clip_lane = nil, nil
+    state.clip_track, state.clip_tag = nil, 0
     state.path, state.name, state.len = "", "", 0
     state.mdrag = nil
 end
@@ -1595,13 +1655,47 @@ end
 -- ---------------------------------------------------------------------------
 local mrows = { list = {}, map = {}, n = 0, drum = false, key = nil }
 
+-- The instrument THIS clip plays into, as a pad map — or nil when it is not a
+-- CP kit. Asking the target rather than reaching for the Sampler's global kit
+-- is what stops a clip routed to a synth from being drawn with someone else's
+-- drum pads listed under its own notes.
+local function clipKit()
+    if state.mode == "clip" then
+        if state.clip_lane and state.loop_att then
+            return Loop.KitViewOfTrack(Loop.GetLaneDest(state.clip_lane))
+        end
+        return nil
+    end
+    if state.item then
+        return Loop.KitViewOfTrack(r.GetMediaItem_Track(state.item))
+    end
+    return nil
+end
+
+-- Row labels, cut to the lane width. Cached against (text, width) because
+-- truncation allocates and this runs once per visible row per frame.
+local row_lbl = {}
+local function rowLabel(rows, p, kv, w)
+    local raw = Rows.Label(rows, p, kv)
+    local c = row_lbl[p]
+    if not c then c = {}; row_lbl[p] = c end
+    if c.src ~= raw or c.w ~= w then
+        c.src, c.w = raw, w
+        c.s = Core_tk.TruncateText(raw, w)
+    end
+    return c.s
+end
+
 local function rollRows()
+    -- A kit under the target means drum rows (one row per loaded pad); a synth
+    -- means the melodic window. The user's explicit toggle still wins.
+    local kit = clipKit()
     local drum = state.drum_mode
-    if drum == nil then drum = Kit.Exists() end
+    if drum == nil then drum = kit ~= nil end
     -- the row model itself is shared with CP_Looper (Engine/Rows), so drum
     -- rows and the melodic window behave identically in both editors
     local m = Rows.Build(mrows, {
-        drum = drum, roll = Roll, kit = Kit,
+        drum = drum, roll = Roll, kit = kit,
         view_hi = state.view_hi, view_rows = state.view_rows,
     })
     if not drum then
@@ -1692,13 +1786,19 @@ local function drawMidiBar(theme)
         if UI.Button("c_bup", "+") then
             setClipBars(math.min(32, bars * 2))
         end
-        if state.clip_lane then
+        if state.clip_track then
             UI.SameLine()
             local att = state.loop_att
-            local m = att and math.floor(Loop.Mode(state.clip_lane) + 0.5) or 0
-            local p = att and Loop.Pending(state.clip_lane) or 0
+            local lane = state.clip_lane
+            local m = (att and lane) and math.floor(Loop.Mode(lane) + 0.5) or 0
+            local p = (att and lane) and Loop.Pending(lane) or 0
             if not att then
                 UI.Text("engine offline", { disabled = true })
+            elseif not lane then
+                -- the engine is not holding this clip (its lane went to
+                -- another cell, or a plugin reset wiped the tags): Play
+                -- stages it back in and launches — same gesture, same result
+                if UI.Button("c_play", "Play") then clipLaunch() end
             elseif m == 1 or m == 4 or p == 3 or p == 4 then
                 -- recording/armed: the Looper owns that transport
                 UI.Text(m == 4 and "armed" or "recording", { disabled = true })
@@ -1717,15 +1817,40 @@ end
 -- ---------------------------------------------------------------------------
 local wbm = { t0 = -1, t1 = -1, w = 0, h = 0, rows = nil, step = 0 }
 
+-- Grid line weight: measure > beat > eighth > finer, ranked by the shared
+-- RollUI so this roll and the Looper's read the same.
+local GRID_TIER_A = RollUI.GRID_ALPHA
+
+-- One vertical gridline at a QN position. Module level on purpose: a closure
+-- built inside the render would allocate on every cache miss, and a cache
+-- miss is every frame while the view is being dragged.
+local function gridLine(qn, tier, sp, w, h, gc)
+    local t = qnToRoll(qn)
+    if t < state.t0 or t > state.t1 then return end
+    local x = (t - state.t0) / sp * w
+    gfx.set(gc[1], gc[2], gc[3], GRID_TIER_A[tier])
+    gfx.line(x, 0, x, h - 1)
+end
+
 local function renderRollGrid(theme, rows, w, h, row_h)
     local step = gridStepQN()
+    local ctsn = state.mode == "clip" and clipTsNum() or 0
+    -- Item mode maps QN through the project, so editing the tempo map or
+    -- dragging the item moves every line with no change to t0/t1/step to
+    -- notice it by. The view edges IN QN do change, and they cost two
+    -- TimeMap calls — far cheaper than keying on the project state counter,
+    -- which every note drag bumps and which would rebuild this buffer on
+    -- every frame of a drag.
+    local qn0, qn1 = rollToQN(state.t0), rollToQN(state.t1)
     if wbm.t0 == state.t0 and wbm.t1 == state.t1 and wbm.w == w
        and wbm.h == h and wbm.rows == rows.key and wbm.step == step
+       and wbm.ctsn == ctsn and wbm.qn0 == qn0 and wbm.qn1 == qn1
        and wbm.sver == Roll.scale_ver then
         return
     end
     wbm.t0, wbm.t1, wbm.w, wbm.h = state.t0, state.t1, w, h
     wbm.rows, wbm.step, wbm.sver = rows.key, step, Roll.scale_ver
+    wbm.ctsn, wbm.qn0, wbm.qn1 = ctsn, qn0, qn1
 
     gfx.dest = MROLL_BUF
     gfx.setimgdim(MROLL_BUF, w, h)
@@ -1760,30 +1885,75 @@ local function renderRollGrid(theme, rows, w, h, row_h)
             gfx.line(0, i * row_h, w - 1, i * row_h)
         end
     end
-    -- vertical grid: grid steps, measure starts stronger. Clip mode: the
-    -- axis is beats and a measure = the project time signature.
+    -- Vertical grid, drawn in passes from weakest to strongest: subdivisions,
+    -- eighths, beats, barlines. LAYERING instead of classifying is what makes
+    -- odd meters and tempo maps come out right — a barline no longer has to
+    -- LAND on the subdivision lattice to appear, it comes from the measure
+    -- map itself, and each pass simply overwrites the previous at the same x
+    -- so the strongest weight always wins.
+    -- text_mute, and CP_Looper's roll reads the same key: the two rolls used
+    -- to pull from different colours, so a barline changed shade depending on
+    -- which window you were in.
     local gc = theme.colors.text_mute or theme.colors.text_disabled
-    local ctsn = state.mode == "clip" and clipTsNum() or 0
-    local qn = math.floor(rollToQN(state.t0) / step) * step
-    local guard = 0
-    while guard < 512 do
-        guard = guard + 1
-        local t = qnToRoll(qn)
-        if t > state.t1 then break end
-        if t >= state.t0 then
-            local x = (t - state.t0) / span() * w
-            local strong
-            if ctsn > 0 then
-                local m = qn / ctsn
-                strong = math.abs(m - math.floor(m + 0.5)) < 0.001
-            else
-                local _, mstart = r.TimeMap_QNToMeasures(0, qn + 0.0001)
-                strong = math.abs(qn - (mstart or -1)) < 0.001
-            end
-            gfx.set(gc[1], gc[2], gc[3], strong and 0.35 or 0.12)
-            gfx.line(x, 0, x, h - 1)
+    local sp = span()
+    -- What "a beat" is. Item mode takes the real meter, so 6/8 tiers on its
+    -- eighths instead of on quarter notes; clip mode keeps the ENGINE's
+    -- convention (a loop's beats are quarter notes and its bar is TsNum of
+    -- them) because that is what LenBeats and the bar buttons mean.
+    local beatQN = 1
+    if ctsn == 0 then
+        local _, den = r.TimeMap_GetTimeSigAtTime(0, itemPos() + state.t0)
+        if den and den > 0 then beatQN = 4 / den end
+    end
+
+    -- pass 1 — the grid's own subdivisions: exactly the positions snapping
+    -- uses, so a triplet grid draws triplet lines and nothing is culled
+    do
+        local i0 = math.floor(qn0 / step)
+        local n  = math.floor((qn1 - qn0) / step) + 2
+        if n > 4096 then n = 4096 end            -- absurd zoom, not a grid
+        for i = 0, n do gridLine((i0 + i) * step, 4, sp, w, h, gc) end
+    end
+    -- pass 2 — eighths, only once the working resolution is at least that
+    -- fine (showing halves of a beat under a 1/4 grid is noise, not help) AND
+    -- the eighth actually sits on the grid's lattice. On a 1/8-triplet grid it
+    -- does not: drawing it anyway would make the ONE line you cannot snap to
+    -- the brightest of the three between beats.
+    local half = beatQN * 0.5
+    local mult = half / step
+    if step <= half + 1e-9
+       and math.abs(mult - math.floor(mult + 0.5)) < 1e-6 then
+        local i0 = math.floor(qn0 / half)
+        local n  = math.floor((qn1 - qn0) / half) + 2
+        if n > 2048 then n = 2048 end
+        for i = 0, n do gridLine((i0 + i) * half, 3, sp, w, h, gc) end
+    end
+    -- pass 3 — beats. Drawn whatever the grid division: at 1/1 the grid alone
+    -- shows nothing between barlines, and "where is beat 3" is exactly what
+    -- the eye is hunting for.
+    do
+        local i0 = math.floor(qn0 / beatQN)
+        local n  = math.floor((qn1 - qn0) / beatQN) + 2
+        if n > 1024 then n = 1024 end
+        for i = 0, n do gridLine((i0 + i) * beatQN, 2, sp, w, h, gc) end
+    end
+    -- pass 4 — barlines, from the measure map in item mode so a tempo map or
+    -- a meter change puts them where the ruler says they are
+    if ctsn > 0 then
+        local i0 = math.floor(qn0 / ctsn)
+        local n  = math.floor((qn1 - qn0) / ctsn) + 2
+        for i = 0, n do gridLine((i0 + i) * ctsn, 1, sp, w, h, gc) end
+    else
+        local _, ms = r.TimeMap_QNToMeasures(0, qn0 + 1e-6)
+        local q = ms or qn0
+        local guard = 0
+        while q <= qn1 and guard < 512 do
+            guard = guard + 1
+            gridLine(q, 1, sp, w, h, gc)
+            local _, _, me = r.TimeMap_QNToMeasures(0, q + 1e-6)
+            -- never stall: a degenerate measure would spin this loop
+            q = (me and me > q) and me or (q + 4)
         end
-        qn = qn + step
     end
     gfx.dest = -1
 end
@@ -2257,13 +2427,14 @@ local function drawRoll(theme, area_h)
     Core_tk.DrawRect(gx, wave.ry, lane_w, grid_h,
                      col_bg[1] * 0.9, col_bg[2] * 0.9, col_bg[3] * 0.9, 1)
     UI.SetFontCaption()
+    -- name the rows after the instrument THIS clip plays into (same helper
+    -- CP_Looper uses), not after whatever kit the Sampler has open
+    local kv = rows.drum and clipKit() or nil
     for i = 1, rows.n do
         local p = rows.list[i]
         local y = wave.ry + (i - 1) * row_h
         if rows.drum then
-            local pad = Kit.pads[p]
-            local label = (pad and pad.fx and Core_tk.TruncateText(pad.name, lane_w - 8))
-                          or NOTE_NAMES[p]
+            local label = rowLabel(rows, p, kv, lane_w - 8)
             if row_h >= 8 then
                 Core_tk.DrawText(label, gx + 4, y + row_h * 0.5 - 6,
                                  col_mute[1], col_mute[2], col_mute[3], 1)
@@ -2483,7 +2654,8 @@ local function frame(theme)
     -- it runs. reconnect() is cheap once attached (early return) — the 1 s
     -- throttle only matters for the track scan while the Looper is absent.
     state.loop_att = false
-    if state.mode == "clip" and state.clip_lane then
+    state.clip_lane = nil
+    if state.mode == "clip" and state.clip_track then
         if now >= (state.loop_rt or 0) then
             state.loop_rt = now + 1.0
             Loop.reconnect()
@@ -2492,6 +2664,16 @@ local function frame(theme)
         -- the draw paths read the flag
         state.loop_att = Loop.IsAttached()
         if state.loop_att then
+            -- Resolve the lane ONCE per frame, here, and let every draw and
+            -- input path below read it. This is what keeps the playhead, the
+            -- transport button and the writes pointed at the clip on screen
+            -- after the Session swapped the halves under us. Nil = the engine
+            -- is not holding this clip any more: no playhead, no writes, and
+            -- the transport stages it again on demand.
+            Loop.Poll()
+            state.clip_lane = Loop.LaneOfTag(state.clip_track, state.clip_tag)
+        end
+        if state.clip_lane then
             local m = math.floor(Loop.Mode(state.clip_lane) + 0.5)
             local p = Loop.Pending(state.clip_lane)
             if m ~= state.lane_mode or p ~= state.lane_pend then

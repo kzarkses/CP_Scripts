@@ -23,6 +23,14 @@ Loop.MAX_LANES   = 8
 Loop.MAX_NOTES   = 1024
 Loop.NOTE_STRIDE = 4       -- start, length, pitch, vel (all in beats/0..127)
 
+-- A musical TRACK is a PAIR of lanes: the half you hear and a silent twin.
+-- Which half is sounding changes every time a clip swaps, so nothing above
+-- this module may remember a lane number — hosts address a track and ask
+-- Loop.LiveLane / Loop.LaneOfTag for the rest. That is the whole reason the
+-- Session grid, the Looper and the Editor can no longer disagree about what
+-- is playing.
+Loop.TRACKS = Loop.MAX_LANES // 2
+
 local G_CMD, G_CMD_LANE, G_CMD_ARG, G_CMD_SEQ = 0, 1, 2, 5
 local G_CMD_ACK    = 7     -- seq the JSFX last consumed (command pacing)
 local G_FREERUN    = 3     -- 0 = follow host transport, 1 = free internal clock
@@ -241,6 +249,16 @@ end
 function Loop.SyncSends()
     local router = Loop.track
     if not valid(router) then return end
+    -- Heal the pairing first: a pair is ONE musical track, and the sounding
+    -- half's destination is the truth. Projects routed before the pairing
+    -- existed have a twin pointing nowhere, which is why they fell silent on
+    -- every other launch — this is the one-time repair, and it costs nothing
+    -- when the two already agree.
+    local n = Loop.TRACKS
+    for t = 0, n - 1 do
+        local g = getDestGUID(t)
+        if getDestGUID(t + n) ~= g then setDestGUID(t + n, g) end
+    end
     for lane = 0, Loop.MAX_LANES - 1 do
         local tr  = resolveGUID(getDestGUID(lane))
         local has = findLaneSend(router, lane) >= 0
@@ -254,24 +272,34 @@ function Loop.SyncSends()
     end
 end
 
--- Route a lane to a destination instrument track (nil = unroute). Rebuilds the
--- lane's send and disarms the destination so live input only reaches it through
--- the router (no double-trigger).
-function Loop.SetLaneDest(lane, track)
-    local router = Loop.track
-    if not valid(router) then return end
-    r.Undo_BeginBlock2(0)
+local function wireLane(router, lane, track)
     removeLaneSend(router, lane)
     if valid(track) and track ~= router then
         makeLaneSend(router, lane, track)
-        disarmDest(track)
         setDestGUID(lane, r.GetTrackGUID(track))
         Loop.dest[lane] = track
     else
         setDestGUID(lane, "")
         Loop.dest[lane] = nil
     end
-    r.Undo_EndBlock2(0, "CP Looper: route lane " .. (lane + 1), -1)
+end
+
+-- Route a TRACK to a destination instrument (nil = unroute), and disarm that
+-- destination so live input only reaches it through the router (no double
+-- trigger). BOTH halves of the lane pair are wired to the same instrument in
+-- one gesture: routing only the sounding half looks fine until a clip swaps,
+-- and then the track goes silent for no visible reason. Taking a lane number
+-- here rather than a track index keeps CP_Looper's call site unchanged — the
+-- pair is resolved from it.
+function Loop.SetLaneDest(lane, track)
+    local router = Loop.track
+    if not valid(router) then return end
+    local t = Loop.TrackOfLane(lane)
+    r.Undo_BeginBlock2(0)
+    wireLane(router, t, track)
+    wireLane(router, t + Loop.TRACKS, track)
+    if valid(track) and track ~= router then disarmDest(track) end
+    r.Undo_EndBlock2(0, "CP Looper: route track " .. (t + 1), -1)
 end
 
 -- Cached destination pointer (zero-alloc per frame). Self-heals if the track was
@@ -306,35 +334,42 @@ local function kitParentOf(tr)
     return nil
 end
 
-function Loop.KitView(lane)
+-- Same thing addressed by TRACK: the editor needs the pads of the instrument
+-- a clip plays into, and it does not always hold a lane (a plain MIDI item
+-- sitting on a kit track deserves the same rows).
+function Loop.KitViewOfTrack(tr)
     local c = r.GetProjectStateChangeCount(0)
-    if c == kv_change and lane == kv_lane then
+    if c == kv_change and tr == kv_lane then
         return kitview.n > 0 and kitview or nil
     end
-    kv_change, kv_lane = c, lane
+    kv_change, kv_lane = c, tr
     local pads, n = kitview.pads, 0
     for k in pairs(pads) do pads[k] = nil end
-    local parent = kitParentOf(Loop.GetLaneDest(lane))
+    local parent = kitParentOf(tr)
     if parent then
         local i = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
         local depth, cnt = 1, r.CountTracks(0)
         while depth > 0 and i < cnt do
-            local tr = r.GetTrack(0, i)
-            local _, nv = r.GetSetMediaTrackInfo_String(tr, "P_EXT:CP_KIT_NOTE", "", false)
+            local ch = r.GetTrack(0, i)
+            local _, nv = r.GetSetMediaTrackInfo_String(ch, "P_EXT:CP_KIT_NOTE", "", false)
             local note = tonumber(nv or "")
             if note and note >= 0 and note <= 127
-               and r.TrackFX_GetCount(tr) > 0 then
-                local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
+               and r.TrackFX_GetCount(ch) > 0 then
+                local _, nm = r.GetSetMediaTrackInfo_String(ch, "P_NAME", "", false)
                 pads[note] = { fx = true, name = nm }
                 n = n + 1
             end
-            depth = depth + r.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH")
+            depth = depth + r.GetMediaTrackInfo_Value(ch, "I_FOLDERDEPTH")
             i = i + 1
         end
     end
     kitview.n = n
     kitview.version = kitview.version + 1
     return n > 0 and kitview or nil
+end
+
+function Loop.KitView(lane)
+    return Loop.KitViewOfTrack(Loop.GetLaneDest(lane))
 end
 
 -- Create a fresh instrument track for a lane and route it there. Selects it so
@@ -346,11 +381,10 @@ function Loop.NewDestTrack(lane)
     local idx = r.CountTracks(0)
     r.InsertTrackAtIndex(idx, true)
     local tr = r.GetTrack(0, idx)
-    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "Lane " .. (lane + 1) .. " inst", true)
-    removeLaneSend(router, lane)
-    makeLaneSend(router, lane, tr)
-    setDestGUID(lane, r.GetTrackGUID(tr))
-    Loop.dest[lane] = tr
+    local t = Loop.TrackOfLane(lane)
+    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "Track " .. (t + 1) .. " inst", true)
+    wireLane(router, t, tr)                  -- both halves of the pair, or the
+    wireLane(router, t + Loop.TRACKS, tr)    -- clip goes silent on the swap
     r.SetOnlyTrackSelected(tr)
     r.Undo_EndBlock2(0, "CP Looper: new instrument track", -1)
     return tr
@@ -464,6 +498,33 @@ function Loop.ReloadEngine()
     return true
 end
 
+-- Bring the engine up to what this build needs, from ANY window — the Session
+-- and the Editor are as entitled to it as CP_Looper, and having to go open a
+-- third script first was never a design, only an accident of history.
+-- `create` gates the one step that touches the project (making the router
+-- track): a window that merely wants to READ a lane must never conjure tracks
+-- into someone's project. Returns ok, note.
+function Loop.Ensure(create)
+    if not attached then return false, "This REAPER build has no gmem." end
+    if not valid(Loop.track) then Loop.reconnect() end
+    if not valid(Loop.track) or not Loop.IsAttached() then
+        if not create then return false, "No looper engine in this project." end
+        local router, err = Loop.Setup()
+        if not router then return false, err or "Could not create the engine." end
+        return true, "Looper engine created"
+    end
+    -- The engine loaded in the chain can be OLDER than this build (the .jsfx
+    -- is only recopied on create/reload). A lane it does not scan drops every
+    -- command aimed at it, silently — a clip that never starts and a column
+    -- that stops instead of switching. Refresh it; the loops live in gmem and
+    -- survive the swap.
+    if Loop.EngineAlive() and Loop.EngineLanes() < Loop.MAX_LANES then
+        if Loop.ReloadEngine() then return true, "Looper engine refreshed" end
+        return false, "The loaded engine is out of date and would not reload."
+    end
+    return true, nil
+end
+
 -- ---------------------------------------------------------------------------
 -- Commands (payload first, seq last — the JSFX acts on the seq bump)
 -- ---------------------------------------------------------------------------
@@ -473,17 +534,21 @@ end
 -- one lane + launch another; firing a scene = one pair per track). So they
 -- QUEUE here, and leave one at a time as the engine acknowledges them.
 local cq, cq_head, cq_tail = {}, 1, 0
-local sent_seq, sent_t = 0, 0
+local wait_seq, wait_t = 0, 0
 
 -- Push the next queued command if the engine is done with the previous one.
--- The ack is the reliable signal; the timeout is the fallback for an engine
--- too old to send one (a frame is ~33 ms, an audio block ~12 ms, so 60 ms
--- means it has certainly run).
+-- The gate reads the SLOT, not a private tally of what we sent: the slot is
+-- shared by every CP window, and waiting only on our own commands would let
+-- the Session overwrite the Looper's un-consumed one (and the other way
+-- round) with nothing to show for it. The ack is the reliable signal; the
+-- timeout is the fallback for an engine too old to send one (a frame is
+-- ~33 ms, an audio block ~12 ms, so 60 ms means it has certainly run).
 function Loop.PumpCmd()
     if not attached or cq_head > cq_tail then return end
-    if sent_seq > 0 then
-        local ack = gread(G_CMD_ACK) or 0
-        if ack ~= sent_seq and (r.time_precise() - sent_t) < 0.06 then return end
+    local cur = gread(G_CMD_SEQ) or 0
+    if cur > 0 and (gread(G_CMD_ACK) or 0) ~= cur then
+        if cur ~= wait_seq then wait_seq, wait_t = cur, r.time_precise() end
+        if (r.time_precise() - wait_t) < 0.06 then return end
     end
     local c = cq[cq_head]
     cq[cq_head] = nil
@@ -492,8 +557,13 @@ function Loop.PumpCmd()
     gwrite(G_CMD, c[1])
     gwrite(G_CMD_LANE, c[2])
     gwrite(G_CMD_ARG, c[3])
-    seq = seq + 1
-    sent_seq, sent_t = seq, r.time_precise()
+    -- The counter must advance from what is IN gmem, not from a per-script
+    -- tally: the slot is shared by every CP window, and a script that kept
+    -- its own count would eventually write a number the engine has already
+    -- seen (it fires on `seq != last_seq`) — the command would vanish with
+    -- no trace. Reading it back makes the sequence global by construction.
+    seq = cur + 1
+    wait_seq, wait_t = seq, r.time_precise()
     gwrite(G_CMD_SEQ, seq)
 end
 
@@ -508,11 +578,16 @@ end
 -- when it doesn't, and capture begins by itself on the first running block.
 function Loop.Rec(lane)      sendCmd(1, lane) end
 function Loop.Stop(lane)     sendCmd(2, lane) end  -- finalize recording -> playing
-function Loop.Clear(lane)    sendCmd(3, lane) end  -- -> empty, notes off
+-- clearing empties the lane, so it no longer holds anyone's clip: drop the
+-- occupancy tag with it or a window would keep following a lane gone empty
+function Loop.Clear(lane)    Loop.SetLaneTag(lane, 0); sendCmd(3, lane) end
 function Loop.Panic()        sendCmd(4, 0)    end  -- all playback notes off
 function Loop.Play(lane)     sendCmd(5, lane) end  -- launch a stopped clip
 function Loop.StopClip(lane) sendCmd(6, lane) end  -- halt a playing clip
-function Loop.ClearAll()     sendCmd(7, 0)    end  -- wipe every lane (explicit only)
+function Loop.ClearAll()                          -- wipe every lane (explicit only)
+    for l = 0, Loop.MAX_LANES - 1 do Loop.SetLaneTag(l, 0) end
+    sendCmd(7, 0)
+end
 -- OVERDUB: capture INTO the playing loop — nothing cleared, no auto-stop,
 -- layers stack until the next Overdub (or Stop) finalizes back to playing.
 -- A second call while queued cancels; while overdubbing it punches out.
@@ -613,6 +688,107 @@ function Loop.Pending(lane)
     return math.floor((gread(G_LANE_STATE + lane * 8 + 6) or 0) + 0.5)
 end
 function Loop.PendingTarget(lane) return attached and gread(G_LANE_STATE + lane * 8 + 7) or 0 end
+
+-- ---------------------------------------------------------------------------
+-- Tracks = lane pairs (the layer every front-end talks to)
+-- ---------------------------------------------------------------------------
+-- Track t owns lane t and lane t + TRACKS. The ENGINE decides which of the
+-- two is sounding; we re-derive it once per frame and hand it out. Nobody
+-- caches a lane number across frames — a cached one goes stale the moment a
+-- clip swaps, and a stale lane is a missing playhead, a wrong transport
+-- button and an edit written into the clip you were NOT editing.
+local live = {}
+for t = 0, Loop.TRACKS - 1 do live[t] = t end
+
+-- "This lane is sounding" — ONE definition, so no two windows can disagree
+-- about what playing means. Recording and overdubbing count: both put notes
+-- out. (Modes: 0 empty · 1 recording · 2 stopped · 3 playing · 4 armed ·
+-- 5 overdubbing.)
+function Loop.IsRunning(lane)
+    if not attached then return false end
+    local m = math.floor((gread(G_LANE_STATE + lane * 8 + 0) or 0) + 0.5)
+    return m == 1 or m == 3 or m == 5
+end
+
+-- "busy" = sounding or about to: a queued launch already belongs to the half
+-- that will play, otherwise the swap would flicker back for one frame.
+local function laneBusy(lane)
+    local m = gread(G_LANE_STATE + lane * 8 + 0) or 0
+    if m == 3 or m == 5 or m == 1 then return true end
+    return (gread(G_LANE_STATE + lane * 8 + 6) or 0) == 1
+end
+
+local function resolveLive()
+    if not attached then return end
+    local n = Loop.TRACKS
+    for t = 0, n - 1 do
+        local a, b = t, t + n
+        local ab, bb = laneBusy(a), laneBusy(b)
+        -- neither busy: keep the last one, so a stopped clip stays where the
+        -- user left it instead of snapping back to the A half
+        if bb and not ab then live[t] = b
+        elseif ab and not bb then live[t] = a end
+    end
+end
+
+-- The lane of track t that is sounding (or was, when it is stopped).
+function Loop.LiveLane(t) return live[t] or t end
+
+-- The silent half: where a clip is staged before it swaps in.
+function Loop.TwinLane(t)
+    local n = Loop.TRACKS
+    return (live[t] or t) == t and (t + n) or t
+end
+
+-- Any lane number -> the track it belongs to. Old clip descriptors stored a
+-- raw lane, so this is also the migration path: lane 5 has always meant
+-- track 1.
+function Loop.TrackOfLane(lane) return (lane or 0) % Loop.TRACKS end
+
+-- ---------------------------------------------------------------------------
+-- Lane occupancy tag
+-- ---------------------------------------------------------------------------
+-- A small non-zero number saying WHICH clip a lane currently holds, written
+-- by whoever loads the lane. It lets a second window find that clip again
+-- after the halves swapped, without either window trusting its own memory.
+-- Lives in the spare LANE_CTRL slots: gmem, so every script reads the same
+-- value with no string traffic and no project dirtying, and the JSFX @init
+-- leaves those slots alone so a plugin reset does not forget.
+function Loop.SetLaneTag(lane, tag)
+    if attached then gwrite(G_LANE_CTRL + lane * 8 + 2, tag or 0) end
+end
+function Loop.GetLaneTag(lane)
+    if not attached then return 0 end
+    return math.floor((gread(G_LANE_CTRL + lane * 8 + 2) or 0) + 0.5)
+end
+
+-- Which half of track t holds `tag`, or NIL when the engine no longer holds
+-- that clip at all — the twin got reused for another cell, or a plugin reset
+-- wiped the tags. Nil is the honest answer and the safe one: a window that
+-- believed otherwise would draw a playhead for someone else's clip and, far
+-- worse, write its edits over the clip that IS playing.
+-- An untagged clip (a plain Looper loop) belongs to its track, so it resolves
+-- to whichever half is live.
+function Loop.LaneOfTag(t, tag)
+    if not tag or tag == 0 then return Loop.LiveLane(t) end
+    local n = Loop.TRACKS
+    if Loop.GetLaneTag(t) == tag then return t end
+    if Loop.GetLaneTag(t + n) == tag then return t + n end
+    return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Per-frame pump — the ONE call every host makes before reading anything
+-- ---------------------------------------------------------------------------
+-- Re-selects our gmem block (Engine/Tempo steals it), lets one queued command
+-- leave, and re-derives the live half of each pair. Hosts used to do these
+-- separately, or not at all, which is precisely how they drifted apart.
+function Loop.Poll()
+    if not attached then return end
+    r.gmem_attach(GMEM_NAME)
+    Loop.PumpCmd()
+    resolveLive()
+end
 
 -- ---------------------------------------------------------------------------
 -- Transport (read)
