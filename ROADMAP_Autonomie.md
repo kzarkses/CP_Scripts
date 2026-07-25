@@ -738,6 +738,66 @@ le thème de debug.
   Son verdict après test : « les zones, on les voit clairement, les icônes,
   l'alignement, c'est génial ».
 
+## Session 11 (2026-07-25) — Floating Toolbar
+
+- [x] **La fenêtre trop grande à l'ouverture** (`7526195`, `3a0a659`, `b224b10`).
+  `gfx.init` n'ouvre pas toujours à la taille demandée (la géométrie est
+  mémorisée par NOM de fenêtre), et le retrait du cadre atterrit une ou deux
+  frames plus tard. Corrigé en **boucle fermée** : on mesure l'écart entre le
+  client que gfx annonce et celui qu'on veut, et on déplace le rectangle
+  extérieur de cet écart exact — ça converge quel que soit le cadre. Affirmer
+  `extérieur = client` ne suffisait pas : quelques pixels de cadre survivent.
+- [x] **Trois sols au choix** : `panel` (une dalle), `chips` (une puce arrondie
+  par icône, boutons détachés), `none` (les glyphes seuls). Couleur, arrondi et
+  bord séparés pour la dalle et pour les puces.
+- [x] **Le manager remis d'aplomb** : les rangées étaient disposées à partir de
+  la largeur de leur propre nom, donc rien n'était aligné verticalement. C'est
+  une grille maintenant. La rangée **montre** l'icône, et un clic dessus ouvre
+  le sélecteur — une porte au lieu de trois contrôles qui se disputaient le
+  même rôle. Pipette (comme le Theme Tweaker) sur les deux couleurs. Taille
+  d'icône qui peut **suivre le thème**.
+- [x] **Le sélecteur d'icônes a deux sources** : les PNG de REAPER et le pack CP
+  (dessinés, donc ils prennent la couleur du thème).
+- [x] Les trois `iconBtn` privés du dépôt sont tous supprimés.
+- 🟡 **Clé chromatique, éteinte par défaut.** Elle rendrait les pixels non
+  peints réellement transparents et traversants — le seul moyen d'avoir une
+  barre non rectangulaire. **Elle ne prend pas sur sa machine** : le magenta
+  s'affichait au lieu de disparaître. Gardée derrière une case marquée
+  expérimentale, absente = éteinte. À reprendre si l'envie du flottant intégral
+  revient (piste : vérifier `JS_Window_SetOpacity(hwnd, "COLOR", …)` et l'ordre
+  entre `SetStyle POPUP` et l'ajout de `WS_EX_LAYERED`).
+
+### À FAIRE PLUS TARD — étendre le pack d'icônes
+
+Décidé le 2026-07-25, **repoussé volontairement**. Mesuré sur le pack existant :
+**406 octets par glyphe**.
+
+| | Fichier | Mémoire (env.) |
+|---|---|---|
+| 57 (actuel) | 23 Ko | ~30 Ko |
+| 200 | 79 Ko | ~100 Ko |
+| 400 | 159 Ko | ~200 Ko |
+| 1754 (tout Lucide) | 0,68 Mo | ~0,9 Mo |
+
+Le disque n'est pas le sujet. **Le coût est le temps d'analyse au chargement**,
+et le toolkit est chargé par *chaque* script CP — donc quelques dizaines de ms
+ajoutées à chaque ouverture de fenêtre, sur un PC de 2005, pour des glyphes
+jamais utilisés.
+
+**Recommandation : 200 à 400 glyphes curatés** (80–160 Ko, négligeable), ce qui
+couvre tout ce dont une interface de DAW a besoin. Les 1754 restent faisables
+mais exigeraient un chargement paresseux (un fichier par lettre, analysé à la
+demande) — un chantier à part.
+
+Procédure : une ligne par icône dans `CP_Tools/icons/manifest.txt`, puis
+`node CP_Tools/icons/build_pack.mjs`. Aucun Lua à écrire. La source Lucide est
+dans `Lucide/lucide-main/icons/` (1754 SVG, gitignorée).
+
+**Attend son choix des familles** : transport, édition, fichiers, formes,
+flèches, audio, MIDI, mixage…
+
+---
+
 **Reste sur le chantier visuel** : les 9 glyphes mixtes (mi-pleins, mi-trait) —
 à faire en les regardant, et un PNG déposé dans `CP_Toolkit/IconOverrides/`
 suffit à en remplacer un sans toucher au code ; `SetHot` sur les 14 widgets
@@ -746,3 +806,19 @@ et n'ont **aucun appelant**, et TAB est capturé comme touche de validation) ;
 les centrages `y + h * 0.5 - 6` dans les apps, où 6 est la moitié de `body = 12`
 alors que le tweaker laisse monter `body` à 24 ; et `mute` / `solo` / `mod`,
 trois jetons qui ne peignent encore rien.
+
+**Les scripts périphériques attendent, sur sa demande** : ChordLab, ColorPicker,
+Inspector, VideoKit, PaintSynth ne sont pas migrés sur les zones. « Le cœur
+c'est ce qu'on travaille ici maintenant, on clarifie d'abord tout cela. »
+
+---
+
+## PROCHAIN CHANTIER — le mixer dans CP_Session
+
+Décidé le 2026-07-25 : c'est la suite. Ce que la roadmap en dit déjà (session
+9, « Reste, dans l'ordre ») : **mixer minimal Session + couleur de clip**.
+
+Les trois jetons de rôle `mute`, `solo` et `mod` attendent précisément ça —
+`mute` et `solo` sont le vocabulaire documenté des boutons M/S, et ils sont
+définis dans le thème sans que rien ne les lise. Le mixer est ce qui les
+branche.
