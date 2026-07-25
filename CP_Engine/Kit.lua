@@ -620,7 +620,19 @@ end
 -- ---------------------------------------------------------------------------
 -- Samples
 -- ---------------------------------------------------------------------------
-function Kit.LoadSample(note, path)
+local autoSync   -- sync-by-default; body lives with the tempo-sync section
+local clearSyncState
+
+-- opts (all optional) — how this load relates to the pad's TEMPO IDENTITY,
+-- which lives on the track (P_EXT) and therefore outlives the sample:
+--   no_sync   derived material (a slice, a selection, a preset recall):
+--             drop the previous sample's tempo identity, sync nothing.
+--   keep_sync same musical material in a new file (a bake): touch nothing.
+--   (default) new material: the old identity is void, re-derive from the
+--             new file and beat-match it if it declares a tempo.
+-- Getting this wrong is audible — inheriting the previous loop's BPM
+-- repitches the new sample against a tempo it never had.
+function Kit.LoadSample(note, path, opts)
     if not path or path == "" then return false end
     ubegin()
     local pad = Kit.EnsurePad(note)
@@ -646,10 +658,15 @@ function Kit.LoadSample(note, path)
     -- Fresh sample: full range (RS5K keeps the previous sample's offsets)
     r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.SOFFS, 0)
     r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.EOFFS, 1)
+    local newmat = (pad.path ~= path)
     pad.path = path
     pad.name = baseName(path)
     pad.fmt = {}
     r.GetSetMediaTrackInfo_String(pad.track, "P_NAME", pad.name, true)
+    if newmat and not (opts and opts.keep_sync) then
+        clearSyncState(note, pad)
+        if not (opts and opts.no_sync) then autoSync(note) end
+    end
     Kit.version = Kit.version + 1
     uend("Sampler: load " .. pad.name)
     return true
@@ -726,6 +743,72 @@ function Kit.SwapPads(a, b)
 end
 
 -- ---------------------------------------------------------------------------
+-- Plain-unit param access. Cockos VST params (RS5K, ReaPitch) expose their
+-- RAW values normalized 0..1 — the real units (ms, dB, semitones) only
+-- exist through the format API. Reads parse the formatted display; writes
+-- binary-search the normalized position whose formatted value lands on the
+-- target (FormatParamValueNormalized is a pure query — only the final
+-- position is written). Self-calibrating: no range or taper is assumed.
+-- ---------------------------------------------------------------------------
+local function parsePlain(s)
+    if not s then return nil end
+    -- "-inf dB" (a silent gain) carries no digits: it is a real value, not a
+    -- parse failure — surfaces that map dB to pixels must see the floor.
+    if s:find("inf", 1, true) then
+        return s:find("-", 1, true) and -150 or 150
+    end
+    local num, unit = s:match("([%-%+]?%d+%.?%d*)%s*(%a*)")
+    local v = tonumber(num)
+    if not v then return nil end
+    if unit == "s" or unit == "sec" then v = v * 1000 end  -- time stays in ms
+    return v
+end
+
+local function plainAt(tr, fx, pid, norm)
+    local ok, buf = r.TrackFX_FormatParamValueNormalized(tr, fx, pid, norm, "")
+    return ok and parsePlain(buf) or nil
+end
+
+local function plainOf(tr, fx, pid)
+    local ok, buf = r.TrackFX_GetFormattedParamValue(tr, fx, pid, "")
+    return ok and parsePlain(buf) or nil
+end
+
+local function plainSet(tr, fx, pid, v)
+    -- endpoints may format as "-inf": probe just inside if an edge fails
+    local f0 = plainAt(tr, fx, pid, 0) or plainAt(tr, fx, pid, 0.001)
+    local f1 = plainAt(tr, fx, pid, 1) or plainAt(tr, fx, pid, 0.999)
+    if not (f0 and f1) or f0 == f1 then return false end
+    local asc = f1 > f0
+    if v <= math.min(f0, f1) then
+        r.TrackFX_SetParamNormalized(tr, fx, pid, asc and 0 or 1)
+        return true
+    elseif v >= math.max(f0, f1) then
+        r.TrackFX_SetParamNormalized(tr, fx, pid, asc and 1 or 0)
+        return true
+    end
+    -- Write a PROBED position, never the final midpoint: the bisection
+    -- converges onto the boundary where the DISPLAY flips buckets, and on a
+    -- stepped or coarsely-formatted param that boundary sits half a quantum
+    -- from the target, on whichever side float rounding lands. Keeping the
+    -- best probe makes the write idempotent — read it back through the same
+    -- format call and you get the value you asked for.
+    local lo, hi = 0, 1
+    local best, bestd
+    for _ = 1, 24 do
+        local mid = (lo + hi) * 0.5
+        local fv = plainAt(tr, fx, pid, mid)
+        if fv == nil then break end
+        local d = math.abs(fv - v)
+        if not bestd or d < bestd then best, bestd = mid, d end
+        if d == 0 then break end          -- exact on the display: done
+        if (fv < v) == asc then lo = mid else hi = mid end
+    end
+    r.TrackFX_SetParamNormalized(tr, fx, pid, best or (lo + hi) * 0.5)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- Tempo sync (refonte chantier 8): repitch a pad's loop to the project
 -- tempo through the TUNE offset — rate follows pitch, the vinyl trade-off
 -- the analysis accepted (true time-stretch is the bake's job). Source BPM
@@ -747,12 +830,63 @@ local function bpmFromName(path)
     return tonumber(bpm)
 end
 
--- Stored BPM wins; the filename guess is only a default, never written.
+-- Audio length in seconds (nil for MIDI or an unreadable file).
+local function srcLen(path)
+    if not path or path == "" then return nil end
+    local src = r.PCM_Source_CreateFromFile(path)
+    if not src then return nil end
+    local len, isQN = r.GetMediaSourceLength(src)
+    r.PCM_Source_Destroy(src)
+    if isQN or not len or len <= 0 then return nil end
+    return len
+end
+
+-- No tempo in the name: infer one from the source length — a musical loop
+-- spans a whole number of beats, so some count in {4,8,16,32} lands on a
+-- plausible tempo. The catch is that those windows OVERLAP: a 3 s file is
+-- "4 beats at 80" and "8 beats at 160" at once, and picking the nearest to
+-- the project tempo would hand every one-shot a tempo it never had. So the
+-- guess only stands when EXACTLY ONE bar count falls in a narrow band
+-- around the project tempo — ambiguity means "unknown", not "pick one".
+local function bpmFromLength(len)
+    if not len or len < 1.2 then return nil end   -- one-shot: no guess
+    local ref = r.Master_GetTempo() or 120
+    if ref <= 0 then ref = 120 end
+    local lo, hi = ref / 1.5, ref * 1.5
+    local best, n = nil, 0
+    for _, beats in ipairs({ 4, 8, 16, 32 }) do
+        local bpm = 60 * beats / len
+        if bpm >= lo and bpm <= hi then n = n + 1; best = bpm end
+    end
+    if n ~= 1 then return nil end
+    return best
+end
+
+-- Stored BPM wins; the filename guess is only a default. The store is
+-- written when a tempo is DECIDED (the user typing one, autoSync engaging
+-- sync) and cleared by LoadSample when the material changes.
 function Kit.PadSrcBpm(note)
     local pad = Kit.Pad(note)
     if not pad then return nil end
     return tonumber(getExt(pad.track, "CP_KIT_BPM") or "")
         or bpmFromName(pad.path)
+end
+
+-- Aim one pad's TUNE at the project tempo. Display-unit write (plainSet):
+-- the RS5K pitch slider's real range/taper never has to be assumed.
+local function applySync(note, pad, project_bpm)
+    if not (pad and pad.fx) then return false end
+    local src = Kit.PadSrcBpm(note)
+    if not (src and src > 0 and project_bpm and project_bpm > 0) then
+        return false
+    end
+    local st = 12 * math.log(project_bpm / src, 2)
+    if st > 80 then st = 80 elseif st < -80 then st = -80 end
+    local cur = plainOf(pad.track, pad.fx, Kit.P.TUNE)
+    if cur and math.abs(cur - st) <= 0.01 then return false end
+    plainSet(pad.track, pad.fx, Kit.P.TUNE, st)
+    pad.fmt[Kit.P.TUNE] = nil
+    return true
 end
 
 function Kit.SetPadSrcBpm(note, bpm)
@@ -766,8 +900,10 @@ function Kit.PadSynced(note)
     return pad ~= nil and getExt(pad.track, "CP_KIT_SYNC") == "1"
 end
 
--- Turning sync ON parks the user's manual tune in P_EXT; OFF restores it
--- — the sync must never eat a tuning gesture.
+-- Turning sync ON parks the user's manual tune in P_EXT and beat-matches
+-- IMMEDIATELY (enabling sync IS the request — not "at the next tempo
+-- change"); OFF restores the parked tune — the sync must never eat a
+-- tuning gesture.
 function Kit.SetPadSynced(note, on)
     local pad = Kit.Pad(note)
     if not pad or not pad.fx then return end
@@ -775,33 +911,73 @@ function Kit.SetPadSynced(note, on)
         local cur = r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.TUNE)
         setExt(pad.track, "CP_KIT_TUNE0", string.format("%.6f", cur))
         setExt(pad.track, "CP_KIT_SYNC", "1")
+        applySync(note, pad, r.Master_GetTempo())
     else
         setExt(pad.track, "CP_KIT_SYNC", "")
         local t0 = tonumber(getExt(pad.track, "CP_KIT_TUNE0") or "")
         r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.TUNE, t0 or 0.5)
         setExt(pad.track, "CP_KIT_TUNE0", "")
+        pad.fmt[Kit.P.TUNE] = nil
     end
+    last_change = r.GetProjectStateChangeCount(0)
+end
+
+-- New material on the pad: the stored source tempo described the PREVIOUS
+-- sample and must not survive it (stored BPM wins over the filename, so a
+-- leftover would beat-match the new loop against the old one's tempo).
+-- Un-syncing also gives the parked manual tune back. (Assigned into the
+-- forward-declared local the Samples section calls.)
+clearSyncState = function(note, pad)
+    if not pad then return end
+    if Kit.PadSynced(note) then Kit.SetPadSynced(note, false) end
+    setExt(pad.track, "CP_KIT_BPM", "")
 end
 
 -- Re-aim every synced pad at the given tempo. Cheap enough for the host
 -- to call whenever Tempo reports a change (writes only on a real delta).
 function Kit.ApplyTempoSync(project_bpm)
     if not project_bpm or project_bpm <= 0 then return end
+    local wrote = false
     for note, pad in pairs(Kit.pads) do
         if pad.fx and getExt(pad.track, "CP_KIT_SYNC") == "1" then
-            local src = Kit.PadSrcBpm(note)
-            if src and src > 0 then
-                local st = 12 * math.log(project_bpm / src, 2)
-                if st > 80 then st = 80 elseif st < -80 then st = -80 end
-                local want = pitchNorm(st)
-                local cur = r.TrackFX_GetParamNormalized(pad.track, pad.fx,
-                    Kit.P.TUNE)
-                if math.abs((cur or 0) - want) > 1e-4 then
-                    r.TrackFX_SetParamNormalized(pad.track, pad.fx,
-                        Kit.P.TUNE, want)
-                end
-            end
+            if applySync(note, pad, project_bpm) then wrote = true end
         end
+    end
+    if wrote then last_change = r.GetProjectStateChangeCount(0) end
+end
+
+-- Sync by default — but only for material that really is a loop at a known
+-- tempo, because being wrong here silently repitches a sample the user
+-- never asked to touch. Two tiers, deliberately unequal:
+--   DECLARED (the filename says "128bpm") — trusted, any amount of
+--   repitch, as long as the file is long enough to BE a loop at that
+--   tempo ("808 Kick 120bpm.wav" is a one-shot, not a bar).
+--   INFERRED (from the length alone) — trusted only when unambiguous AND
+--   the correction stays small (±2 st): a big shift means the inference
+--   picked the wrong bar count far more often than it means a 174 BPM
+--   break landed in a 120 BPM project (which the filename would declare).
+-- The resolved tempo is then STORED: from here on it is a decision, not a
+-- guess, and LoadSample clears it whenever the material changes.
+-- (Assigned into the forward-declared local the Samples section calls.)
+autoSync = function(note)
+    local pad = Kit.Pad(note)
+    if not (pad and pad.fx and pad.path) then return end
+    local len = srcLen(pad.path)
+    if not len then return end
+    local ref = r.Master_GetTempo()
+    if not ref or ref <= 0 then return end
+    local bpm = bpmFromName(pad.path)
+    if bpm and len < (60 / bpm) * 2 * 0.9 then bpm = nil end   -- < 2 beats
+    if not bpm then
+        bpm = bpmFromLength(len)
+        if not bpm then return end
+        if math.abs(12 * math.log(ref / bpm, 2)) > 2 then return end
+    end
+    setExt(pad.track, "CP_KIT_BPM", string.format("%.3f", bpm))
+    if Kit.PadSynced(note) then
+        applySync(note, pad, ref)   -- already synced: just re-aim
+    else
+        Kit.SetPadSynced(note, true)
     end
 end
 
@@ -1137,17 +1313,14 @@ local function padReaPitch(pad, create)
     if best then
         -- One-shot migration: an earlier build drove the stepped slider —
         -- fold any leftover shift into the continuous param so the audible
-        -- pitch and the knob agree again.
+        -- pitch and the knob agree again. DISPLAY units throughout: the raw
+        -- values are normalized, where 0.5 (not 0) means "no shift".
         if full and semi and semi ~= full then
-            local sv = r.TrackFX_GetParam(pad.track, fx, semi)
-            if sv and sv ~= 0 then
-                local cur, mn, mx = r.TrackFX_GetParam(pad.track, fx, full)
-                local v = (cur or 0) + sv
-                if mn and mx and mx > mn then
-                    if v < mn then v = mn elseif v > mx then v = mx end
-                end
-                r.TrackFX_SetParam(pad.track, fx, full, v)
-                r.TrackFX_SetParam(pad.track, fx, semi, 0)
+            local sv = plainOf(pad.track, fx, semi)
+            if sv and math.abs(sv) > 0.005 then
+                local cur = plainOf(pad.track, fx, full) or 0
+                plainSet(pad.track, fx, full, cur + sv)
+                plainSet(pad.track, fx, semi, 0)
             end
         end
         pad.rp_fx, pad.rp_param = fx, best
@@ -1159,20 +1332,28 @@ end
 -- Plain-value access to a pad's RS5K params (ms / dB — what the sliders
 -- show), for surfaces that think in real units: the ADSR overlay on the
 -- waveform maps pixels to milliseconds, not to normalized positions.
+-- NEVER TrackFX_GetParam here: Cockos VST raw values are normalized 0..1
+-- whatever the display says — real units go through the format API.
 function Kit.ParamPlain(note, pid)
     local pad = Kit.Pad(note)
     if not (pad and pad.fx) then return nil end
-    return r.TrackFX_GetParam(pad.track, pad.fx, pid)
+    -- The parse is cached against the formatted string it came from (which
+    -- ParamFmt already caches and invalidates): the per-frame ADSR overlay
+    -- reads four of these every frame and must not allocate.
+    local s = Kit.ParamFmt(note, pid)
+    local pv, ps = pad.pv, pad.ps
+    if not pv then pv, ps = {}, {}; pad.pv, pad.ps = pv, ps end
+    if ps[pid] ~= s then
+        ps[pid] = s
+        pv[pid] = parsePlain(s)
+    end
+    return pv[pid]
 end
 
 function Kit.SetParamPlain(note, pid, v)
     local pad = Kit.Pad(note)
     if not (pad and pad.fx) then return end
-    local _, mn, mx = r.TrackFX_GetParam(pad.track, pad.fx, pid)
-    if mn and mx and mx > mn then
-        if v < mn then v = mn elseif v > mx then v = mx end
-    end
-    r.TrackFX_SetParam(pad.track, pad.fx, pid, v)
+    plainSet(pad.track, pad.fx, pid, v)   -- clamps into the real range
     pad.fmt[pid] = nil
     last_change = r.GetProjectStateChangeCount(0)
 end
@@ -1184,7 +1365,7 @@ function Kit.PadPitch(note)
     if not pad then return 0 end
     local fx, pi = padReaPitch(pad, false)
     if not fx then return 0 end
-    return r.TrackFX_GetParam(pad.track, fx, pi) or 0
+    return plainOf(pad.track, fx, pi) or 0
 end
 
 function Kit.SetPadPitch(note, st)
@@ -1192,11 +1373,7 @@ function Kit.SetPadPitch(note, st)
     if not pad then return end
     local fx, pi = padReaPitch(pad, true)
     if not fx then return end
-    local _, mn, mx = r.TrackFX_GetParam(pad.track, fx, pi)
-    if mn and mx and mx > mn then
-        if st < mn then st = mn elseif st > mx then st = mx end
-    end
-    r.TrackFX_SetParam(pad.track, fx, pi, st)
+    plainSet(pad.track, fx, pi, st)   -- clamps into the param's real bounds
     last_change = r.GetProjectStateChangeCount(0)
 end
 
@@ -1396,7 +1573,10 @@ function Kit.LoadPreset(filepath)
     for _, p in ipairs(data.pads) do
         if type(p) == "table" and type(p.note) == "number"
            and type(p.path) == "string" then
-            Kit.LoadSample(p.note, p.path)
+            -- a preset restores its own TUNE below: auto-sync would both
+            -- fight that write and outlive it (the next ApplyTempoSync
+            -- would re-aim a pad the preset had tuned by hand)
+            Kit.LoadSample(p.note, p.path, { no_sync = true })
             if type(p.p) == "table" then
                 for pid, v in pairs(p.p) do
                     if type(pid) == "number" and type(v) == "number" then
