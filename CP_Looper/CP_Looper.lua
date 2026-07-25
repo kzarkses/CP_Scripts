@@ -1492,6 +1492,7 @@ local function frame(theme)
         Loop.reconnect()
     end
     local attached = Loop.IsAttached()
+    Loop.PumpCmd()   -- one queued engine command leaves per frame
 
     -- The engine resets more often than it looks (REAPER re-inits a JSFX on
     -- transport start, samplerate change, FX reload). The loops now survive it,

@@ -24,6 +24,7 @@ Loop.MAX_NOTES   = 1024
 Loop.NOTE_STRIDE = 4       -- start, length, pitch, vel (all in beats/0..127)
 
 local G_CMD, G_CMD_LANE, G_CMD_ARG, G_CMD_SEQ = 0, 1, 2, 5
+local G_CMD_ACK    = 7     -- seq the JSFX last consumed (command pacing)
 local G_FREERUN    = 3     -- 0 = follow host transport, 1 = free internal clock
 local G_ARMED      = 4     -- lane index that live input is monitored on
 local G_LAUNCH_Q   = 6     -- launch quantize in beats (0 = immediate)
@@ -460,13 +461,41 @@ end
 -- ---------------------------------------------------------------------------
 -- Commands (payload first, seq last — the JSFX acts on the seq bump)
 -- ---------------------------------------------------------------------------
+-- The engine consumes ONE command per audio block, from a single slot. Two
+-- commands written in the same script frame therefore lose the first — and
+-- the gestures that matter most need two or more (swapping a clip = stop
+-- one lane + launch another; firing a scene = one pair per track). So they
+-- QUEUE here, and leave one at a time as the engine acknowledges them.
+local cq, cq_head, cq_tail = {}, 1, 0
+local sent_seq, sent_t = 0, 0
+
+-- Push the next queued command if the engine is done with the previous one.
+-- The ack is the reliable signal; the timeout is the fallback for an engine
+-- too old to send one (a frame is ~33 ms, an audio block ~12 ms, so 60 ms
+-- means it has certainly run).
+function Loop.PumpCmd()
+    if not attached or cq_head > cq_tail then return end
+    if sent_seq > 0 then
+        local ack = gread(G_CMD_ACK) or 0
+        if ack ~= sent_seq and (r.time_precise() - sent_t) < 0.06 then return end
+    end
+    local c = cq[cq_head]
+    cq[cq_head] = nil
+    cq_head = cq_head + 1
+    if cq_head > cq_tail then cq_head, cq_tail = 1, 0 end   -- keep indices small
+    gwrite(G_CMD, c[1])
+    gwrite(G_CMD_LANE, c[2])
+    gwrite(G_CMD_ARG, c[3])
+    seq = seq + 1
+    sent_seq, sent_t = seq, r.time_precise()
+    gwrite(G_CMD_SEQ, seq)
+end
+
 local function sendCmd(cmd, lane, arg)
     if not attached then return end
-    gwrite(G_CMD, cmd)
-    gwrite(G_CMD_LANE, lane or 0)
-    gwrite(G_CMD_ARG, arg or 0)
-    seq = seq + 1
-    gwrite(G_CMD_SEQ, seq)
+    cq_tail = cq_tail + 1
+    cq[cq_tail] = { cmd, lane or 0, arg or 0 }
+    Loop.PumpCmd()   -- an idle engine takes it immediately
 end
 
 -- REC: clears + captures when the clock runs; ARMS (non-destructive, mode 4)

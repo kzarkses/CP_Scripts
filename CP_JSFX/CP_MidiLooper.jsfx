@@ -83,6 +83,7 @@ GMEM_FREERUN    = 3;    // 0 = follow host transport, 1 = free internal clock
 GMEM_ARMED      = 4;    // lane index that live input is monitored on (0..MAX_LANES-1)
 GMEM_CMD_SEQ    = 5;
 GMEM_LAUNCH_Q   = 6;    // launch quantize in beats (0 = immediate) — Lua-owned
+GMEM_CMD_ACK    = 7;    // seq of the last command actually consumed
 GMEM_LANE_CTRL  = 100;  // stride 8: +0 length_bars, +1 muted   (Lua -> JSFX)
 GMEM_LANE_STATE = 200;  // stride 8: +0 mode,+1 nev(SHARED),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 GMEM_TRANSPORT  = 3000;
@@ -474,6 +475,11 @@ seq != last_seq ? (
     );
   );
   gmem[GMEM_CMD] = 0;
+  // Acknowledge: the host reads ONE command per block, so a sender that
+  // needs two (swap a clip: stop one lane, launch another) must know this
+  // one was consumed before writing the next — otherwise it overwrites it
+  // and the command is simply lost.
+  gmem[GMEM_CMD_ACK] = seq;
 );
 
 // ---- armed lanes start capturing as soon as the clock runs (quantized to the

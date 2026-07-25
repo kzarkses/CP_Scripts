@@ -83,10 +83,12 @@ quantized, stops by itself on the loop's length, and what you played
 lands in that cell.
 
 ## Editing
-DOUBLE-CLICK any cell — even an empty one — and it opens in CP_Editor,
-launched if needed. That is the ONLY way to edit a cell: notes, loop
-length, playhead and transport all live there, and edits come back
-here live. Right-click a cell for edit / clear / stop.
+The button strip on the left of a cell is the transport; clicking
+ANYWHERE ELSE in the cell opens it in CP_Editor (launched if needed) —
+looking at a clip never changes what is playing, and launching is never
+a side effect of wanting to edit. CP_Editor is the only place a cell is
+edited: notes, loop length, playhead and transport live there, and the
+edits come back here live. Right-click: edit / clear / stop.
 
 ## Audio row (A)
 Drop an audio file from the Media Explorer on an A cell: click loops
@@ -573,10 +575,20 @@ local function drawCell(theme, t, s, x, y, w, h)
     end
     Core.DrawRoundRectFilled(x, y, w, h, rad, br, bg_, bb, 1)
 
-    -- the transport button: what it shows IS what a click does
-    local bx, by = x + 2, y + floor((h - BTN_W) / 2)
+    -- The transport button owns its own strip on the left. Clicking the REST
+    -- of the cell opens it in CP_Editor — editing must never cost a play
+    -- state, and launching must never be a side effect of wanting to look
+    -- at the notes.
+    local bw = BTN_W + 6
+    local bx, by = x + 3, y + floor((h - BTN_W) / 2)
     local tc = C.text
     local mc = C.text_mute or C.text_disabled
+    local btn_hot = Core.MouseInRect(x, y, bw, h) and not Core.HasPopup()
+    if btn_hot then
+        Core.DrawRoundRectFilled(x + 1, y + 1, bw - 1, h - 2,
+                                 theme.rounding_small or 0, 1, 1, 1, 0.10)
+    end
+    local lit = playing or capturing or pend == 1
     if capturing then
         local a = 0.5 + 0.5 * math.abs(sin(r.time_precise() * 5))
         local d = C.danger or C.accent
@@ -584,14 +596,19 @@ local function drawCell(theme, t, s, x, y, w, h)
         UI.RequestRedraw()
     elseif c then
         if playing or pend == 1 then
-            UI.Icons.Stop(bx, by, BTN_W, tc[1], tc[2], tc[3], 0.9)
+            UI.Icons.Stop(bx, by, BTN_W, tc[1], tc[2], tc[3], 1)
         else
-            UI.Icons.Play(bx, by, BTN_W, tc[1], tc[2], tc[3], 0.75)
+            UI.Icons.Play(bx, by, BTN_W, tc[1], tc[2], tc[3],
+                          btn_hot and 1 or 0.7)
         end
     elseif isArmed(t) then
         -- empty slot on the armed track: this is where a take lands
         local d = C.danger or C.accent
-        UI.Icons.Record(bx, by, BTN_W, d[1], d[2], d[3], 0.55)
+        UI.Icons.Record(bx, by, BTN_W, d[1], d[2], d[3], btn_hot and 0.9 or 0.5)
+    end
+    -- the lit state reads as a lit button, not only as a coloured cell
+    if lit and not capturing then
+        Core.DrawRect(x + 1, y + 1, 2, h - 2, C.accent[1], C.accent[2], C.accent[3], 0.9)
     end
 
     if c then
@@ -613,29 +630,37 @@ local function drawCell(theme, t, s, x, y, w, h)
             UI.RequestRedraw()
         end
         local nm = (c.name and c.name ~= "") and c.name or "clip"
-        local tw = w - BTN_W - 8
-        Core.DrawText(cellLabel(t, s, nm, tw), x + BTN_W + 4, y + 3,
+        local tw = w - bw - 6
+        Core.DrawText(cellLabel(t, s, nm, tw), x + bw + 2, y + 3,
                       tc[1], tc[2], tc[3], 0.95)
         UI.SetFontCaption()
-        Core.DrawText(barsLabel(cellBars(c)), x + BTN_W + 4, y + h - 13,
+        Core.DrawText(barsLabel(cellBars(c)), x + bw + 2, y + h - 13,
                       mc[1], mc[2], mc[3], 0.85)
         UI.SetFontBody()
     end
 
     if Core.MouseInRect(x, y, w, h) and not Core.HasPopup() then
-        Core.DrawRect(x, y, w, h, 1, 1, 1, 0.05)
-        if Core.MouseDoubleClicked() then
-            editCell(t, s)
-        elseif Core.MouseClicked(1) then
-            if c then
-                launchCell(t, s)
-            elseif isArmed(t) then
-                recCell(t, s)     -- empty + armed: the click records
-            else
-                flash("Empty cell — arm the track to record, or double-click to write")
+        if btn_hot then
+            -- transport strip
+            if Core.MouseClicked(1) then
+                if c then
+                    launchCell(t, s)
+                elseif isArmed(t) then
+                    recCell(t, s)
+                else
+                    flash("Arm this track (circle in its header) to record here")
+                end
+            elseif Core.MouseClicked(2) then
+                cellMenu(t, s)
             end
-        elseif Core.MouseClicked(2) then
-            cellMenu(t, s)
+        else
+            -- content: opening it must not touch what is playing
+            Core.DrawRect(x + bw, y, w - bw, h, 1, 1, 1, 0.05)
+            if Core.MouseClicked(1) then
+                editCell(t, s)
+            elseif Core.MouseClicked(2) then
+                cellMenu(t, s)
+            end
         end
     end
 end
@@ -738,6 +763,7 @@ local function frame(theme)
         flash("Engine is older than this grid — click Reload in CP_Looper")
     end
 
+    Loop.PumpCmd()   -- one queued engine command leaves per frame
     syncBuffers()
     pollRec()
 
@@ -860,7 +886,7 @@ local function frame(theme)
             state.flash_msg = ""
         end
     else
-        UI.Text("Click = launch/stop · empty + armed = record · double-click = edit in CP_Editor · triangle = scene",
+        UI.Text("Left strip = launch/stop/record · click the cell = edit in CP_Editor · triangle = scene",
                 { disabled = true })
     end
     UI.SetFontBody()
