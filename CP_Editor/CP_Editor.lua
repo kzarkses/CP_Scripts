@@ -82,6 +82,10 @@ local opts = {
     -- reaches an instrument you did not mean (see the input-monitor note).
     audition   = cfg.audition ~= false,
     thru_track = cfg.thru_track ~= false, -- preview through the item's track (its FX)
+    -- Loop the preview over the played region (the selection, or the whole
+    -- region when there is none). Off by default: an audition that will not
+    -- stop is a surprise, a loop you asked for is a tool.
+    loop       = cfg.loop == true,
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -138,6 +142,7 @@ local function persistConfig()
     cfg.note_names = opts.note_names
     cfg.audition   = opts.audition
     cfg.thru_track = opts.thru_track
+    cfg.loop       = opts.loop
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -729,6 +734,21 @@ end
 -- ---------------------------------------------------------------------------
 -- Playback
 -- ---------------------------------------------------------------------------
+-- Where the preview starts, and where a loop turns around. The selection when
+-- there is one; the region otherwise — the item's extent, or the whole file.
+local function previewSpan()
+    local s = state.sel_a or state.cursor
+    local e = state.sel_b
+    if not e then
+        local a, b = targetRegion()
+        if b and b > a then
+            e = b
+            if s < a or s >= b then s = a end
+        end
+    end
+    return s, e
+end
+
 local function togglePlay()
     if state.mode == "clip" then
         clipLaunch()   -- the clip plays in its origin engine (quantized)
@@ -743,8 +763,14 @@ local function togglePlay()
         Audio.Stop()
         return
     end
-    PLAY_OPTS.start_s = state.sel_a or state.cursor
-    PLAY_OPTS.end_s   = state.sel_b
+    local ps, pe = previewSpan()
+    PLAY_OPTS.start_s = ps
+    -- A plain play runs to the end of the material; only a LOOP needs a
+    -- turnaround, and without one there is nothing to bounce off (Audio
+    -- enforces the section itself — CF_Preview's own B_LOOP would loop the
+    -- whole source, not the part you are listening to).
+    PLAY_OPTS.loop  = opts.loop or nil
+    PLAY_OPTS.end_s = opts.loop and pe or state.sel_b
     -- Reflect the take's non-destructive edits so the preview SOUNDS like
     -- the item (gain/normalize, pitch, rate, fades, repitch mode) — playing
     -- the raw file otherwise ignores every edit.
@@ -931,6 +957,17 @@ rate and reverse are the item's own, non-destructive — and the
 preview SOUNDS like the item: fades, reverse, repitch, its track's
 FX (Settings). Slice to pads, bake a selection, normalize, warp.
 
+Handles, and where they live. FADES at the TOP of the waveform, the
+item's EDGES at the BOTTOM — drag one to change what actually plays,
+the way the Sampler's region works. A selection's own edges resize it
+instead of starting a new one. Every handle lights up under the
+cursor and grows while you hold it.
+
+LOOP (next to Play) repeats the played part — the selection when
+there is one, the whole region otherwise — and takes effect on what
+is already playing. The play cursor is REAPER's own colour and shows
+both our preview AND the arrange's transport running over this item.
+
 ## MIDI / clip
 Click = add note (keep dragging for length), drag = move, edge =
 resize, right-drag = marquee, velocity lane below. Q quantize,
@@ -1027,6 +1064,16 @@ local function barAudio(theme)
     if UI.BarToggle("play", "Stop", "Play", playing,
                     playing and "Stop" or "Play", false, roles(theme).play) then
         togglePlay()
+    end
+    -- Loop the played part: the selection when there is one, the region
+    -- otherwise. It applies to what is ALREADY playing, so it is a thing you
+    -- reach for while listening rather than a setting for next time.
+    if UI.BarToggle("loop", "Repeat", nil, opts.loop,
+                    "Loop the played part (selection, else the whole region)") then
+        opts.loop = not opts.loop
+        markDirty()
+        local ps, pe = previewSpan()
+        Audio.SetLoop(opts.loop, pe, ps)
     end
     if UI.BarIcon("zfit", "Maximize", "Fit to window") then fitView() end
     if UI.BarIcon("zin", "ZoomIn", "Zoom in") then
@@ -1143,7 +1190,15 @@ end
 -- Waveform buffer (re-rendered only when the view/audio changes)
 -- ---------------------------------------------------------------------------
 local wb = { src = nil, t0 = -1, t1 = -1, w = 0, h = 0, gen = -1 }
+local SS = Peaks.SS or 2       -- supersampling factor: bake big, blit filtered
+local WOPTS = { lanes = true, scale = 0.47, vol = 1,
+                mid_r = 0, mid_g = 0, mid_b = 0, mid_a = 0.35 }
 
+-- The buffer is baked at SSx and blitted back filtered, and the peaks are read
+-- at SSx too — so the smoothness comes from FINER DATA, not from blurring
+-- coarse data. The extra cost is one GetPeaks of twice the count and twice the
+-- line calls, and both are paid only when the view actually changes; a steady
+-- frame is still one blit. (The same trick the knobs use for their arcs.)
 local function renderWave(theme, entry, w, h)
     if wb.src == state.src and wb.t0 == state.t0 and wb.t1 == state.t1
        and wb.w == w and wb.h == h and wb.gen == state.gen then
@@ -1152,13 +1207,14 @@ local function renderWave(theme, entry, w, h)
     wb.src, wb.t0, wb.t1, wb.w, wb.h, wb.gen =
         state.src, state.t0, state.t1, w, h, state.gen
 
+    local bw, bh = w * SS, h * SS
     gfx.dest = WAVE_BUF
-    gfx.setimgdim(WAVE_BUF, w, h)
-    gfx.muladdrect(0, 0, w, h, 0, 0, 0, 0)   -- contents undefined after resize
+    gfx.setimgdim(WAVE_BUF, bw, bh)
+    gfx.muladdrect(0, 0, bw, bh, 0, 0, 0, 0)   -- contents undefined after resize
 
     local bg = theme.colors.list_bg or theme.colors.window_bg
     gfx.set(bg[1], bg[2], bg[3], 1)
-    gfx.rect(0, 0, w, h, 1)
+    gfx.rect(0, 0, bw, bh, 1)
 
     -- Take volume scales the drawn waveform so gain / normalize are
     -- visible (the peaks are source-domain, i.e. pre take-volume).
@@ -1167,29 +1223,11 @@ local function renderWave(theme, entry, w, h)
         vol = math.abs(r.GetMediaItemTakeInfo_Value(state.take, "D_VOL"))
     end
 
-    local ch = entry.ch
-    local lane_h = h / ch
     local mid_c = theme.colors.text_mute or theme.colors.text_disabled
     local wf = theme.colors.accent
-    for c = 1, ch do
-        local mid = (c - 0.5) * lane_h
-        gfx.set(mid_c[1], mid_c[2], mid_c[3], 0.35)
-        gfx.line(0, mid, w - 1, mid)
-        gfx.set(wf[1], wf[2], wf[3], 0.9)
-        local scale = lane_h * 0.47
-        local cap = lane_h * 0.5
-        local maxs, mins = entry.maxs[c], entry.mins[c]
-        for px = 1, entry.n do
-            local d1 = (maxs[px] or 0) * scale * vol
-            local d2 = (mins[px] or 0) * scale * vol
-            if d1 > cap then d1 = cap elseif d1 < -cap then d1 = -cap end
-            if d2 > cap then d2 = cap elseif d2 < -cap then d2 = -cap end
-            local y1 = mid - d1
-            local y2 = mid - d2
-            if y2 - y1 < 1 then y2 = y1 + 1 end
-            gfx.line(px - 1, y1, px - 1, y2)
-        end
-    end
+    WOPTS.vol = vol
+    WOPTS.mid_r, WOPTS.mid_g, WOPTS.mid_b = mid_c[1], mid_c[2], mid_c[3]
+    Peaks.Render(entry, bw, bh, wf[1], wf[2], wf[3], 0.9, WOPTS)
     gfx.dest = -1
 end
 
@@ -1203,6 +1241,79 @@ local function fadeHandles()
     local fin  = r.GetMediaItemInfo_Value(state.item, "D_FADEINLEN") * rate
     local fout = r.GetMediaItemInfo_Value(state.item, "D_FADEOUTLEN") * rate
     return xAtTime(a + fin), xAtTime(b - fout), a, b, rate
+end
+
+-- The play cursor, from whichever thing is actually playing.
+--
+--   · our own preview. In item mode it plays the take's SOURCE, so it has no
+--     path — and the test used to be `IsPlaying(state.path)`, which can never
+--     be true there. That is why the cursor only ever showed in file mode;
+--   · REAPER's transport, when the item this editor follows is under the play
+--     head. Watching the arrange play while nothing moved here was the other
+--     half of it.
+--
+-- Both answers are in the SOURCE domain, so one xAtTime serves both.
+local function playCursorTime()
+    if Audio.IsPlaying() then
+        local pos = Audio.Progress()
+        if pos then return pos end
+    end
+    if state.mode ~= "item" and state.mode ~= "midi" then return nil end
+    if not state.item or not state.take then return nil end
+    if (r.GetPlayState() & 1) ~= 1 then return nil end
+    if not r.ValidatePtr2(0, state.item, "MediaItem*") then return nil end
+    local pp   = r.GetPlayPosition()
+    local ipos = r.GetMediaItemInfo_Value(state.item, "D_POSITION")
+    local ilen = r.GetMediaItemInfo_Value(state.item, "D_LENGTH")
+    if pp < ipos or pp > ipos + ilen then return nil end
+    local a, _, rate = Ops.ItemRegion(state.item, state.take)
+    return a + (pp - ipos) * rate
+end
+
+-- ---------------------------------------------------------------------------
+-- Wave handles: what is under the cursor, so the DRAWING can answer before
+-- the click. A handle you find by trial is not a handle.
+--
+-- The two families are separated by height rather than by luck: fades live in
+-- the top strip, the region edges in the bottom one. They sit at different x
+-- anyway, but not always — a fade of zero puts its handle exactly on the edge.
+-- ---------------------------------------------------------------------------
+local HANDLE_BAND = 14      -- how deep the top/bottom grab strips are
+local HANDLE_PX   = 6       -- how close in x counts as "on it"
+
+-- Rest / hover / grab. On a 5-px target a colour change alone is not an
+-- answer, so a handle answers by getting BIGGER.
+local function handleGrow(hot, held)
+    if held then return 3 end
+    if hot then return 2 end
+    return 0
+end
+
+local function itemEdges()
+    if state.mode ~= "item" then return nil end
+    local a, b = Ops.ItemRegion(state.item, state.take)
+    return xAtTime(a), xAtTime(b), a, b
+end
+
+-- "fadein" | "fadeout" | "trim_a" | "trim_b" | "sel_a" | "sel_b" | nil
+local function waveHit(mx, my)
+    local top = my < wave.ry + HANDLE_BAND
+    local bot = my > wave.ry + wave.rh - HANDLE_BAND
+    if top then
+        local fin_x, fout_x = fadeHandles()
+        if fin_x and math.abs(mx - fin_x) < 7 then return "fadein" end
+        if fout_x and math.abs(mx - fout_x) < 7 then return "fadeout" end
+    end
+    if bot then
+        local xa, xb = itemEdges()
+        if xa and math.abs(mx - xa) <= HANDLE_PX then return "trim_a" end
+        if xb and math.abs(mx - xb) <= HANDLE_PX then return "trim_b" end
+    end
+    if state.sel_a then
+        if math.abs(mx - xAtTime(state.sel_a)) <= 5 then return "sel_a" end
+        if math.abs(mx - xAtTime(state.sel_b)) <= 5 then return "sel_b" end
+    end
+    return nil
 end
 
 local function waveInput(theme)
@@ -1232,28 +1343,20 @@ local function waveInput(theme)
         end
     end
 
-    -- hover affordance: cursor reacts to the fade handles + selection edges
-    -- (skipped mid-pan so the middle-drag size_all cursor wins)
+    -- What is under the cursor, once, for the pointer AND for the drawing
+    -- (which runs before this and reads state.whot). Skipped mid-pan so the
+    -- middle-drag size_all cursor wins.
+    state.whot = nil
     if inside and not state.wpress and not Core_tk.MouseDown(64) then
-        local fin_x, fout_x = fadeHandles()
-        if (fin_x and my < wave.ry + 14 and math.abs(mx - fin_x) < 7)
-           or (fout_x and my < wave.ry + 14 and math.abs(mx - fout_x) < 7) then
-            UI.SetCursor("size_we")
-        elseif state.sel_a and (math.abs(mx - xAtTime(state.sel_a)) <= 5
-               or math.abs(mx - xAtTime(state.sel_b)) <= 5) then
-            UI.SetCursor("size_we")
-        else
-            UI.SetCursor("ibeam")   -- the waveform body selects text-style
-        end
+        state.whot = waveHit(mx, my)
+        UI.SetCursor(state.whot and "size_we" or "ibeam")
     end
 
-    -- press: fade handles first, then selection
+    -- press: handles first, then a fresh selection
     if inside and Core_tk.MouseClicked(1) then
-        local fin_x, fout_x = fadeHandles()
-        if fin_x and my < wave.ry + 14 and math.abs(mx - fin_x) < 7 then
-            state.wpress = { kind = "fadein" }
-        elseif fout_x and my < wave.ry + 14 and math.abs(mx - fout_x) < 7 then
-            state.wpress = { kind = "fadeout" }
+        local k = waveHit(mx, my)
+        if k then
+            state.wpress = { kind = k }
         else
             state.wpress = { kind = "sel", x = mx, t = timeAtX(mx), moved = false }
         end
@@ -1264,7 +1367,8 @@ local function waveInput(theme)
         if Core_tk.MouseDown(1) then
             local t = timeAtX(mx)
             if t < 0 then t = 0 elseif t > state.len then t = state.len end
-            if wp.kind == "sel" then
+            local k = wp.kind
+            if k == "sel" then
                 if wp.moved or math.abs(mx - wp.x) > 3 then
                     wp.moved = true
                     if t < wp.t then
@@ -1273,9 +1377,24 @@ local function waveInput(theme)
                         state.sel_a, state.sel_b = wp.t, t
                     end
                 end
+            elseif k == "sel_a" or k == "sel_b" then
+                -- Resize an existing selection instead of throwing it away and
+                -- redrawing it. Crossing over swaps the ends, as any range does.
+                if k == "sel_a" then state.sel_a = t else state.sel_b = t end
+                if state.sel_a > state.sel_b then
+                    state.sel_a, state.sel_b = state.sel_b, state.sel_a
+                    wp.kind = (k == "sel_a") and "sel_b" or "sel_a"
+                end
+                UI.SetCursor("size_we")
+            elseif k == "trim_a" or k == "trim_b" then
+                -- The played part, resized by its edges — the same gesture as
+                -- the Sampler's region, on the object the arrange owns.
+                Ops.TrimEdge(state.item, state.take,
+                             (k == "trim_a") and "start" or "end", t, state.len)
+                UI.SetCursor("size_we")
             elseif state.mode == "item" then
                 local _, _, a, b, rate = fadeHandles()
-                if wp.kind == "fadein" then
+                if k == "fadein" then
                     local f = (t - a) / rate
                     if f < 0 then f = 0 end
                     Ops.SetFades(state.item, f, nil)
@@ -1288,7 +1407,8 @@ local function waveInput(theme)
             end
         else
             -- release
-            if wp.kind == "sel" then
+            local k = wp.kind
+            if k == "sel" then
                 if not wp.moved then
                     state.cursor = wp.t
                     state.sel_a, state.sel_b = nil, nil
@@ -1296,6 +1416,13 @@ local function waveInput(theme)
                     state.sel_a = Ops.SnapZero(state.src, state.sel_a)
                     state.sel_b = Ops.SnapZero(state.src, state.sel_b)
                 end
+            elseif k == "sel_a" or k == "sel_b" then
+                if opts.snap_zero and state.src then
+                    state.sel_a = Ops.SnapZero(state.src, state.sel_a)
+                    state.sel_b = Ops.SnapZero(state.src, state.sel_b)
+                end
+            elseif k == "trim_a" or k == "trim_b" then
+                Ops.CommitTrim()
             else
                 Ops.CommitFades()
             end
@@ -1357,12 +1484,16 @@ local function drawWave(theme, area_h)
     end
 
     local entry = Peaks.Read(state.src, state.path, state.t0, state.t1,
-                            aw, state.gen)
+                            aw * SS, state.gen)
     if entry then
         renderWave(theme, entry, aw, wave.rh)
         gfx.dest = -1
-        gfx.a, gfx.mode = 1, 0
-        gfx.blit(WAVE_BUF, 1, 0, 0, 0, aw, wave.rh, gx, wave.ry, aw, wave.rh)
+        gfx.a = 1
+        local om = gfx.mode
+        gfx.mode = 4        -- filtered: the SSx bake downsamples smooth
+        gfx.blit(WAVE_BUF, 1, 0, 0, 0, aw * SS, wave.rh * SS,
+                 gx, wave.ry, aw, wave.rh)
+        gfx.mode = om
     else
         Core_tk.DrawRect(gx, wave.ry, aw, wave.rh,
                          col_bg[1], col_bg[2], col_bg[3], 1)
@@ -1387,7 +1518,14 @@ local function drawWave(theme, area_h)
     end
     UI.SetFontBody()
 
-    -- item region bounds + dim outside
+    -- Which handle is lit. `whot` is the hover the input pass found LAST
+    -- frame; `wpress` is the one being held. Drawing runs before input, so a
+    -- one-frame-old hover is the only honest answer — and at 30 fps nobody
+    -- has ever seen the difference.
+    local hot  = (state.wpress and state.wpress.kind) or state.whot
+    local held = state.wpress and state.wpress.kind or nil
+
+    -- item region bounds + dim outside + the edges you can drag
     if state.mode == "item" then
         local a, b = targetRegion()
         local xa, xb = xAtTime(a), xAtTime(b)
@@ -1412,12 +1550,37 @@ local function drawWave(theme, area_h)
                             col_text[1], col_text[2], col_text[3], 0.10)
         end
         if fin_x then
-            Core_tk.DrawRect(fin_x - 3, wave.ry, 7, 7,
-                             col_text[1], col_text[2], col_text[3], 0.9)
+            local g = handleGrow(hot == "fadein", held == "fadein")
+            Core_tk.DrawRect(fin_x - 3 - g * 0.5, wave.ry, 7 + g, 7 + g,
+                             col_text[1], col_text[2], col_text[3],
+                             (hot == "fadein") and 1 or 0.9)
         end
         if fout_x then
-            Core_tk.DrawRect(fout_x - 3, wave.ry, 7, 7,
-                             col_text[1], col_text[2], col_text[3], 0.9)
+            local g = handleGrow(hot == "fadeout", held == "fadeout")
+            Core_tk.DrawRect(fout_x - 3 - g * 0.5, wave.ry, 7 + g, 7 + g,
+                             col_text[1], col_text[2], col_text[3],
+                             (hot == "fadeout") and 1 or 0.9)
+        end
+        -- Region edges, with grips at the BOTTOM so they never argue with the
+        -- fade grips at the top. Dragging one resizes what actually plays.
+        -- Text colour, like the fades: both are the ITEM's geometry, and the
+        -- accent belongs to the editor's own selection. Two families, two
+        -- colours, and no guessing which handle you are about to grab.
+        local ec = col_text
+        for i = 1, 2 do
+            local k  = (i == 1) and "trim_a" or "trim_b"
+            local hx = (i == 1) and xa or xb
+            if hx > gx - 8 and hx < gx + aw + 8 then
+                local lit = (hot == k)
+                local g = handleGrow(lit, held == k)
+                local ca = lit and 1 or 0.55
+                Core_tk.DrawRect((i == 1) and hx or (hx - 1), wave.ry, 1,
+                                 wave.rh, ec[1], ec[2], ec[3], ca)
+                local gw, gh = 5 + g, 10 + g
+                Core_tk.DrawRect((i == 1) and hx or (hx - gw),
+                                 wave.ry + wave.rh - gh, gw, gh,
+                                 ec[1], ec[2], ec[3], lit and 1 or 0.8)
+            end
         end
     end
 
@@ -1428,10 +1591,20 @@ local function drawWave(theme, area_h)
             Core_tk.DrawRect(math.max(xa, gx), wave.ry,
                              math.min(xb, gx + aw) - math.max(xa, gx), wave.rh,
                              col_acc[1], col_acc[2], col_acc[3], 0.20)
-            Core_tk.DrawRect(xa, wave.ry, 1, wave.rh,
-                             col_acc[1], col_acc[2], col_acc[3], 0.9)
-            Core_tk.DrawRect(xb, wave.ry, 1, wave.rh,
-                             col_acc[1], col_acc[2], col_acc[3], 0.9)
+            for i = 1, 2 do
+                local k  = (i == 1) and "sel_a" or "sel_b"
+                local hx = (i == 1) and xa or xb
+                local lit = (hot == k)
+                local g = handleGrow(lit, held == k)
+                Core_tk.DrawRect(hx, wave.ry, 1 + (g > 0 and 1 or 0), wave.rh,
+                                 col_acc[1], col_acc[2], col_acc[3],
+                                 lit and 1 or 0.9)
+                if lit then
+                    Core_tk.DrawRect(hx - 2, wave.ry + wave.rh * 0.5 - 8 - g,
+                                     5 + g, 16 + g * 2,
+                                     col_acc[1], col_acc[2], col_acc[3], 1)
+                end
+            end
         end
     end
 
@@ -1454,13 +1627,16 @@ local function drawWave(theme, area_h)
                          col_text[1], col_text[2], col_text[3], 0.8)
     end
 
-    -- playback position (source domain — we play the raw file)
-    if Audio.IsPlaying(state.path ~= "" and state.path or nil) then
-        local pos = Audio.Progress()
-        if pos and pos >= state.t0 and pos <= state.t1 then
-            local x = xAtTime(pos)
-            Core_tk.DrawRect(x, wave.ry, 1, wave.rh,
-                             col_acc[1], col_acc[2], col_acc[3], 1)
+    -- Play cursor: our preview, or the arrange's transport over this item.
+    -- `pending` is the theme's play-cursor token, taken from REAPER's own —
+    -- so the line here is the same colour as the one moving in the arrange,
+    -- and it is not the accent the selection already speaks with.
+    local pt = playCursorTime()
+    if pt then
+        if pt >= state.t0 and pt <= state.t1 then
+            local pc = C.pending or col_acc
+            Core_tk.DrawRect(xAtTime(pt), wave.ry, 1, wave.rh,
+                             pc[1], pc[2], pc[3], 1)
         end
         UI.RequestRedraw()
     end
