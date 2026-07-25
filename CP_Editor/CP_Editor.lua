@@ -35,6 +35,7 @@ local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Clip  = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Bus   = dofile(cp_root .. "CP_Engine/Bus.lua")
+local Loop  = dofile(cp_root .. "CP_Engine/Loop.lua")
 
 Peaks.init(r)
 Ops.init(r, Peaks)
@@ -44,6 +45,17 @@ Kit.init(r, Tracks)
 Audio.init(r)
 DragBus.init(r)
 Bus.init(r, DragBus, Clip)
+
+-- Loop (the live-lane link for clips born in the Looper/Session) is armed
+-- LAZILY, on the first clip that names a lane: its init re-scans the
+-- project and re-syncs the router's sends, and an editor opened on an
+-- audio item has no business touching that.
+local loop_ready = false
+local function loopInit()
+    if loop_ready then return end
+    loop_ready = true
+    Loop.init(r, Tracks)
+end
 
 local Core_tk = UI.Core
 local Keys    = UI.Keys
@@ -230,9 +242,70 @@ end
 
 local function flushApply()
     if state.apply_t and state.mode == "clip" and state.clip then
+        -- Write the live lane DIRECTLY. The Bus message only reaches an app
+        -- that happens to be RUNNING (5 s TTL, delete-on-read) — the engine
+        -- must hear the edit even with no Looper/Session window open, which
+        -- is the whole point of editing session clips from here. The message
+        -- still goes out so those apps refresh their own view when they are
+        -- up (Loop.ApplyClip is idempotent, applying it twice is harmless).
+        if state.clip_lane and Loop.IsAttached() then
+            Loop.ApplyClip(state.clip_lane, state.clip)
+        end
         Bus.Send("editor:apply", state.clip)
     end
     state.apply_t = nil
+end
+
+-- Direct loop-length control (clip mode): resize the clip and, when a live
+-- lane backs it, the engine lane too — the Looper's halve/double gesture.
+local function setClipBars(bars)
+    local c = state.clip
+    if not c then return end
+    if bars < 1 then bars = 1 elseif bars > 32 then bars = 32 end
+    if bars == (c.bars or 4) then return end
+    c.bars = bars
+    state.len = bars * clipTsNum()
+    if state.clip_lane and Loop.IsAttached() then
+        Loop.SetLengthBars(state.clip_lane, bars)
+    end
+    scheduleApply()   -- other consumers (Session grid) hear the new length
+    clampView()
+    UI.RequestRedraw()
+end
+
+-- Clip transport: the lane's own launch/stop, driven exactly like the
+-- Looper's lane button — a queued launch/stop cancels, an overdubbing lane
+-- stops, a recording one is left to the Looper. A lane the engine still
+-- believes is empty is promoted to "stopped with content" first, so the
+-- very first launch of a freshly written clip takes instead of no-oping.
+local function clipLaunch()
+    local lane = state.clip_lane
+    if not lane then
+        flash("Clip has no live engine (open it from the Looper or Session)")
+        return
+    end
+    if not Loop.IsAttached() then
+        flash("Looper engine not found in this project")
+        return
+    end
+    flushApply()   -- the engine must play what is on screen
+    local p = Loop.Pending(lane)
+    if p == 1 or p == 2 then
+        Loop.ToggleClip(lane)   -- cancels the queued launch / stop
+        return
+    end
+    local m = math.floor(Loop.Mode(lane) + 0.5)
+    if m == 1 or m == 4 or p == 3 or p == 4 then
+        flash("Lane is recording — stop it in the Looper")
+    elseif m == 3 or m == 5 then
+        Loop.StopClip(lane)
+    else
+        if m == 0 then
+            if Roll.count <= 0 then flash("Empty clip") return end
+            Loop.SetMode(lane, 2)   -- it has content now: launchable
+        end
+        Loop.Play(lane)
+    end
 end
 
 local function makeClipBackend(c)
@@ -285,7 +358,7 @@ local function setItem(item)
     local take = r.GetActiveTake(item)
     if not take then return false end
     flushApply()
-    state.clip = nil
+    state.clip, state.clip_lane = nil, nil
     if r.TakeIsMIDI(take) then
         dropOwnSource()
         state.mode, state.item, state.take = "midi", item, take
@@ -321,7 +394,7 @@ end
 
 local function setFile(path)
     flushApply()
-    state.clip = nil
+    state.clip, state.clip_lane = nil, nil
     local src = r.PCM_Source_CreateFromFile(path)
     if not src then
         flash("Cannot open: " .. path)
@@ -347,6 +420,14 @@ local function setClip(c)
     Roll.Detach()
     state.mode, state.item, state.take = "clip", nil, nil
     state.clip = c
+    -- origin "looper:N" → the live lane this clip mirrors: playhead,
+    -- play/stop and bars talk to the engine through Loop
+    state.clip_lane = nil
+    local ln = c.origin and c.origin:match("^looper:(%d+)")
+    if ln then
+        state.clip_lane = tonumber(ln)
+        loopInit()
+    end
     c.notes = c.notes or { s = {}, l = {}, p = {}, v = {} }
     state.name = (c.name and c.name ~= "") and c.name or "Clip"
     state.src, state.path = nil, ""
@@ -378,7 +459,7 @@ local function clearTarget()
     dropOwnSource()
     Roll.Detach()
     state.mode, state.item, state.take = nil, nil, nil
-    state.clip = nil
+    state.clip, state.clip_lane = nil, nil
     state.path, state.name, state.len = "", "", 0
     state.mdrag = nil
 end
@@ -514,8 +595,7 @@ end
 -- ---------------------------------------------------------------------------
 local function togglePlay()
     if state.mode == "clip" then
-        -- a clip has no transport here; it plays in its origin engine
-        flash("Clip plays in its engine (Looper)")
+        clipLaunch()   -- the clip plays in its origin engine (quantized)
         return
     end
     if state.mode == "midi" then
@@ -607,7 +687,9 @@ local function slicesToPads()
             if t - prev < 0.001 then return end
             local note = Kit.FirstEmpty()
             if not note then return end
-            if Kit.LoadSample(note, state.path) then
+            -- a slice is a fragment of the file: its length says nothing
+            -- about a tempo, so never auto beat-match it
+            if Kit.LoadSample(note, state.path, { no_sync = true }) then
                 Kit.SetOffsets(note, prev / state.len, t / state.len)
                 count = count + 1
             end
@@ -634,7 +716,7 @@ local function selectionToPad()
         return
     end
     Kit.Batch("Sampler: selection to pad", function()
-        if Kit.LoadSample(note, state.path) then
+        if Kit.LoadSample(note, state.path, { no_sync = true }) then
             Kit.SetOffsets(note, state.sel_a / state.len,
                                  state.sel_b / state.len)
         end
@@ -755,6 +837,11 @@ resize, right-drag = marquee, velocity lane below. Q quantize,
 Ctrl+D duplicate, Ctrl+C/X/V, arrows transpose/nudge, Alt+arrows
 walk the notes, Esc leave. Transform: scale snap, chord, arpeggiate,
 euclidean, humanize... Drum rows show the kit's pads by name.
+
+## Clip loop (LOOP cluster)
+A clip born in the Looper/Session stays live: the playhead shows the
+engine's position, Play/Stop launches the lane (quantized — Space
+works too), and -/+ halve/double the loop length in bars.
 ]]
 
 local function drawToolbar(theme)
@@ -1517,6 +1604,47 @@ local function drawMidiBar(theme)
             r.Main_OnCommand(40153, 0)   -- Item: open in built-in MIDI editor
         end
     end
+
+    -- LOOP cluster (clip mode): the lane's own transport — length in bars
+    -- (halve/double, the Looper gesture) + quantized play/stop. The editor
+    -- stands in for the Looper's lane editor completely: Session cells are
+    -- only editable here.
+    if state.mode == "clip" and state.clip then
+        rowDiv(theme)
+        rowTag(theme, "LOOP")
+        local bars = math.floor((state.clip.bars or 4) + 0.5)
+        if UI.Button("c_bdn", "-") then
+            setClipBars(math.max(1, math.floor(bars / 2)))
+        end
+        UI.SameLine()
+        -- label cached on the value (no concat in the frame path)
+        if state.bars_n ~= bars then
+            state.bars_n = bars
+            state.bars_lbl = bars .. (bars > 1 and " bars" or " bar")
+        end
+        UI.Text(state.bars_lbl)
+        UI.SameLine()
+        if UI.Button("c_bup", "+") then
+            setClipBars(math.min(32, bars * 2))
+        end
+        if state.clip_lane then
+            UI.SameLine()
+            local att = state.loop_att
+            local m = att and math.floor(Loop.Mode(state.clip_lane) + 0.5) or 0
+            local p = att and Loop.Pending(state.clip_lane) or 0
+            if not att then
+                UI.Text("engine offline", { disabled = true })
+            elseif m == 1 or m == 4 or p == 3 or p == 4 then
+                -- recording/armed: the Looper owns that transport
+                UI.Text(m == 4 and "armed" or "recording", { disabled = true })
+            else
+                local lbl = (m == 3 or m == 5) and "Stop" or "Play"
+                if p == 1 then lbl = "Play.."
+                elseif p == 2 then lbl = "Stop.." end
+                if UI.Button("c_play", lbl) then clipLaunch() end
+            end
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2199,6 +2327,21 @@ local function drawRoll(theme, area_h)
         UI.RequestRedraw()
     end
 
+    -- clip playhead: the origin engine's phase, in beats — the same
+    -- progress line the Looper draws on its lanes
+    if state.mode == "clip" and state.clip_lane and state.loop_att then
+        local lmode = math.floor(Loop.Mode(state.clip_lane) + 0.5)
+        if lmode == 1 or lmode == 3 or lmode == 5 then
+            local ph = Loop.Phase(state.clip_lane)
+            if ph >= state.t0 and ph <= state.t1 then
+                local x = xAtTime(ph)
+                Core_tk.DrawRect(x, wave.ry, 1, grid_h + 4 + VEL_H,
+                                 col_text[1], col_text[2], col_text[3], 0.8)
+            end
+            UI.RequestRedraw()
+        end
+    end
+
     -- marquee (right-drag multi-select box)
     if state.marquee then
         local m = state.marquee
@@ -2269,6 +2412,41 @@ local function frame(theme)
     pollTarget()
     Kit.Poll()
     Audio.Poll()
+    -- live lane (clip mode): keep the engine link fresh and animate while
+    -- it runs. reconnect() is cheap once attached (early return) — the 1 s
+    -- throttle only matters for the track scan while the Looper is absent.
+    state.loop_att = false
+    if state.mode == "clip" and state.clip_lane then
+        if now >= (state.loop_rt or 0) then
+            state.loop_rt = now + 1.0
+            Loop.reconnect()
+        end
+        -- one attach probe per frame (it walks the router's FX chain);
+        -- the draw paths read the flag
+        state.loop_att = Loop.IsAttached()
+        if state.loop_att then
+            local m = math.floor(Loop.Mode(state.clip_lane) + 0.5)
+            local p = Loop.Pending(state.clip_lane)
+            if m ~= state.lane_mode or p ~= state.lane_pend then
+                state.lane_mode, state.lane_pend = m, p
+                UI.RequestRedraw()
+            end
+            -- rec/play/overdub advance the phase; pending states blink
+            if m == 1 or m == 3 or m == 5 or p ~= 0 then
+                UI.RequestRedraw()
+            end
+            -- the lane's length can also change from the Looper's own
+            -- button: follow it, or the roll would draw the wrong canvas
+            local lb = math.floor(Loop.GetLengthBars(state.clip_lane) + 0.5)
+            if lb >= 1 and state.clip
+               and lb ~= math.floor((state.clip.bars or 4) + 0.5) then
+                state.clip.bars = lb
+                state.len = lb * clipTsNum()
+                clampView()
+                UI.RequestRedraw()
+            end
+        end
+    end
     -- debounced clip publish (editor:apply): one message per edit gesture
     if state.apply_t and r.time_precise() >= state.apply_t then
         flushApply()

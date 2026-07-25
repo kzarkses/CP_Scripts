@@ -437,7 +437,9 @@ local function bakeCropPad(note)
     local dst = Bake.NextPath(pad.path, "crop")
     local frames, err = Bake.FileRegionToWav(pad.path, s * slen, e * slen, dst)
     if not frames then flash("Bake failed: " .. (err or "?")) return end
-    Kit.LoadSample(note, dst)
+    -- same musical material in a cleaner file: the pad keeps its tempo
+    -- identity (sync flag + source BPM) instead of re-deriving from the crop
+    Kit.LoadSample(note, dst, { keep_sync = true })
     flash("Baked -> " .. (dst:match("[^\\/]+$") or dst))
 end
 
