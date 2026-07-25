@@ -555,13 +555,21 @@ blanche — le défaut exact de `DEFAULT.lua`. Ils basculent le canvas aussi.
    trois `iconBtn` locaux. C'est le plus gros morceau restant.
 10. ✅ **`Layout.lua` branché sur le thème** (`0ea9f11`) : scrollbars, splitter
     (jeton créé), et le commentaire qui promettait une clé inexistante retiré.
-11. ⬜ Désactivé sur les 31 contrôles, `SetHot` sur les 34, anneau de focus.
+11. 🟡 **Partiel** (`058ce8e`). Les trois contrôles qui coupaient l'interaction
+    **sans aucun signe visuel** — `Combo`, `TabBar`, `NumberInput` — le
+    montrent. **Reste** : les 19 qui ne coupent rien du tout, `SetHot` sur les
+    14 muets (ils ne peuvent structurellement pas porter d'infobulle), et
+    l'anneau de focus.
     **Correction** : les « deux conversions de molette contradictoires » ne le
     sont pas — le discret arrondit vers l'extérieur, le continu reste
     fractionnaire, et les faire coïncider casserait le trackpad. Le vrai
     défaut, `NumberInput` qui ignorait le nombre de crans, est corrigé.
-12. ⬜ **Rôles morts** : brancher `mute`, `solo`, `mod`, `value_normal`,
-    `close_btn` — ou les supprimer.
+12. 🟡 **Rôles morts, 5 → 3** (`058ce8e`). `close_btn` peint enfin le glyphe au
+    repos (elle était définie, réécrite par deux presets, et lue par personne) ;
+    `value_normal` porte la poignée du slider. **Restent `mute`, `solo`,
+    `mod`**, qui attendent les boutons M/S de CP_Session et les sources de
+    ModJSFX — gardées parce qu'elles sont le vocabulaire documenté des rôles,
+    mais comptées : trois pipettes sur 65 ne font encore rien.
 
 **Hors plan, sur demande.**
 
