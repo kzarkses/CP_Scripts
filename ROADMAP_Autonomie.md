@@ -617,3 +617,53 @@ convention du moteur en mode clip.
 
 Inchangé — rail, icônes, mixer minimal, step sequencer, phases 2-6 —
 voir la liste de la session 7.
+
+---
+
+## Session 9 (2026-07-25) — le moniteur d'entrée, puis les icônes
+
+Ordre retenu, discuté avec lui : **ce qui est cassé, puis les fondations UI,
+puis ce qui s'appuie dessus, puis la profondeur fonctionnelle.** La deuxième
+marche vient de sa règle de la session 3 (« refonte graphique avant, pour
+éviter les dettes techniques ») : l'unification étant finie, c'est son tour.
+
+- [x] **Un seul moniteur d'entrée** (`f11072f`). Deux rapports — « un C2 du
+  sampler déclenche aussi Vital sur la colonne 1 » et « le kit sort à +6 dB
+  dès que je route la colonne sur CP Kit MIDI » — n'en faisaient **qu'un**.
+  +6 dB, c'est exactement le double d'amplitude : la même note jouée deux
+  fois, en phase. `StuffMIDIMessage` est une diffusion vers toute piste armée
+  en monitoring, et la suite en arme deux volontairement ; par-dessus,
+  `gmem[ARMED]` **n'avait pas de valeur « personne »** (un arm hors plage
+  était rabattu sur la lane 0), donc un projet auquel on n'avait pas touché
+  monitorait la lane 0 quand même. Correction en deux moitiés : les previews
+  sortent sur le canal 16 et le moteur les ignore (ni monitorées, ni
+  capturées — un preview n'est pas du jeu) ; et armer devient une décision,
+  -1 par défaut, bascule dans les deux hôtes, plus d'armement en douce à
+  l'ouverture d'un éditeur. Tant que le routeur monitore une lane armée, le
+  bus du kit se rétrécit sur le canal de preview. BUILD_VER 3.
+- [x] **Record lisible** (même commit) : la cellule distinguait mal « armé,
+  en attente de la frontière » de « prise en cours » — elle virait au rouge
+  dès le clic, y compris quand rien n'avait commencé, d'où « des fois la case
+  devient rouge, des fois pas » et « je n'ai jamais réussi à enregistrer ».
+  Attente = clignotement plus lent et plus sombre ; second clic = finalise ou
+  annule.
+- [x] **Pack d'icônes Lucide** (`ba846ad`) : convertisseur SVG → primitives
+  `gfx` (`CP_Tools/icons/build_pack.mjs`), aplatissement à la construction
+  (Béziers subdivisées, arcs SVG en paramétrage central, rects arrondis
+  développés) vers un flux plat de nombres dans le repère 24×24 que
+  `Icons.lua` parcourt sans rien allouer. **57 glyphes**, additifs seulement :
+  un nom déjà dessiné à la main garde son glyphe (les triangles de transport
+  sont PLEINS et se lisent mieux qu'un contour à 14 px). Source Lucide
+  gitignorée, licence ISC commitée. Ajouter une icône = une ligne dans
+  `manifest.txt` + une relance.
+- [x] **Toggles à icône** (`2ad787d`) : `UI.IconButton` / `UI.IconToggle`.
+  L'argument qui compte est `icon_off` — une couleur oblige à se souvenir de
+  ce que l'allumage signifie, une **paire** de glyphes l'énonce. Première
+  migration : le « Listen » de CP_Editor.
+
+**Reste, dans l'ordre** : rail (toolkit → Session → Sampler → Editor), mixer
+minimal Session + couleur de clip, CP_Looper en step sequencer, phases 2-6
+(follow actions d'abord), fond de tiroir.
+
+**Ouvert, noté pendant la session** : enregistrer par-dessus une cellule
+pleine, et un décompte visible avant le départ d'une prise.
