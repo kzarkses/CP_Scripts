@@ -504,25 +504,49 @@ de localisateur est un symptôme de cinquante noms abstraits.
 
 Chaque étape est autonome et visible. Rien ne dépend de la suivante.
 
-1. **Écrire l'identité** (§5) en littéraux dans `Theme.Default()`, supprimer
-   `ApplyMacro`/`BeginMacro`/`EndMacro` et l'onglet Macro. Réparer
-   `theme.lua` (il est en debug) et `DEFAULT.lua` (il est amputé).
-2. **Sauvegarde en diff** (§4.3), plus la migration des thèmes existants.
-3. **Effondrer les états** (§4.2) : douze clés d'état → une fonction. Les sept
-   collisions disparaissent avec elles.
-4. **Corriger les trois régressions** (§2.4) : barre d'accent invisible, texte
-   noir sur accent, jetons canvas partagés par les trois canvas.
-5. **`UI.AppFrame`** (§4.4), puis migrer les huit fenêtres. Supprimer les trois
-   `iconBtn` locaux.
-6. **Brancher `Layout.lua` sur le thème** : scrollbars, splitter (créer le
-   jeton), et retirer le commentaire qui promet une clé inexistante.
-7. **Typo** : donner à `h2` une taille distincte de `body`, remonter
-   `mono_size` au niveau de `body`, remplacer les centrages `- 6`.
-8. **Rôles** : brancher `mute`, `solo`, `mod`, `value_normal`, `close_btn` — ou
-   les supprimer. Une clé morte et éditable est un contrôle qui ment.
+**Vague 1 — livrée le 2026-07-25 (`852c5a3`).**
 
-Les étapes 1 à 4 sont ce que Cédric verra ; 5 à 8 sont ce qui empêchera le
-problème de revenir.
+1. ✅ **Écrire l'identité** (§5) en littéraux dans `Theme.Default()` — 64 clés.
+   `ApplyMacro` / `BeginMacro` / `EndMacro` / `MacroDefault` supprimés, onglet
+   Macro retiré du tweaker.
+2. ✅ **Sauvegarde en diff** (§4.3). Les anciens fichiers pleins se chargent
+   toujours et maigrissent au prochain enregistrement.
+3. ✅ **Séparer les états** : les sept collisions sont tombées. Un champ
+   s'enfonce sous son panneau, un bouton se lève au-dessus. `Theme.Step(n)`
+   existe comme chemin d'avenir, mais les douze clés d'état **restent nommées**
+   — 704 sites de lecture les désignent directement, et un renommage de masse
+   n'a aucun bénéfice visible. Elles n'ont simplement plus le droit d'entrer en
+   collision, et une vérification mécanique le contrôle.
+4. ✅ **Les trois régressions** (§2.4), plus une quatrième trouvée en chemin :
+   `opts.accent` court-circuitait la branche de survol, donc un `IconToggle`
+   rouge-record allumé ne répondait plus à la souris.
+
+En prime, hors plan initial mais dans la même faute : les presets clairs ne
+repeignaient que le chrome, donc le roll restait sombre dans une fenêtre
+blanche — le défaut exact de `DEFAULT.lua`. Ils basculent le canvas aussi.
+
+**Vague 2 — la grammaire.**
+
+5. Un seul vocabulaire d'allumé ; une seule routine de ligne sélectionnée
+   (6 → 1).
+6. Module `Value` partagé : un geste = un sens, molette partout, `opts.bipolar`
+   — aucun paramètre bipolaire n'est lisible aujourd'hui.
+7. Icônes : transport plein / reste en trait, ancrage au centre partout, les
+   9 glyphes mixtes redessinés.
+8. Typo : le reste de l'échelle, `mono ≥ body`, et les centrages `- 6`
+   remplacés par une mesure. (`h2 ≠ body` est fait en vague 1.)
+
+**Vague 3 — la structure.**
+
+9. **`UI.AppFrame`** (§4.4), puis migrer les huit fenêtres. Supprimer les trois
+   `iconBtn` locaux.
+10. **Brancher `Layout.lua` sur le thème** : scrollbars, splitter (créer le
+    jeton), et retirer le commentaire qui promet une clé inexistante.
+11. Désactivé sur les 31 contrôles, `SetHot` sur les 34, anneau de focus,
+    molette unifiée (deux conversions contradictoires aujourd'hui).
+12. **Rôles morts** : brancher `mute`, `solo`, `mod`, `value_normal`,
+    `close_btn` — ou les supprimer. Une clé morte et éditable est un contrôle
+    qui ment.
 
 ---
 
