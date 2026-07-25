@@ -380,3 +380,70 @@ tierce pour jouer, "-inf dB" lu comme une erreur, allocations par frame.
   en dur, DnD-capture de modulation, "?" dans ME/ModLFO/FXC, maquettes
   HTML design (avec lui), overflow §3.5, **CP_Session (sa session
   dédiée)**, moteur audio P4 (JSFX sample-lock).
+
+---
+
+## Session 6 (2026-07-25) — le programme discuté, en autonomie
+
+Discussion préalable : (1) la Session doit se rapprocher au maximum
+d'Ableton, avec une analyse de son fonctionnement réel ; (3) l'UI a
+besoin d'une **nomenclature** — quel rôle mérite quel widget — avant
+toute migration massive ; (6) la logique produit, c'est **CP_Editor
+qui transforme un son en sampler** : « je suis sur un son dans Media
+Explorer, je le drag n drop dans CP_Editor, il devrait se passer
+quelque chose, pour le moment rien ». Validé : « d'accord avec tout,
+travaille en autonomie ».
+
+- [x] **Déposer un son dans CP_Editor** (`8394f00`) : l'éditeur
+  chargeait DragBus sans jamais s'enregistrer comme cible — d'où
+  « rien ». Il accepte les deux protocoles : le bus CP (Media
+  Explorer, Session, Sampler — descripteur Clip, donc l'audio garde sa
+  région) et les fichiers de l'OS (explorateur Windows). Un dépôt
+  VERROUILLE le suivi de sélection, sinon le prochain clic dans
+  l'arrangeur volerait la cible. La chaîne « son → instrument » est
+  dite explicitement dans l'accueil et l'aide (tranches → pads,
+  sélection → pad, son entier → instrument chromatique), sans rien
+  créer dans l'arrangeur. Au passage : `DragBus.RectSync` ne formate
+  plus une chaîne par frame (gain pour toutes les applis).
+- [x] **`ANALYSE_Ableton_Session.md`** (`b510911`) : le fonctionnement
+  réel d'Ableton, comportement par comportement (quantisation de
+  lancement, modes + legato, follow actions, scènes, stop, rec dans une
+  cellule, warp, ponts avec l'arrangement), puis la traduction CP. Deux
+  conclusions qui engagent le code : **colonne = piste = une lane**
+  (l'exclusivité devient structurelle) et **double tampon A/B** pour
+  changer de clip sur la frontière sans toucher au JSFX.
+- [x] **Saisie d'une valeur exacte sur les knobs** (`3a81c81`) : le
+  prérequis de toute migration (sinon migrer un champ numérique vers un
+  knob fait perdre la précision). Clic droit = taper la valeur ; le
+  double-clic reste « remettre le défaut ». Le modèle d'interaction est
+  factorisé (slider + knob + les futurs), et `Kit` expose la conversion
+  inverse (position 0..1 dont l'AFFICHAGE vaut la valeur demandée).
+  Sampler câblé, en unités du plugin, sans allocation par frame.
+- [x] **`ANALYSE_Nomenclature.md`** (`15b1906`) + **maquette** : la
+  règle en trois questions, le tableau rôle → widget, trois interdits,
+  l'inventaire mesuré (40 boutons sur 58 contrôles ; des knobs
+  uniquement dans le Sampler), et la migration app par app en cinq
+  étapes isolables. Maquette HTML publiée (avant/après par écran + 3
+  choix à trancher) : https://claude.ai/code/artifact/869747a6-3ee1-42b7-a6a7-9b6aa068f194
+- [x] **CP_Session : la vraie grille** (`88d48ae`, `898af8e`) — une
+  colonne par piste, une ligne par scène (8), un clip par cellule, et
+  **une piste ne joue qu'un clip** : lancer une cellule arrête ce que
+  la piste jouait. Le changement à chaud passe par la lane jumelle
+  silencieuse (Play + Stop, tous deux quantisés par le moteur) → la
+  bascule tombe pile sur la frontière, zéro ligne de JSFX en plus ;
+  quand rien ne joue, pas d'échange. Le tampon actif est re-déduit du
+  moteur à chaque frame (un lancement venu de l'éditeur ne peut pas
+  désynchroniser). Lancer une scène arrête les pistes sans clip (défaut
+  Ableton). Cellules stockées en CPC1 dans le projet, éditables
+  UNIQUEMENT dans CP_Editor — celle qui joue s'édite via sa propre lane
+  (on entend), les autres via la jumelle. Moteur : MAX_LANES 4 → 8
+  (vérifié contre la carte gmem) ; le JSFX publie le nombre de lanes
+  qu'il sert, donc un projet portant l'ancien moteur est signalé au
+  lieu d'avaler les écritures ; CP_Looper continue d'afficher 4 lanes.
+
+**Reste ouvert** : phases 2-6 de la Session (quantisation par clip,
+legato, **follow actions**, rec dans une cellule, audio P4, capture
+vers l'arrangeur) ; la migration UI elle-même (les 5 étapes du
+document, en attente de ses réponses sur les 3 choix) ; palette
+sémantique + sweep des couleurs en dur ; DnD-capture de modulation ;
+« ? » dans ME/ModLFO/FXC.
