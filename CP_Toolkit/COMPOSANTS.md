@@ -174,6 +174,33 @@ vient d'une table de niveau module.
 bout réservé le premier survit — et les contrôles qui ne doivent jamais
 disparaître sont Settings et Help.
 
+### Et dans une grille ? Les contrôles posés par un RECTANGLE
+
+Une grille calcule sa propre géométrie — cellules, colonnes, rangées — et le
+curseur de flux n'a rien à y dire. Mais les contrôles **dans** une cellule
+doivent rester de vrais contrôles : même remplissage, mêmes quatre états, même
+encre que la barre de commande, sinon la fenêtre cesse de se lire comme un seul
+produit. C'est exactement là que chaque app avait commencé à écrire son propre
+bouton privé (trois copies supprimées à la passe des zones, une quatrième dans
+le manager de la Floating Toolbar).
+
+| Appel | Pour quoi |
+|---|---|
+| `UI.ChipAt(id, x, y, w, h, icon, label, on, disabled, opts)` | la puce de la barre, posée où on veut ; glyphe si le nom existe, sinon le texte |
+| `UI.FaderAt(id, x, y, w, h, v, opts)` | un fader horizontal 0..1 → `changed, value, released` |
+| `UI.MeterAt(x, y, w, h, l, r, vertical, hold_l, hold_r)` | un vu-mètre à un rectangle (`VMeter`/`HMeter` passent par lui) |
+
+Trois choses à retenir :
+
+- **La valeur d'un fader est 0..1 et l'APPELANT possède la courbe et l'unité.**
+  Un widget qui connaîtrait les décibels ne connaîtrait qu'une seule sorte de
+  décibels. `opts.text` reçoit la valeur déjà formatée, donc rien n'alloue dans
+  la boucle de dessin.
+- **`released` compte** : un glisser est **un** point d'annulation, pas soixante.
+  C'est le seul moment où l'appelant doit écrire l'historique.
+- **`opts.mark`** dessine le cran (l'unité, le centre) — un fader sans repère
+  oblige à lire le nombre pour savoir où est le zéro.
+
 ### Rail ou barre ?
 
 Le rail existe toujours (`UI.BeginRail`), avec `RailCombo` et `RailValue` qui
@@ -201,6 +228,10 @@ le milieu** au lieu qu'il faille un drapeau de repli pour le lui dire.
 | CP_ModLFO | — | panneau, pas une fenêtre |
 
 Les trois `iconBtn` privés et l'`iconToggle` du Media Explorer sont supprimés.
+Il reste **une** copie privée, l'`icon_btn` du manager de la Floating Toolbar :
+`UI.ChipAt` fait son travail, mais la bascule change sa taille de glyphe (3 px
+de marge fixe → 0,62 × la taille) et son rayon (donné à la main → celui du
+thème). C'est un chantier à part entière, pas un remplacement à l'aveugle.
 
 ---
 

@@ -2434,29 +2434,8 @@ function Widgets.VMeter(id, peak_l, peak_r, theme, opts)
     local x, y = Layout.GetCursorPos()
     local width = opts.width or 12
     local height = opts.height or 80
-    local half_w = floor(width / 2) - 1
-
-    if Core.IsVisible(x, y, width, height) then
-        -- Background
-        local bg = theme.colors.frame_bg
-        Core.DrawRect(x, y, half_w, height, bg[1], bg[2], bg[3], bg[4])
-        Core.DrawRect(x + half_w + 1, y, width - half_w - 1, height, bg[1], bg[2], bg[3], bg[4])
-
-        -- Left channel
-        local h_l = floor(max(0, min(1, peak_l)) * height)
-        if h_l > 0 then
-            local r, g, b, a = meter_color(peak_l)
-            Core.DrawRect(x, y + height - h_l, half_w, h_l, r, g, b, a)
-        end
-
-        -- Right channel
-        local h_r = floor(max(0, min(1, peak_r)) * height)
-        if h_r > 0 then
-            local r, g, b, a = meter_color(peak_r)
-            Core.DrawRect(x + half_w + 1, y + height - h_r, width - half_w - 1, h_r, r, g, b, a)
-        end
-    end
-
+    Widgets.MeterAt(x, y, width, height, peak_l, peak_r, theme, true,
+                    opts.hold_l, opts.hold_r)
     Layout.AdvanceCursor(width, height)
 end
 
@@ -2468,26 +2447,8 @@ function Widgets.HMeter(id, peak_l, peak_r, theme, opts)
     local x, y = Layout.GetCursorPos()
     local width = opts.width or 120
     local height = opts.height or 12
-    local half_h = floor(height / 2) - 1
-
-    if Core.IsVisible(x, y, width, height) then
-        local bg = theme.colors.frame_bg
-        Core.DrawRect(x, y, width, half_h, bg[1], bg[2], bg[3], bg[4])
-        Core.DrawRect(x, y + half_h + 1, width, height - half_h - 1, bg[1], bg[2], bg[3], bg[4])
-
-        local w_l = floor(max(0, min(1, peak_l)) * width)
-        if w_l > 0 then
-            local r, g, b, a = meter_color(peak_l)
-            Core.DrawRect(x, y, w_l, half_h, r, g, b, a)
-        end
-
-        local w_r = floor(max(0, min(1, peak_r)) * width)
-        if w_r > 0 then
-            local r, g, b, a = meter_color(peak_r)
-            Core.DrawRect(x, y + half_h + 1, w_r, height - half_h - 1, r, g, b, a)
-        end
-    end
-
+    Widgets.MeterAt(x, y, width, height, peak_l, peak_r, theme, false,
+                    opts.hold_l, opts.hold_r)
     Layout.AdvanceCursor(width, height)
 end
 
@@ -6227,6 +6188,200 @@ end
 
 function Widgets.EndRail()
     Layout.EndColumns()
+end
+
+-- ============================================================================
+-- STRIP CONTROLS — the same chips, placed by a RECT instead of the cursor
+-- ============================================================================
+-- A grid computes its own geometry: cells, columns, rows. The flow layout has
+-- nothing to say in there — but the controls INSIDE a cell still have to be
+-- real controls, with the same fill, the same four states and the same ink as
+-- the command bar, or the window stops reading as one product. Every app that
+-- draws a grid had begun writing its own private button for this; three copies
+-- had to be deleted in the zones pass. These are that button, once.
+--
+-- They take (x, y, w, h) and never touch the layout cursor.
+
+-- A chip at a rect: the glyph if the name resolves, the label otherwise —
+-- same fallback as the bar, because a control you cannot see is worse than an
+-- ugly one. `on` lights it; `opts.accent` gives the LIT fill its role colour
+-- (mute grey-blue, solo yellow), never the resting one: hue is the state
+-- channel.
+function Widgets.ChipAt(id, x, y, w, h, icon, label, on, disabled, theme, opts)
+    opts = opts or EMPTY_OPTS
+    disabled = disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
+    local clicked = false
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then clicked = true end
+    end
+
+    if Core.IsVisible(x, y, w, h) then
+        barChip(x, y, w, h, theme, hovered, down, on, disabled, opts.sunken,
+                opts.accent)
+        local ink = barInk(theme, on, disabled)
+        local draw = (type(icon) == "function") and icon or (Icons and Icons[icon])
+        if draw then
+            local isz = opts.icon_size or floor((w < h and w or h) * 0.62)
+            draw(x + floor((w - isz) / 2), y + floor((h - isz) / 2), isz,
+                 ink[1], ink[2], ink[3], 1)
+        elseif label then
+            local tw, th = Core.MeasureText(label)
+            Core.DrawText(label, x + floor((w - tw) / 2), y + floor((h - th) / 2),
+                          ink[1], ink[2], ink[3], 1)
+        end
+    end
+    if hovered and opts.tip then Widgets.Tooltip(opts.tip, theme) end
+    return clicked
+end
+
+-- A horizontal fader at a rect. The value is 0..1 and the CALLER owns the
+-- taper and the units — a widget that knew about decibels would only know
+-- about one kind of decibel.
+--   Shift = fine (a tenth of the travel) · double-click = opts.default ·
+--   wheel steps · opts.mark draws a detent (unity, centre…) · opts.text is
+--   drawn right-aligned inside, already formatted by the caller so nothing
+--   allocates here.
+-- Returns changed, value, released. The release matters: a drag is ONE undo
+-- point, not sixty.
+function Widgets.FaderAt(id, x, y, w, h, value, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local c = theme.colors
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local active = Core.IsActive(id)
+    local changed, released = false, false
+    local nv = value
+
+    if hovered then Core.SetHot(id) end
+    if hovered and Core.MouseClicked(1) then
+        Core.SetActive(id)
+        active = true
+    end
+    if active then
+        if Core.MouseDown(1) then
+            local dx = Core.MouseDelta()
+            if dx ~= 0 and w > 1 then
+                nv = value + (dx / (w - 1)) * (Core.ModShift() and 0.1 or 1)
+                if nv < 0 then nv = 0 elseif nv > 1 then nv = 1 end
+                if nv ~= value then changed = true end
+            end
+        else
+            Core.ClearActive()
+            active = false
+            released = true
+        end
+    end
+    if hovered and Core.MouseDoubleClicked() and opts.default then
+        nv = opts.default
+        if nv ~= value then changed = true end
+        released = true
+    end
+    if hovered and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            local step = (opts.wheel_step or 0.02) * (Core.ModCtrl() and 0.25 or 1)
+            nv = value + wheel_notches(wheel) * step
+            if nv < 0 then nv = 0 elseif nv > 1 then nv = 1 end
+            if nv ~= value then changed = true; released = true end
+            Core.ConsumeWheel()
+        end
+    end
+    if hovered or active then Core.SetCursor("size_we") end
+
+    if Core.IsVisible(x, y, w, h) then
+        local rad = theme.rounding_small or 0
+        local g = c.frame_bg
+        fillRound(x, y, w, h, rad, g[1], g[2], g[3], disabled and 0.45 or 1)
+        -- The level is INSET and flat-ended: a rounded right edge would read
+        -- as the end of the travel wherever the fader happened to sit.
+        local disp = changed and nv or value
+        local fw = floor((w - 2) * disp + 0.5)
+        if fw > 0 then
+            local a = opts.accent or c.accent
+            local col = a
+            if disabled then col = scaledColor(a, 0.55)
+            elseif active then col = scaledColor(a, 0.84)
+            elseif hovered then col = scaledColor(a, 1.12) end
+            Core.DrawRect(x + 1, y + 1, fw, h - 2, col[1], col[2], col[3], 1)
+        end
+        if opts.mark then
+            local mx = x + 1 + floor((w - 2) * opts.mark + 0.5)
+            Core.DrawRect(mx, y + 1, 1, h - 2, 0, 0, 0, 0.4)
+        end
+        if opts.text then
+            local tw, th = Core.MeasureText(opts.text)
+            local ink = disabled and c.text_disabled or c.text
+            Core.DrawText(opts.text, x + w - 4 - tw, y + floor((h - th) / 2),
+                          ink[1], ink[2], ink[3], 0.9)
+        end
+    end
+    return changed, nv, released
+end
+
+-- A level meter at a rect: two channels split along the SHORT axis, the fill
+-- running bottom-up when vertical and left-right when horizontal. `hold` is
+-- the peak line — on a meter this small it is the only thing that makes a
+-- transient visible at all, since the level itself is gone by the next frame.
+function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, hold_r)
+    if not Core.IsVisible(x, y, w, h) then return end
+    local bg = theme.colors.frame_bg
+    if vertical then
+        local half = floor(w / 2) - 1
+        if half < 1 then half = 1 end
+        local w2 = w - half - 1
+        Core.DrawRect(x, y, half, h, bg[1], bg[2], bg[3], bg[4])
+        Core.DrawRect(x + half + 1, y, w2, h, bg[1], bg[2], bg[3], bg[4])
+        local hl = floor(max(0, min(1, peak_l)) * h)
+        if hl > 0 then
+            local mr, mg, mb, ma = meter_color(peak_l)
+            Core.DrawRect(x, y + h - hl, half, hl, mr, mg, mb, ma)
+        end
+        local hr = floor(max(0, min(1, peak_r)) * h)
+        if hr > 0 then
+            local mr, mg, mb, ma = meter_color(peak_r)
+            Core.DrawRect(x + half + 1, y + h - hr, w2, hr, mr, mg, mb, ma)
+        end
+        if hold_l and hold_l > 0 then
+            local mr, mg, mb = meter_color(hold_l)
+            Core.DrawRect(x, y + h - 1 - floor(min(1, hold_l) * (h - 1)), half, 1,
+                          mr, mg, mb, 1)
+        end
+        if hold_r and hold_r > 0 then
+            local mr, mg, mb = meter_color(hold_r)
+            Core.DrawRect(x + half + 1, y + h - 1 - floor(min(1, hold_r) * (h - 1)),
+                          w2, 1, mr, mg, mb, 1)
+        end
+    else
+        local half = floor(h / 2) - 1
+        if half < 1 then half = 1 end
+        local h2 = h - half - 1
+        Core.DrawRect(x, y, w, half, bg[1], bg[2], bg[3], bg[4])
+        Core.DrawRect(x, y + half + 1, w, h2, bg[1], bg[2], bg[3], bg[4])
+        local wl = floor(max(0, min(1, peak_l)) * w)
+        if wl > 0 then
+            local mr, mg, mb, ma = meter_color(peak_l)
+            Core.DrawRect(x, y, wl, half, mr, mg, mb, ma)
+        end
+        local wr = floor(max(0, min(1, peak_r)) * w)
+        if wr > 0 then
+            local mr, mg, mb, ma = meter_color(peak_r)
+            Core.DrawRect(x, y + half + 1, wr, h2, mr, mg, mb, ma)
+        end
+        if hold_l and hold_l > 0 then
+            local mr, mg, mb = meter_color(hold_l)
+            Core.DrawRect(x + floor(min(1, hold_l) * (w - 1)), y, 1, half, mr, mg, mb, 1)
+        end
+        if hold_r and hold_r > 0 then
+            local mr, mg, mb = meter_color(hold_r)
+            Core.DrawRect(x + floor(min(1, hold_r) * (w - 1)), y + half + 1, 1, h2,
+                          mr, mg, mb, 1)
+        end
+    end
 end
 
 -- ============================================================================

@@ -638,6 +638,23 @@ function UI.HMeter(id, peak_l, peak_r, opts)
     return Widgets.HMeter(id, peak_l, peak_r, UI._theme, opts)
 end
 
+-- Strip controls — the same chips, placed by a RECT instead of the layout
+-- cursor. For grids, which compute their own geometry and used to have to
+-- write their own buttons for it.
+function UI.ChipAt(id, x, y, w, h, icon, label, on, disabled, opts)
+    return Widgets.ChipAt(id, x, y, w, h, icon, label, on, disabled, UI._theme, opts)
+end
+
+-- Returns changed, value, released.
+function UI.FaderAt(id, x, y, w, h, value, opts)
+    return Widgets.FaderAt(id, x, y, w, h, value, UI._theme, opts)
+end
+
+function UI.MeterAt(x, y, w, h, peak_l, peak_r, vertical, hold_l, hold_r)
+    return Widgets.MeterAt(x, y, w, h, peak_l, peak_r, UI._theme, vertical,
+                           hold_l, hold_r)
+end
+
 -- Canvas
 function UI.Canvas(id, opts)
     return Widgets.Canvas(id, UI._theme, opts)
