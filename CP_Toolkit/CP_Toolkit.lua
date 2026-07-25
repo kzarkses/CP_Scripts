@@ -693,6 +693,9 @@ function UI.BarLabel(text, opts)   return Widgets.BarLabel(text, UI._theme, opts
 function UI.BarIcon(id, icon, label, disabled, opts)
     return Widgets.BarIcon(id, icon, label, disabled, UI._theme, opts)
 end
+function UI.BarButton(id, label, disabled, on, opts)
+    return Widgets.BarButton(id, label, disabled, on, UI._theme, opts)
+end
 function UI.BarToggle(id, icon, icon_off, is_on, label, disabled, opts)
     return Widgets.BarToggle(id, icon, icon_off, is_on, label, disabled,
                              UI._theme, opts)

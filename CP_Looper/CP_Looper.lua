@@ -601,113 +601,143 @@ Free = internal clock, clips play with the transport stopped.
 Follow = REAPER transport (locks to an external MIDI clock).
 ]]
 
-local function drawToolbar(attached)
-    UI.SetFontH2(); UI.Text("Looper"); UI.SetFontBody()
-    UI.SameLine(6)
-    UI.HelpButton("help", HELP_TEXT)
-    UI.SameLine(12)
-    UI.SetFontCaption()
-    local bpm = Loop.Tempo()
-    local playing = Loop.Playing()
-    UI.Text(string.format("%s   %.1f BPM", playing and "PLAY" or "STOP", bpm or 0),
-            { disabled = true })
-    UI.SetFontBody()
+-- Launch quantize is a CHOICE among five, not a button that cycles. As a combo
+-- the wheel walks it, the current setting is readable without clicking, and
+-- you can jump straight to the one you want instead of pressing four times.
+-- Stored in beats so the engine never needs to know about bars.
+local Q_ITEMS = { "Q: Off", "Q: Beat", "Q: Bar", "Q: 2 bars", "Q: 4 bars" }
+local Q_OPTS  = { w = 3 }
+local R_LISTEN = { accent = nil }
+-- The name lives IN the bar rather than on a line of its own. One strip
+-- instead of two: in an app whose content is a stack of lane rows, a title
+-- line spends a row and says nothing that changes.
+local TITLE_OPTS = { title = "Looper" }
 
-    UI.SameLine()
-    if attached then
-        local free = Loop.GetFreeRun()
-        if UI.Button("clock", free and "Clock: Free" or "Clock: Follow") then
-            Loop.SetFreeRun(not free)
-            persist_dirty = true
-            flash(free and "Follow host transport" or "Free run (launch without transport)")
-        end
-        UI.SameLine()
-        -- Launch quantize (Ableton-style): commands wait for the next boundary.
-        -- Cycles Off -> beat -> bar -> 2 bars -> 4 bars; stored in beats so the
-        -- engine never needs to know about bars.
-        local q   = Loop.GetLaunchQ()
-        local tsn = Loop.TsNum()
-        local qlbl
-        if q <= 0 then                            qlbl = "Q: Off"
-        elseif math.abs(q - 1) < 0.01 then        qlbl = "Q: Beat"
-        elseif math.abs(q - tsn) < 0.01 then      qlbl = "Q: Bar"
-        elseif math.abs(q - 2 * tsn) < 0.01 then  qlbl = "Q: 2 bars"
-        elseif math.abs(q - 4 * tsn) < 0.01 then  qlbl = "Q: 4 bars"
-        else                                      qlbl = string.format("Q: %g bt", q) end
-        if UI.Button("launchq", qlbl) then
-            local nq
-            if q <= 0 then                            nq = 1
-            elseif math.abs(q - 1) < 0.01 then        nq = tsn
-            elseif math.abs(q - tsn) < 0.01 then      nq = 2 * tsn
-            elseif math.abs(q - 2 * tsn) < 0.01 then  nq = 4 * tsn
-            else                                      nq = 0 end
-            Loop.SetLaunchQ(nq)
-            persist_dirty = true
-            flash(nq <= 0 and "Launch quantize off" or
-                  string.format("Launch quantize: %g beat%s", nq, nq > 1 and "s" or ""))
-        end
-        UI.SameLine()
-        -- The router is armed on ALL MIDI inputs and fans your playing to each
-        -- lane's instrument through sends — and a send ignores the destination's
-        -- arm state, so those tracks sound even unarmed. This is the off switch:
-        -- turn it off and the keyboard is free for whatever track you armed.
-        local listen = Loop.GetListen()
-        if listen then
-            UI.PushStyleColor("button", 0.75, 0.30, 0.28)
-        end
-        if UI.Button("listen", listen and "Listen: on" or "Listen: off") then
-            Loop.SetListen(not listen)
-            flash(listen and "MIDI input released - lanes won't sound live"
-                          or "Listening: your playing reaches the routed lanes")
-        end
-        if listen then UI.PopStyleColor() end
+local function qIndex(q, tsn)
+    if q <= 0 then return 1 end
+    if math.abs(q - 1) < 0.01 then return 2 end
+    if math.abs(q - tsn) < 0.01 then return 3 end
+    if math.abs(q - 2 * tsn) < 0.01 then return 4 end
+    if math.abs(q - 4 * tsn) < 0.01 then return 5 end
+    return 1
+end
 
-        UI.SameLine()
-        if UI.Button("panic", "Panic") then Loop.Panic(); flash("All notes off") end
-        UI.SameLine()
-        if UI.Button("allsel", "Sound → sel") then
-            local sel = r.GetSelectedTrack(0, 0)
-            if sel and sel ~= Loop.track then
-                for l = 0, LANES - 1 do Loop.SetLaneDest(l, sel) end
-                local _, nm = r.GetTrackName(sel)
-                flash("All lanes → " .. (nm ~= "" and nm or "track"))
-            else
-                flash("Select an instrument track first")
-            end
-        end
-        UI.SameLine()
-        if UI.Button("reload", "Reload") then
-            -- no longer destructive: the loops live in gmem and survive the
-            -- engine's @init (that is exactly the bug this replaced)
-            Loop.ReloadEngine(); flash("Engine reloaded (loops kept)")
-        end
-        UI.SameLine()
-        -- Explicit recall: the automatic one refuses to overwrite lanes that
-        -- already hold notes, so this is how you get the project's copy back
-        -- over a live set.
-        if UI.Button("recall", "Recall") then
-            if not Loop.HasSavedState() then
-                flash("Nothing saved in this project yet")
-            elseif r.MB("Recall the loops saved in this project?\n\nThis REPLACES every lane.",
-                        "CP Looper", 4) == 6 then
-                local ok, n = Loop.LoadState(true)
-                for l = 0, LANES - 1 do ev[l].ver = -1 end
-                roll_ver = -1
-                flash(ok and (n .. " notes recalled") or "Recall failed")
-            end
-        end
-        UI.SameLine()
-        -- the ONLY way to lose every loop, so it asks
-        if UI.Button("clearall", "Clear all") then
-            if r.MB("Clear every recorded loop?", "CP Looper", 4) == 6 then
-                Loop.ClearAll(); flash("All lanes cleared")
-            end
-        end
-    else
-        if UI.Button("attach", "Create looper engine") then doSetup() end
-        UI.SameLine()
-        if UI.Button("panic", "Panic") then Loop.Panic() end
+local function qValue(i, tsn)
+    if i == 2 then return 1 end
+    if i == 3 then return tsn end
+    if i == 4 then return 2 * tsn end
+    if i == 5 then return 4 * tsn end
+    return 0
+end
+
+-- The transport readout, cached on (playing, tempo). string.format in a frame
+-- path allocates, and this window redraws continuously while loops run.
+local stat = { play = nil, bpm = -1, s = "" }
+local function statusLine()
+    local playing = Loop.Playing() and true or false
+    local bpm = Loop.Tempo() or 0
+    if stat.play ~= playing or stat.bpm ~= bpm then
+        stat.play, stat.bpm = playing, bpm
+        stat.s = string.format("%s   %.1f BPM", playing and "PLAY" or "STOP", bpm)
     end
+    return stat.s
+end
+
+local function drawToolbar(attached, theme)
+    R_LISTEN.accent = theme.colors.record or theme.colors.danger
+    UI.BeginBar("cmd", TITLE_OPTS)
+
+    -- Right end first: Help never disappears, whatever the window's width.
+    UI.BarRight()
+    if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
+    UI.BarSep()
+    UI.BarLeft()
+
+    if not attached then
+        if UI.BarButton("attach", "Create looper engine") then doSetup() end
+        if UI.BarIcon("panic", "Mute", "Panic: all notes off") then Loop.Panic() end
+        UI.EndBar()
+        return
+    end
+
+    -- Clock: an icon PAIR would be wrong here (both states are a clock), so it
+    -- is a lit toggle — free run on, follow off — with the meaning in the tip.
+    local free = Loop.GetFreeRun()
+    if UI.BarToggle("clock", "Clock", nil, free,
+                    free and "Free run: clips launch with the transport stopped"
+                          or "Follow the host transport (locks to external clock)") then
+        Loop.SetFreeRun(not free)
+        persist_dirty = true
+        flash(free and "Follow host transport" or "Free run (launch without transport)")
+    end
+
+    local tsn = Loop.TsNum()
+    local q = Loop.GetLaunchQ()
+    local qch, qi = UI.BarCombo("launchq", qIndex(q, tsn), Q_ITEMS, false, Q_OPTS)
+    if qch then
+        local nq = qValue(qi, tsn)
+        Loop.SetLaunchQ(nq)
+        persist_dirty = true
+        flash(nq <= 0 and "Launch quantize off" or
+              string.format("Launch quantize: %g beat%s", nq, nq > 1 and "s" or ""))
+    end
+    UI.BarSep()
+
+    -- The router is armed on ALL MIDI inputs and fans your playing to each
+    -- lane's instrument through sends — and a send ignores the destination's
+    -- arm state, so those tracks sound even unarmed. This is the off switch:
+    -- turn it off and the keyboard is free for whatever track you armed.
+    local listen = Loop.GetListen()
+    if UI.BarToggle("listen", "VolumeUp", "VolumeOff", listen,
+                    listen and "Listening: your playing reaches the routed lanes"
+                            or "MIDI input released: lanes won't sound live",
+                    false, R_LISTEN) then
+        Loop.SetListen(not listen)
+        flash(listen and "MIDI input released - lanes won't sound live"
+                      or "Listening: your playing reaches the routed lanes")
+    end
+    if UI.BarIcon("panic", "Mute", "Panic: all notes off") then
+        Loop.Panic(); flash("All notes off")
+    end
+    if UI.BarIcon("allsel", "Target", "Route every lane to the selected track") then
+        local sel = r.GetSelectedTrack(0, 0)
+        if sel and sel ~= Loop.track then
+            for l = 0, LANES - 1 do Loop.SetLaneDest(l, sel) end
+            local _, nm = r.GetTrackName(sel)
+            flash("All lanes → " .. (nm ~= "" and nm or "track"))
+        else
+            flash("Select an instrument track first")
+        end
+    end
+    UI.BarSep()
+
+    if UI.BarIcon("reload", "Refresh", "Reload the engine (loops are kept)") then
+        -- no longer destructive: the loops live in gmem and survive the
+        -- engine's @init (that is exactly the bug this replaced)
+        Loop.ReloadEngine(); flash("Engine reloaded (loops kept)")
+    end
+    -- Explicit recall: the automatic one refuses to overwrite lanes that
+    -- already hold notes, so this is how you get the project's copy back
+    -- over a live set.
+    if UI.BarIcon("recall", "Import", "Recall the loops saved in this project") then
+        if not Loop.HasSavedState() then
+            flash("Nothing saved in this project yet")
+        elseif r.MB("Recall the loops saved in this project?\n\nThis REPLACES every lane.",
+                    "CP Looper", 4) == 6 then
+            local ok, n = Loop.LoadState(true)
+            for l = 0, LANES - 1 do ev[l].ver = -1 end
+            roll_ver = -1
+            flash(ok and (n .. " notes recalled") or "Recall failed")
+        end
+    end
+    -- the ONLY way to lose every loop, so it asks
+    if UI.BarIcon("clearall", "Trash", "Clear every recorded loop") then
+        if r.MB("Clear every recorded loop?", "CP Looper", 4) == 6 then
+            Loop.ClearAll(); flash("All lanes cleared")
+        end
+    end
+
+    UI.EndBar()
 end
 
 local function drawUnattached()
@@ -1641,8 +1671,9 @@ local function frame(theme)
         state.aud_note = nil
     end
 
-    drawToolbar(attached)
+    drawToolbar(attached, theme)
     UI.Spacing(4)
+    local STATUS_H = 20
 
     if not attached then
         drawUnattached()
@@ -1653,7 +1684,7 @@ local function frame(theme)
     else
         local x, y = UI.GetCursorPos()
         local w = UI.GetAvailableWidth()
-        local avail = UI.GetAvailableHeight() - 16   -- reserve a status line
+        local avail = UI.GetAvailableHeight() - STATUS_H
         Core.SetFontCaption()
         local gap = 3
         local lane_h = math.floor((avail - gap * (LANES - 1)) / LANES)
@@ -1670,17 +1701,20 @@ local function frame(theme)
         if Loop.Playing() then UI.RequestRedraw() end
     end
 
-    -- status flash
+    -- Status zone. The transport readout lives here rather than in the
+    -- command bar: it is something the app TELLS you, not something you act
+    -- on, and the two belong in different zones.
+    local msg
     if state.flash_msg ~= "" then
         if r.time_precise() < state.flash_until then
-            UI.SetFontCaption()
-            UI.Text(state.flash_msg, { disabled = true })
-            UI.SetFontBody()
+            msg = state.flash_msg
             UI.RequestRedraw()
         else
             state.flash_msg = ""
         end
     end
+    if not msg then msg = statusLine() end
+    UI.AppStatus(msg)
 end
 
 -- ---------------------------------------------------------------------------

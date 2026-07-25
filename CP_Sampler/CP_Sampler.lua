@@ -120,9 +120,10 @@ local CHOKE_STR   = { "1", "2", "3", "4", "5", "6", "7", "8" }
 local CHOKE_ITEMS = { "Off", "1", "2", "3", "4", "5", "6", "7", "8" }
 local PAGE_IDS    = { "pg1", "pg2", "pg3", "pg4" }
 local PAGE_LBL    = { "1", "2", "3", "4" }
-local MODE_TABS   = { { key = "drum", id = "mode_drum", label = "Drum" },
-                      { key = "instrument", id = "mode_instr", label = "Instr" } }
-local ICONBTN_OPTS = { width = 0, height = 0 }
+-- Role colour for the arm toggle, bound once. `record` is what the rest of the
+-- suite already uses to mean "this is live"; rebuilt when the theme object
+-- itself changes, never per frame.
+local R_REC = { accent = nil }
 -- Typing an exact value on a knob (right-click) needs the real unit, which
 -- only the plugin knows. The conversion pair is bound ONCE to these two
 -- upvalues and re-aimed before each knob call — closures built per frame
@@ -633,19 +634,12 @@ local function openSettings()
 end
 
 -- ---------------------------------------------------------------------------
--- Toolbar
+-- Command bar
 -- ---------------------------------------------------------------------------
-local function iconBtn(id, icon_fn, tip, size)
-    local theme = UI.GetTheme()
-    size = size or theme.button_height
-    local cx, cy = UI.GetCursorPos()
-    ICONBTN_OPTS.width, ICONBTN_OPTS.height = size, size
-    local clicked = UI.Button(id, "", ICONBTN_OPTS)
-    local color = theme.colors.text
-    icon_fn(cx, cy, size, color[1], color[2], color[3], color[4] or 1)
-    if tip and Core_tk.MouseInRect(cx, cy, size, size) then UI.Tooltip(tip) end
-    return clicked
-end
+-- The local `iconBtn` is gone. It was one of three private copies across the
+-- repo, with two incompatible signatures, all of them re-solving what the
+-- toolkit now owns: a chip of the bar's one height, with four states and a
+-- tooltip.
 
 -- Multi-kit selector: the label caches on Kit.version (GetTrackName
 -- allocates, and the toolbar runs every frame).
@@ -696,92 +690,78 @@ Load sample, Open in Editor (the trim lands selected), Bake: crop to
 a new file, Sync to project tempo, choke group.
 ]]
 
+local ARM_ON  = "Kit bus armed: MIDI input and pad clicks play through the pads"
+local ARM_OFF = "Kit bus disarmed: pad clicks fall back to direct preview"
+local KIT_W   = { w = 4 }
+
 local function drawToolbar(theme)
-    local btn = theme.button_height
+    R_REC.accent = theme.colors.record or theme.colors.danger
+    UI.BeginBar("cmd")
+
+    -- Right end claimed first, so a narrow window sheds a page button rather
+    -- than Settings. Outermost written first: Help hard against the edge.
+    UI.BarRight()
+    if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
+    if UI.BarIcon("settings", "Settings", "Settings") then openSettings() end
+    if UI.BarIcon("load_kit", "Folder", "Load kit preset") then loadPresetMenu() end
+    if UI.BarIcon("save_kit", "Save", "Save kit preset") then savePresetDialog() end
+    UI.BarSep()
+    UI.BarLeft()
 
     if not Kit.Exists() then
-        if UI.Button("mk_kit", "Create kit bus") then
+        if UI.BarButton("mk_kit", "Create kit bus") then
             Kit.Ensure()
             flash("Kit bus created — drop samples on the pads")
         end
-    else
-        -- Armed toggle (Record icon, red when live)
-        local armed = Kit.Armed()
-        local cx, cy = UI.GetCursorPos()
-        ICONBTN_OPTS.width, ICONBTN_OPTS.height = btn, btn
-        if UI.Button("arm", "", ICONBTN_OPTS) then
-            Kit.SetArmed(not armed)
-        end
-        local c = armed and (theme.colors.danger or theme.colors.accent)
-                         or theme.colors.text_disabled
-        UI.Icons.Record(cx, cy, btn, c[1], c[2], c[3], c[4] or 1)
-        if Core_tk.MouseInRect(cx, cy, btn, btn) then
-            UI.Tooltip(armed and "Kit bus armed: MIDI input and pad clicks play through the pads"
-                              or "Kit bus disarmed: pad clicks fall back to direct preview")
-        end
+        UI.EndBar()
+        return
     end
 
-    -- Mode toggle: Drum (4x4 pads) vs Instrument (chromatic, one sample)
-    if Kit.Exists() then
-        UI.SameLine(12)
-        local acc = theme.colors.accent
-        for _, m in ipairs(MODE_TABS) do
-            UI.SameLine()
-            local on = Kit.mode == m.key
-            if on then UI.PushStyleColor("button", acc[1], acc[2], acc[3]) end
-            if UI.Button(m.id, m.label) then
-                if not on then Kit.SetMode(m.key) end
-            end
-            if on then UI.PopStyleColor() end
-        end
-
-        -- Kit selector: active kit's name; the menu switches or creates.
-        -- Shown as soon as a kit exists so "New kit..." is always reachable.
-        if kitsel.ver ~= Kit.version then
-            kitsel.ver = Kit.version
-            local _, nm = r.GetTrackName(Kit.parent)
-            kitsel.label = (nm ~= "" and nm or "Kit")
-                         .. (#Kit.kits > 1 and ("  (" .. #Kit.kits .. ")") or "")
-        end
-        UI.SameLine(8)
-        if UI.Button("kit_sel", kitsel.label) then
-            kitMenu()
-        end
+    -- Armed: a held state, so it lights. The role colour is `record`, which
+    -- is what the rest of the suite already uses to mean "this is live".
+    local armed = Kit.Armed()
+    if UI.BarToggle("arm", "Record", nil, armed, armed and ARM_ON or ARM_OFF,
+                    false, R_REC) then
+        Kit.SetArmed(not armed)
     end
-    UI.SameLine(8)
-    UI.HelpButton("help", HELP_TEXT)
+    UI.BarSep()
 
-    -- Pages (drum mode only)
+    -- Mode: two glyphs rather than two words. Pads versus a keyboard says it
+    -- without being read, and the pair reads as one choice.
+    if UI.BarToggle("mode_drum", "Drum", nil, Kit.mode == "drum", "Drum pads") then
+        if Kit.mode ~= "drum" then Kit.SetMode("drum") end
+    end
+    if UI.BarToggle("mode_inst", "Piano", nil, Kit.mode == "instrument",
+                    "Instrument (chromatic)") then
+        if Kit.mode ~= "instrument" then Kit.SetMode("instrument") end
+    end
+
+    -- Kit selector: active kit's name; the menu switches or creates. Shown as
+    -- soon as a kit exists so "New kit..." is always reachable.
+    if kitsel.ver ~= Kit.version then
+        kitsel.ver = Kit.version
+        local _, nm = r.GetTrackName(Kit.parent)
+        kitsel.label = (nm ~= "" and nm or "Kit")
+                     .. (#Kit.kits > 1 and ("  (" .. #Kit.kits .. ")") or "")
+    end
+    UI.BarSep()
+    if UI.BarButton("kit_sel", kitsel.label, false, false, KIT_W) then
+        kitMenu()
+    end
+
+    -- Pages (drum mode only): four square chips, lit on the current one.
     if Kit.mode == "drum" then
+        UI.BarSep()
         for p = 1, 4 do
-            UI.SameLine()
-            if p == state.page + 1 then UI.PushStyleColor("button",
-                theme.colors.accent[1], theme.colors.accent[2], theme.colors.accent[3]) end
-            ICONBTN_OPTS.width, ICONBTN_OPTS.height = btn, btn
-            if UI.Button(PAGE_IDS[p], PAGE_LBL[p], ICONBTN_OPTS) then
+            if UI.BarToggle(PAGE_IDS[p], nil, nil, p == state.page + 1,
+                            PAGE_LBL[p]) then
                 state.page = p - 1
                 markDirty()
             end
-            if p == state.page + 1 then UI.PopStyleColor() end
         end
     end
 
-    -- Right group: save / load / settings
-    local right_w = btn * 3 + theme.item_spacing * 2
-    local gap = UI.GetAvailableWidth() - right_w
-    if gap > 0 then UI.SameLine(gap) else UI.SameLine() end
-    if iconBtn("save_kit", UI.Icons.Save, "Save kit preset") then
-        savePresetDialog()
-    end
-    UI.SameLine()
-    if iconBtn("load_kit", UI.Icons.Folder, "Load kit preset") then
-        loadPresetMenu()
-    end
-    UI.SameLine()
-    if iconBtn("settings", UI.Icons.Settings, "Settings") then
-        openSettings()
-    end
-    UI.Spacing(0)
+    UI.EndBar()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1626,9 +1606,16 @@ local function frame(theme)
 
     drawToolbar(theme)
 
+    -- The status strip is a ZONE now: it owns the bottom of the window whether
+    -- or not it has something to say. Before, it appeared under the content
+    -- only while a flash lasted, so the layout jumped by a line every time the
+    -- app told you something.
+    local STATUS_H = 20
+    local body_h = UI.GetAvailableHeight() - STATUS_H
+
     if Kit.Exists() and Kit.mode == "instrument" then
         UI.Spacing(theme.pad_small or 4)
-        drawInstrument(theme, UI.GetAvailableHeight())
+        drawInstrument(theme, body_h - (theme.pad_small or 4))
         -- release a MIDI-triggered note on mouse-up (keyboard clicks)
         if state.press_midi and not Core_tk.MouseDown(1) then
             Kit.StuffNote(state.press_midi, false)
@@ -1637,7 +1624,7 @@ local function frame(theme)
     else
         -- Controls reserve tracks the selection: a loaded pad needs the full
         -- strip, an empty one two lines — the grid gets everything else.
-        local avail = UI.GetAvailableHeight()
+        local avail = body_h
         local selpad = state.sel and Kit.pads[state.sel]
         local ctrl_h = (selpad and selpad.fx) and CTRL_H or 56
         local grid_h = avail - ctrl_h
@@ -1650,17 +1637,28 @@ local function frame(theme)
         handlePadDrag()
     end
 
-    -- status flash
+    -- status zone
+    local msg
     if state.flash_msg ~= "" then
         if r.time_precise() < state.flash_until then
-            UI.SetFontCaption()
-            UI.Text(state.flash_msg, { disabled = true })
-            UI.SetFontBody()
+            msg = state.flash_msg
             UI.RequestRedraw()
         else
             state.flash_msg = ""
         end
     end
+    if not msg then
+        if not Kit.Exists() then
+            msg = "no kit bus yet — create one to start dropping samples"
+        elseif Kit.mode == "instrument" then
+            msg = "click the keyboard to play · drop a sample to load it chromatically"
+        elseif state.sel and Kit.pads[state.sel] and Kit.pads[state.sel].fx then
+            msg = "drag the ADSR handles on the waveform · right-click a pad for load / bake / choke"
+        else
+            msg = "drop a file or an arrange item on a pad · right-click for the pad menu"
+        end
+    end
+    UI.AppStatus(msg)
 
     if state.cfg_dirty and not Core_tk.MouseDown(1) then
         persistConfig()

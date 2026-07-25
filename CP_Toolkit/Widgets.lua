@@ -5590,6 +5590,47 @@ function Widgets.BarIcon(id, icon, label, disabled, theme, opts)
     return barButtonBody(id, icon, label, disabled, false, theme, opts, false)
 end
 
+-- A verb that needs WORDS. Some do: "Create kit bus" has no glyph anyone would
+-- guess, and a name that changes ("Kit 2 (3)") is the control's whole content.
+-- Its width still comes from the ladder — the first step that fits, then the
+-- text truncates rather than the chip growing to a size no neighbour shares.
+-- `on` is optional and lights the chip like a toggle.
+function Widgets.BarButton(id, label, disabled, on, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local ctl_h = bar.ctl_h
+    local tw = Core.MeasureText(label)
+    local w = barWidth(tw, opts.w)
+    local x = barSlot(w)
+    if not x then return false end
+    local y = bar.cy
+
+    disabled = disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, ctl_h) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
+    local clicked = false
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then clicked = true end
+    end
+
+    if Core.IsVisible(x, y, w, ctl_h) then
+        barChip(x, y, w, ctl_h, theme, hovered, down, on, disabled, false,
+                opts.accent)
+        local ink = barInk(theme, on, disabled)
+        local txt = label
+        if tw > w - BAR_PAD_X * 2 then
+            txt, tw = Core.TruncateText(label, w - BAR_PAD_X * 2)
+        end
+        local _, th = Core.MeasureText(txt)
+        Core.DrawText(txt, x + floor((w - tw) / 2), y + floor((ctl_h - th) / 2),
+                      ink[1], ink[2], ink[3], 1)
+    end
+    if hovered and opts.label then Widgets.Tooltip(opts.label, theme) end
+
+    return clicked
+end
+
 -- A held state. `icon_off` gives OFF its own glyph, which says which way this
 -- is set without having to read a colour.
 -- Returns toggled, new_on.

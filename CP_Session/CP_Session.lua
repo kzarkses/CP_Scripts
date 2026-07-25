@@ -243,34 +243,33 @@ local function cellLabel(t, s, name, w)
     return c.s
 end
 
--- Launch-quantize label, cached on the raw q value (same cycle as the
--- Looper's toolbar button).
-local qlbl = { q = -1, s = "" }
-local function qLabel()
-    local q = Loop.GetLaunchQ()
-    if q ~= qlbl.q then
-        qlbl.q = q
-        local tsn = Loop.TsNum()
-        if q <= 0 then qlbl.s = "Q: Off"
-        elseif q == 1 then qlbl.s = "Q: Beat"
-        elseif q == tsn then qlbl.s = "Q: Bar"
-        elseif q == tsn * 2 then qlbl.s = "Q: 2 bars"
-        elseif q == tsn * 4 then qlbl.s = "Q: 4 bars"
-        else qlbl.s = "Q: " .. q .. " beats" end
-    end
-    return qlbl.s
+-- Launch quantize and take length are CHOICES among a handful, not buttons
+-- that cycle. As combos the wheel walks them, the current setting reads
+-- without clicking, and you land on the one you want instead of pressing four
+-- times. Both lists are stored in beats / bars so the engine never needs to
+-- know about the words.
+local Q_ITEMS = { "Q: Off", "Q: Beat", "Q: Bar", "Q: 2 bars", "Q: 4 bars" }
+local Q_OPTS  = { w = 3 }
+local TITLE_OPTS = { title = "Session" }
+
+local function qIndex()
+    local q, tsn = Loop.GetLaunchQ(), Loop.TsNum()
+    if q <= 0 then return 1 end
+    if q == 1 then return 2 end
+    if q == tsn then return 3 end
+    if q == tsn * 2 then return 4 end
+    if q == tsn * 4 then return 5 end
+    return 1
 end
 
-local function cycleQ()
-    local q, tsn = Loop.GetLaunchQ(), Loop.TsNum()
-    local nq
-    if q <= 0 then nq = 1
-    elseif q == 1 then nq = tsn
-    elseif q == tsn then nq = tsn * 2
-    elseif q == tsn * 2 then nq = tsn * 4
-    else nq = 0 end
+local function setQIndex(i)
+    local tsn = Loop.TsNum()
+    local nq = 0
+    if i == 2 then nq = 1
+    elseif i == 3 then nq = tsn
+    elseif i == 4 then nq = tsn * 2
+    elseif i == 5 then nq = tsn * 4 end
     Loop.SetLaunchQ(nq)
-    qlbl.q = -1
 end
 
 -- How long a take runs. The engine records for the lane's length and closes
@@ -279,27 +278,39 @@ end
 -- length has to be known BEFORE the take. Leaving it to whatever the lane
 -- happened to hold made it unknowable; it is a stated setting now, next to
 -- the quantize that says when the take starts. Saved with the project.
-local REC_BARS = { 1, 2, 4, 8 }
+local REC_BARS  = { 1, 2, 4, 8 }
+local REC_ITEMS = { "Rec: 1 bar", "Rec: 2 bars", "Rec: 4 bars", "Rec: 8 bars" }
 local rec_bars = 1
-local rblbl = { b = -1, s = "" }
 
-local function recBarsLabel()
-    if rblbl.b ~= rec_bars then
-        rblbl.b = rec_bars
-        rblbl.s = "Rec: " .. (rec_bars == 1 and "1 bar" or (rec_bars .. " bars"))
+local function recBarsIndex()
+    for i = 1, #REC_BARS do
+        if REC_BARS[i] == rec_bars then return i end
     end
-    return rblbl.s
+    return 1
 end
 
-local function cycleRecBars()
-    for i = 1, #REC_BARS do
-        if REC_BARS[i] == rec_bars then
-            rec_bars = REC_BARS[i % #REC_BARS + 1]
-            r.SetProjExtState(0, "CP_Session", "rec_bars", tostring(rec_bars))
-            return
-        end
+local function setRecBarsIndex(i)
+    rec_bars = REC_BARS[i] or 1
+    r.SetProjExtState(0, "CP_Session", "rec_bars", tostring(rec_bars))
+end
+
+-- The status line carries the transport, so it changes — but only when the
+-- transport does. Cached on (playing, tempo): string.format in a frame path
+-- allocates, and this one runs on every frame of a window that redraws
+-- continuously while clips play.
+local stat = { play = nil, bpm = -1, s = "" }
+local STAT_HINT =
+    "  ·  left strip = launch/stop/record · click the cell = edit in CP_Editor · triangle = scene"
+
+local function statusLine()
+    local playing = Loop.Playing() and true or false
+    local bpm = Loop.Tempo() or 0
+    if stat.play ~= playing or stat.bpm ~= bpm then
+        stat.play, stat.bpm = playing, bpm
+        stat.s = string.format("%s   %.1f BPM%s", playing and "PLAY" or "STOP",
+                               bpm, STAT_HINT)
     end
-    rec_bars = 1
+    return stat.s
 end
 
 -- ---------------------------------------------------------------------------
@@ -1081,28 +1092,34 @@ local function frame(theme)
         if empty and Loop.HasSavedState() then Loop.LoadState(false) end
     end
 
-    -- toolbar
-    UI.SetFontH2()
-    UI.Text("Session")
-    UI.SetFontBody()
-    UI.SameLine(12)
+    -- COMMAND ZONE. Same shape, same height, same right-hand rank as every
+    -- other CP window: the point of a primitive is that this stops being a
+    -- decision each app makes on its own.
+    UI.BeginBar("cmd", TITLE_OPTS)
+    UI.BarRight()
+    if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
+    UI.BarSep()
+    UI.BarLeft()
     if attached then
-        if UI.Button("clock", Loop.GetFreeRun() and "Clock: Free" or "Clock: Follow") then
-            Loop.SetFreeRun(not Loop.GetFreeRun())
+        local free = Loop.GetFreeRun()
+        if UI.BarToggle("clock", "Clock", nil, free,
+                        free and "Free run: clips launch with the transport stopped"
+                              or "Follow the host transport") then
+            Loop.SetFreeRun(not free)
         end
-        UI.SameLine()
-        if UI.Button("q", qLabel()) then cycleQ() end
-        UI.SameLine()
-        -- Q says WHEN a take starts, this says how long it runs. Together they
-        -- are the whole answer to "will it start where I mean it to".
-        if UI.Button("recbars", recBarsLabel()) then cycleRecBars() end
-        UI.SameLine()
-        if UI.Button("stopall", "Stop all") then stopAll() end
-        UI.SameLine()
-        if UI.Button("panic", "Panic") then Loop.Panic() end
-        UI.SameLine()
-        UI.HelpButton("help", HELP_TEXT)
+        -- Q says WHEN a take starts, Rec says how long it runs. Together they
+        -- are the whole answer to "will it start where I mean it to". Both are
+        -- choices among a handful, so both are combos: the wheel walks them and
+        -- the current setting is readable without clicking.
+        local qch, qi = UI.BarCombo("q", qIndex(), Q_ITEMS, false, Q_OPTS)
+        if qch then setQIndex(qi) end
+        local rch, ri = UI.BarCombo("recbars", recBarsIndex(), REC_ITEMS, false, Q_OPTS)
+        if rch then setRecBarsIndex(ri) end
+        UI.BarSep()
+        if UI.BarIcon("stopall", "Stop", "Stop every clip") then stopAll() end
+        if UI.BarIcon("panic", "Mute", "Panic: all notes off") then Loop.Panic() end
     end
+    UI.EndBar()
     UI.Spacing(4)
 
     -- This window IS the engine's front end — a grid with no engine can do
@@ -1276,19 +1293,17 @@ local function frame(theme)
 
     UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 4)
 
-    -- status
-    UI.SetFontCaption()
+    -- status zone
+    local msg
     if state.flash_msg ~= "" then
         if r.time_precise() < state.flash_until then
-            UI.Text(state.flash_msg, { disabled = true })
+            msg = state.flash_msg
         else
             state.flash_msg = ""
         end
-    else
-        UI.Text("Left strip = launch/stop/record · click the cell = edit in CP_Editor · triangle = scene",
-                { disabled = true })
     end
-    UI.SetFontBody()
+    if not msg then msg = statusLine() end
+    UI.AppStatus(msg)
 
     if Loop.Playing() then UI.RequestRedraw() end
 end
