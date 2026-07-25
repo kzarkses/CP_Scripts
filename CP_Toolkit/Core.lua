@@ -490,6 +490,9 @@ local reveal_rects = {}          -- flat x,y,w,h — never reallocated
 local reveal_n = 0
 local REVEAL_MAX = 400           -- a full window of rows, and a hard stop
 local REVEAL_EPS = 0.002         -- ~0.5/255: same colour, not "close"
+-- Set while a composite shape paints itself out of primitives, so the shape
+-- is marked once instead of once per piece.
+local reveal_suspend = false
 
 function Core.SetReveal(r, g, b)
     if r then
@@ -500,6 +503,34 @@ function Core.SetReveal(r, g, b)
 end
 
 function Core.IsRevealing() return reveal_on end
+
+-- The cross-window channel. Read here rather than from the user callback,
+-- because the callback is exactly what an idle script skips.
+--
+-- One frame in ten: GetExtState hands back a NEW Lua string every call and
+-- this runs in every open script, so polling it per frame would be a steady
+-- drip of garbage for a design-time feature. Six checks a second is instant.
+local _rv_str, _rv_tick = "", 0
+function Core._PollReveal()
+    _rv_tick = _rv_tick + 1
+    if _rv_tick < 10 then return end
+    _rv_tick = 0
+    local s = reaper.GetExtState("CP_Toolkit", "reveal")
+    if s == _rv_str then return end
+    _rv_str = s
+    if s == "" then
+        reveal_on = false
+    else
+        local r, g, b = s:match("^([%d%.]+),([%d%.]+),([%d%.]+)$")
+        r, g, b = tonumber(r), tonumber(g), tonumber(b)
+        if r then
+            reveal_on, reveal_r, reveal_g, reveal_b = true, r, g, b
+        else
+            reveal_on = false
+        end
+    end
+    state._request_redraw = true
+end
 
 -- Called once per frame, after the user's drawing. Outlines what matched.
 function Core.FlushReveal()
@@ -520,6 +551,7 @@ function Core.FlushReveal()
 end
 
 local function reveal_record(x, y, w, h, r, g, b)
+    if reveal_suspend then return end
     if reveal_n >= REVEAL_MAX * 4 then return end
     if r < reveal_r - REVEAL_EPS or r > reveal_r + REVEAL_EPS then return end
     if g < reveal_g - REVEAL_EPS or g > reveal_g + REVEAL_EPS then return end
@@ -605,6 +637,14 @@ end
 
 function Core.DrawLine(x1, y1, x2, y2, r, g, b, a)
     _stats._draw_count = _stats._draw_count + 1
+    if reveal_on then
+        -- A line's bounding box, padded so a 1 px rule still shows a mark.
+        local lx = x1 < x2 and x1 or x2
+        local ly = y1 < y2 and y1 or y2
+        local lw = x1 < x2 and (x2 - x1) or (x1 - x2)
+        local lh = y1 < y2 and (y2 - y1) or (y1 - y2)
+        reveal_record(lx, ly, lw < 2 and 2 or lw, lh < 2 and 2 or lh, r, g, b)
+    end
     local cx1, cy1, cx2, cy2 = _clip_line(x1, y1, x2, y2)
     if not cx1 then return end
     gfx.set(r, g, b, a or 1)
@@ -618,6 +658,15 @@ end
 -- disappears the moment its panel starts to scroll out).
 function Core.DrawText(text, x, y, r, g, b, a)
     _stats._draw_count = _stats._draw_count + 1
+    if reveal_on then
+        -- Measuring here is normally the thing this function goes out of its
+        -- way to avoid, but it only happens while revealing — and text IS a
+        -- themed colour, so leaving it out would make `text`, `text_mute` and
+        -- the whole Text group unrevealable, i.e. six keys you could never
+        -- locate.
+        local mw, mh = Core.MeasureText(text)
+        reveal_record(x, y, mw, mh, r, g, b)
+    end
     if clip_top > 0 then
         local cx = clip_x[clip_top]
         local cy = clip_y[clip_top]
@@ -1864,6 +1913,14 @@ function Core.DrawRoundRectFilled(x, y, w, h, radius, r, g, b, a)
         Core.DrawRect(x, y, w, h, r, g, b, a)
         return
     end
+    -- Record the WHOLE control once, then mute the pieces. This is built from
+    -- three slabs and four discs, so without the guard a rounded button — and
+    -- the default theme rounds everything — came out as three separate
+    -- outlines side by side instead of one box round the thing you pointed at.
+    if reveal_on then
+        reveal_record(x, y, w, h, r, g, b)
+        reveal_suspend = true
+    end
     Core.DrawRect(x + radius, y, w - radius * 2, h, r, g, b, a)
     Core.DrawRect(x, y + radius, radius, h - radius * 2, r, g, b, a)
     Core.DrawRect(x + w - radius, y + radius, radius, h - radius * 2, r, g, b, a)
@@ -1871,10 +1928,14 @@ function Core.DrawRoundRectFilled(x, y, w, h, radius, r, g, b, a)
     Core.DrawCircle(x + w - radius - 1, y + radius, radius, r, g, b, a, true)
     Core.DrawCircle(x + radius, y + h - radius - 1, radius, r, g, b, a, true)
     Core.DrawCircle(x + w - radius - 1, y + h - radius - 1, radius, r, g, b, a, true)
+    reveal_suspend = false
 end
 
 function Core.DrawCircle(x, y, radius, r, g, b, a, filled, antialias)
     _stats._draw_count = _stats._draw_count + 1
+    if reveal_on then
+        reveal_record(x - radius, y - radius, radius * 2, radius * 2, r, g, b)
+    end
     -- Skip only when the bounding box is FULLY outside the clip rect. gfx
     -- has no per-pixel scissor; circles partially overlapping the clip
     -- still draw cleanly enough that we don't need a hard cutoff (matches
@@ -2024,6 +2085,9 @@ local function _can_skip_frame()
     if state.active ~= nil then return false end
     if state._has_active_animation then return false end
     if state._request_redraw then return false end
+    -- Revealing means every window must keep painting, including the ones
+    -- nobody is touching — that is the entire point of it.
+    if reveal_on then return false end
 
     -- Anchored overlays can skip *if* the anchor target didn't move
     -- this frame. We tick the anchor here in the cheap path so it can
@@ -2061,6 +2125,13 @@ end
 function Core.Run(loop_fn)
     user_loop_fn = loop_fn
     local function frame()
+        -- Reveal has to be polled HERE, above the idle check, not from the
+        -- user callback. A script sitting still skips the whole callback, so
+        -- polling inside it meant an idle window never learned the mode had
+        -- been switched on and therefore never woke up to draw the marks —
+        -- the feature only ever worked in whichever window you were already
+        -- moving the mouse over.
+        Core._PollReveal()
         -- ----- Idle skip check (cheap path, runs first) -----
         if _can_skip_frame() then
             -- Keyboard can't be observed without consuming: poll it here.
