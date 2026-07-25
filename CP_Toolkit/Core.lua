@@ -172,6 +172,11 @@ end
 -- instead of running full frames continuously.
 Core.BLINK_PERIOD = 1.0
 Core.BLINK_ON = 0.55
+
+-- Does a bare ESC close the window? True by default (the convention for a
+-- floating tool). An app whose ESC means something — clear the selection,
+-- leave a mode — turns it off with UI.Init{ close_on_esc = false }.
+Core._close_on_esc = true
 function Core.ScheduleBlinkRedraw(blink_start)
     local now = reaper.time_precise()
     local phase = (now - blink_start) % Core.BLINK_PERIOD
@@ -2482,7 +2487,11 @@ function Core.Run(loop_fn)
                 Core.ClearPopup()
             elseif state.focus ~= nil then
                 state.focus = nil
-            else
+            elseif Core._close_on_esc then
+                -- Only for windows that opted in. An editor where ESC is also
+                -- an editing key must not close on the second press: "cancel
+                -- what I am doing" and "throw away the window" are not the
+                -- same intention, and one of them is expensive.
                 want_close = true
             end
         end

@@ -111,6 +111,14 @@ function UI.Init(title, width, height, opts)
         Core.SetIdleThrottle(false)
     end
 
+    -- ESC closes the window by default. Pass close_on_esc = false when ESC
+    -- already means something in this app — clearing a selection, leaving a
+    -- mode — so a second press does nothing instead of throwing the window
+    -- away. The layered dismissals (popup, then focus) still run either way.
+    if opts.close_on_esc == false then
+        Core._close_on_esc = false
+    end
+
     -- Register a default OnClose so persist works even if the user never
     -- calls UI.OnClose. UI.OnClose() will replace this with a wrapped version.
     if UI._persist_id then
