@@ -96,6 +96,10 @@ local opts = {
     -- detecting them and then not being able to land on them would be an odd
     -- thing to ask for. The grid still wins unless one is genuinely nearer.
     snap_trans = cfg.snap_trans ~= false,
+    -- What a time selection means to playback when the loop is off. On by
+    -- default: a range you drew is a range you meant, and hearing the sound
+    -- walk straight through it reads as the editor ignoring you.
+    stop_at_sel = cfg.stop_at_sel ~= false,
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -155,6 +159,7 @@ local function persistConfig()
     cfg.loop       = opts.loop
     cfg.wave_snap  = opts.wave_snap
     cfg.snap_trans = opts.snap_trans
+    cfg.stop_at_sel = opts.stop_at_sel
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -913,6 +918,50 @@ local function previewSpan(from)
     return s, pb, pa
 end
 
+-- ONE place decides what section is in force while a preview runs.
+--
+-- The time selection is never IGNORED. You may start outside it — that is what
+-- plain Space is for — but the moment the playhead enters it, its edges take
+-- over: loop back when the loop is on, stop at the end when you asked for
+-- that. Arming it on arrival rather than at the press is what lets a start
+-- from anywhere and a respected range be the same thing.
+--
+-- It also re-asserts the section every frame, so MOVING the selection while it
+-- plays moves what plays instead of being ignored until the next press.
+local function pollSection()
+    if not Audio.IsPlaying() then
+        state.fenced = false
+        return
+    end
+
+    -- Does the selection govern playback at all right now? Only if there is
+    -- one AND something says what its end means: the loop, the stop rule, or
+    -- the fact that you asked to play it.
+    local governs = state.sel_a
+        and (opts.loop or opts.stop_at_sel or state.play_from == "sel")
+
+    if not governs then
+        -- The material's own span, re-asserted — which also RELEASES a fence
+        -- if the rule that armed it was just switched off.
+        state.fenced = false
+        local _, pe, pl = previewSpan(state.play_from)
+        Audio.SetLoop(opts.loop, pe, pl)
+        return
+    end
+
+    if not state.fenced and state.play_from ~= "sel" then
+        local pos = Audio.Progress()
+        if not (pos and pos >= state.sel_a and pos < state.sel_b) then
+            -- outside it still: the material's span applies until we arrive
+            local _, pe, pl = previewSpan(state.play_from)
+            Audio.SetLoop(opts.loop, pe, pl)
+            return
+        end
+        state.fenced = true
+    end
+    Audio.SetLoop(opts.loop, state.sel_b, state.sel_a)
+end
+
 -- from: "cursor" (default) | "sel" | "start"
 local function togglePlay(from)
     if state.mode == "clip" then
@@ -929,6 +978,7 @@ local function togglePlay(from)
         return
     end
     state.play_from = from or "cursor"
+    state.fenced = false
     local ps, pe, pl = previewSpan(from)
     PLAY_OPTS.start_s = ps
     -- The section is the played PART either way; the loop only decides whether
@@ -1099,6 +1149,14 @@ local function openSettings()
         } },
         { label = "Preview through item's track (its FX)", checked = opts.thru_track,
           action = function() opts.thru_track = not opts.thru_track markDirty() end },
+        { separator = true },
+        -- The rule that says what a time selection MEANS to playback when the
+        -- loop is off. With the loop on it loops; with this on it stops there;
+        -- with both off the selection is only a range you act on, and the
+        -- sound runs past it.
+        { label = "Playback stops at the end of the time selection",
+          checked = opts.stop_at_sel,
+          action = function() opts.stop_at_sel = not opts.stop_at_sel markDirty() end },
     })
 end
 
@@ -1142,6 +1200,12 @@ Space plays the SAMPLE from wherever the cursor is; only Shift+Space
 plays the time selection. A loop turns back to the start of the part
 being played, never to the point you started from — and moving the
 selection while it loops changes what loops.
+
+The time selection is never IGNORED. Start outside it if you like:
+the moment the playhead enters it, its edges take over — it loops if
+LOOP is on, and it stops at the end if "Playback stops at the end of
+the time selection" is on (Settings, on by default). Turn both off and
+the selection becomes a range you act on rather than one you hear.
 
 A CLICK places the edit cursor and leaves the selection alone: only a
 DRAG changes a selection. SHIFT ignores the snap, everywhere.
@@ -1272,8 +1336,7 @@ local function barAudio(theme)
                     "Loop the played part (selection, else the whole region)") then
         opts.loop = not opts.loop
         markDirty()
-        local _, pe, pl = previewSpan()
-        Audio.SetLoop(opts.loop, pe, pl)
+        -- nothing to compute: pollSection re-asserts the section every frame
     end
     if UI.BarIcon("zfit", "Maximize", "Fit to window") then fitView() end
     if UI.BarIcon("zin", "ZoomIn", "Zoom in") then
@@ -3333,13 +3396,7 @@ local function frame(theme)
     pollTarget()
     Kit.Poll()
     Audio.Poll()
-    -- The section is RE-ASSERTED while it plays. Moving the time selection
-    -- with a loop running should change what loops — it was captured at the
-    -- press, so the first selection stayed stuck until you pressed play again.
-    if Audio.IsPlaying() and opts.loop then
-        local _, pe, pl = previewSpan(state.play_from)
-        Audio.SetLoop(true, pe, pl)
-    end
+    pollSection()
     -- The drag-out lives OUTSIDE the window once it starts, so it is polled
     -- from the frame rather than from the wave's input pass.
     handleDragOut()
