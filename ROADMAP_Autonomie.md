@@ -1057,9 +1057,26 @@ branche.
   sortait quand même.
   Un lancement et le moment où il démarre sont **deux choses différentes** dès
   que l'horloge suit. `audioPlay` **arme** la cellule, `pollAudio` la démarre
-  quand l'horloge tourne (alignée à la mesure), lui **reprend** l'aperçu quand
-  le transport s'arrête, et la garde armée entre les deux. Une cellule armée
-  porte la couleur d'un lancement en file : même état, même signe.
+  quand l'horloge tourne, lui **reprend** l'aperçu quand le transport s'arrête,
+  et la garde armée entre les deux. Une cellule armée porte la couleur d'un
+  lancement en file : même état, même signe.
+- [x] **`D_MEASUREALIGN` est parti, et avec lui les deux derniers symptômes.**
+  Il tient **chaque passe** de boucle sur la grille de mesures, pas seulement la
+  première : un sample qui ne fait pas exactement N mesures attend donc à la fin
+  de chaque passe — c'est le trou entre deux instances. Et il ne sait aligner
+  que sur une **mesure**, ce qui est exactement pourquoi un son ignorait le Q
+  quand tous les clips MIDI l'honoraient. Le libérer après coup ne suffisait pas.
+  La frontière est donc **la nôtre** maintenant (`launchBeat`), prise sur
+  l'horloge du moteur et avec **la règle du JSFX recopiée** — une position à
+  moins de 0.05 beat après une frontière compte comme dessus — pour qu'un son et
+  un clip MIDI lancés ensemble atterrissent ensemble.
+  Une frame fait 16 ms, donc on arrive toujours un cheveu après la frontière
+  visée. Démarrer là laisserait le son en retard de ce cheveu **aussi longtemps
+  qu'il boucle** : le dépassement est donc pris sur le **devant** du sample
+  (`D_POSITION`), le clip atterrit en phase, et ce sont quelques millisecondes
+  d'attaque que personne n'entend. La cible est reprise à chaque départ du
+  transport — une frontière calculée sur une tête de lecture gelée est un numéro
+  de beat dans un passé que le transport s'apprête à quitter.
 
 ### CP_Sampler — le drumkit et l'instrument sont deux instruments
 

@@ -117,14 +117,14 @@ the copy keeps it.
 
 ## Sound or MIDI, same cell
 Any cell takes either. Drop a sound from the Media Explorer and it
-loops TEMPO-MATCHED (native stretch), measure-aligned when the
-transport runs, through that column's track. Drop or write MIDI and it
-plays through the engine. A track still plays ONE thing at a time,
-whichever kind — launching a sound stops the MIDI under it and the
-other way round. A sound obeys the clock like everything else: with
-Clock: Follow and the transport stopped it is ARMED and blinks, and it
-starts when the transport does. (Sounds use the interim preview engine;
-the sample-locked one comes later.)
+loops TEMPO-MATCHED (native stretch) through that column's track. Drop
+or write MIDI and it plays through the engine. A track still plays ONE
+thing at a time, whichever kind — launching a sound stops the MIDI
+under it and the other way round. A sound obeys the clock like
+everything else: it lands on the Q boundary, and with Clock: Follow and
+the transport stopped it is ARMED and blinks until the transport rolls.
+(Sounds use the interim preview engine; the sample-locked one comes
+later.)
 
 ## The mixer strip
 The band under the grid (toggle it beside the "?") balances what you
@@ -368,7 +368,7 @@ end
 -- track plays one thing, whatever its kind.
 -- ---------------------------------------------------------------------------
 local HAS_CF = r.CF_CreatePreview ~= nil
-local aplay = {}   -- [t] = { prev, src, s } the sound this track is playing
+local aplay = {}   -- [t] = { s, c, at, prev, src } the sound this track holds
 
 local function audioStop(t)
     local a = aplay[t]
@@ -385,12 +385,32 @@ local function audioRelease(t)
     if not a then return end
     if a.prev then pcall(r.CF_Preview_Stop, a.prev) end
     if a.src then r.PCM_Source_Destroy(a.src) end
-    a.prev, a.src, a.align = nil, nil, nil
+    a.prev, a.src, a.at = nil, nil, nil
 end
 
--- Actually make the sound. Split from audioPlay because a launch and the
--- moment it starts are two different things as soon as the clock follows.
-local function audioStart(t)
+-- WHERE A LAUNCH LANDS, on the engine's own clock (host beat when following,
+-- the free clock otherwise). This is the JSFX's rule, copied on purpose: a
+-- position within 0.05 beat past a boundary counts as ON it, anything else
+-- waits for the next one. A sound and a MIDI clip launched together must land
+-- together, and they only do if they answer the same question the same way.
+local Q_SLOP = 0.05
+local function launchBeat()
+    local pb = Loop.EngineBeat()
+    local q = Loop.GetLaunchQ() or 0
+    if q <= 0.001 then return pb end
+    local qph = pb - floor(pb / q) * q
+    if qph < Q_SLOP then return pb - qph end
+    return pb - qph + q
+end
+
+-- Actually make the sound, at the beat we have REACHED — which is a hair past
+-- the boundary we aimed at, because a frame is 16 ms wide. Starting there and
+-- then would leave the sound late by that hair for as long as it loops, so the
+-- overshoot is taken off the FRONT of the sample instead: the clip lands in
+-- phase, at the cost of a few ms of attack nobody hears. (A jump in the
+-- transport can make the overshoot enormous; past a quarter second it is not
+-- an overshoot any more, and the clip starts whole.)
+local function audioStart(t, beat)
     local a = aplay[t]
     if not a or a.prev then return end
     local c = a.c
@@ -408,11 +428,21 @@ local function audioStart(t)
         r.CF_Preview_SetValue(prev, "B_PPITCH", 1)
     end
     r.CF_Preview_SetValue(prev, "B_LOOP", 1)
-    local align = false
-    if (r.GetPlayState() & 1) == 1 then
-        r.CF_Preview_SetValue(prev, "D_MEASUREALIGN", 1)
-        align = true
+    -- No D_MEASUREALIGN. It holds EVERY loop pass to the bar grid, not only the
+    -- first, so a sample that is not exactly N measures long waits at the end
+    -- of each pass — the gap between two instances. And it can only align to a
+    -- MEASURE, which is why a sound ignored the Q while every MIDI clip obeyed
+    -- it. The boundary is ours to pick now (launchBeat), on the engine's clock
+    -- and by the engine's rule, so the launch is quantized and the loop runs.
+    local skip = 0
+    if beat and a.at then
+        local tempo = Loop.Tempo()
+        if tempo and tempo > 1 then
+            skip = (beat - a.at) * (60 / tempo) * rt
+            if skip < 0 or skip > 0.25 then skip = 0 end
+        end
     end
+    if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
     -- Route through the track this column stands for, so its FX apply — but
     -- NOT when that track hosts a virtual instrument: a VSTi replaces its
     -- input with its own output, so the sound would simply vanish into it.
@@ -428,7 +458,7 @@ local function audioStart(t)
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
     r.CF_Preview_Play(prev)
-    a.prev, a.src, a.align = prev, src, align
+    a.prev, a.src = prev, src
 end
 
 -- Is the clock RUNNING? Free run has its own, which never stops; following
@@ -438,47 +468,51 @@ local function clockRolling()
     return (r.GetPlayState() & 1) == 1
 end
 
--- Launch a sound cell. With the clock free it starts on the spot; following a
--- stopped transport it is ARMED and starts when the transport does — which is
--- what following MEANS, and what the MIDI lanes have always done (the engine
--- advances on the host beat, so a launch queued on a stopped transport simply
--- waits). Sound cells used to ignore that and start immediately: the grid
--- showed a clip waiting for a transport, and the sound came out anyway.
+-- Launch a sound cell: it is ARMED here and pollAudio starts it on the Q
+-- boundary, exactly as a MIDI clip is queued and fires on the boundary. Two
+-- things follow from that and both were wrong before: a launch with the clock
+-- following a STOPPED transport waits for the transport (there is no beat to
+-- land on until then), and a launch with Q: 2 bars waits two bars instead of
+-- landing on whatever measure came next.
 local function audioPlay(t, s, c)
     audioStop(t)
     if not HAS_CF then flash("Audio cells need the SWS extension") return end
-    aplay[t] = { s = s, c = c }
-    if clockRolling() then audioStart(t) end
+    local a = { s = s, c = c }
+    aplay[t] = a
+    -- Q: Off means NOW, and now is this frame — waiting for the next poll
+    -- would put a frame of silence under every unquantized launch.
+    if clockRolling() then
+        a.at = launchBeat()
+        local beat = Loop.EngineBeat()
+        if beat >= a.at then audioStart(t, beat) end
+    end
 end
 
 -- Per-frame reconciliation of the sound cells with the clock:
---   * armed + the clock rolling      → start (measure-aligned)
---   * playing + the transport left   → give the preview back, stay armed
---   * playing + still aligned        → release the align (see below)
+--   * armed, clock stopped          → no target yet (see below)
+--   * armed, clock rolling          → take a target, start when it is reached
+--   * playing, the transport left   → give the preview back, stay armed
 --
--- CF_Preview's measure align holds EVERY loop pass to the grid, not only the
--- first. A sample that is not exactly N measures long therefore WAITS at the
--- end of each pass — the gap that appears with Clock: Follow and never with
--- Free (where the transport is stopped, so the align was never set).
--- So: align the START, then release it. The launch still lands on the bar, and
--- the loop runs seamlessly afterwards, which is what a session clip does
--- everywhere else. Released only once playback has actually begun — clearing
--- it while the preview is still waiting for the bar would start it on the spot.
+-- The target is dropped whenever the clock is not rolling and taken again when
+-- it is. A boundary computed on a frozen playhead is a beat number in a past
+-- the transport is about to leave: pressing play would either fire the clip at
+-- once or, worse, leave it waiting for a beat that will not come round for
+-- another minute.
 local function pollAudio()
     local rolling = clockRolling()
+    local beat = rolling and Loop.EngineBeat() or 0
     for t = 0, TRACKS - 1 do
         local a = aplay[t]
         if a then
             if not a.prev then
-                if rolling then audioStart(t) end
+                if not rolling then
+                    a.at = nil
+                else
+                    if not a.at then a.at = launchBeat() end
+                    if beat >= a.at then audioStart(t, beat) end
+                end
             elseif not rolling then
                 audioRelease(t)
-            elseif a.align then
-                local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
-                if ok and rv and pos and pos > 0 then
-                    pcall(r.CF_Preview_SetValue, a.prev, "D_MEASUREALIGN", 0)
-                    a.align = false
-                end
             end
         end
     end
