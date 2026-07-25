@@ -183,6 +183,20 @@ local function knobAngle(v)
     return KNOB_ANGLE_MIN + KNOB_SWEEP * v
 end
 
+-- A knob angle → a unit vector on screen.
+--
+-- This exists because the two coordinate systems in play do NOT agree, and
+-- mixing them is the bug it fixes. gfx.arc measures from UP, clockwise;
+-- cos/sin measure from RIGHT, counter-clockwise. The value pointer was drawn
+-- with cos(a), sin(a) straight from the angle handed to gfx.arc, so the
+-- needle sat 90 degrees off its own arc: a knob at zero drew its arc at
+-- 7:30 and pointed its needle at 9:00, and a knob at half pointed right
+-- while the arc ended at the top. The arc was always correct; the needle
+-- beside it never was.
+local function knobDir(a)
+    return sin(a), -cos(a)
+end
+
 local function get_knob_bg_buffer(size, bg_r, bg_g, bg_b, trk_r, trk_g, trk_b, tw)
     local entry = knob_bg_cache[size]
     if entry and entry.bg_r == bg_r and entry.bg_g == bg_g and entry.bg_b == bg_b
@@ -2119,11 +2133,11 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         -- Centre tick for a bipolar dial: the origin has to be visible even
         -- when the value sits on it and no arc is drawn at all.
         if opts.bipolar then
-            local ca, sa = cos(origin), sin(origin)
+            local dx, dy = knobDir(origin)
             local tc = theme.colors.border
             gfx.set(tc[1], tc[2], tc[3], tc[4] or 1)
-            gfx.line(cx + ca * (ar + 1), cy + sa * (ar + 1),
-                     cx + ca * (ar - tw - 1), cy + sa * (ar - tw - 1), 1)
+            gfx.line(cx + dx * (ar + 1), cy + dy * (ar + 1),
+                     cx + dx * (ar - tw - 1), cy + dy * (ar - tw - 1), 1)
         end
 
         -- Value pointer. The arc alone is genuinely hard to read at 28-34 px,
@@ -2132,17 +2146,17 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         -- Drawn INSIDE the track so it never collides with the arc; the two
         -- perpendicular half-alpha passes give it weight without a polygon.
         do
-            local ca, sa = cos(angle_val), sin(angle_val)
+            local dx, dy = knobDir(angle_val)
             local r0, r1 = radius * 0.30, ar - tw - 1.5
             if r1 > r0 then
                 local pc = theme.colors.text
                 gfx.set(pc[1], pc[2], pc[3], 0.85)
-                gfx.line(cx + ca * r0, cy + sa * r0, cx + ca * r1, cy + sa * r1, 1)
+                gfx.line(cx + dx * r0, cy + dy * r0, cx + dx * r1, cy + dy * r1, 1)
                 gfx.set(pc[1], pc[2], pc[3], 0.35)
-                gfx.line(cx + ca * r0 - sa, cy + sa * r0 + ca,
-                         cx + ca * r1 - sa, cy + sa * r1 + ca, 1)
-                gfx.line(cx + ca * r0 + sa, cy + sa * r0 - ca,
-                         cx + ca * r1 + sa, cy + sa * r1 - ca, 1)
+                gfx.line(cx + dx * r0 - dy, cy + dy * r0 + dx,
+                         cx + dx * r1 - dy, cy + dy * r1 + dx, 1)
+                gfx.line(cx + dx * r0 + dy, cy + dy * r0 - dx,
+                         cx + dx * r1 + dy, cy + dy * r1 - dx, 1)
             end
         end
 
