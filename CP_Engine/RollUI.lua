@@ -52,25 +52,48 @@ RollUI.SelSpan = selSpan
 
 -- How far a Duplicate should move the copy.
 --
--- Musicians think in bars, not in "the span of what I selected". A one-bar
--- pattern whose last note is a 16th ending just before the barline must repeat
--- at bar 2, not a 16th early — which is what the raw span gives. So the offset
--- is the distance from the BAR CONTAINING the selection start to the BAR END at
--- or after the selection end. Using barFloor(a) rather than a itself preserves
--- the pattern's position inside its bar (a phrase starting on the "and" of 1
--- lands on the "and" of 1 in the next bar).
+-- Musicians think in musical units, not in "the span of what I selected": a
+-- figure whose last note is a 16th ending just short of the next unit must
+-- repeat ON that unit, not a 16th early, which is what the raw span gives.
 --
--- Hosts that don't provide barFloor/barCeil keep the old span behaviour.
+-- WHICH unit is decided by what the selection already fills — that is the
+-- whole point. Four 16ths covering beat 1 repeat on beat 2; a full bar repeats
+-- on the next bar; a lone 16th repeats on the next grid step. Rounding the
+-- span UP to a whole number of that unit does the rest: a figure filling most
+-- of a bar rounds to the bar by itself, and one and a half bars rounds to two.
+--
+-- The offset is anchored on the selection, not on an absolute lattice, so the
+-- copy keeps the original's placement inside its unit for free — a phrase
+-- starting on the "and" of 1 lands on the "and" of 1 in the next unit — and it
+-- stays correct in both hosts, whose cache unit is beats for a loop and
+-- seconds for a take.
+local function ceilUnits(span, unit)
+    local n = math.ceil(span / unit - 1e-6)
+    return (n < 1 and 1 or n) * unit
+end
+
 local function dupOffset(ctx)
     local a, b = selBounds(ctx.Roll)
     if a == math.huge then return 0 end
+    local span = b - a
+    local grid = ctx.gridStep and ctx.gridStep(a) or 0
+
+    -- bar length in cache units, measured through the host's own bar map so
+    -- tempo maps and odd meters come out right. The probe has to clear
+    -- barCeil's "already on a barline" epsilon, hence half a grid step.
+    local bar
     if ctx.barFloor and ctx.barCeil then
-        local dt = ctx.barCeil(b) - ctx.barFloor(a)
-        if dt > 1e-9 then return dt end
+        local f = ctx.barFloor(a)
+        local c = ctx.barCeil(f + (grid > 0 and grid * 0.5 or 1e-3))
+        if c and c > f + 1e-9 then bar = c - f end
     end
-    local dt = b - a
-    if dt <= 0 then dt = ctx.gridStep(a) end
-    return dt
+    if bar and span >= bar - 1e-6 then return ceilUnits(span, bar) end
+
+    local beat = ctx.divToUnit and ctx.divToUnit(0.25) or nil
+    if beat and beat > 0 and span >= beat - 1e-6 then return ceilUnits(span, beat) end
+
+    if grid > 0 then return ceilUnits(span, grid) end
+    return span > 0 and span or 1
 end
 RollUI.DupOffset = dupOffset
 
