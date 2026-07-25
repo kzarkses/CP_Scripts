@@ -34,7 +34,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Consumer side
 -- ---------------------------------------------------------------------------
-local last_rect = nil   -- last published rect string (write only on change)
+-- last published rect, kept as NUMBERS: the per-frame path compares four
+-- integers and allocates nothing. Formatting only happens when the window
+-- actually moved (string.format in a defer loop is a real cost on a slow
+-- machine, multiplied by every open CP window).
+local lx1, ly1, lx2, ly2 = nil, nil, nil, nil
 
 function DragBus.Register(id)
     if not r then return false end
@@ -43,7 +47,7 @@ function DragBus.Register(id)
         r.SetExtState(SECTION, "targets",
                       list == "" and id or (list .. "," .. id), false)
     end
-    last_rect = nil
+    lx1 = nil
     return true
 end
 
@@ -53,11 +57,10 @@ function DragBus.RectSync(id)
     if not r then return end
     local x1, y1 = gfx.clienttoscreen(0, 0)
     local x2, y2 = gfx.clienttoscreen(gfx.w, gfx.h)
-    local rect = string.format("%d|%d|%d|%d", x1, y1, x2, y2)
-    if rect ~= last_rect then
-        last_rect = rect
-        r.SetExtState(SECTION, "rect_" .. id, rect, false)
-    end
+    if x1 == lx1 and y1 == ly1 and x2 == lx2 and y2 == ly2 then return end
+    lx1, ly1, lx2, ly2 = x1, y1, x2, y2
+    r.SetExtState(SECTION, "rect_" .. id,
+                  string.format("%d|%d|%d|%d", x1, y1, x2, y2), false)
 end
 
 function DragBus.Unregister(id)

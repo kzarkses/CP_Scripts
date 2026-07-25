@@ -527,6 +527,57 @@ local function openClip(c)
 end
 
 -- ---------------------------------------------------------------------------
+-- Drops INTO the editor. Two protocols, one destination:
+--   · the CP bus (Media Explorer, Session, Sampler…) — a Clip descriptor,
+--     so an audio drop keeps its region and a MIDI clip stays a clip;
+--   · plain OS files (Explorer, or any app that drops paths on the window).
+-- Dropping a sound here is the gesture that turns it into an instrument:
+-- it opens for editing, and the SEND cluster ships it to the Sampler
+-- (slices → pads, selection → pad, whole file → chromatic instrument)
+-- without ever touching the arrange.
+-- ---------------------------------------------------------------------------
+local BUS_ID = "editor"
+local drop_paths = {}   -- reused scratch (no per-frame allocation)
+
+local function handleFileDrops()
+    if gfx.getdropfile(0) == 0 then return end
+    for i = #drop_paths, 1, -1 do drop_paths[i] = nil end
+    local i = 0
+    while true do
+        local got, path = gfx.getdropfile(i)
+        if got == 0 or not path or path == "" then break end
+        if r.file_exists(path) then drop_paths[#drop_paths + 1] = path end
+        i = i + 1
+    end
+    gfx.getdropfile(-1)
+    if #drop_paths == 0 then return end
+    -- one editor, one target: the first file wins (the rest would just
+    -- replace each other), and the lock is respected like any other open
+    if setFile(drop_paths[1]) then
+        state.lock = true   -- a deliberate drop must not be stolen back by
+                            -- the next arrange selection
+        flash(#drop_paths > 1
+              and ("Opened " .. state.name .. "  ·  follow locked  ·  "
+                   .. (#drop_paths - 1) .. " more ignored")
+              or ("Opened " .. state.name .. "  ·  follow locked"))
+    end
+end
+
+local function busConsume()
+    if not state.registered then
+        state.registered = DragBus.Register(BUS_ID)
+    end
+    DragBus.RectSync(BUS_ID)   -- publish our screen rect (write-on-change)
+    local clip = Bus.TakeDrop(BUS_ID)
+    if not clip then return end
+    openClip(clip)
+    if state.mode then
+        state.lock = true
+        flash("Opened " .. state.name .. "  ·  follow locked")
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- Target polling (arrange selection follow + cross-script open + validity)
 -- ---------------------------------------------------------------------------
 local function pollTarget()
@@ -825,6 +876,15 @@ One editor for everything: an audio item, a MIDI item, a plain file,
 or a CLIP (a Looper lane / session cell — edits go back live). It
 follows the arrange selection; the lock keeps the current target.
 
+## Sound in, instrument out
+Drop a sound on this window — from the Media Explorer, the Session, or
+Windows — and it opens for editing (following the arrange selection
+locks itself, so the drop stays). Then the SEND cluster turns it into
+an instrument WITHOUT creating anything in the arrange: Detect finds
+the transients, "Slices to pads" scatters them across the kit, "Sel to
+pad" sends one region, "To instrument" spreads the whole sound across
+the keyboard (chromatic).
+
 ## Audio
 Drag = select, wheel = zoom, middle-drag = pan. Gain, fades, pitch,
 rate and reverse are the item's own, non-destructive — and the
@@ -903,8 +963,8 @@ local function drawOpsRow(theme)
     if state.mode ~= "item" then
         UI.SetFontCaption()
         UI.Text(state.mode == "file"
-                and "File mode — select, slice, send to Sampler pads. Select an arrange item for full editing."
-                or "Select an audio item in the arrange, or send a file from the Media Explorer.",
+                and "File mode — select, slice, send to Sampler pads (no item touched). Select an arrange item for full editing."
+                or "Drop a sound here (Media Explorer, Windows Explorer), or select an audio item in the arrange.",
                 { disabled = true })
         UI.SetFontBody()
         return
@@ -2409,6 +2469,8 @@ local function frame(theme)
         r.SetExtState("CP_Editor", "alive", tostring(now), false)
     end
 
+    handleFileDrops()   -- OS files dropped on the window
+    busConsume()        -- Clips dropped from another CP window
     pollTarget()
     Kit.Poll()
     Audio.Poll()
@@ -2541,6 +2603,7 @@ UI.OnClose(function()
     -- Core keeps a SINGLE OnClose callback — everything belongs here.
     flushApply()   -- a pending clip edit must reach its engine
     if state.aud_note then Kit.StuffNote(state.aud_note, false) end
+    if state.registered then DragBus.Unregister(BUS_ID) end
     persistConfig()
     Audio.Destroy()
     Peaks.Destroy()
