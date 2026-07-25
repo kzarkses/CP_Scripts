@@ -40,6 +40,7 @@ local G_LANE_CTRL  = 100   -- stride 8: +0 length_bars, +1 muted
 local G_LANE_STATE = 200   -- stride 8: +0 mode,+1 nev(shared),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 local G_TRANSPORT  = 3000  -- +0 tempo,+1 play_state,+2 beat,+3 spb,+4 ts_num,+5 ts_denom,+6 srate
 local G_INIT_COUNT = 3095  -- incremented by the JSFX @init: counts engine resets
+local G_FREEBEAT   = 3096  -- free clock position (the engine's beat when free-running)
 local G_ENG_LANES  = 3097  -- lanes the LOADED JSFX actually serves
 local G_BUILD      = 3094  -- behaviour revision of the LOADED JSFX
 local G_VERSION    = 3099
@@ -479,6 +480,12 @@ function Loop.Setup()
     r.Undo_EndBlock2(0, "CP Looper: set up", -1)
     Loop.SetFreeRun(true)
     Loop.SetArmedLane(nil)   -- nothing monitors until you arm something
+    -- One bar, as in Ableton — and for the same reason: the launch quantize is
+    -- what makes a clip swap, a scene and a TAKE land on the grid instead of
+    -- wherever the mouse happened to be. Zero is a legitimate choice, but it
+    -- is a terrible default: it makes the A/B twin buffer pointless and it
+    -- starts a recording mid-bar.
+    Loop.SetLaunchQ(Loop.TsNum())
     return router
 end
 
@@ -739,10 +746,16 @@ end
 
 -- "busy" = sounding or about to: a queued launch already belongs to the half
 -- that will play, otherwise the swap would flicker back for one frame.
+-- ARMED (4) and a queued REC (pending 3) count for the same reason — a take
+-- waiting on the transport, or on the next bar line, is the half the user is
+-- looking at. Leaving them out let the live half flip to the twin between the
+-- click and the first captured note, and everything watching the recording
+-- then watched the wrong lane.
 local function laneBusy(lane)
     local m = gread(G_LANE_STATE + lane * 8 + 0) or 0
-    if m == 3 or m == 5 or m == 1 then return true end
-    return (gread(G_LANE_STATE + lane * 8 + 6) or 0) == 1
+    if m == 3 or m == 5 or m == 1 or m == 4 then return true end
+    local p = gread(G_LANE_STATE + lane * 8 + 6) or 0
+    return p == 1 or p == 3
 end
 
 local function resolveLive()
@@ -878,6 +891,16 @@ function Loop.Playing()
     return (math.floor(ps) & 1) == 1
 end
 function Loop.Beat()    return attached and gread(G_TRANSPORT + 2) or 0 end
+
+-- The clock the ENGINE is actually on: the host's beat when following it, its
+-- own free-running beat otherwise. PendingTarget is expressed on THIS
+-- timeline, so a countdown built on Loop.Beat() would be wrong precisely when
+-- the transport is stopped — which is when a countdown is worth the most.
+function Loop.EngineBeat()
+    if not attached then return 0 end
+    if Loop.GetFreeRun() then return gread(G_FREEBEAT) or 0 end
+    return gread(G_TRANSPORT + 2) or 0
+end
 function Loop.TsNum()   local v = attached and gread(G_TRANSPORT + 4) or 4; return v > 0 and v or 4 end
 -- non-zero once the JSFX has run its @init at least once (engine alive)
 function Loop.EngineAlive() return attached and gread(G_VERSION) >= 1 end
@@ -1060,6 +1083,16 @@ local function num(v)          -- compact, still exact enough for beats
     return string.format("%.6g", v or 0)
 end
 
+-- A launch quantize stored before v4 cannot have been an informed "off": a
+-- queued take had no visible waiting state to choose against, and off also
+-- makes the A/B twin buffer — which exists only so a swap lands on the
+-- boundary — do nothing at all. So an older zero becomes one bar; from v4 on,
+-- a zero is a decision and is restored as written.
+local function migrateQ(ver, q)
+    if ver ~= "4" and (q or 0) <= 0 then return Loop.TsNum() end
+    return q or 0
+end
+
 function Loop.Serialize()
     if not attached then return "" end
     local out = { "4",
@@ -1109,7 +1142,7 @@ function Loop.Deserialize(str)
             -- project — exactly the leak this replaced — so it is dropped.
             local a = (ver == "4") and math.floor(tonumber(arm) or -1) or -1
             Loop.SetArmedLane(a >= 0 and a or nil)
-            if lq then Loop.SetLaunchQ(tonumber(lq) or 0) end
+            if lq then Loop.SetLaunchQ(migrateQ(ver, tonumber(lq))) end
         end
     end
 
@@ -1205,7 +1238,7 @@ function Loop.LoadGlobals()
     -- decision, and re-arming lane 0 from it would reopen the preview leak
     local a = (fields[1] == "4") and math.floor(tonumber(arm) or -1) or -1
     Loop.SetArmedLane(a >= 0 and a or nil)
-    if lq then Loop.SetLaunchQ(tonumber(lq) or 0) end
+    if lq then Loop.SetLaunchQ(migrateQ(fields[1], tonumber(lq))) end
     return true
 end
 

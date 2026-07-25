@@ -85,10 +85,23 @@ the one on the left); the triangle beside a row launches that whole
 scene, and tracks with no clip in it stop, as in Ableton.
 
 ## Recording into a cell
-Arm a track with the circle in its header (one at a time — the engine
-monitors one), then click any EMPTY cell of that track: capture starts
-quantized, stops by itself on the loop's length, and what you played
-lands in that cell.
+1. ARM the track — the circle in its header. One track at a time: the
+   armed track is the one your playing is heard through, so arming is
+   also how you choose which instrument you are playing.
+2. Click the circle in any EMPTY cell of that track.
+3. Play. A MIDI keyboard, or REAPER's virtual keyboard. Clicking pads in
+   CP_Sampler does NOT record — those are previews, not playing.
+
+The take does not start on your click: it waits for the next Q boundary,
+and the cell counts the beats down so you can come in on time. It then
+records for "Rec: N bars" and closes itself — there is nothing to press
+to end it. A second click on the blinking button finalizes a take early,
+or drops one that has not started.
+
+With Clock: Follow and the transport stopped, the cell says PLAY: it is
+armed and waiting for the transport. Press play and the take begins at
+the next boundary. With Clock: Free the engine has its own clock, so it
+starts without touching REAPER's transport.
 
 ## Editing
 The button strip on the left of a cell is the transport; clicking
@@ -258,6 +271,35 @@ local function cycleQ()
     else nq = 0 end
     Loop.SetLaunchQ(nq)
     qlbl.q = -1
+end
+
+-- How long a take runs. The engine records for the lane's length and closes
+-- the take itself (one click in, nothing to press to end it) — so unlike
+-- Ableton, where a session recording is open-ended until you stop it, the
+-- length has to be known BEFORE the take. Leaving it to whatever the lane
+-- happened to hold made it unknowable; it is a stated setting now, next to
+-- the quantize that says when the take starts. Saved with the project.
+local REC_BARS = { 1, 2, 4, 8 }
+local rec_bars = 1
+local rblbl = { b = -1, s = "" }
+
+local function recBarsLabel()
+    if rblbl.b ~= rec_bars then
+        rblbl.b = rec_bars
+        rblbl.s = "Rec: " .. (rec_bars == 1 and "1 bar" or (rec_bars .. " bars"))
+    end
+    return rblbl.s
+end
+
+local function cycleRecBars()
+    for i = 1, #REC_BARS do
+        if REC_BARS[i] == rec_bars then
+            rec_bars = REC_BARS[i % #REC_BARS + 1]
+            r.SetProjExtState(0, "CP_Session", "rec_bars", tostring(rec_bars))
+            return
+        end
+    end
+    rec_bars = 1
 end
 
 -- ---------------------------------------------------------------------------
@@ -562,30 +604,67 @@ local function armTrack(t)
     end
 end
 
+-- Recording into an empty slot is a clip SWAP like any other: the track may
+-- be playing something else, and that something has to leave on the same
+-- boundary the take arrives on. So the take goes into the silent twin
+-- whenever the live half is busy, exactly as launchCell does. Sending REC to
+-- the live half instead would have cleared the clip the track was playing.
 local function recCell(t, s)
+    audioStop(t)                            -- a sound cell on this track leaves
     local live = liveLane(t)
-    Loop.SetArmedLane(live)   -- on the half that will actually capture
-    Loop.SetLaneTag(live, cellTag(t, s))   -- the take lands in THIS cell
-    Loop.Rec(live)            -- quantized, auto-stops on the lane's length
-    rec = { t = t, s = s }
+    local other = (live == t) and (t + TRACKS) or t
+    if Loop.Pending(other) == 1 then Loop.StopClip(other) end
+    local busy = isRunning(live) or Loop.Pending(live) == 1
+    local lane = busy and twinLane(t) or live
+    Loop.SetArmedLane(lane)                 -- monitor the half that captures
+    Loop.SetLaneTag(lane, cellTag(t, s))    -- the take lands in THIS cell
+    Loop.SetLengthBars(lane, rec_bars)      -- stated, not inherited from the lane
+    Loop.Rec(lane)                          -- quantized; auto-stops on the length
+    if busy then Loop.StopClip(live) end    -- outgoing clip leaves on that boundary
+    rec = { t = t, s = s, lane = lane, seen = false, t0 = r.time_precise() }
     cur[t] = s
 end
 
 -- The capture is the engine's business; we only watch for its end and keep
 -- what it produced. Recording finishes into "playing" (the loop rolls on).
+--
+-- It watches the lane the command was SENT TO, never "the track's live lane":
+-- the live half moves as clips swap, and following it made this poll read a
+-- different clip halfway through a take.
+--
+-- `seen` is the other half of the same lesson. A command does not take effect
+-- on the frame it is issued — the engine consumes one per audio block — so
+-- for a few frames the lane is still mode 0, because the slot was empty.
+-- Reading that as "cleared under us" dropped the recording before it had
+-- started: the take ran, the notes were captured, the editor showed them, and
+-- the grid never grew a clip because nothing was left watching. It also made
+-- the red cell appear only when the timing happened to fall the other way,
+-- which is what "once in two" was.
+local REC_PICKUP_TIMEOUT = 3.0
+
 local function pollRec()
     if not rec then return end
-    local live = liveLane(rec.t)
-    local m = floor(Loop.Mode(live) + 0.5)
-    if m == 1 or m == 4 then return end          -- still capturing / armed
-    if m == 0 then rec = nil return end          -- cleared under us
-    local c = Loop.LaneToClip(live)
+    local m = floor(Loop.Mode(rec.lane) + 0.5)
+    if m == 1 or m == 4 or Loop.Pending(rec.lane) == 3 then
+        rec.seen = true                     -- the engine has the command
+        return
+    end
+    if not rec.seen then
+        if r.time_precise() - rec.t0 < REC_PICKUP_TIMEOUT then return end
+        rec = nil
+        flash("The engine never took the record command")
+        return
+    end
+    if m == 0 then rec = nil return end     -- cleared under us
+    local c = Loop.LaneToClip(rec.lane)
     if c then
         c.cell = rec.t .. "," .. rec.s
         c.name = trackName(rec.t) .. " · " .. (rec.s + 1)
         cells[rec.t][rec.s] = c
         saveGrid()
         flash("Captured into " .. c.name)
+    else
+        flash("Nothing played — the slot stays empty")
     end
     rec = nil
 end
@@ -596,11 +675,10 @@ end
 -- not mean to start was to wait for its auto-stop.
 local function stopRec()
     if not rec then return end
-    local live = liveLane(rec.t)
-    if floor(Loop.Mode(live) + 0.5) == 1 then
-        Loop.Stop(live)
+    if floor(Loop.Mode(rec.lane) + 0.5) == 1 then
+        Loop.Stop(rec.lane)
     else
-        Loop.Clear(live)
+        Loop.Clear(rec.lane)
         rec = nil
         flash("Recording cancelled")
     end
@@ -674,6 +752,16 @@ end
 
 loadGrid()
 
+do
+    local _, v = r.GetProjExtState(0, "CP_Session", "rec_bars")
+    local n = tonumber(v)
+    if n then
+        for i = 1, #REC_BARS do
+            if REC_BARS[i] == n then rec_bars = n break end
+        end
+    end
+end
+
 -- Migration: the old fixed "A" row (four sound slots under the grid) is
 -- gone — a sound is a cell like any other now. Whatever was in it moves
 -- into the first free scene of the matching column, once.
@@ -736,6 +824,11 @@ end
 -- raw gfx primitives.
 local BTN_W = 16
 
+-- Countdown labels, precomputed. The waiting cell redraws every frame and a
+-- tostring() there would mint one string per frame for nothing.
+local CD_LBL = {}
+for i = 1, 128 do CD_LBL[i] = tostring(i) end
+
 local function drawCell(theme, t, s, x, y, w, h)
     local C = theme.colors
     local c = cells[t][s]
@@ -771,10 +864,23 @@ local function drawCell(theme, t, s, x, y, w, h)
     -- Painting both red made a recording that had not started look exactly
     -- like one that had — so a cell could blink for a whole bar, capture
     -- nothing, and give no clue why. They are told apart now.
-    local capturing, waiting = false, false
-    if rec and rec.t == t and rec.s == s then
-        capturing = floor(Loop.Mode(liveLane(t)) + 0.5) == 1
+    -- And the wait says WHAT it waits for: beats counting down to the boundary,
+    -- or the transport when the clock follows one that is not running. "Am I
+    -- going to start at the right moment" should be answerable by looking.
+    local capturing, waiting, cd_beats, cd_play = false, false, nil, false
+    local rec_lane = (rec and rec.t == t and rec.s == s) and rec.lane or nil
+    if rec_lane then
+        local rm = floor(Loop.Mode(rec_lane) + 0.5)
+        capturing = (rm == 1)
         waiting   = not capturing
+        if waiting then
+            if Loop.Pending(rec_lane) == 3 then
+                local d = Loop.PendingTarget(rec_lane) - Loop.EngineBeat()
+                if d > 0 then cd_beats = d end
+            elseif rm == 4 then
+                cd_play = true            -- armed: the clock has to run first
+            end
+        end
     end
 
     local br, bg_, bb = 0.15, 0.15, 0.17
@@ -868,6 +974,42 @@ local function drawCell(theme, t, s, x, y, w, h)
         UI.SetFontBody()
     end
 
+    -- What the queued take is waiting for, in the cell's own body.
+    if capturing or waiting then
+        local d = C.danger or C.accent
+        local head, sub
+        if cd_beats then
+            -- beats remaining, rounded UP: it reads 4, 3, 2, 1 and the take
+            -- starts as it would have said 0
+            local n = floor(cd_beats) + 1
+            if n < 1 then n = 1 elseif n > 128 then n = 128 end
+            head = CD_LBL[n]
+            sub  = "beats to go"
+        elseif cd_play then
+            head, sub = "PLAY", "waiting for the transport"
+        elseif capturing then
+            head, sub = "REC", barsLabel(Loop.GetLengthBars(rec_lane))
+        else
+            head, sub = "REC", "queued"
+        end
+        Core.DrawText(head, x + bw + 3, y + 3, d[1], d[2], d[3], 0.95)
+        UI.SetFontCaption()
+        Core.DrawText(sub, x + bw + 3, y + h - 13, d[1], d[2], d[3], 0.7)
+        UI.SetFontBody()
+        -- how much of the take is already in — the same strip a playing clip
+        -- uses, so "is it running" reads the same way whatever the cell is doing
+        if capturing then
+            local L = Loop.LenBeats(rec_lane)
+            if L > 0 then
+                local p = Loop.Phase(rec_lane) / L
+                if p > 0 then
+                    Core.DrawRect(x + 2, y + h - 4, (w - 4) * p, 2,
+                                  d[1], d[2], d[3], 0.9)
+                end
+            end
+        end
+    end
+
     -- Ctrl-drag copy: the cell being dragged FROM stays lit, the one under the
     -- cursor shows where it would land.
     if cdrag then
@@ -944,6 +1086,10 @@ local function frame(theme)
         end
         UI.SameLine()
         if UI.Button("q", qLabel()) then cycleQ() end
+        UI.SameLine()
+        -- Q says WHEN a take starts, this says how long it runs. Together they
+        -- are the whole answer to "will it start where I mean it to".
+        if UI.Button("recbars", recBarsLabel()) then cycleRecBars() end
         UI.SameLine()
         if UI.Button("stopall", "Stop all") then stopAll() end
         UI.SameLine()
