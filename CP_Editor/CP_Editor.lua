@@ -82,7 +82,6 @@ local opts = {
     -- reaches an instrument you did not mean (see the input-monitor note).
     audition   = cfg.audition ~= false,
     thru_track = cfg.thru_track ~= false, -- preview through the item's track (its FX)
-    rail_fold  = cfg.rail_fold == true,   -- rail folded to icons only
 }
 Audio.volume = cfg.vol or 1.0
 
@@ -139,7 +138,6 @@ local function persistConfig()
     cfg.note_names = opts.note_names
     cfg.audition   = opts.audition
     cfg.thru_track = opts.thru_track
-    cfg.rail_fold  = opts.rail_fold
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -946,21 +944,29 @@ engine's position, Play/Stop launches the lane (quantized — Space
 works too), and -/+ halve/double the loop length in bars.
 ]]
 
--- Bottom of the rail: what is true of the window whatever it is showing.
--- Lock is a TOGGLE and not a button any more — it carried a state and hid
--- it, which is the third of the nomenclature's interdits.
-local function railCommon(theme)
-    UI.RailGroup("Editor")
-    if UI.RailItem("lock", state.lock and "Lock" or "Unlock",
-                   state.lock and "Locked" or "Following", state.lock) then
-        state.lock = not state.lock
-    end
-    if UI.RailItem("settings", "Settings2", "Settings", false) then
-        openSettings()
-    end
-    if UI.RailItem("help", "Help", "Help", false) then
+-- Right-hand end of the bar: what is true of the window whatever it is
+-- showing. Reserved FIRST, before anything fills from the left, so a narrow
+-- window drops a slice tool rather than Settings.
+--
+-- Written outermost-first: Help sits hard against the right edge, Settings to
+-- its left, Lock to the left of that.
+--
+-- Lock is a TOGGLE and not a button — it carried a state and hid it, which is
+-- the third of the nomenclature's interdits.
+local function barCommon()
+    UI.BarRight()
+    if UI.BarIcon("help", "Help", "Help") then
         UI.ShowHelp("help", HELP_TEXT)
     end
+    if UI.BarIcon("settings", "Settings2", "Settings") then
+        openSettings()
+    end
+    local lk = UI.BarToggle("lock", "Lock", "Unlock", state.lock,
+                            state.lock and "Locked to this take"
+                                       or "Following the selection")
+    if lk then state.lock = not state.lock end
+    UI.BarSep()
+    UI.BarLeft()
 end
 
 -- The identity of what is open, on one line above the canvas. It is not a
@@ -983,14 +989,14 @@ local function headerLine(theme)
     UI.Spacing(2)
 end
 
--- The rail is only useful if folding it is a real trade. Folded it shows
--- ICONS ONLY: every entry that is a GESTURE stays reachable, every entry that
--- is a VALUE (velocity, bars, gain) goes away until you unfold. Squeezing a
--- numeric field into 40 px would make it unreadable and unclickable both, and
--- pretending otherwise is worse than saying "unfold to tweak".
-local function railWide()
-    return not opts.rail_fold
-end
+-- The rail is gone. It cost 126 px of WIDTH permanently, and width is what a
+-- waveform and a piano roll are made of; a bar costs 30 px of height once.
+-- The other half of the trade is that the bar degrades by itself: a control
+-- that no longer fits is simply not placed, so a narrow window sheds tools
+-- from the middle instead of needing a fold flag to be told to.
+--
+-- Verbs are ICONS ONLY here, with the name in the tooltip. In a strip that
+-- dense the glyph is what you aim at; the word only takes room.
 
 -- Role-coloured option tables, rebuilt only when the theme object itself
 -- changes. The colours are the THEME's (play / record / pending), never
@@ -1002,66 +1008,65 @@ local function roles(theme)
         roleOpts.play = { accent = theme.colors.play }
         roleOpts.rec  = { accent = theme.colors.record }
         roleOpts.pend = { accent = theme.colors.pending }
-        roleOpts.dis  = { disabled = true }
     end
     return roleOpts
 end
 
--- Gain / pitch / rate / sens become KNOBS: four values you set by ear, where
--- a slider's position teaches nothing and a numeric field asks you to think
--- in units before you have heard the result. The exact figure is not lost —
--- every knob takes a typed value on right-click (3a81c81).
-local K_GAIN = { min = -60, max = 24,  decimals = 1, label_right = true, size = 30 }
-local K_PIT  = { min = -48, max = 48,  decimals = 0, label_right = true, size = 30 }
-local K_RATE = { min = 0.25, max = 4,  decimals = 2, label_right = true, size = 30 }
-local K_SENS = { min = 0,   max = 100, decimals = 0, label_right = true, size = 30 }
+-- Gain / pitch / rate / sens are values you set BY EAR, so they keep the
+-- gestures a knob had — drag, wheel, right-click to type, double-click to
+-- reset — but they wear the bar's form: a chip of the one height, filled to
+-- show how far along the value sits. A 30 px knob in a 22 px strip would have
+-- set the height of the whole window's chrome by itself.
+local V_GAIN = { format = "%.1f dB", step = 0.5, integer = false, default = 0, w = 4 }
+local V_PIT  = { format = "%d st",   step = 1,   default = 0, w = 3 }
+local V_RATE = { format = "%.2fx",   step = 0.05, integer = false, default = 1, w = 3 }
+local V_SENS = { format = "%d%%",    step = 1,   default = 50, w = 3 }
 
-local function railAudio(theme)
-    UI.RailGroup("Transport")
+local function barAudio(theme)
     local playing = Audio.IsPlaying()
-    if UI.RailItem("play", playing and "Stop" or "Play",
-                   playing and "Stop" or "Play", playing, roles(theme).play) then
+    if UI.BarToggle("play", "Stop", "Play", playing,
+                    playing and "Stop" or "Play", false, roles(theme).play) then
         togglePlay()
     end
-    if UI.RailItem("zfit", "Maximize", "Fit", false) then fitView() end
-    if UI.RailItem("zin", "ZoomIn", "Zoom in", false) then
+    if UI.BarIcon("zfit", "Maximize", "Fit to window") then fitView() end
+    if UI.BarIcon("zin", "ZoomIn", "Zoom in") then
         zoomAt(wave.x + wave.w / 2, 1 / 1.5)
     end
-    if UI.RailItem("zout", "ZoomOut", "Zoom out", false) then
+    if UI.BarIcon("zout", "ZoomOut", "Zoom out") then
         zoomAt(wave.x + wave.w / 2, 1.5)
     end
+    UI.BarSep()
+
+    local nomark = #state.markers == 0
 
     if state.mode ~= "item" then
-        UI.RailGroup("Slice")
-        local nomark = #state.markers == 0
-        if UI.RailItem("sl_detect", "Activity", "Detect", false) then detectMarkers() end
-        if UI.RailItem("sl_clear", "Eraser", "Clear", false,
-                       nomark and roles(theme).dis or nil) then clearMarkers() end
-        UI.RailGroup("Send")
-        if UI.RailItem("sl_pads", "Drum", "Slices to pads", false,
-                       nomark and roles(theme).dis or nil) then slicesToPads() end
-        if UI.RailItem("sl_selpad", "Target", "Sel to pad", false,
-                       (state.sel_a == nil) and roles(theme).dis or nil) then selectionToPad() end
-        if UI.RailItem("sl_instr", "Piano", "To instrument", false,
-                       (state.path == "") and roles(theme).dis or nil) then sendToInstrument() end
+        if UI.BarIcon("sl_detect", "Activity", "Detect transients") then
+            detectMarkers()
+        end
+        if UI.BarIcon("sl_clear", "Eraser", "Clear markers", nomark) then
+            clearMarkers()
+        end
+        UI.BarSep()
+        if UI.BarIcon("sl_pads", "Drum", "Slices to pads", nomark) then slicesToPads() end
+        if UI.BarIcon("sl_selpad", "Target", "Selection to pad",
+                      state.sel_a == nil) then selectionToPad() end
+        if UI.BarIcon("sl_instr", "Piano", "To instrument",
+                      state.path == "") then sendToInstrument() end
         return
     end
 
-    UI.RailGroup("Shape")
-    if railWide() then
-        local db = Ops.VolDB(state.take)
-        local gch, g01 = UI.Knob("op_gain", "dB", (db + 60) / 84, 60 / 84, K_GAIN)
-        if gch then Ops.SetVolDB(state.item, state.take, g01 * 84 - 60) end
-        local pitch = r.GetMediaItemTakeInfo_Value(state.take, "D_PITCH")
-        local pch, p01 = UI.Knob("op_pitch", "st", (pitch + 48) / 96, 0.5, K_PIT)
-        if pch then Ops.SetPitch(state.take, state.item, p01 * 96 - 48) end
-        local rate = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
-        local rch, r01 = UI.Knob("op_rate", "rate", (rate - 0.25) / 3.75, 0.2, K_RATE)
-        if rch then Ops.SetRate(state.item, state.take, r01 * 3.75 + 0.25, true) end
-    end
+    local db = Ops.VolDB(state.take)
+    local gch, gdb = UI.BarValue("op_gain", nil, db, -60, 24, false, V_GAIN)
+    if gch then Ops.SetVolDB(state.item, state.take, gdb) end
+    local pitch = r.GetMediaItemTakeInfo_Value(state.take, "D_PITCH")
+    local pch, npit = UI.BarValue("op_pitch", nil, pitch, -48, 48, false, V_PIT)
+    if pch then Ops.SetPitch(state.take, state.item, npit) end
+    local rate = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
+    local rch, nrate = UI.BarValue("op_rate", nil, rate, 0.25, 4, false, V_RATE)
+    if rch then Ops.SetRate(state.item, state.take, nrate, true) end
+    UI.BarSep()
 
-    UI.RailGroup("Process")
-    if UI.RailItem("op_norm", "Gauge", "Normalize", false) then
+    if UI.BarIcon("op_norm", "Gauge", "Normalize") then
         local a, b = targetRegion()
         if state.sel_a then a, b = state.sel_a, state.sel_b end
         if Ops.Normalize(state.item, state.take, state.src, a, b, opts.norm_db) then
@@ -1070,39 +1075,39 @@ local function railAudio(theme)
             flash("Normalize: no peaks readable")
         end
     end
-    if UI.RailItem("op_rev", "ArrowUpDown", "Reverse", false) then
+    if UI.BarIcon("op_rev", "ArrowUpDown", "Reverse") then
         Ops.Reverse(state.item)
     end
-    if UI.RailItem("op_trim", "Scissors", "Trim to sel", false,
-                   (state.sel_a == nil) and roles(theme).dis or nil) then
+    if UI.BarIcon("op_trim", "Scissors", "Trim to selection",
+                  state.sel_a == nil) then
         Ops.TrimToSel(state.item, state.take, state.sel_a, state.sel_b)
         state.sel_a, state.sel_b = nil, nil
     end
+    UI.BarSep()
 
-    UI.RailGroup("Slice")
-    if railWide() then
-        local sch, s01 = UI.Knob("sl_sens", "sens", state.sens, 0.5, K_SENS)
-        if sch then
-            state.sens = s01
-            markDirty()
-        end
+    local sch, sens = UI.BarValue("sl_sens", nil,
+                                  math.floor(state.sens * 100 + 0.5), 0, 100,
+                                  false, V_SENS)
+    if sch then
+        state.sens = sens / 100
+        markDirty()
     end
-    local nomark = #state.markers == 0
-    if UI.RailItem("sl_detect", "Activity", "Detect", false) then detectMarkers() end
-    if UI.RailItem("sl_clear", "Eraser", "Clear", false,
-                   nomark and roles(theme).dis or nil) then clearMarkers() end
-    if UI.RailItem("sl_split", "Scissors", "Split item", false,
-                   nomark and roles(theme).dis or nil) then splitAtMarkers() end
+    if UI.BarIcon("sl_detect", "Activity", "Detect transients") then
+        detectMarkers()
+    end
+    if UI.BarIcon("sl_clear", "Eraser", "Clear markers", nomark) then clearMarkers() end
+    if UI.BarIcon("sl_split", "Scissors", "Split item at markers", nomark) then
+        splitAtMarkers()
+    end
+    UI.BarSep()
 
     -- SEND is the chain "a sound becomes an instrument". It reads as one
     -- block on purpose: these three are the product's whole point.
-    UI.RailGroup("Send")
-    if UI.RailItem("sl_pads", "Drum", "Slices to pads", false,
-                   nomark and roles(theme).dis or nil) then slicesToPads() end
-    if UI.RailItem("sl_selpad", "Target", "Sel to pad", false,
-                   (state.sel_a == nil) and roles(theme).dis or nil) then selectionToPad() end
-    if UI.RailItem("sl_instr", "Piano", "To instrument", false,
-                   (state.path == "") and roles(theme).dis or nil) then sendToInstrument() end
+    if UI.BarIcon("sl_pads", "Drum", "Slices to pads", nomark) then slicesToPads() end
+    if UI.BarIcon("sl_selpad", "Target", "Selection to pad",
+                  state.sel_a == nil) then selectionToPad() end
+    if UI.BarIcon("sl_instr", "Piano", "To instrument",
+                  state.path == "") then sendToInstrument() end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1642,27 +1647,6 @@ for i = 1, #GRID_CHOICES do
     GRID_VALS[i + 1]  = GRID_CHOICES[i][2]
 end
 
-local function gridMenu()
-    local items = {
-        { label = "Follow project grid", checked = opts.grid_div == nil,
-          action = function()
-              opts.grid_div = nil
-              grid_lbl.div = -1
-              markDirty()
-          end },
-        { separator = true },
-    }
-    for _, c in ipairs(GRID_CHOICES) do
-        items[#items + 1] = { label = c[1], checked = opts.grid_div == c[2],
-            action = function()
-                opts.grid_div = c[2]
-                grid_lbl.div = -1
-                markDirty()
-            end }
-    end
-    UI.NativeMenu(items)
-end
-
 -- ---------------------------------------------------------------------------
 -- Rows (event-driven build; drum mode shows pad rows named after the kit)
 -- ---------------------------------------------------------------------------
@@ -1720,60 +1704,54 @@ end
 -- ---------------------------------------------------------------------------
 -- Toolbar row (MIDI mode)
 -- ---------------------------------------------------------------------------
--- Hoisted: a widget opts table built inline would allocate once per frame.
-
 -- Widget option tables, hoisted: built inline they would allocate per frame.
-local RAIL_W_IN   = 108        -- what a value widget may take inside the rail
-local NUMV_OPTS   = { step = 1, format = "%.0f", width = RAIL_W_IN }
+-- `w` is a step on the bar's width ladder, not a pixel count — that is what
+-- keeps a dropdown the same width as the one three controls along.
 local BARS_ITEMS  = { "1 bar", "2 bars", "4 bars", "8 bars", "16 bars", "32 bars" }
 local BARS_VALS   = { 1, 2, 4, 8, 16, 32 }
-local BARS_OPTS   = { width = RAIL_W_IN }
+local GRID_BAR_OPTS = { w = 3 }
 
--- MIDI / clip rail. GRID and VIEW hold state, EDIT holds the two gestures
--- used often enough to deserve a permanent home; everything rarer lives in
--- the Transform menu or the roll's own right-click.
-local function railMidi(theme)
+-- MIDI / clip bar. GRID and VIEW hold state, EDIT holds the two gestures used
+-- often enough to deserve a permanent home; everything rarer lives in the
+-- Transform menu or the roll's own right-click.
+local V_VEL = { w = 3, default = 100 }
+
+local function barMidi(theme)
     local R = roles(theme)
-    UI.RailGroup("Grid")
-    if UI.RailItem("m_snap", "Magnet", "Snap", opts.midi_snap) then
+    if UI.BarToggle("m_snap", "Magnet", nil, opts.midi_snap, "Snap to grid") then
         opts.midi_snap = not opts.midi_snap
         markDirty()
     end
-    if railWide() then
-        -- A real COMBO, not a button that opens a menu. The mousewheel walks
-        -- the divisions without opening anything, which is the gesture that
-        -- was missing — and triplets are just two more entries in the list,
-        -- so nothing had to be given up to get it.
-        local idx = 1
-        for i = 2, #GRID_ITEMS do
-            if opts.grid_div and math.abs(opts.grid_div - GRID_VALS[i]) < 1e-9 then
-                idx = i break
-            end
+    -- A real COMBO, not a button that opens a menu. The mousewheel walks the
+    -- divisions without opening anything, which is the gesture that was
+    -- missing — and triplets are just two more entries in the list, so nothing
+    -- had to be given up to get it.
+    local idx = 1
+    for i = 2, #GRID_ITEMS do
+        if opts.grid_div and math.abs(opts.grid_div - GRID_VALS[i]) < 1e-9 then
+            idx = i break
         end
-        local gch, gi = UI.Combo("m_grid", "", idx, GRID_ITEMS, BARS_OPTS)
-        if gch then
-            opts.grid_div = (gi == 1) and nil or GRID_VALS[gi]
-            grid_lbl.div = -1
-            markDirty()
-        end
-    elseif UI.RailItem("m_grid", "Grid", nil, false) then
-        gridMenu()   -- folded: no room for a combo, the menu still answers
     end
+    local gch, gi = UI.BarCombo("m_grid", idx, GRID_ITEMS, false, GRID_BAR_OPTS)
+    if gch then
+        opts.grid_div = (gi == 1) and nil or GRID_VALS[gi]
+        grid_lbl.div = -1
+        markDirty()
+    end
+    UI.BarSep()
 
-    UI.RailGroup("View")
     local rows = rollRows()
-    if UI.RailItem("m_drum", "Drum", "Drum rows", rows.drum) then
+    if UI.BarToggle("m_drum", "Drum", nil, rows.drum, "Drum rows") then
         state.drum_mode = not rows.drum
         mrows.key = nil
     end
-    if UI.RailItem("m_names", "Note", "Note names", opts.note_names) then
+    if UI.BarToggle("m_names", "Note", nil, opts.note_names, "Note names") then
         opts.note_names = not opts.note_names
         markDirty()
     end
     -- Icon PAIR rather than a tick: a speaker with and without sound says
     -- which way this is set without reading a label (ANALYSE_Nomenclature).
-    if UI.RailItem("m_aud", opts.audition and "VolumeUp" or "VolumeOff",
-                   "Listen", opts.audition) then
+    if UI.BarToggle("m_aud", "VolumeUp", "VolumeOff", opts.audition, "Listen") then
         opts.audition = not opts.audition
         -- a note may be sounding right now: do not strand it
         if not opts.audition and state.aud_note then
@@ -1782,24 +1760,22 @@ local function railMidi(theme)
         end
         markDirty()
     end
+    UI.BarSep()
 
-    UI.RailGroup("Edit")
-    if railWide() then
-        local vch, nv = UI.NumberInput("m_vel", "Vel", state.last_vel, 1, 127, NUMV_OPTS)
-        if vch then
-            state.last_vel = math.floor(nv + 0.5)
-            markDirty()
-        end
+    local vch, nv = UI.BarValue("m_vel", "Vel", state.last_vel, 1, 127, false, V_VEL)
+    if vch then
+        state.last_vel = math.floor(nv + 0.5)
+        markDirty()
     end
-    if UI.RailItem("m_quant", "Magnet", "Quantize", false) then
+    if UI.BarIcon("m_quant", "Magnet", "Quantize") then
         local n = Roll.Quantize(midiSnap)
         flash(n .. " notes quantized" .. (Roll.sel and " (selected)" or ""))
     end
-    if UI.RailItem("m_transform", "Wand", "Transform", false) then
+    if UI.BarIcon("m_transform", "Wand", "Transform") then
         UI.NativeMenu(RollUI.TransformMenu(midiCtx))
     end
     if state.item then   -- take-backed only (a clip has no native editor)
-        if UI.RailItem("m_native", "Piano", "Native", false) then
+        if UI.BarIcon("m_native", "Piano", "Open in REAPER's MIDI editor") then
             r.SelectAllMediaItems(0, false)
             r.SetMediaItemSelected(state.item, true)
             r.Main_OnCommand(40153, 0)   -- Item: open in built-in MIDI editor
@@ -1810,27 +1786,25 @@ local function railMidi(theme)
     -- the Looper's lane editor completely — Session cells are only editable
     -- here — so length and play/stop have to live here too.
     if state.mode == "clip" and state.clip then
-        UI.RailGroup("Loop")
+        UI.BarSep()
         local bars = math.floor((state.clip.bars or 4) + 0.5)
-        if railWide() then
-            -- A combo, not two nudge buttons: six named lengths, and the
-            -- wheel walks them without opening anything.
-            local idx = 1
-            for i = 1, #BARS_VALS do if BARS_VALS[i] == bars then idx = i break end end
-            local bch, bi = UI.Combo("c_bars", "", idx, BARS_ITEMS, BARS_OPTS)
-            if bch and BARS_VALS[bi] ~= bars then setClipBars(BARS_VALS[bi]) end
-        end
+        -- A combo, not two nudge buttons: six named lengths, and the wheel
+        -- walks them without opening anything.
+        local bidx = 1
+        for i = 1, #BARS_VALS do if BARS_VALS[i] == bars then bidx = i break end end
+        local bch, bi = UI.BarCombo("c_bars", bidx, BARS_ITEMS, false, GRID_BAR_OPTS)
+        if bch and BARS_VALS[bi] ~= bars then setClipBars(BARS_VALS[bi]) end
         if state.clip_track then
             local att = state.loop_att
             local lane = state.clip_lane
             local m = (att and lane) and math.floor(Loop.Mode(lane) + 0.5) or 0
             local p = (att and lane) and Loop.Pending(lane) or 0
             if not att then
-                UI.RailItem("c_play", "Power", "Engine off", false, R.dis)
+                UI.BarIcon("c_play", "Power", "Engine off", true)
             elseif m == 1 or m == 4 or p == 3 or p == 4 then
                 -- recording/armed: the Session owns that transport
-                UI.RailItem("c_play", "Mic", m == 4 and "Armed" or "Recording",
-                            true, R.rec)
+                UI.BarToggle("c_play", "Mic", nil, true,
+                             m == 4 and "Armed" or "Recording", false, R.rec)
             else
                 -- nil lane = the engine is not holding this clip any more (its
                 -- lane went to another cell): Play stages it back in and
@@ -1838,8 +1812,8 @@ local function railMidi(theme)
                 local run = (m == 3 or m == 5)
                 local lbl = run and "Stop" or "Play"
                 if p == 1 then lbl = "Play…" elseif p == 2 then lbl = "Stop…" end
-                if UI.RailItem("c_play", run and "Stop" or "Play", lbl, run or p > 0,
-                               (p == 1 or p == 2) and R.pend or R.play) then
+                if UI.BarToggle("c_play", "Stop", "Play", run or p > 0, lbl, false,
+                                (p == 1 or p == 2) and R.pend or R.play) then
                     clipLaunch()
                 end
             end
@@ -2783,23 +2757,19 @@ local function frame(theme)
 
     UI.SetWindowPadding(theme.pad_large or 10)
 
-    -- Rail only. There is no action bar left: everything that was in it lives
-    -- in the column, and the canvas gets the whole height back — which is the
-    -- dimension a piano roll and a waveform were short of.
+    -- FOUR ZONES, each with its own ground and a seam between: the command
+    -- bar, the identity line, the canvas, the status. The rail is gone — it
+    -- cost 126 px of width permanently, and width is what a waveform and a
+    -- piano roll are made of.
     local midi = (state.mode == "midi" or state.mode == "clip")
-    UI.BeginRail("nav", opts.rail_fold)
-    if midi then railMidi(theme) else railAudio(theme) end
-    railCommon(theme)
-    local fold = UI.RailBody(opts.rail_fold)
-    if fold ~= opts.rail_fold then
-        opts.rail_fold = fold
-        markDirty()
-    end
+    UI.BeginBar("cmd")
+    barCommon()                                  -- claims the right end first
+    if midi then barMidi(theme) else barAudio(theme) end
+    UI.EndBar()
 
     headerLine(theme)
-    local pad = theme.pad_small or 4
     local status_h = 18
-    local area_h = UI.GetAvailableHeight() - status_h - pad
+    local area_h = UI.GetAvailableHeight() - status_h - 4
     if area_h < 80 then area_h = 80 end
     if midi then
         drawRoll(theme, area_h)
@@ -2807,34 +2777,28 @@ local function frame(theme)
         drawWave(theme, area_h)
     end
 
-    -- status line
-    UI.SetFontCaption()
+    -- status zone: its own ground, its own seam, pinned to the bottom
+    local msg
     if state.flash_msg ~= "" and r.time_precise() < state.flash_until then
-        UI.Text(state.flash_msg, { disabled = true })
+        msg = state.flash_msg
         UI.RequestRedraw()
-    elseif state.mode == "midi" or state.mode == "clip" then
+    elseif midi then
         if Roll.seln > 1 then
-            UI.Text(Roll.seln .. " notes selected  ·  drag = move all · Del = delete · arrows = transpose",
-                    { disabled = true })
+            msg = Roll.seln .. " notes selected  ·  drag = move all · Del = delete · arrows = transpose"
         elseif Roll.sel and Roll.pitches[Roll.sel] then
-            UI.Text(string.format("note %s  ·  vel %d  ·  %.3fs",
-                                  NOTE_NAMES[Roll.pitches[Roll.sel]],
-                                  Roll.vels[Roll.sel], Roll.lens[Roll.sel]),
-                    { disabled = true })
+            msg = string.format("note %s  ·  vel %d  ·  %.3fs",
+                                NOTE_NAMES[Roll.pitches[Roll.sel]],
+                                Roll.vels[Roll.sel], Roll.lens[Roll.sel])
         else
-            UI.Text("click/drag = add · edge = resize · right-drag = select · Ctrl+D dup · Ctrl+C/V · Q quant · Transform menu",
-                    { disabled = true })
+            msg = "click/drag = add · edge = resize · right-drag = select · Ctrl+D dup · Ctrl+C/V · Q quant · Transform menu"
         end
     elseif state.sel_a then
-        UI.Text(string.format("sel  %.3f – %.3f  (%.3fs)",
-                              state.sel_a, state.sel_b,
-                              state.sel_b - state.sel_a), { disabled = true })
+        msg = string.format("sel  %.3f – %.3f  (%.3fs)",
+                            state.sel_a, state.sel_b, state.sel_b - state.sel_a)
     else
-        UI.Text("drag = select · wheel = zoom · middle-drag = pan · Space = play",
-                { disabled = true })
+        msg = "drag = select · wheel = zoom · middle-drag = pan · Space = play"
     end
-    UI.SetFontBody()
-    UI.EndRail()
+    UI.AppStatus(msg)
 
     if state.cfg_dirty and not Core_tk.MouseDown(1) then
         persistConfig()
