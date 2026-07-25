@@ -9,10 +9,18 @@
 --
 -- Identification is P_EXT track state (saved in the project, undo-safe):
 --   parent: P_EXT:CP_KIT = "1"     pads: P_EXT:CP_KIT_NOTE = "36".."99"
+--   instrument: P_EXT:CP_KIT_INSTR = "1"   (its own track, beside the kits)
 --
--- MIDI flow: parent receives all MIDI inputs (armed + monitoring), its FX
--- chain runs the generated choke JSFX, then per-pad MIDI-only sends fan out
--- to the children whose RS5K note range does the note filtering.
+-- MIDI flow: the kit's MIDI bus receives all MIDI inputs (armed + monitoring),
+-- its FX chain runs the generated choke JSFX, then per-pad MIDI-only sends fan
+-- out to the children whose RS5K note range does the note filtering.
+--
+-- The chromatic INSTRUMENT is not part of that fan-out: it is a second
+-- instrument on a track of its own, with its own input, its own output and no
+-- tie to any kit. Both can sound at once (that is the point) — only the LIVE
+-- listener is exclusive, because pad clicks are a broadcast on the virtual
+-- keyboard queue and would otherwise reach both. Kit.mode says which one is on
+-- screen, and the listener follows it.
 --
 -- RS5K param indices (verified against mpl_RS5K_manager_functions.lua):
 --   0 vol · 1 pan · 3/4 note range · 8 max voices · 9 attack · 10 release
@@ -355,6 +363,15 @@ function Kit.Scan()
             choke_tr = choke_fx and Kit.parent or nil
         end
     end
+    -- The instrument stands on its own track, beside the kits rather than
+    -- inside one, so it is found by tag ANYWHERE — the folder walk above only
+    -- still catches it where an un-migrated project left it.
+    if not Kit.instr then
+        for i = 0, count - 1 do
+            local tr = r.GetTrack(0, i)
+            if getExt(tr, "CP_KIT_INSTR") then scanInstrument(tr) break end
+        end
+    end
     Kit.pads = pads
     Kit.version = Kit.version + 1
 end
@@ -466,14 +483,12 @@ function Kit.Poll()
     -- One-time routing migration/repair per session: kits built before
     -- the MIDI-bus architecture have choke+sends on the folder parent
     -- (feedback-muted) and possibly pads armed as a user workaround.
-    if valid(Kit.parent) and not repaired then
+    if not repaired then
         repaired = true
-        Kit.Repair()
+        if valid(Kit.parent) then Kit.Repair() end
+        Kit.SplitInstrument()   -- one-time: the instrument leaves the kit
         Kit.Scan()
     end
-    -- keep the inactive set (pads vs instrument) muted per the saved mode —
-    -- newly scanned/created tracks are unmuted by default
-    Kit.EnforceMode()
     return true
 end
 
@@ -1019,9 +1034,13 @@ local function applyRoot(instr)
                                  pitchNorm(hi - root))
 end
 
+-- The instrument is an INSTRUMENT OF ITS OWN, not a page of the kit: its own
+-- track, its own MIDI input, its own output. It used to be a child of the kit
+-- folder fed by the kit's bus, which meant the two could only take turns —
+-- looking at one MUTED the other, so a kit could not play while an instrument
+-- was on screen, and neither could be mixed apart from the other.
 function Kit.EnsureInstrument()
     if Kit.instr and valid(Kit.instr.track) then return Kit.instr end
-    local parent = Kit.Ensure()
     local count = r.CountTracks(0)
     for i = 0, count - 1 do
         local tr = r.GetTrack(0, i)
@@ -1031,16 +1050,23 @@ function Kit.EnsureInstrument()
         end
     end
     ubegin()
-    local bus = Kit.EnsureBus()
-    local tr = insertChildTrack(parent)
-    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Instrument", true)
+    local tr
+    if Tracks then
+        -- born beside the kits in the shared CP folder, not inside one
+        tr = Tracks.NewChild("sampler", "instrument", "CP Instrument")
+    else
+        local idx = r.CountTracks(0)
+        r.InsertTrackAtIndex(idx, false)
+        tr = r.GetTrack(0, idx)
+        r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Instrument", true)
+    end
     setExt(tr, "CP_KIT_INSTR", "1")
     setExt(tr, "CP_KIT_ROOT", "60")
-    local s = r.CreateTrackSend(bus, tr)
-    if s >= 0 then
-        r.SetTrackSendInfo_Value(bus, 0, s, "I_SRCCHAN", -1)
-        r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", MIDI_TO_CH1)
-    end
+    -- listens for itself (the kit bus fans out to the PADS and stops there)
+    r.SetMediaTrackInfo_Value(tr, "I_RECINPUT", Kit.INPUT_ALL)
+    r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)
+    r.SetMediaTrackInfo_Value(tr, "I_RECARM", 0)
+    r.SetMediaTrackInfo_Value(tr, "I_RECMON", 0)
     local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
     if fx >= 0 then
         hideFX(tr, fx)
@@ -1105,25 +1131,10 @@ function Kit.SetRoot(note)
     last_change = r.GetProjectStateChangeCount(0)
 end
 
--- Isolate the active set: the MIDI bus fans out to BOTH the pads and the
--- instrument track (all note-range 0-127-ish), so without muting they'd
--- sound together. Mute the inactive set's tracks (reversible, undo-safe).
--- Idempotent: only writes B_MUTE when it actually differs, so EnforceMode
--- can run every scan without bumping the project change count (which would
--- retrigger Poll → rescan → mute → … in a loop).
-local function setMute(tr, want)
-    if not valid(tr) then return end
-    if (r.GetMediaTrackInfo_Value(tr, "B_MUTE") >= 0.5) ~= want then
-        r.SetMediaTrackInfo_Value(tr, "B_MUTE", want and 1 or 0)
-    end
-end
-local function applyModeMutes()
-    local instr_on = Kit.mode == "instrument"
-    for _, pad in pairs(Kit.pads) do setMute(pad.track, instr_on) end
-    if Kit.instr then setMute(Kit.instr.track, not instr_on) end
-end
-
--- Switch the whole kit between drum and instrument (Simpler/Sampler split).
+-- Switch what the SAMPLER SHOWS. Nothing is muted, nothing changes hands:
+-- the pads and the instrument are two instruments on two tracks and both keep
+-- playing whatever is sent to them. Only the LIVE LISTENER follows the view
+-- (see armTarget) — the keyboard has to reach one of them, not both.
 function Kit.SetMode(mode)
     if mode ~= "drum" and mode ~= "instrument" then return end
     local parent = Kit.Ensure()
@@ -1131,16 +1142,129 @@ function Kit.SetMode(mode)
     setExt(parent, "CP_KIT_MODE", mode)
     Kit.mode = mode
     if mode == "instrument" then Kit.EnsureInstrument() end
-    applyModeMutes()
     Kit.version = Kit.version + 1
     uend("Sampler: set mode " .. mode)
+    Kit.HoldArm()          -- the listener moves with the view
 end
 
--- Re-assert the active-set mutes (called after Scan, since new pads/
--- instrument tracks are created unmuted and a fresh session must respect
--- the persisted mode).
-function Kit.EnforceMode()
-    if valid(Kit.parent) then applyModeMutes() end
+-- One-time separation, for projects built while the instrument was a page of
+-- the kit: cut the bus → instrument MIDI send, give it its own input, move it
+-- out of the kit folder and lift the mode mutes. Everything here is a no-op
+-- once done, and the whole pass runs once per session (Kit.Poll).
+local function guidOf(tr)
+    local _, g = r.GetSetMediaTrackInfo_String(tr, "GUID", "", false)
+    return g
+end
+
+-- The kit folder this track sits in, or nil when it stands on its own.
+local function kitFolderOf(track)
+    local want = guidOf(track)
+    for _, ktr in ipairs(Kit.kits) do
+        if valid(ktr) then
+            local found = folderWalk(ktr, function(tr)
+                return guidOf(tr) == want
+            end)
+            if found then return ktr end
+        end
+    end
+end
+
+function Kit.SplitInstrument()
+    local instr = Kit.instr
+    if not instr or not valid(instr.track) then return false end
+    local tr = instr.track
+    local guid = guidOf(tr)
+
+    -- What is still to do — READS ONLY, so an already-separated project pays
+    -- a handful of queries once per session and opens no undo block at all.
+    local feeds = {}                      -- [bus] = true, buses sending to it
+    for _, ktr in ipairs(Kit.kits) do
+        local bus = valid(ktr) and busOf(ktr) or nil
+        if bus then
+            for si = 0, r.GetTrackNumSends(bus, 0) - 1 do
+                local dest = r.GetTrackSendInfo_Value(bus, 0, si, "P_DESTTRACK")
+                if dest and valid(dest) and guidOf(dest) == guid then
+                    feeds[bus] = true
+                end
+            end
+        end
+    end
+    local wants_input = r.GetMediaTrackInfo_Value(tr, "I_RECINPUT") ~= Kit.INPUT_ALL
+    local owner = kitFolderOf(tr)
+    local unmute = {}
+    if Kit.mode == "instrument" then
+        for _, pad in pairs(Kit.pads) do
+            if valid(pad.track)
+               and r.GetMediaTrackInfo_Value(pad.track, "B_MUTE") >= 0.5 then
+                unmute[#unmute + 1] = pad.track
+            end
+        end
+    elseif r.GetMediaTrackInfo_Value(tr, "B_MUTE") >= 0.5 then
+        unmute[1] = tr
+    end
+    if not (next(feeds) or wants_input or owner or #unmute > 0) then
+        return false
+    end
+
+    ubegin()
+
+    -- 1. no kit bus feeds it any more
+    for bus in pairs(feeds) do
+        for si = r.GetTrackNumSends(bus, 0) - 1, 0, -1 do
+            local dest = r.GetTrackSendInfo_Value(bus, 0, si, "P_DESTTRACK")
+            if dest and valid(dest) and guidOf(dest) == guid then
+                r.RemoveTrackSend(bus, 0, si)
+            end
+        end
+    end
+
+    -- 2. its own MIDI input (arming is a choice, and the view owns it)
+    if wants_input then
+        r.SetMediaTrackInfo_Value(tr, "I_RECINPUT", Kit.INPUT_ALL)
+        r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)
+    end
+
+    -- 3. out of the kit folder, to just before it — a sibling, at the same
+    -- level, so its audio stops flowing through the kit's fader. The closing
+    -- depth it may have been carrying goes back to the child above it, which
+    -- becomes the folder's last one; both cases (only child, middle child)
+    -- fall out of that single line.
+    if owner then
+        local idx = trackIdx(tr)
+        local depth = r.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH")
+        if depth < 0 and idx > 0 then
+            local prev = r.GetTrack(0, idx - 1)
+            r.SetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH",
+                r.GetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH") + depth)
+        end
+        r.SetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH", 0)
+        -- the selection is the user's; it travels by POINTER because the
+        -- indices are exactly what the move is about to change
+        local sel, n = {}, 0
+        for i = 0, r.CountTracks(0) - 1 do
+            local t = r.GetTrack(0, i)
+            if r.IsTrackSelected(t) then n = n + 1 sel[n] = t end
+            r.SetTrackSelected(t, false)
+        end
+        r.SetTrackSelected(tr, true)
+        pcall(r.ReorderSelectedTracks, trackIdx(owner), 0)
+        r.SetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH", 0)
+        r.SetTrackSelected(tr, false)
+        for i = 1, n do
+            if valid(sel[i]) then r.SetTrackSelected(sel[i], true) end
+        end
+    end
+
+    -- 4. the mode mutes go. They were how the two took turns; there are no
+    -- turns any more, so what the saved mode had silenced comes back — and
+    -- ONLY that: a pad the user muted by hand in drum mode is his own.
+    for i = 1, #unmute do
+        r.SetMediaTrackInfo_Value(unmute[i], "B_MUTE", 0)
+    end
+
+    uend("Sampler: separate instrument from kit")
+    Kit.version = Kit.version + 1
+    return true
 end
 
 function Kit.InstrParam(pid)
@@ -1178,6 +1302,25 @@ function Kit.InstrNormForPlain(pid, v)
     local instr = Kit.instr
     if not instr or not instr.fx then return nil end
     return plainNorm(instr.track, instr.fx, pid, v)
+end
+
+-- Voices — the instrument's answer to a pad's choke group. At 1 the RS5K is
+-- monophonic: every note cuts the one before it, which IS a choke, and the
+-- only form of it a single chromatic instrument can have. RS5K's max-voices
+-- param runs 0..64 over the normalized range.
+Kit.MAX_VOICES = 16
+
+function Kit.InstrVoices()
+    local v = Kit.InstrParam(Kit.P.MAXV)
+    if not v then return Kit.MAX_VOICES end
+    local n = math.floor(v * 64 + 0.5)
+    if n < 1 then n = 1 elseif n > Kit.MAX_VOICES then n = Kit.MAX_VOICES end
+    return n
+end
+
+function Kit.SetInstrVoices(n)
+    if n < 1 then n = 1 elseif n > Kit.MAX_VOICES then n = Kit.MAX_VOICES end
+    Kit.SetInstrParam(Kit.P.MAXV, n / 64)
 end
 
 function Kit.InstrPeak()
@@ -1456,10 +1599,30 @@ function Kit.StuffNote(note, on, vel)
                        on and (vel or 100) or 0)
 end
 
+-- WHO HEARS THE KEYBOARD. Pad clicks travel over the VKB queue, which reaches
+-- every armed track at once, so the two instruments cannot both listen: the
+-- one ON SCREEN does. That is the only thing the view still decides — both
+-- tracks keep sounding whatever is sent to them (items, sends, looper lanes),
+-- which is what makes them usable at the same time.
+local function armTarget()
+    if Kit.mode == "instrument" then
+        local t = Kit.instr and Kit.instr.track
+        return valid(t) and t or nil
+    end
+    return valid(Kit.bus) and Kit.bus or nil
+end
+
+local function idleTarget()
+    if Kit.mode == "instrument" then return valid(Kit.bus) and Kit.bus or nil end
+    local t = Kit.instr and Kit.instr.track
+    return valid(t) and t or nil
+end
+
 function Kit.Armed()
-    if not valid(Kit.bus) then return false end
-    return r.GetMediaTrackInfo_Value(Kit.bus, "I_RECARM") == 1
-       and r.GetMediaTrackInfo_Value(Kit.bus, "I_RECMON") > 0
+    local tr = armTarget()
+    if not tr then return false end
+    return r.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1
+       and r.GetMediaTrackInfo_Value(tr, "I_RECMON") > 0
 end
 
 -- The arm is an INTENT, not just a track value. Armed is the working default
@@ -1471,30 +1634,54 @@ end
 Kit.arm_intent = true
 
 function Kit.SetArmed(on)
-    if not valid(Kit.bus) then
+    if Kit.mode == "instrument" then
+        Kit.EnsureInstrument()
+    elseif not valid(Kit.bus) then
         if not valid(Kit.parent) then return end
         Kit.EnsureBus()
     end
     Kit.arm_intent = on and true or false
-    r.SetMediaTrackInfo_Value(Kit.bus, "I_RECARM", on and 1 or 0)
-    r.SetMediaTrackInfo_Value(Kit.bus, "I_RECMON", on and 1 or 0)
+    local tr = armTarget()
+    if not tr then return end
+    r.SetMediaTrackInfo_Value(tr, "I_RECARM", on and 1 or 0)
+    r.SetMediaTrackInfo_Value(tr, "I_RECMON", on and 1 or 0)
+    local idle = on and idleTarget() or nil
+    if idle then
+        r.SetMediaTrackInfo_Value(idle, "I_RECARM", 0)
+        r.SetMediaTrackInfo_Value(idle, "I_RECMON", 0)
+    end
     -- our own write must not look like an external project change, or the next
     -- Poll rescans the whole kit for nothing
     last_change = r.GetProjectStateChangeCount(0)
 end
 
 -- Re-assert the intent if something moved it. Cheap: two reads, and it only
--- writes on an actual mismatch.
+-- writes on an actual mismatch. The other instrument is pushed out of the way
+-- ONLY while we claim the input — disarmed, we have no business touching a
+-- track the user armed himself.
 function Kit.HoldArm()
-    if not valid(Kit.bus) then return false end
+    local tr = armTarget()
+    if not tr then return false end
     local want = Kit.arm_intent and 1 or 0
-    local arm  = r.GetMediaTrackInfo_Value(Kit.bus, "I_RECARM")
-    local mon  = r.GetMediaTrackInfo_Value(Kit.bus, "I_RECMON")
-    if arm == want and ((want == 0) == (mon == 0)) then return false end
-    r.SetMediaTrackInfo_Value(Kit.bus, "I_RECARM", want)
-    r.SetMediaTrackInfo_Value(Kit.bus, "I_RECMON", want)
-    last_change = r.GetProjectStateChangeCount(0)
-    return true
+    local wrote = false
+    local arm  = r.GetMediaTrackInfo_Value(tr, "I_RECARM")
+    local mon  = r.GetMediaTrackInfo_Value(tr, "I_RECMON")
+    if arm ~= want or ((want == 0) ~= (mon == 0)) then
+        r.SetMediaTrackInfo_Value(tr, "I_RECARM", want)
+        r.SetMediaTrackInfo_Value(tr, "I_RECMON", want)
+        wrote = true
+    end
+    if want == 1 then
+        local idle = idleTarget()
+        if idle and (r.GetMediaTrackInfo_Value(idle, "I_RECARM") == 1
+                  or r.GetMediaTrackInfo_Value(idle, "I_RECMON") ~= 0) then
+            r.SetMediaTrackInfo_Value(idle, "I_RECARM", 0)
+            r.SetMediaTrackInfo_Value(idle, "I_RECMON", 0)
+            wrote = true
+        end
+    end
+    if wrote then last_change = r.GetProjectStateChangeCount(0) end
+    return wrote
 end
 
 -- One-shot migration + self-heal: move a legacy choke off the folder
