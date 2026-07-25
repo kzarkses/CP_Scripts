@@ -157,6 +157,83 @@ function Peaks.Read(src, path, t0, t1, w, gen)
 end
 
 -- ---------------------------------------------------------------------------
+-- Rendering an entry
+--
+-- Here rather than in the toolkit because the ENTRY is this module's format,
+-- and a domain-free widget kit has no business knowing it. Three call sites
+-- drew the same loop with three small divergences; this is that loop, once.
+--
+-- Draws into the CURRENT gfx destination at 1:1, from (0,0) to (w,h). Two
+-- things make the result smooth, and neither is expensive:
+--
+--   · the CALLER bakes at 2x and blits back with `gfx.mode = 4` — the same
+--     trick the knobs use. That is real supersampling: the peaks themselves
+--     are read finer, so it is not a blur of coarse data. The extra cost is
+--     one GetPeaks of twice the count and 2x the line calls, both paid only
+--     when the view actually changes;
+--   · consecutive columns are LINKED along the top and bottom envelopes. A
+--     column drawn on its own is a picket fence the moment the zoom outruns
+--     the peak resolution; linked, it is a shape with an edge.
+--
+-- opts: lanes (one lane per channel with a midline, else the channels merge),
+--       vol (scale, for take volume), scale (0..0.5 of a lane), mid_* (the
+--       midline colour, omitted = no midline).
+-- ---------------------------------------------------------------------------
+function Peaks.Render(entry, w, h, cr, cg, cb, ca, opts)
+    local n, ch = entry.n, entry.ch
+    if not n or n < 1 then return end
+    local lanes = opts and opts.lanes
+    local vol   = (opts and opts.vol) or 1
+    local k     = (opts and opts.scale) or 0.47
+    local nl    = lanes and ch or 1
+    local lane_h = h / nl
+    local maxs, mins = entry.maxs, entry.mins
+
+    for L = 1, nl do
+        local mid   = (L - 0.5) * lane_h
+        local scale = lane_h * k
+        local cap   = lane_h * 0.5
+        if opts and opts.mid_a and opts.mid_a > 0 then
+            gfx.set(opts.mid_r, opts.mid_g, opts.mid_b, opts.mid_a)
+            gfx.line(0, mid, w - 1, mid)
+        end
+        gfx.set(cr, cg, cb, ca)
+        local ppx, pt, pb
+        for px = 1, n do
+            local vmax, vmin
+            if lanes then
+                vmax = maxs[L][px] or 0
+                vmin = mins[L][px] or 0
+            else
+                vmax, vmin = -1, 1
+                for c = 1, ch do
+                    local v = maxs[c][px] or 0
+                    if v > vmax then vmax = v end
+                    v = mins[c][px] or 0
+                    if v < vmin then vmin = v end
+                end
+            end
+            local d1, d2 = vmax * scale * vol, vmin * scale * vol
+            if d1 > cap then d1 = cap elseif d1 < -cap then d1 = -cap end
+            if d2 > cap then d2 = cap elseif d2 < -cap then d2 = -cap end
+            local yt, yb = mid - d1, mid - d2
+            if yb - yt < 1 then yb = yt + 1 end
+            local X = px - 1
+            gfx.line(X, yt, X, yb)
+            if ppx then
+                gfx.line(ppx, pt, X, yt)
+                gfx.line(ppx, pb, X, yb)
+            end
+            ppx, pt, pb = X, yt, yb
+        end
+    end
+end
+
+-- The supersampling factor the callers bake at. One place to change it, and
+-- one place to read it from when sizing the buffer and asking for peaks.
+Peaks.SS = 2
+
+-- ---------------------------------------------------------------------------
 -- Browser strip read, LRU-cached: [path][width] → { mins, maxs, n }
 -- ---------------------------------------------------------------------------
 local CACHE_MAX = 64   -- sized for waveform-row mode (~25 visible rows)

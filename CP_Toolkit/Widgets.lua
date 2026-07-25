@@ -2057,8 +2057,13 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
     local changed = false
     local new_value = value
 
-    -- Hit area
-    local hovered = Core.MouseInClippedRect(x, y, box_w, box_h) and not Core.HasPopup()
+    -- Hit area. A DISABLED dial still shows its value and still takes its
+    -- place: a control that disappears when it cannot be used takes the
+    -- layout with it, and the window jumps every time the selection changes.
+    -- It simply answers nothing — no hover, no drag, no wheel, no typing.
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, box_w, box_h) and not Core.HasPopup()
 
     if hovered then
         Core.SetHot(id)
@@ -2087,7 +2092,7 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         Core.SetActive(id)
     end
 
-    if Core.IsActive(id) and not kd.editing then
+    if Core.IsActive(id) and not kd.editing and not disabled then
         if Core.MouseDown(1) then
             local _, dy = Core.MouseDelta()
             if dy ~= 0 then
@@ -2174,7 +2179,8 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         if a1 < a0 then a0, a1 = a1, a0 end
         if a1 - a0 > 0.004 then
             local ac = theme.colors.accent
-            if Core.IsActive(id) then ac = theme.colors.accent_active
+            if disabled then ac = theme.colors.text_disabled
+            elseif Core.IsActive(id) then ac = theme.colors.accent_active
             elseif hovered then ac = theme.colors.accent_hovered end
             gfx.set(ac[1], ac[2], ac[3], (ac[4] or 1) * 0.45)
             gfx.arc(cx, cy, ar + 0.5, a0, a1, 1)
@@ -2205,9 +2211,10 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
             local r0, r1 = radius * 0.30, ar - tw - 1.5
             if r1 > r0 then
                 local pc = theme.colors.text
-                gfx.set(pc[1], pc[2], pc[3], 0.85)
+                local pa = disabled and 0.38 or 0.85
+                gfx.set(pc[1], pc[2], pc[3], pa)
                 gfx.line(cx + dx * r0, cy + dy * r0, cx + dx * r1, cy + dy * r1, 1)
-                gfx.set(pc[1], pc[2], pc[3], 0.35)
+                gfx.set(pc[1], pc[2], pc[3], pa * 0.41)
                 gfx.line(cx + dx * r0 - dy, cy + dy * r0 + dx,
                          cx + dx * r1 - dy, cy + dy * r1 + dx, 1)
                 gfx.line(cx + dx * r0 + dy, cy + dy * r0 - dx,
@@ -5364,7 +5371,8 @@ end
 -- The four states, once, for everything that lives in a bar.
 -- `sunken` picks the value ramp instead of the verb ramp; `on` overrides both,
 -- because a held state is a different message and gets its own channel.
-local function barChip(x, y, w, h, theme, hovered, down, on, disabled, sunken, accent)
+local function barChip(x, y, w, h, theme, hovered, down, on, disabled, sunken,
+                       accent, rad)
     local c = theme.colors
     local col
     if on then
@@ -5382,8 +5390,8 @@ local function barChip(x, y, w, h, theme, hovered, down, on, disabled, sunken, a
         elseif hovered then col = c.button_hovered
         else col = c.button end
     end
-    local rad = theme.rounding_small or 0
-    fillRound(x, y, w, h, rad, col[1], col[2], col[3], disabled and 0.45 or 1)
+    fillRound(x, y, w, h, rad or theme.rounding_small or 0,
+              col[1], col[2], col[3], disabled and 0.45 or 1)
 end
 
 -- The glyph/text colour that goes with the chip above.
@@ -6382,6 +6390,121 @@ function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, ho
                           mr, mg, mb, 1)
         end
     end
+end
+
+-- ============================================================================
+-- KNOB-SIZED DISCRETE CONTROLS — a row of dials must stay a ROW
+-- ============================================================================
+-- A dial row is a rhythm: one width, one height, one caption line under each.
+-- Dropping a labelled combo and a checkbox into it breaks that rhythm, and the
+-- eye reads the two intruders as belonging to something else — which is
+-- exactly what they look like. These occupy a dial's FOOTPRINT and carry the
+-- two values a dial cannot: an on/off, and a choice among a handful.
+--
+-- Rounded square rather than a circle, on purpose: the shape says "this is not
+-- continuous". The rhythm is what has to match, not the outline.
+
+local function knobCaption(label, x, y, size, theme)
+    if not label or label == "" then return end
+    Core.SetFontCaption()
+    local lc = theme.colors.text_disabled
+    local lw = Core.MeasureText(label)
+    Core.DrawText(label, x + floor((size - lw) / 2), y + size,
+                  lc[1], lc[2], lc[3], lc[4])
+    Core.SetFontBody()
+end
+
+-- An on/off in a dial's footprint. Returns changed, on.
+function Widgets.KnobToggle(id, label, icon, is_on, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local size = opts.size or Widgets.KNOB_SIZE
+    local has_label = label and label ~= ""
+    local box_h = size + (has_label and KNOB_LABEL_H or 0)
+
+    if Layout.IsWrapping() then Layout.WrapPreCheck(size) end
+    local x, y = Layout.GetCursorPos()
+
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, size, size) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
+    local changed = false
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then changed = true end
+    end
+    local on = changed and (not is_on) or (not changed and is_on) or false
+
+    if Core.IsVisible(x, y, size, box_h) then
+        barChip(x, y, size, size, theme, hovered, down, on, disabled, false,
+                opts.accent, opts.radius or floor(size * 0.28))
+        local ink = barInk(theme, on, disabled)
+        local draw = (type(icon) == "function") and icon or (Icons and Icons[icon])
+        if draw then
+            local isz = opts.icon_size or floor(size * 0.5)
+            draw(x + floor((size - isz) / 2), y + floor((size - isz) / 2), isz,
+                 ink[1], ink[2], ink[3], 1)
+        elseif opts.text then
+            local tw, th = Core.MeasureText(opts.text)
+            Core.DrawText(opts.text, x + floor((size - tw) / 2),
+                          y + floor((size - th) / 2), ink[1], ink[2], ink[3], 1)
+        end
+        knobCaption(label, x, y, size, theme)
+    end
+    if hovered and opts.tip then Widgets.Tooltip(opts.tip, theme) end
+    Layout.AdvanceCursor(size, box_h)
+    return changed, on
+end
+
+-- A choice among a handful, in a dial's footprint: it SHOWS the current value
+-- and the caller opens its own menu on the click. Sunken by default — a value
+-- read is a field, not a button — and lit when it is not at rest, so "this pad
+-- is in a choke group" is visible without reading the word.
+-- Returns clicked, wheel_delta (notches, already consumed).
+function Widgets.KnobChip(id, label, text, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local size = opts.size or Widgets.KNOB_SIZE
+    local has_label = label and label ~= ""
+    local box_h = size + (has_label and KNOB_LABEL_H or 0)
+
+    if Layout.IsWrapping() then Layout.WrapPreCheck(size) end
+    local x, y = Layout.GetCursorPos()
+
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, size, size) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
+    local clicked, delta = false, 0
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) or Core.MouseClicked(2) then clicked = true end
+        if not Core.IsWheelConsumed() then
+            local wheel = Core.GetState().mouse_wheel
+            if wheel ~= 0 then
+                delta = wheel_notches(wheel)
+                Core.ConsumeWheel()
+            end
+        end
+    end
+
+    if Core.IsVisible(x, y, size, box_h) then
+        local on = opts.on and true or false
+        barChip(x, y, size, size, theme, hovered, down, on, disabled, not on,
+                opts.accent, opts.radius or floor(size * 0.28))
+        local ink = barInk(theme, on, disabled)
+        if text then
+            Core.SetFontCaption()
+            local tw, th = Core.MeasureText(text)
+            if tw > size - 4 then text, tw = Core.TruncateText(text, size - 4) end
+            Core.DrawText(text, x + floor((size - tw) / 2),
+                          y + floor((size - th) / 2), ink[1], ink[2], ink[3], 1)
+            Core.SetFontBody()
+        end
+        knobCaption(label, x, y, size, theme)
+    end
+    if hovered and opts.tip then Widgets.Tooltip(opts.tip, theme) end
+    Layout.AdvanceCursor(size, box_h)
+    return clicked, delta
 end
 
 -- ============================================================================

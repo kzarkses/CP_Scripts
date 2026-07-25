@@ -213,6 +213,17 @@ function Audio.Poll()
     end
 end
 
+-- Loop the section that is ALREADY playing. Toggling a loop should take
+-- effect on what you are hearing, not on the next thing you press — and
+-- restarting the preview to apply it would jump the position back.
+-- end_s/start_s install the turnaround when the running preview had none
+-- (a plain play has no section end to bounce off).
+function Audio.SetLoop(on, end_s, start_s)
+    cur_loop = on and true or false
+    if end_s then cur_end = end_s end
+    if start_s then cur_start = start_s end
+end
+
 function Audio.SetVolume(vol)
     Audio.volume = vol
     if cur then pcall(r.CF_Preview_SetValue, cur, "D_VOLUME", vol) end

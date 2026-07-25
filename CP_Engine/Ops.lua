@@ -242,6 +242,50 @@ function Ops.CommitFades()
 end
 
 -- Crop the item to the [a, b] source region (position preserved).
+-- Drag ONE edge of an item, in the SOURCE domain — the domain the sample
+-- editor draws in. `t` is where that edge should now sit in the source.
+--
+-- The start edge moves the item on the timeline with it, so the audio that
+-- stays visible does not slide sideways: that is what REAPER's own edge drag
+-- does, and what anyone dragging a waveform edge expects. The end edge is a
+-- plain length change. `src_len` (optional) stops the end edge running past
+-- the material into silence.
+function Ops.TrimEdge(item, take, which, t, src_len)
+    if not item or not take then return end
+    local soffs = r.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
+    local rate  = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+    if rate <= 0 then rate = 1 end
+    local pos = r.GetMediaItemInfo_Value(item, "D_POSITION")
+    local len = r.GetMediaItemInfo_Value(item, "D_LENGTH")
+    local MIN = 0.002 * rate            -- source seconds of surviving material
+
+    if which == "start" then
+        local ns = t
+        if ns < 0 then ns = 0 end
+        local limit = soffs + len * rate - MIN
+        if ns > limit then ns = limit end
+        local d = (ns - soffs) / rate   -- timeline seconds
+        if pos + d < 0 then
+            d = -pos
+            ns = soffs + d * rate
+        end
+        r.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", ns)
+        r.SetMediaItemInfo_Value(item, "D_POSITION", pos + d)
+        r.SetMediaItemInfo_Value(item, "D_LENGTH", len - d)
+    else
+        local e = t
+        if src_len and src_len > 0 and e > src_len then e = src_len end
+        local nlen = (e - soffs) / rate
+        if nlen < MIN / rate then nlen = MIN / rate end
+        r.SetMediaItemInfo_Value(item, "D_LENGTH", nlen)
+    end
+    r.UpdateItemInProject(item)
+end
+
+function Ops.CommitTrim()
+    r.Undo_OnStateChange("Sample Editor: trim edge")
+end
+
 function Ops.TrimToSel(item, take, a, b)
     local rate = r.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
     if rate <= 0 then rate = 1 end

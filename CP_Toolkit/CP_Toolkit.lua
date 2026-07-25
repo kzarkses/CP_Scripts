@@ -629,6 +629,17 @@ function UI.ModKnob(id, label, base, depth, live, opts)
     return Widgets.ModKnob(id, label, base, depth, live, UI._theme, opts)
 end
 
+-- Knob-sized discrete controls: an on/off and a choice, in a dial's footprint,
+-- so a row of dials stays a row instead of being broken by a combo.
+function UI.KnobToggle(id, label, icon, is_on, opts)
+    return Widgets.KnobToggle(id, label, icon, is_on, UI._theme, opts)
+end
+
+-- Returns clicked, wheel_delta.
+function UI.KnobChip(id, label, text, opts)
+    return Widgets.KnobChip(id, label, text, UI._theme, opts)
+end
+
 -- VU Meters
 function UI.VMeter(id, peak_l, peak_r, opts)
     return Widgets.VMeter(id, peak_l, peak_r, UI._theme, opts)
