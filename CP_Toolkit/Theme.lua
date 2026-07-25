@@ -6,8 +6,131 @@ local Theme = {}
 -- ============================================================================
 -- DEFAULT THEME (dark, REAPER-ish) — values at scale 1.0
 -- ============================================================================
-function Theme.Default()
+-- ============================================================================
+-- MACROS — the six numbers a theme is really made of
+-- ============================================================================
+-- The colour list below is forty-odd keys, and editing it by hand produces
+-- exactly one outcome: a pile of near-identical greys. Measured on a real
+-- hand-tuned theme — window 0.18, surface 0.16, surface2 0.20, frame 0.22,
+-- header 0.22, tab 0.20, list 0.18 — seven levels inside six hundredths, with
+-- a border at 0.30 × 0.5 alpha (≈0.25 effective) that could not draw a line
+-- between any of them. Nothing separated because nothing was far enough apart.
+--
+-- So the chrome is DERIVED from six macros instead of authored key by key:
+--
+--   base       the deepest ground; everything else climbs from it
+--   step       the distance between two levels — this IS the contrast knob
+--   primary    "active, chosen, yours" — the accent
+--   secondary  the second voice: selection, links, informational chrome
+--   text       text luminance
+--   outline    how strongly elements are framed (0 = none, 1 = hard edges)
+--
+-- Levels, and what may live on each — a widget picks a LEVEL, never a colour:
+--   L0 base            the window
+--   L1 base + step     panels, lists, popups
+--   L2 base + 2·step   inputs, headers, tabs, alternating rows
+--   L3 base + 3·step   buttons at rest
+--   L4 base + 4·step   buttons hovered
+-- A pressed control goes DOWN to L1: sunken, not brighter.
+--
+-- The neutral is tinted a few percent toward `secondary` on purpose. A pure
+-- grey reads as unconsidered; the tint is what makes it look chosen.
+function Theme.MacroDefault()
     return {
+        base      = { 0.105, 0.105, 0.115 },
+        step      = 0.055,
+        primary   = { 0.40, 0.62, 0.45 },
+        secondary = { 0.42, 0.55, 0.72 },
+        text      = 0.92,
+        outline   = 0.62,
+    }
+end
+
+local function clamp01(v) return v < 0 and 0 or (v > 1 and 1 or v) end
+
+-- level → an rgba on the ladder, tinted toward `secondary`
+local function lvl(m, n, a)
+    local s = m.secondary
+    local out = {}
+    for i = 1, 3 do
+        local g = m.base[i] + m.step * n
+        out[i] = clamp01(g + (s[i] - 0.5) * 0.035)
+    end
+    out[4] = a or 1
+    return out
+end
+
+local function scaled(c, k, a)
+    return { clamp01(c[1] * k), clamp01(c[2] * k), clamp01(c[3] * k), a or 1 }
+end
+
+local function grey(v, a) return { v, v, v, a or 1 } end
+
+-- Rewrite every CHROME colour from the macros. Role colours (play, record,
+-- pending, …) are deliberately untouched: they mean something, so they are
+-- not the theme's to reinterpret.
+function Theme.ApplyMacro(t)
+    local m = t.macro
+    if not m then return t end
+    local c = t.colors
+    local pri, sec = m.primary, m.secondary
+
+    c.window_bg   = lvl(m, 0)
+    c.title_bar   = lvl(m, -0.4)
+    c.surface     = lvl(m, 1)
+    c.list_bg     = lvl(m, 1)
+    c.popup_bg    = lvl(m, 1.4, 0.98)
+    c.surface2    = lvl(m, 2)
+    c.frame_bg    = lvl(m, 2)
+    c.header      = lvl(m, 2)
+    c.tab         = lvl(m, 1.4)
+    c.list_alt_bg = lvl(m, 1.5)
+    c.list_hover  = lvl(m, 2.4)
+    c.frame_hovered  = lvl(m, 2.8)
+    c.header_hovered = lvl(m, 3)
+    c.tab_hovered    = lvl(m, 2.6)
+    c.tab_active     = lvl(m, 3.4)
+    c.button         = lvl(m, 3)
+    c.button_hovered = lvl(m, 4.2)
+    -- pressed goes DOWN, not up: a sunken control is the physical metaphor
+    c.button_active  = lvl(m, 1)
+    c.frame_active   = lvl(m, 1)
+    c.header_active  = lvl(m, 1)
+
+    -- Framing. Opaque on purpose: a half-alpha border over a dark ground is
+    -- the thing that stopped drawing a line at all.
+    local ow = 3.4 + 4.6 * m.outline
+    c.border      = lvl(m, ow)
+    c.border_soft = lvl(m, 2.2 + 2.2 * m.outline)
+    c.separator   = lvl(m, ow * 0.85)
+    c.list_grid   = lvl(m, 2.4, 0.55)
+
+    c.text          = grey(clamp01(m.text))
+    c.title_text    = grey(clamp01(m.text * 0.86))
+    c.list_text     = grey(clamp01(m.text * 0.95))
+    c.value_normal  = grey(clamp01(m.text * 0.85))
+    c.text_mute     = grey(clamp01(m.text * 0.52))
+    c.text_disabled = grey(clamp01(m.text * 0.40))
+
+    c.accent         = { pri[1], pri[2], pri[3], 1 }
+    c.accent_hovered = scaled(pri, 1.22)
+    c.accent_active  = scaled(pri, 0.82)
+    c.accent_dim     = scaled(pri, 0.62)
+    c.list_selected      = { sec[1], sec[2], sec[3], 1 }
+    c.list_selected_text = grey(1)
+    c.scrollbar_bg   = lvl(m, 0.6, 0.35)
+    c.scrollbar_grab = lvl(m, 4, 0.75)
+    return t
+end
+
+function Theme.Default()
+    local t = {
+        -- Derived chrome: see Theme.MacroDefault. A theme file that carries a
+        -- `macro` block is re-derived on load; one that does not keeps the
+        -- literal colours it was hand-tuned with. The literals below are the
+        -- pre-macro values — kept as the shape of the table, immediately
+        -- overwritten by ApplyMacro at the bottom of this function.
+        macro = Theme.MacroDefault(),
         -- Scale factor (1.0 = 100%, 1.5 = 150%, 2.0 = 200%)
         scale = 1.0,
 
@@ -160,6 +283,7 @@ function Theme.Default()
         tooltip_max_w   = 320,   -- wrap width in px (scaled)
         tooltip_delay   = 0.4,   -- hover delay in seconds (not scaled)
     }
+    return Theme.ApplyMacro(t)
 end
 
 -- ============================================================================
@@ -397,6 +521,7 @@ function Theme.Save(t, name)
 
     -- Build saveable data (exclude runtime/computed fields)
     local data = {
+        macro = t.macro,
         colors = {},
         fonts = {
             face = t.fonts.face,
@@ -464,6 +589,18 @@ function Theme.LoadSaved(name)
     if not ok or not data then return nil end
 
     local t = Theme.Default()
+
+    -- A file that carries macros is re-derived from them; the literal colour
+    -- list it also stores is then only an override layer for the few keys a
+    -- user pinned by hand. A file WITHOUT macros predates them and is left
+    -- exactly as authored — upgrading someone's theme without being asked
+    -- would be the rudest possible reading of "make it more contrasted".
+    if data.macro then
+        for k, v in pairs(data.macro) do t.macro[k] = v end
+        Theme.ApplyMacro(t)
+    else
+        t.macro = nil
+    end
 
     -- Apply loaded data
     if data.colors then

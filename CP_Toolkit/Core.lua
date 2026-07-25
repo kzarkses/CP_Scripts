@@ -767,6 +767,11 @@ function Core.LoadFontSlots(theme)
     gfx.setfont(5, f.face, f.caption, 0)         -- Caption (small/hints)
     gfx.setfont(6, f.mono_face, f.mono_size, 0)  -- Mono (values)
     gfx.setfont(7, f.face, f.h2, 66)             -- H2 Bold
+    -- Body at the SAME size, bold. What a lit control, a selected row or a
+    -- section label needs is weight, not size: growing the type reflows the
+    -- layout, weight does not.
+    gfx.setfont(9, f.face, f.body, 66)           -- Body Bold
+    gfx.setfont(10, f.mono_face, f.mono_size, 66) -- Mono Bold (values)
     font_slots_loaded = true
     gfx.setfont(4)  -- restore to Body
     _current_font_slot = 4
@@ -786,6 +791,9 @@ function Core.SetFontBody()     if font_slots_loaded and _current_font_slot ~= 4
 function Core.SetFontCaption()  if font_slots_loaded and _current_font_slot ~= 5 then gfx.setfont(5); _current_font_slot = 5 end end
 function Core.SetFontMono()     if font_slots_loaded and _current_font_slot ~= 6 then gfx.setfont(6); _current_font_slot = 6 end end
 function Core.SetFontH2Bold()   if font_slots_loaded and _current_font_slot ~= 7 then gfx.setfont(7); _current_font_slot = 7 end end
+-- Body weight, same size: emphasis that does not reflow anything around it.
+function Core.SetFontBold()     if font_slots_loaded and _current_font_slot ~= 9 then gfx.setfont(9); _current_font_slot = 9 end end
+function Core.SetFontMonoBold() if font_slots_loaded and _current_font_slot ~= 10 then gfx.setfont(10); _current_font_slot = 10 end end
 
 function Core.GetCurrentFontSlot()
     return _current_font_slot

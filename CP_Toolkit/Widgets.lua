@@ -253,6 +253,18 @@ local function strokeRound(x, y, w, h, rad, r, g, b, a)
     end
 end
 
+-- One-pixel frame around a control. This is what "I cannot tell what is what"
+-- was asking for: a FILL only separates two surfaces when they sit far apart
+-- on the ladder, an EDGE separates them at any distance. Cheap, and it makes
+-- a dense bar legible without pushing every level further from its neighbour.
+-- Uses the theme's `border`, which the macro system now derives high enough
+-- above the button level to actually draw a line (see Theme.ApplyMacro).
+local function frameIt(x, y, w, h, rad, theme, a)
+    if theme.widget_style == "windows" then return end   -- the bevel is its frame
+    local c = theme.colors.border
+    strokeRound(x, y, w, h, rad, c[1], c[2], c[3], (c[4] or 1) * (a or 1))
+end
+
 local function draw_win32_bevel(x, y, w, h, theme, mode)
     if theme.widget_style ~= "windows" then return end
     local border = theme.colors.border
@@ -815,6 +827,7 @@ function Widgets.Button(id, label, theme, opts)
         local alpha_mul = disabled and 0.5 or 1.0
         local rad = theme.widget_style ~= "windows" and theme.rounding or 0
         fillRound(x, y, w, h, rad, bg[1], bg[2], bg[3], (bg[4] or 1) * alpha_mul)
+        frameIt(x, y, w, h, rad, theme, alpha_mul * (hovered and 1 or 0.8))
 
         -- Windows-style 3D bevel (raised for buttons, sunken when pressed or selected)
         local pressed = (Core.IsActive(id) and hovered) or opts.selected
@@ -4692,9 +4705,16 @@ function Widgets.ToggleButton(id, label, is_on, theme, opts)
             bg = hovered and theme.colors.button_hovered or theme.colors.button
         end
         local dim = disabled and 0.5 or 1
-        fillRound(x, y, w, h,
-            theme.widget_style ~= "windows" and theme.rounding or 0,
-            bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
+        local rad0 = theme.widget_style ~= "windows" and theme.rounding or 0
+        fillRound(x, y, w, h, rad0, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
+        -- A lit toggle takes a brighter frame: the state reads on the EDGE as
+        -- well as on the fill, so it survives a low-contrast theme.
+        if new_on then
+            local a = theme.colors.accent
+            strokeRound(x, y, w, h, rad0, a[1], a[2], a[3], 0.85 * dim)
+        else
+            frameIt(x, y, w, h, rad0, theme, dim * (hovered and 1 or 0.8))
+        end
 
         -- Bevel: ON = sunken (pressed), OFF = raised (like a button)
         if not disabled then
@@ -4792,6 +4812,12 @@ local function iconWidget(id, icon, icon_off, is_on, theme, opts, toggle)
         end
         if bg then
             fillRound(x, y, w, h, rad, bg[1], bg[2], bg[3], (bg[4] or 1) * dim)
+            if on then
+                local a = opts.accent or theme.colors.accent
+                strokeRound(x, y, w, h, rad, a[1], a[2], a[3], 0.85 * dim)
+            elseif not opts.flat then
+                frameIt(x, y, w, h, rad, theme, dim * (hovered and 1 or 0.8))
+            end
             if not disabled and not opts.flat then
                 draw_win32_bevel(x, y, w, h, theme, on and "sunken" or "raised")
             end
@@ -4921,10 +4947,12 @@ function Widgets.RailItem(id, icon, label, selected, theme, opts)
         local rad = theme.rounding_small or 0
         if selected then
             local a = opts.accent or theme.colors.accent
-            fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.18)
-            Core.DrawRect(x + 3, y + 3, 2, h - 6, a[1], a[2], a[3], 0.95)
+            fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.20)
+            strokeRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.7)
+            Core.DrawRect(x + 3, y + 2, 2, h - 4, a[1], a[2], a[3], 1)
         elseif hovered then
-            fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, 0.055)
+            fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, 0.07)
+            frameIt(x + 3, y, w - 6, h, rad, theme, 0.7)
         end
         local tc
         if disabled then tc = theme.colors.text_disabled
@@ -4936,9 +4964,13 @@ function Widgets.RailItem(id, icon, label, selected, theme, opts)
         local draw = (type(icon) == "function") and icon or (Icons and Icons[icon])
         if draw then draw(ix, y + floor((h - isz) / 2), isz, tc[1], tc[2], tc[3], 1) end
         if not rail.slim and label then
+            -- Selected reads in WEIGHT as well as colour. Same size, so
+            -- nothing around it moves — and it survives a flat theme.
+            if selected then Core.SetFontBold() end
             local _, lh = Core.MeasureText(label)
             Core.DrawText(label, ix + isz + 9, y + floor((h - lh) / 2),
                           tc[1], tc[2], tc[3], 1)
+            if selected then Core.SetFontBody() end
         end
     end
     if hovered and rail.slim and label then Widgets.Tooltip(label, theme) end
