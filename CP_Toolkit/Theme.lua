@@ -133,6 +133,9 @@ function Theme.Default()
             border_soft     = { 0.345, 0.345, 0.345, 1.0 },  -- n6
             separator       = { 0.345, 0.345, 0.345, 1.0 },
             list_grid       = { 0.300, 0.300, 0.300, 1.0 },
+            -- The handle between two panels. It had no key at all and drew
+            -- itself as a literal grey at half alpha, in every application.
+            splitter        = { 0.300, 0.300, 0.300, 1.0 },
 
             scrollbar_bg    = { 0.176, 0.176, 0.176, 1.0 },
             scrollbar_grab  = { 0.380, 0.380, 0.380, 1.0 },
@@ -939,7 +942,7 @@ end
 -- every screen and reachable from nowhere.
 local COLOR_GROUPS = {
     { name = "Base",     keys = { "window_bg", "surface", "surface2", "title_bar",
-                                  "border", "border_soft", "separator" } },
+                                  "border", "border_soft", "separator", "splitter" } },
     { name = "Text",     keys = { "text", "title_text", "text_mute", "text_disabled",
                                   "value_normal", "value_modified", "value_negative" } },
     { name = "Accent",   keys = { "accent", "accent_hovered", "accent_active",
@@ -962,7 +965,7 @@ local COLOR_GROUPS = {
 
 local COLOR_LABELS = {
     window_bg = "Window BG", text = "Text", text_disabled = "Text Dim",
-    border = "Border", separator = "Separator",
+    border = "Border", separator = "Separator", splitter = "Splitter",
     accent = "Accent", accent_hovered = "Accent Hover", accent_active = "Accent Active",
     accent_dim = "Accent Dim", on_accent = "Text on accent",
     surface = "Panel", surface2 = "Panel raised", border_soft = "Border soft",

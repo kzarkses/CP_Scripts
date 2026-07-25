@@ -7,6 +7,24 @@ local floor, min, max, abs, ceil = math.floor, math.min, math.max, math.abs, mat
 local Layout = {}
 local Core  -- set via init
 
+-- Theme colour, or a stated fallback. Never `theme.colors.x or something`:
+-- that idiom is what let a typo (`surface1`) live for months, because the
+-- fallback quietly answered forever and the key was never missing enough to
+-- notice. Here the fallback exists only for the case where no theme has been
+-- handed over at all, which is a real state during the first frame.
+local FALLBACK = {
+    scrollbar_bg   = { 0.176, 0.176, 0.176, 1 },
+    scrollbar_grab = { 0.380, 0.380, 0.380, 1 },
+    window_bg      = { 0.145, 0.145, 0.145, 1 },
+    border         = { 0.420, 0.420, 0.420, 1 },
+    splitter       = { 0.345, 0.345, 0.345, 1 },
+}
+local function themeCol(key)
+    local t = Layout.theme
+    local c = t and t.colors[key]
+    return c or FALLBACK[key]
+end
+
 -- ============================================================================
 -- INIT
 -- ============================================================================
@@ -138,6 +156,13 @@ end
 -- ============================================================================
 function Layout.Begin(id, theme, opts)
     opts = opts or {}
+    -- Kept for the frame: scrollbars and splitters are drawn deep inside
+    -- containers that never get a theme handed to them, and until now they
+    -- simply invented their greys — this file contained ZERO references to
+    -- the theme while painting the scrollbars and the panel splitter of all
+    -- eight applications. On a light theme that meant a near-black gutter
+    -- and a dark thumb on a pale window: the whole suite looked half-themed.
+    Layout.theme = theme
     local w, h = Core.GetWindowSize()
     local pad = theme and theme.window_padding or 8
     local spacing = theme and theme.item_spacing or 4
@@ -423,9 +448,12 @@ function Layout._DrawScrollbar(c, data)
 
     -- Gutter + track background
     if not overlay then
-        Core.DrawRect(c.x + c.w, c.y, gutter, c.h, 0.13, 0.13, 0.13, 1)
+        local gc = themeCol("window_bg")
+        Core.DrawRect(c.x + c.w, c.y, gutter, c.h, gc[1], gc[2], gc[3], 1)
     end
-    Core.DrawRect(bar_x, bar_y, bar_w, bar_h, 0.2, 0.2, 0.2, overlay and 0.3 or 1)
+    local tb = themeCol("scrollbar_bg")
+    Core.DrawRect(bar_x, bar_y, bar_w, bar_h, tb[1], tb[2], tb[3],
+                  overlay and 0.3 or (tb[4] or 1))
 
     local drag_id = data._sb_id
     if not drag_id then
@@ -437,10 +465,11 @@ function Layout._DrawScrollbar(c, data)
 
     -- Thumb (clipped hit-test — audit B21; drag id cached — audit P9)
     local hover_thumb = Core.MouseInClippedRect(bar_x - 2, thumb_y, bar_w + 4, thumb_h)
+    local tg = themeCol("scrollbar_grab")
     if hover_thumb or (active and mode == "thumb") then
-        Core.DrawRect(bar_x, thumb_y, bar_w, thumb_h, 0.5, 0.5, 0.5, 0.7)
+        Core.DrawRect(bar_x, thumb_y, bar_w, thumb_h, tg[1], tg[2], tg[3], 1)
     else
-        Core.DrawRect(bar_x, thumb_y, bar_w, thumb_h, 0.4, 0.4, 0.4, 0.5)
+        Core.DrawRect(bar_x, thumb_y, bar_w, thumb_h, tg[1], tg[2], tg[3], 0.7)
     end
 
     -- Arrow buttons (gutter mode only)
@@ -521,11 +550,17 @@ function Layout._DrawScrollbar(c, data)
     end
 end
 
--- Horizontal scrollbar (mirror of _DrawScrollbar). Drawn at the bottom of
--- the container; height = scrollbar_thickness from the theme (falls back
--- to the same 6 px the vertical bar uses).
+-- Horizontal scrollbar (mirror of _DrawScrollbar), drawn at the bottom of the
+-- container.
+--
+-- The comment that used to sit here promised a height read from a theme key
+-- named `scrollbar_thickness`. That key has never existed in Theme.lua, and
+-- the line below has always been a literal 6. A comment that describes work
+-- nobody did is worse than no comment: the next reader believes the case is
+-- already wired and moves on.
 function Layout._DrawScrollbarH(c, data)
-    local bar_h = 6
+    local t = Layout.theme
+    local bar_h = (t and t.scrollbar_width) or 6
     local bar_x = c.x + 2
     local bar_y = c.y + c.h - bar_h - 2
     local bar_w = c.w - 4
@@ -538,7 +573,8 @@ function Layout._DrawScrollbarH(c, data)
     local thumb_x = bar_x + (bar_w - thumb_w) * scroll_ratio
 
     -- Track background
-    Core.DrawRect(bar_x, bar_y, bar_w, bar_h, 0.2, 0.2, 0.2, 0.3)
+    local tb = themeCol("scrollbar_bg")
+    Core.DrawRect(bar_x, bar_y, bar_w, bar_h, tb[1], tb[2], tb[3], 0.3)
 
     -- Thumb (clipped hit-test — audit B21; drag id cached — audit P9)
     local hover = Core.MouseInClippedRect(thumb_x, bar_y - 2, thumb_w, bar_h + 4)
@@ -548,10 +584,11 @@ function Layout._DrawScrollbarH(c, data)
         data._sbh_id = drag_id
     end
 
+    local tg = themeCol("scrollbar_grab")
     if hover or Core.IsActive(drag_id) then
-        Core.DrawRect(thumb_x, bar_y, thumb_w, bar_h, 0.5, 0.5, 0.5, 0.7)
+        Core.DrawRect(thumb_x, bar_y, thumb_w, bar_h, tg[1], tg[2], tg[3], 1)
     else
-        Core.DrawRect(thumb_x, bar_y, thumb_w, bar_h, 0.4, 0.4, 0.4, 0.5)
+        Core.DrawRect(thumb_x, bar_y, thumb_w, bar_h, tg[1], tg[2], tg[3], 0.7)
     end
 
     -- Drag scrollbar thumb
@@ -1372,10 +1409,15 @@ function Layout.Splitter(id, direction, total_size, default_ratio, opts)
         end
     end
 
-    -- Draw splitter bar
+    -- Draw splitter bar. This is the separation between panels in every app,
+    -- and it had no theme key at all — two literal greys at half alpha, so on
+    -- a light theme it was a dark smear on a pale window. It gets the same
+    -- treatment as everything else now: rest on the soft border, hover one
+    -- step up on the border proper.
     if Core.IsVisible(bar_x, bar_y, bar_w, bar_h) then
-        local color = (hovered or Core.IsActive(drag_id)) and 0.45 or 0.25
-        Core.DrawRect(bar_x, bar_y, bar_w, bar_h, color, color, color, 0.5)
+        local sc = (hovered or Core.IsActive(drag_id))
+                   and themeCol("border") or themeCol("splitter")
+        Core.DrawRect(bar_x, bar_y, bar_w, bar_h, sc[1], sc[2], sc[3], sc[4] or 1)
     end
     -- data is a reference from GetWidgetData; ratio mutation persists without SetWidgetData.
     return size_a
