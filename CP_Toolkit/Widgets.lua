@@ -325,12 +325,19 @@ end
 --
 -- Hover and selection are two different channels, as everywhere else: hover
 -- moves the VALUE by a step, selection changes the HUE to the tinted band.
-local function drawRowState(x, y, w, h, theme, hovered, selected)
+-- `down` is the press: the band darkens under the finger. Without it a click
+-- on a row looks exactly like hovering it, and on a list the press is the only
+-- moment that tells you the row under the cursor is the one you got.
+local function drawRowState(x, y, w, h, theme, hovered, selected, down)
     local c
     if selected then c = theme.colors.list_selected
     elseif hovered then c = theme.colors.list_hover
     else return end
-    Core.DrawRect(x, y, w, h, c[1], c[2], c[3], c[4] or 1)
+    if down then
+        Core.DrawRect(x, y, w, h, c[1] * 0.8, c[2] * 0.8, c[3] * 0.8, c[4] or 1)
+    else
+        Core.DrawRect(x, y, w, h, c[1], c[2], c[3], c[4] or 1)
+    end
 end
 
 -- Matching text colour. A row painted with the selection band needs the
@@ -340,6 +347,21 @@ local function rowTextColor(theme, selected, disabled)
     if disabled then return theme.colors.text_disabled end
     if selected then return theme.colors.list_selected_text end
     return theme.colors.list_text
+end
+
+-- Rest / hover / pressed, chosen in ONE place from a theme triple.
+--
+-- A control that answers the mouse on hover but not on the press leaves the
+-- click itself unacknowledged: you cannot tell a click that landed from one
+-- that missed, and on a slow machine that is the difference between "it did
+-- not register" and "it is working on it". The three colours are passed in
+-- rather than derived from a base name, because `base .. "_active"` would
+-- build a string on every frame of every control.
+local function pickState(rest, hov, act, hovered, down, disabled)
+    if disabled then return rest end
+    if down then return act end
+    if hovered then return hov end
+    return rest
 end
 
 local function draw_win32_bevel(x, y, w, h, theme, mode)
@@ -973,11 +995,14 @@ function Widgets.Checkbox(id, label, checked, theme, opts)
     end
 
     local new_checked = toggled and not checked or (not toggled and checked)
+    local down = hovered and Core.MouseDown(1)
 
     -- Draw box
     if Core.IsVisible(x, y, total_w, h) then
         local box_y = y + floor((h - size) / 2)
-        local bg = hovered and theme.colors.frame_hovered or theme.colors.frame_bg
+        local c = theme.colors
+        local bg = pickState(c.frame_bg, c.frame_hovered, c.frame_active,
+                             hovered, down, disabled)
         local rad = theme.widget_style ~= "windows" and theme.rounding_small or 0
         fillRound(x, box_y, size, size, rad, bg[1], bg[2], bg[3], bg[4])
 
@@ -1438,7 +1463,8 @@ local function comboBehaviour(id, cx, cy, cw, h, current_index, items, theme, di
                 -- one question, in the same file.
                 local item_sel = (i == popup_current)
                 drawRowState(popup_x + 1, iy, popup_w - 2, item_h, theme,
-                             item_hovered or i == data.nav, item_sel)
+                             item_hovered or i == data.nav, item_sel,
+                             item_hovered and Core.MouseDown(1))
 
                 -- Keyboard focus, when it differs from the pointer. A caret on
                 -- the leading edge: the two used to be painted identically, so
@@ -1670,17 +1696,21 @@ end
 -- ============================================================================
 -- COLLAPSING HEADER / TREE NODE
 -- ============================================================================
-function Widgets.CollapsingHeader(id, label, is_open, theme)
+function Widgets.CollapsingHeader(id, label, is_open, theme, opts)
     local x, y = Layout.GetCursorPos()
     local avail_w = Layout.GetAvailableWidth()
     local tw, th = Core.MeasureText(label)
     local h = theme.combo_height
     local toggled = false
 
-    local hovered = Core.MouseInClippedRect(x, y, avail_w, h) and not Core.HasPopup()
+    local disabled = (opts and opts.disabled) or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, avail_w, h) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
 
-    if hovered and Core.MouseClicked(1) then
-        toggled = true
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then toggled = true end
     end
 
     local new_open = (toggled and (not is_open)) or ((not toggled) and is_open)
@@ -1688,16 +1718,13 @@ function Widgets.CollapsingHeader(id, label, is_open, theme)
 
     -- Draw
     if Core.IsVisible(x, y, avail_w, h) then
-        local bg
-        if hovered then
-            bg = theme.colors.header_hovered
-        else
-            bg = theme.colors.header
-        end
+        local c = theme.colors
+        local bg = pickState(c.header, c.header_hovered, c.header_active,
+                             hovered, down, disabled)
         Core.DrawRect(x, y, avail_w, h, bg[1], bg[2], bg[3], bg[4])
 
         -- Arrow icon + label
-        local tc = theme.colors.text
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
         local ty = y + floor((h - th) / 2)
         local icon_size = h
         if Icons then
@@ -1744,12 +1771,17 @@ function Widgets.HelpButton(id, help_text, theme, opts)
     local w = opts.width or h
     if Layout.IsWrapping() then Layout.WrapPreCheck(w) end
     local x, y = Layout.GetCursorPos()
-    local hovered = Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
-    local bg = hovered and theme.colors.button_hovered or theme.colors.button
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
+    local c = theme.colors
+    local bg = pickState(c.button, c.button_hovered, c.button_active,
+                         hovered, down, disabled)
     fillRound(x, y, w, h,
         theme.widget_style ~= "windows" and theme.rounding or 0,
-        bg[1], bg[2], bg[3], bg[4] or 1)
-    local tc = theme.colors.text
+        bg[1], bg[2], bg[3], (bg[4] or 1) * (disabled and 0.5 or 1))
+    local tc = disabled and c.text_disabled or c.text
     local tw, th = Core.MeasureText("?")
     Core.DrawText("?", x + floor((w - tw) / 2), y + floor((h - th) / 2),
         tc[1], tc[2], tc[3], hovered and 1 or 0.8)
@@ -1911,24 +1943,32 @@ function Widgets.TreeNode(id, label, is_open, theme, opts)
     -- Icon + label area
     local icon_w = h  -- square icon area matching line height
     local hit_w = icon_w + tw + 4
-    local hovered = Core.MouseInClippedRect(x, y, hit_w, h) and not Core.HasPopup()
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, hit_w, h) and not Core.HasPopup()
+    local down = hovered and Core.MouseDown(1)
 
-    if hovered and Core.MouseClicked(1) then
-        toggled = true
-        if Log then Log.WidgetChanged(id, "TreeNode", tostring(is_open), tostring(not is_open)) end
+    if hovered then
+        Core.SetHot(id)
+        if Core.MouseClicked(1) then
+            toggled = true
+            if Log then Log.WidgetChanged(id, "TreeNode", tostring(is_open), tostring(not is_open)) end
+        end
     end
 
     local new_open = (toggled and (not is_open)) or ((not toggled) and is_open)
 
     -- Draw
     if Core.IsVisible(x, y, hit_w, h) then
-        -- Hover highlight
+        -- Hover, then press: the band deepens under the click instead of
+        -- staying identical to the hover it came from.
         if hovered then
-            local hc = theme.colors.header_hovered
-            Core.DrawRect(x, y, Layout.GetAvailableWidth(), h, hc[1], hc[2], hc[3], 0.3)
+            local hc = down and theme.colors.header_active or theme.colors.header_hovered
+            Core.DrawRect(x, y, Layout.GetAvailableWidth(), h,
+                          hc[1], hc[2], hc[3], down and 0.55 or 0.3)
         end
 
-        local tc = theme.colors.text
+        local tc = disabled and theme.colors.text_disabled or theme.colors.text
         if Icons then
             if new_open then
                 Icons.TriangleDown(x, y, icon_w, tc[1], tc[2], tc[3], 0.7)
@@ -3686,7 +3726,10 @@ function Widgets.RadioGroup(id, label, current_index, items, theme, opts)
         -- Draw
         if Core.IsVisible(x, y, total_w, h) then
             local circle_y = y + floor((h - size) / 2)
-            local bg = item_hovered and theme.colors.frame_hovered or theme.colors.frame_bg
+            local c = theme.colors
+            local bg = pickState(c.frame_bg, c.frame_hovered, c.frame_active,
+                                 item_hovered, item_hovered and Core.MouseDown(1),
+                                 disabled)
 
             -- Box fill (+ top shadow in windows mode only)
             gfx.set(bg[1], bg[2], bg[3], bg[4])
@@ -3956,7 +3999,12 @@ function Widgets.Table(id, columns, rows, theme, opts)
 
             -- Hover highlight
             if row_hovered and not is_selected then
-                Core.DrawRect(x + inset, row_y, avail_w - inset * 2, row_h, list_hov[1], list_hov[2], list_hov[3], list_hov[4] or 0.5)
+                -- Darkened under the press: on a list the click is the only
+                -- moment that confirms which row you actually got.
+                local k = Core.MouseDown(1) and 0.8 or 1
+                Core.DrawRect(x + inset, row_y, avail_w - inset * 2, row_h,
+                              list_hov[1] * k, list_hov[2] * k, list_hov[3] * k,
+                              list_hov[4] or 0.5)
             end
 
             if row_hovered and Core.MouseClicked(1) then
@@ -4322,7 +4370,8 @@ function Widgets.ContextMenu(id, items, theme, opts)
                     local disabled = item.disabled
 
                     if item_hovered and not disabled then
-                        local hc = theme.colors.header_hovered
+                        local hc = Core.MouseDown(1) and theme.colors.header_active
+                                                     or theme.colors.header_hovered
                         Core.DrawRect(popup_x + 1, iy, menu_w - 2, item_h, hc[1], hc[2], hc[3], hc[4])
                     end
 
@@ -4446,7 +4495,8 @@ function Widgets.MenuBar(id, menus, theme)
             and not Core.HasPopup()
 
         if hovered then
-            local hc = theme.colors.header_hovered
+            local hc = Core.MouseDown(1) and theme.colors.header_active
+                                         or theme.colors.header_hovered
             Core.DrawRect(mx, y, bw, h, hc[1], hc[2], hc[3], hc[4])
         end
 
@@ -5833,14 +5883,16 @@ local RAIL_ICON_X, RAIL_ICON_SZ, RAIL_LABEL_GAP = 12, 16, 9
 
 -- Rest / hover / selected, exactly as RailItem paints them. One routine, so
 -- the two can never drift apart again.
-local function railRowBg(x, y, w, h, theme, hovered, selected, opts)
+local function railRowBg(x, y, w, h, theme, hovered, selected, opts, down)
     local rad = theme.rounding_small or 0
     if selected then
         local a = (opts and opts.accent) or theme.colors.accent
-        fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], 0.13)
+        fillRound(x + 3, y, w - 6, h, rad, a[1], a[2], a[3], down and 0.24 or 0.13)
         Core.DrawRect(x + 3, y + 1, 3, h - 2, a[1], a[2], a[3], 1)
     elseif hovered then
-        fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, 0.07)
+        -- The press deepens the wash. A rail entry that looked the same
+        -- hovered and clicked never acknowledged the click at all.
+        fillRound(x + 3, y, w - 6, h, rad, 1, 1, 1, down and 0.14 or 0.07)
     end
 end
 
@@ -5897,7 +5949,8 @@ function Widgets.RailItem(id, icon, label, selected, theme, opts)
         -- RailValue also use: the row's look now has ONE implementation, so a
         -- toggle and a dropdown in the same strip cannot end up in different
         -- styles again.
-        railRowBg(x, y, w, h, theme, hovered, selected, opts)
+        railRowBg(x, y, w, h, theme, hovered, selected, opts,
+                  hovered and Core.MouseDown(1))
         local tc = railInk(theme, hovered, selected, disabled, opts)
         -- Selected reads in WEIGHT as well as colour. Same size, so nothing
         -- around it moves — and it survives a flat theme.
@@ -5923,7 +5976,8 @@ function Widgets.RailCombo(id, icon, label, current_index, items, theme, opts)
         comboBehaviour(id, x, y, w, h, current_index, items, theme, disabled)
 
     if Core.IsVisible(x, y, w, h) then
-        railRowBg(x, y, w, h, theme, hovered or Core.HasPopup(id), false, opts)
+        railRowBg(x, y, w, h, theme, hovered or Core.HasPopup(id), false, opts,
+                  Core.HasPopup(id))
         local ink = railInk(theme, hovered, false, disabled, opts)
         railRowContent(x, y, w, h, icon, label, ink, false)
         if not rail.slim then
@@ -6015,7 +6069,7 @@ function Widgets.RailValue(id, icon, label, value, min_val, max_val, theme, opts
                 end
             end
         end
-        railRowBg(x, y, w, h, theme, hovered or active, false, opts)
+        railRowBg(x, y, w, h, theme, hovered or active, false, opts, active)
         local ink = railInk(theme, hovered or active, false, disabled, opts)
         railRowContent(x, y, w, h, icon, label, ink, false)
         if not rail.slim then
@@ -6916,9 +6970,10 @@ function Widgets.CollapsiblePanel(id, label, is_open, theme, opts)
     if Core.IsVisible(x, y, w, panel_h) then
         if not new_open then
             -- Collapsed: draw vertical text
-            local bg = theme.colors.header
+            local c = theme.colors
             local hovered = Core.MouseInRect(x, y, collapsed_w, panel_h)
-            if hovered then bg = theme.colors.header_hovered end
+            local bg = pickState(c.header, c.header_hovered, c.header_active,
+                                 hovered, hovered and Core.MouseDown(1), false)
             Core.DrawRect(x, y, collapsed_w, panel_h, bg[1], bg[2], bg[3], bg[4])
 
             -- Vertical text (character by character)
@@ -6949,7 +7004,8 @@ function Widgets.CollapsiblePanel(id, label, is_open, theme, opts)
             local btn_x = x + expanded_w - header_h
             local btn_hovered = Core.MouseInRect(btn_x, y, header_h, header_h)
             if btn_hovered then
-                local bhc = theme.colors.header_hovered
+                local bhc = Core.MouseDown(1) and theme.colors.header_active
+                                             or theme.colors.header_hovered
                 Core.DrawRect(btn_x, y, header_h, header_h, bhc[1], bhc[2], bhc[3], bhc[4])
             end
             if Icons then
@@ -7076,7 +7132,8 @@ function Widgets.ReorderableList(id, items, theme, opts)
                 local row_hovered = Core.MouseInClippedRect(x, iy, w, item_h) and not Core.HasPopup()
 
                 local row_sel = (display_i == selected)
-                drawRowState(x + 1, iy, w - 2, item_h, theme, row_hovered, row_sel)
+                drawRowState(x + 1, iy, w - 2, item_h, theme, row_hovered, row_sel,
+                             row_hovered and Core.MouseDown(1))
 
                 -- Drag handle (left side)
                 local handle_w = 16
@@ -7260,7 +7317,8 @@ function Widgets.InteractiveTable(id, columns, row_count, cell_render, theme, op
                 local zc = theme.colors.list_alt_bg
                 Core.DrawRect(x, ry, avail_w, row_h, zc[1], zc[2], zc[3], zc[4] or 1)
             end
-            drawRowState(x, ry, avail_w, row_h, theme, row_hovered, is_selected)
+            drawRowState(x, ry, avail_w, row_h, theme, row_hovered, is_selected,
+                         row_hovered and Core.MouseDown(1))
 
             -- Cells
             for i, col in ipairs(columns) do
