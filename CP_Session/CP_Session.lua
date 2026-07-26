@@ -510,63 +510,59 @@ local function audioRelease(a)
     a.at, a.stop_at = nil, nil
 end
 
+-- What a display frame currently costs, averaged. Maintained by frameLead
+-- further down; needed this early because the quantize tolerance is measured
+-- in frames and the probe reports it.
+local frame_s = 0.033
+
 -- WHERE A LAUNCH LANDS, on the engine's own clock (host beat when following,
 -- the free clock otherwise). This is the JSFX's rule, copied on purpose: a
--- position within 0.05 beat past a boundary counts as ON it, anything else
--- waits for the next one. A sound and a MIDI clip launched together must land
--- together, and they only do if they answer the same question the same way.
+-- position just past a boundary counts as ON it, anything else waits for the
+-- next one. A sound and a MIDI clip launched together must land together, and
+-- they only do if they answer the same question the same way.
+--
+-- AND "JUST PAST" IS A FRAME, NOT A CONSTANT. This is where a launch loses a
+-- whole bar rather than a few milliseconds. The transport starts on the bar
+-- line and this loop hears about it up to one frame later; quantizing from a
+-- beat that is already a frame past the line, against a fixed 0.05-beat
+-- tolerance, sends the launch to the NEXT bar whenever a frame runs long. At
+-- 112 BPM a 30 ms frame is 0.056 beat — just over the old constant, which is
+-- exactly how "press play on the bar" became "wait one more bar" on a slow
+-- frame and not on a fast one.
+--
+-- The tolerance is therefore the frame itself, floored at the old constant and
+-- capped at a quarter of the quantize: a Q that forgives a third of its own
+-- period is not a Q any more.
+--
+-- WHAT THIS IS NOT is a way of pretending the launch was on time. The boundary
+-- it returns is the BAR — an absolute position on the grid, not "wherever I
+-- happened to look" — so `elapsed` measures the real lateness against it and
+-- the sound skips exactly that far into itself. Deciding the target and
+-- measuring the error against it stay two different questions, which is the
+-- whole reason this works.
 --
 -- The engine holds its free clock at ZERO while the session is silent, so the
 -- first launch of a silent session reads pb = 0 here and lands on 0: it starts
 -- now, in phase, and it is what starts the clock. Nothing special is needed
 -- for that case — it falls out of asking the same question.
 local Q_SLOP = 0.05
-local function launchBeat(pb)
-    pb = pb or Loop.EngineBeat()
+
+local function qSlop(q)
+    local bpm = Loop.Tempo() or 0
+    local s = (bpm > 1) and (frame_s * 1.5 * bpm / 60) or Q_SLOP
+    if s < Q_SLOP then s = Q_SLOP end
+    local cap = q * 0.25
+    if s > cap then s = cap end
+    return s
+end
+
+local function launchBeat()
+    local pb = Loop.EngineBeat()
     local q = Loop.GetLaunchQ() or 0
     if q <= 0.001 then return pb end
     local qph = pb - floor(pb / q) * q
-    if qph < Q_SLOP then return pb - qph end
+    if qph < qSlop(q) then return pb - qph end
     return pb - qph + q
-end
-
--- WHERE THE TRANSPORT ACTUALLY STARTED — not where we noticed that it had.
---
--- THE DEFECT THIS EXISTS TO KILL. A sound armed while the transport is stopped
--- has no boundary; it takes one on the first frame that sees the transport
--- rolling. That frame is up to a display frame LATE, and the boundary was being
--- quantized from the beat as it read AT THAT MOMENT — so the target was, in
--- effect, "wherever I happened to look". Everything downstream then measured
--- its own lateness against that target and found zero, because the target had
--- been defined as now. The launch could not perceive that it was late, the
--- compensation had nothing to compensate, and firing early could not help:
--- with the target equal to now, "fire before the target" is already true.
---
--- The transport does not start where we noticed it. It starts at the CURSOR,
--- which is knowable before the fact — so it is latched every frame while the
--- clock is stopped, and the first rolling frame quantizes from THAT. The
--- boundary then lands in the past by however long the notice took, `elapsed`
--- reports that as a real positive lateness, and the sound skips exactly that
--- far into itself to stay in phase. Which is what the arithmetic was for.
---
--- Guarded, because the cursor is not the only way a transport starts: if the
--- play position is not plausibly just after it, we are back to trusting now.
-local TS = { cur = 0, at = nil, notice = 0 }
-
-local function transportEdge(rolling)
-    if not rolling then
-        TS.cur = r.GetCursorPosition() or 0
-        TS.at, TS.notice = nil, 0
-        return
-    end
-    if TS.at then return end                    -- latched once per run
-    local pp2 = r.GetPlayPosition2() or 0
-    local lag = pp2 - TS.cur
-    if lag < 0 or lag > 0.5 then
-        TS.at, TS.notice = pp2, 0
-    else
-        TS.at, TS.notice = TS.cur, lag
-    end
 end
 
 -- WHERE THE SOUND COMES OUT. A column's own track when it can take audio —
@@ -864,10 +860,6 @@ end
 -- ---------------------------------------------------------------------------
 local diag_on = Core.LoadPersistent("CP_Session", "diag", false)
 
--- What a display frame currently costs, averaged. Declared here because the
--- probe reports it; maintained by frameLead below, which is what uses it.
-local frame_s = 0.033
-
 local function diagLaunch(a, t, e, off, clamped, pos)
     local tempo = r.Master_GetTempo() or 0
     local beat  = Loop.EngineBeat()
@@ -880,12 +872,11 @@ local function diagLaunch(a, t, e, off, clamped, pos)
     local fire = (tempo > 1) and ((beat - (a.at or 0)) * 60 / tempo * 1000) or 0
     r.ShowConsoleMsg(string.format(
         "[CP_Session] LAUNCH tr=%d clock=%s bpm=%.2f rt=%.4f slen=%.3f\n" ..
-        "   transport started %s, noticed %+.1fms later | frame=%.1fms\n" ..
+        "   frame=%.1fms\n" ..
         "   at=%.4f beat=%.4f fire=%+.1fms | t0=%s pp2=%.4f pp=%.4f pp2-pp=%+.1fms" ..
         " outlat=%.1fms bsize=%s sr=%s\n" ..
         "   e=%s halfblock=%.1fms(unused) pdc=%+.1fms off=%+.1fms clamped=%d pos=%.4f\n",
         t, Loop.GetFreeRun() and "FREE" or "FOLLOW", tempo, a.rt or 0, a.slen or 0,
-        TS.at and string.format("%.4f", TS.at) or "-", TS.notice * 1000,
         frame_s * 1000,
         a.at or 0, beat, fire,
         a.t0 and string.format("%.4f", a.t0) or "-", pp2, pp, (pp2 - pp) * 1000,
@@ -1236,11 +1227,6 @@ local last_bpm  = nil
 
 local function pollAudio()
     reapDying()      -- whatever was replaced last frame has now had its beat
-    -- Before anything else, so a launch this frame reads a fresh edge. REAPER's
-    -- OWN transport, not clockRolling(): the free clock is always rolling, and
-    -- a latch taken on it would still be there, stale, when the window is put
-    -- back on Follow.
-    transportEdge((r.GetPlayState() & 1) == 1)
     local free = Loop.GetFreeRun()
     if free ~= last_free then
         if last_free ~= nil then
@@ -1322,26 +1308,24 @@ local function pollAudio()
                 -- clock is here now, so it takes a real boundary — the same
                 -- one the engine gives its lanes at the same moment, which is
                 -- the whole reason a sound and a clip launched together arrive
-                -- together. The transport rolling mid-bar is not a bar line.
-                --
-                -- Quantized from WHERE THE TRANSPORT STARTED, not from where it
-                -- has got to while we were not looking (see TS): otherwise the
-                -- boundary is defined as the moment we noticed, and a launch
-                -- that measures its lateness against it always finds zero.
+                -- together. The transport rolling mid-bar is not a bar line —
+                -- but a transport that started ON one, and was heard about a
+                -- frame later, IS: that is what qSlop is for.
                 if not q.at then
-                    local base = (not free) and TS.at
-                                 and r.TimeMap2_timeToQN(0, TS.at) or nil
-                    q.at = launchBeat(base)
+                    q.at = launchBeat()
                     -- The one decision the probe could not see, and the only
                     -- place a launch can lose a whole bar rather than a few
-                    -- milliseconds: which beat the boundary was quantized FROM.
+                    -- milliseconds: how far past a boundary still counts as on
+                    -- it, against how far past we actually are.
                     if diag_on then
+                        local qv = Loop.GetLaunchQ() or 0
                         r.ShowConsoleMsg(string.format(
-                            "[CP_Session] QUEUE tr=%d Q=%.3f beats  base=%s"
-                         .. "  beat=%.4f -> target=%.4f  (%+.0f ms away)\n",
-                            t, Loop.GetLaunchQ() or 0,
-                            base and string.format("%.4f", base) or "now",
-                            beat, q.at,
+                            "[CP_Session] QUEUE tr=%d Q=%.3f beats  beat=%.4f"
+                         .. "  phase=%.4f slop=%.4f -> target=%.4f  (%+.0f ms away)\n",
+                            t, qv, beat,
+                            (qv > 0.001) and (beat - floor(beat / qv) * qv) or 0,
+                            (qv > 0.001) and qSlop(qv) or 0,
+                            q.at,
                             (bpm > 1) and ((q.at - beat) * 60 / bpm * 1000) or 0))
                     end
                 end

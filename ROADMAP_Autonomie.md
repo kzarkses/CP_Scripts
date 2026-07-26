@@ -1524,3 +1524,21 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   calage, et le second échantillon passe de 10 frames à **2 secondes** : sur un
   tiers de seconde, la granularité de bloc de `D_POSITION` vaut 6 % de la
   réponse et se lit comme une dérive qui n'existe pas.
+- [x] **« Le transport démarre au curseur » était FAUX, et la sonde l'a attrapé
+  en deux lancements.** `QUEUE ... base=38.1454 beat=8.0000 -> target=40.0000
+  (+17143 ms away)` : la base était à trente beats dans le futur. Chez cet
+  utilisateur le curseur d'édition reste où la lecture s'est **arrêtée** et le
+  transport repart de son point de **départ** — deux positions différentes, et
+  j'avais latché la mauvaise. Le garde n'a rien vu parce que `GetPlayPosition2`
+  sur la frame de l'attaque rapporte encore la position d'avant le saut : les
+  deux concordaient, à 20 s de la vérité.
+  La prémisse est supprimée, pas rafistolée. **La tolérance de quantize devient
+  la FRAME**, plancher à l'ancienne constante, plafond au quart du Q. C'est là
+  qu'était le vrai défaut : le transport démarre sur la barre, cette boucle
+  l'apprend une frame plus tard, et 30 ms à 112 BPM valent 0,056 beat — juste
+  au-dessus de l'ancien 0,05. D'où « play sur la barre » devenu « attends une
+  mesure de plus » sur une frame lente et pas sur une frame rapide.
+  Et la frontière rendue reste la **BARRE** — une position absolue sur la
+  grille, pas « là où j'ai regardé » — donc `elapsed` mesure toujours le vrai
+  retard contre elle. Décider la cible et mesurer l'erreur contre elle restent
+  deux questions distinctes, ce qui est toute la raison pour laquelle ça marche.
