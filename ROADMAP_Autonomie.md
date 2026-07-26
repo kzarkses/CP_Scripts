@@ -1669,3 +1669,23 @@ VU de la colonne. L'envoyer en audio dans la piste de colonne ne marche pas quan
 celle-ci porte un instrument (un synthé remplace son entrée par sa sortie — c'est
 la raison d'être de `previewDest`), et une piste sœur repart au master en
 contournant la colonne, ce qui est le défaut d'aujourd'hui simplement déplacé.
+- [x] **CP_Session : le son est un CLIP, et l'aperçu est parti.** 900 lignes en
+  moins. Une case audio charge son fichier dans le RS5K de la colonne (piste
+  enfant de dossier, donc fader/FX/VU de la colonne), écrit dans la lane **une
+  note** — racine fixe, la colonne se distingue par le CANAL — et se lance par
+  le chemin d'un clip. La branche audio de `launchCell` disparaît : les trois
+  réponses à un clic (annuler ce qui n'est que mis en file, reprendre l'arrêt de
+  ce qui joue, échanger sur une frontière) étaient réécrites à côté du moteur qui
+  les donne déjà.
+  Morts avec l'aperçu : `aplay`/`aqueue`/`dying`, `elapsed`, `off`, `blockSlack`,
+  `chainLatency`, `lockPhase`, `reanchor`, `LEAD`, `frameLead`, `qSlop`,
+  `launchBeat`, `clockRolling`, `previewDest`, `liveTrack`, `plen`,
+  `Loop.SetAudioRun`, la sonde et son bouton. On ne compense que ce qu'on n'a pas
+  pu placer.
+  La note s'arrête à 97 % de la boucle : le gate du moteur ne redéclenche que ce
+  qu'il a vu FINIR, et obéir au note-off laisse l'échantillon se relâcher avant
+  le passage suivant au lieu d'être coupé par le vol de voix.
+  Et le drapeau est ré-estampillé au rappel du projet, avant que quoi que ce soit
+  puisse sonner : il vit dans gmem, qui appartient à la session REAPER et non au
+  projet, tandis que le rappel restaure une lane qui jouait. Sans ça, un projet
+  rouvert à froid tirait une note vélocité 127 dans l'instrument de la colonne.

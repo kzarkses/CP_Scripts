@@ -130,67 +130,25 @@ loops TEMPO-MATCHED through that column's track. Drop or write MIDI
 and it plays through the engine.
 
 ## How a sound follows the tempo — right-click, Tempo
-REPITCH is the default and it is the one that is IN TIME. The file is
-read faster or slower, which moves its pitch with it, exactly as every
-hardware sampler and every tracker has always done. Nothing is
-buffered, so the first sample comes out on the beat.
+REPITCH is the default and it is the one that is in time: the sampler
+reads faster or slower, which moves the pitch with it, exactly as every
+hardware sampler has always done.
 
-STRETCH keeps the key. It runs the sound through REAPER's time
-stretcher, and a stretcher cannot emit anything until it has filled its
-analysis window: the sound is LATE by that window — a fixed few tens of
-milliseconds — and no API reports it, so this window cannot correct for
-it. Use it where the key matters more than the grid.
+STRETCH and DON'T FOLLOW are the other two answers. Stretch keeps the
+key but a sampler cannot stretch without a window of latency, so it is
+now the same repitch until a baked version exists; don't-follow plays
+the file at its own tempo.
 
-DON'T FOLLOW plays the file at its own tempo.
+## Where a sound comes out
+Each column that plays a sound grows a SAMPLER track, a folder child of
+the column's own track — so the sound passes through that column's
+fader, its FX and its meter, which a preview never could when the
+column held an instrument.
 
-## The launch probe (the pulse icon, top right)
-It logs every sound launch to REAPER's console: the boundary it was
-given, both clocks as they read at that instant, every term of the
-offset applied, and — one frame later and ten frames later — the START
-ERROR: how far the preview's own read head is from where it must be to
-be exactly in time. Signed, positive for a sound running ahead.
-
-An error near zero means the launch is exact and anything still heard
-late is DOWNSTREAM of this window: REAPER's mixing, the driver, or the
-way the measurement itself is recorded. The line also prints REAPER's
-own idea of its output latency (GetPlayPosition2 minus GetPlayPosition)
-beside what the driver claims, which is where "everything is late by a
-constant" usually comes from.
-
-To tell a late LAUNCH from a late MEASUREMENT with no code at all: put
-the same file as an ordinary item on the bar line, record what you
-hear, and look at where THAT lands. Whatever it is off by is your
-recording path, not this window. The difference between the two is
-ours.
-
-A sound plays THROUGH the column's track — its fader, its FX, and so
-into the master and into anything you record. When that track holds an
-instrument it cannot take audio (a synth replaces its input with its
-own output), so the sound goes to the nearest thing downstream that
-can: the folder it lives in, or the master.
-
-That track is then marked LIVE (its performance options: no anticipative
-FX, no media buffering) and stays marked. It has to be: REAPER normally
-renders a track ahead of the play cursor and keeps the result in a
-buffer, which is right for items — they carry their timeline position
-with them — and wrong for a sound mixed in as it plays, which would come
-out however far ahead REAPER had got. It is the same treatment REAPER
-already gives a record-armed track, and the reason MIDI was never out of
-time: the engine lives on one.
-
-A sound answers a click exactly as a clip does, because it lives in the
-same two halves: launching is QUEUED to the Q boundary and blinks until
-it lands, STOPPING is queued too (a clip finishes its bar, it does not
-stop under your finger), swapping one sound for another happens on ONE
-boundary with no gap, and clicking again takes back whatever is still
-only queued. A track plays ONE thing at a time whichever kind, so a
-sound leaves on the boundary the MIDI arrives on, and the other way
-round. With Clock: Follow and the transport stopped, a sound is ARMED
-and waits for the transport, as everything else does.
-(Sounds use the interim preview engine; the sample-locked one comes
-later — one visible seam is left: after the transport stops and rolls
-again, a sound restarts from its beginning where a clip resumes in
-phase with the beat.)
+The trigger travels on a channel of the column's own (9 to 12), and the
+router feeds each destination one filtered channel, so the column's
+instrument never hears a syllable of it. That is why an instrument and
+sound cells can share one column: not a convention, wiring.
 
 ## The mixer
 The zone under the grid (toggle it beside the "?") is a channel strip
@@ -467,240 +425,11 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Audio cells. A cell holds EITHER a MIDI clip or a sound — same grid, same
--- gestures, interchangeable. MIDI goes through the JSFX lanes; audio goes
--- through CF_Preview, tempo-matched and looped (the interim engine, until
--- the sample-locked one exists). Exclusivity is enforced across both: a
--- track plays one thing, whatever its kind.
+-- gestures, interchangeable. Both are CLIPS in an engine lane now: the MIDI
+-- one plays through the column's instrument, the sound one through a sampler
+-- on the column's own sampler track, on a channel of its own. Exclusivity
+-- falls out of that instead of being enforced twice — a lane plays one thing.
 -- ---------------------------------------------------------------------------
-local HAS_CF = r.CF_CreatePreview ~= nil
--- A sound cell lives in the SAME two states a MIDI clip does, because a track
--- has the same two halves whatever it plays: one sounding, one waiting for the
--- boundary. aplay is the live half, aqueue the twin — and every gesture below
--- is written against that pair so a sound answers a click exactly as a clip
--- does: launches queued, stops queued, swaps landing on one boundary, and a
--- second click taking back whichever of the two is still only queued.
--- BOTH halves own real resources now: a waiting sound has its FILE open as
--- soon as it is armed, not when it fires (see audioOpen). So freeing is one
--- routine, and a cancelled launch frees exactly as a stopped one does.
-local aplay  = {}  -- [t] = { s,c,at,prev,src,rt,slen,pdc,stop_at,t0,locked }
-local aqueue = {}  -- [t] = { s,c,at, + the same, prepared but not playing }
-
-local function freeAudio(a)
-    if not a then return end
-    if a.prev then pcall(r.CF_Preview_Stop, a.prev) end
-    if a.src then r.PCM_Source_Destroy(a.src) end
-    a.prev, a.src = nil, nil
-end
-
-local function audioStop(t)
-    freeAudio(aplay[t])
-    aplay[t] = nil
-end
-
-local function audioCancel(t)
-    freeAudio(aqueue[t])
-    aqueue[t] = nil
-end
-
--- Give the preview back without forgetting the cell: what the transport took
--- away it can give back. Used when the clock follows a transport that stopped.
-local function audioRelease(a)
-    if not a then return end
-    freeAudio(a)
-    a.at, a.stop_at = nil, nil
-end
-
--- What a display frame currently costs, averaged. Maintained by frameLead
--- further down; needed this early because the quantize tolerance is measured
--- in frames and the probe reports it.
-local frame_s = 0.033
-
--- WHERE A LAUNCH LANDS, on the engine's own clock (host beat when following,
--- the free clock otherwise). This is the JSFX's rule, copied on purpose: a
--- position just past a boundary counts as ON it, anything else waits for the
--- next one. A sound and a MIDI clip launched together must land together, and
--- they only do if they answer the same question the same way.
---
--- AND "JUST PAST" IS A FRAME, NOT A CONSTANT. This is where a launch loses a
--- whole bar rather than a few milliseconds. The transport starts on the bar
--- line and this loop hears about it up to one frame later; quantizing from a
--- beat that is already a frame past the line, against a fixed 0.05-beat
--- tolerance, sends the launch to the NEXT bar whenever a frame runs long. At
--- 112 BPM a 30 ms frame is 0.056 beat — just over the old constant, which is
--- exactly how "press play on the bar" became "wait one more bar" on a slow
--- frame and not on a fast one.
---
--- The tolerance is therefore the frame itself, floored at the old constant and
--- capped at a quarter of the quantize: a Q that forgives a third of its own
--- period is not a Q any more.
---
--- WHAT THIS IS NOT is a way of pretending the launch was on time. The boundary
--- it returns is the BAR — an absolute position on the grid, not "wherever I
--- happened to look" — so `elapsed` measures the real lateness against it and
--- the sound skips exactly that far into itself. Deciding the target and
--- measuring the error against it stay two different questions, which is the
--- whole reason this works.
---
--- The engine holds its free clock at ZERO while the session is silent, so the
--- first launch of a silent session reads pb = 0 here and lands on 0: it starts
--- now, in phase, and it is what starts the clock. Nothing special is needed
--- for that case — it falls out of asking the same question.
-local Q_SLOP = 0.05
-
-local function qSlop(q)
-    local bpm = Loop.Tempo() or 0
-    local s = (bpm > 1) and (frame_s * 1.5 * bpm / 60) or Q_SLOP
-    if s < Q_SLOP then s = Q_SLOP end
-    local cap = q * 0.25
-    if s > cap then s = cap end
-    return s
-end
-
-local function launchBeat()
-    local pb = Loop.EngineBeat()
-    local q = Loop.GetLaunchQ() or 0
-    if q <= 0.001 then return pb end
-    local qph = pb - floor(pb / q) * q
-    if qph < qSlop(q) then return pb - qph end
-    return pb - qph + q
-end
-
--- WHERE THE SOUND COMES OUT. A column's own track when it can take audio —
--- its fader, its FX, its place in the mixer, and it lands in anything you
--- record. When it cannot, the sound must still reach the mixer rather than
--- leave by the back door: a track whose chain holds an INSTRUMENT swallows
--- audio put into it (a synth replaces its input with its own output), so the
--- preview goes to the nearest thing downstream that has no instrument — the
--- folder the track lives in, and the master as the last resort.
---
--- This is also why a sound could be out of time with everything else: a
--- preview sent straight to the hardware skips the whole output path the
--- project is aligned on.
-local function previewDest(tr)
-    if not tr or not r.TrackFX_GetInstrument then return tr end
-    local ok, ins = pcall(r.TrackFX_GetInstrument, tr)
-    if not (ok and ins and ins >= 0) then return tr end
-    local par = r.GetParentTrack and r.GetParentTrack(tr) or nil
-    local guard = 0
-    while par and guard < 8 do
-        local ok2, i2 = pcall(r.TrackFX_GetInstrument, par)
-        if not (ok2 and i2 and i2 >= 0) then return par end
-        par = r.GetParentTrack(par)
-        guard = guard + 1
-    end
-    return r.GetMasterTrack and r.GetMasterTrack(0) or nil
-end
-
--- A TRACK FED BY A PREVIEW IS A LIVE TRACK, and REAPER has to be told.
---
--- By default REAPER runs a track's FX AHEAD of the play cursor and keeps the
--- result in a buffer (anticipative processing, 200 ms by default) so a CPU
--- spike cannot cause a dropout. Items on that track are rendered at their
--- timeline position, so they come out on time. A preview is not: it is mixed
--- in at the moment the audio thread happens to be computing that track — which
--- is the position it will reach in 200 ms. The sound is therefore LATE by
--- whatever REAPER managed to render ahead.
---
--- Which is why the offset grew as the buffer SHRANK: 147 ms on a 3 ms ASIO
--- buffer, 67 ms on a 200 ms DirectSound one. Nothing downstream of the sound
--- can behave that way; only something that runs ahead of it can. And it is
--- exactly why MIDI was never affected — the engine lives on a record-armed,
--- input-monitored router track, and REAPER already runs those live.
---
--- I_PERFFLAGS is the per-track answer REAPER gives its own live tracks:
--- &1 no media buffering, &2 no anticipative FX. Set once, left set: a column
--- that plays sounds is a live column, and the flags are visible in the track's
--- own performance options if the user ever wants them back.
---
--- ONLY THE SECOND BIT. Anticipative processing is the one with the timing
--- argument: it renders the track ahead, so a preview mixed in now lands in a
--- buffer that was computed for later. Media buffering is a different thing —
--- it pre-reads the track's ITEMS, and a preview is not an item, so turning it
--- off bought nothing here and took away read-ahead the audio thread wants when
--- its deadline is 1.3 ms rather than 21. A flag that costs and does not pay is
--- worse than no flag.
-local PERF_LIVE = 2
-local function liveTrack(tr)
-    if not tr then return end
-    local f = floor((r.GetMediaTrackInfo_Value(tr, "I_PERFFLAGS") or 0) + 0.5)
-    if (f & PERF_LIVE) ~= PERF_LIVE then
-        r.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", f | PERF_LIVE)
-    end
-end
-
--- Half an audio block: the preview is picked up by the audio thread on its
--- NEXT block, so where it actually starts is somewhere in [now, now + block].
--- Read once — the device does not change under a running script.
--- A few milliseconds of fade at the start: SWS opens on a raw sample edge,
--- which clicks on anything that does not begin at zero — and it is also what
--- makes the one corrective seek of lockPhase inaudible.
-local FADE_IN = 0.003
-
-local block_s, srate_hz = nil, 48000
-local function blockSlack()
-    if block_s then return block_s end
-    block_s = 0
-    local ok, bs = r.GetAudioDeviceInfo("BSIZE", "")
-    local ok2, sr = r.GetAudioDeviceInfo("SRATE", "")
-    local b, s = tonumber(ok and bs or ""), tonumber(ok2 and sr or "")
-    if s and s > 0 then srate_hz = s end
-    if b and s and b > 0 and s > 0 then block_s = (b / s) * 0.5 end
-    return block_s
-end
-
--- The chain's own LATENCY, in seconds. REAPER compensates an item on a track
--- with plugin delay by rendering it that much earlier; a preview injected at
--- the track's input gets no such courtesy — it is simply late by the whole
--- chain, which is exactly how a sound stays out of time on a track that has
--- anything serious on it. We cannot feed it earlier, so we feed it FURTHER
--- IN: the sample handed over now is the one that must be heard after the
--- delay. Zero on a bare track, which is the common case.
-local function chainLatency(tr)
-    if not tr or not r.TrackFX_GetNamedConfigParm then return 0 end
-    blockSlack()
-    local n = r.TrackFX_GetCount(tr)
-    local sum = 0
-    for i = 0, n - 1 do
-        local ok, rv, v = pcall(r.TrackFX_GetNamedConfigParm, tr, i, "pdc")
-        if ok and rv then
-            local s = tonumber(v)
-            if s and s > 0 then sum = sum + s end
-        end
-    end
-    local secs = sum / srate_hz
-    if secs < 0 or secs > 0.5 then return 0 end
-    return secs
-end
-
--- HOW LONG the sound has been running, in seconds — the one question the
--- whole alignment rests on, and it has two answers because there are two
--- clocks. Both come from the AUDIO thread rather than from the frame we happen
--- to be drawing, which is what makes them usable at all:
---   * following the transport → the play position the audio thread is ABOUT
---     to render (GetPlayPosition2), measured from the time of the boundary.
---   * free-running → the engine's own beat, which the JSFX advances one audio
---     block at a time, measured from the beat of that boundary.
--- Nil when there is nothing to measure from yet.
-local function elapsed(a)
-    if a.t0 then
-        local p = r.GetPlayPosition2()
-        -- ON THE FRAME A TRANSPORT STARTS, GetPlayPosition2 CAN STILL BE THE
-        -- PREVIOUS RUN'S. Caught in the log: pp2 = 8.6472 while pp = 6.4286 and
-        -- the boundary was 6.4286 — two and a quarter seconds of pure fiction,
-        -- which read as a launch that was two seconds late. The clamp swallowed
-        -- it, so the sound survived on luck rather than on reason.
-        -- The two positions can only differ by the output latency. Further apart
-        -- than a quarter second, the one that just seeked is the liar.
-        local p1 = r.GetPlayPosition()
-        if p and p1 and (p - p1 > 0.25 or p1 - p > 0.25) then p = p1 end
-        return p and (p - a.t0) or nil
-    end
-    if not a.at then return nil end
-    local tempo = Loop.Tempo()
-    if not tempo or tempo <= 1 then return nil end
-    return (Loop.EngineBeat() - a.at) * (60 / tempo)
-end
-
 -- HOW FAST a sound must run to sit at the project's tempo, and whether that
 -- rate is allowed to move its pitch. The clip's own announced tempo wins when
 -- it carries one; otherwise the SAME routine the browser used to audition this
@@ -727,648 +456,6 @@ local function rateFor(c)
     return rt, (mode == "stretch")
 end
 
--- OPEN THE FILE WHEN THE LAUNCH IS ARMED, NOT WHEN IT FIRES.
---
--- Two things here are slow, and neither of them is the launch: opening the WAV,
--- and asking REAPER for the tempo-match rate — which ANALYSES the source and is
--- the slower of the two. Both used to sit between "the boundary just passed"
--- and "the sound starts", so a launch cost however long they took.
---
--- Worse: the overshoot is measured after that work, so its cost was read as
--- musical time already elapsed and taken off the front of the sample —
--- multiplied by the playrate. That is why the offset GREW with the project
--- tempo (three measurements, 147/220/460 ms, all within a few percent of the
--- same number once divided by their rate) and why it was unstable: the price
--- of a disk read is not a constant.
---
--- What CANNOT be done in advance is the preview object itself: SWS reaps a
--- preview that was created and never started before the defer cycle ends (the
--- rule is written at the top of Engine/Preview). Made at arm time, it would be
--- dead by the boundary — and in Follow, where the wait is real, the sound
--- simply never came out. So: the SOURCE is opened early, the PREVIEW is built
--- and played in one tick. The expensive half is the half moved.
-local function audioOpen(a)
-    if not a or a.src or a.dead then return end
-    local c = a.c
-    local src = r.PCM_Source_CreateFromFile(c.path)
-    if not src then
-        a.dead = true
-        flash("Cannot open: " .. (c.path or "?"))
-        return
-    end
-    local rt, st = rateFor(c)
-    a.src     = src
-    a.rt      = rt
-    a.stretch = st
-    a.slen    = r.GetMediaSourceLength(src)
-    -- HOW LONG ONE PASS TAKES TO PLAY — and the only length this window ever
-    -- needs. A preview counts its position in the seconds it has been PLAYING,
-    -- not in the seconds of the file it is reading: D_LENGTH comes back as the
-    -- source over the rate, and D_POSITION advances at one second per second
-    -- whatever the rate is. Both facts measured, not assumed (D_LENGTH 4.2857
-    -- for a 4.5714 s source at 1.0667, and a read head that moved 0.2773 s
-    -- while 0.2773 s of clock passed, three times running on two drivers).
-    --
-    -- Which means every position handed to a preview is simply REAL TIME, and
-    -- the playrate has no business anywhere near it. It was in all of them:
-    -- start, phase lock, re-anchor — each multiplying by the rate what it
-    -- should have left alone, so every offset was rate times too big. At 400
-    -- BPM against a 100 BPM loop that is four times, which is the shape of the
-    -- 220 ms / 460 ms pair measured at 170 and 400 BPM.
-    a.plen = (rt > 0) and (a.slen / rt) or a.slen
-    -- The source's OWN tempo, derived rather than asked for again: the rate is
-    -- the project's tempo over it. Keeping it is what lets a playing loop
-    -- follow a tempo change with one division instead of a second analysis.
-    -- Not matching means not following: a clip told to keep the file's own
-    -- tempo has no BPM of its own to be re-rated against.
-    local pb = r.Master_GetTempo() or 0
-    a.bpm = (c.tempo_mode ~= "none" and pb > 1 and rt > 0) and (pb / rt) or nil
-end
-
--- Build the preview and hand it its settings. Cheap — no disk, no analysis —
--- and it MUST happen in the tick that plays it.
---
--- REPITCH, NOT STRETCH — and this is where the last fixed offset was.
---
--- Preserving pitch across a rate change is not arithmetic on a read pointer:
--- it runs the sound through REAPER's TIME STRETCHER, and every time stretcher
--- works on a window it must fill before it can emit anything. That fill is a
--- LATENCY — tens of milliseconds, fixed for a given mode — and nothing in the
--- API reports it: D_POSITION reports where the stretcher is READING, which
--- keeps running ahead of what anyone hears. So the sound came out late by that
--- window, every single time, identically, whatever the Q and whatever the
--- clock. It is exactly why MIDI measured zero through the same track on the
--- same card: a sampler plays the file, it does not stretch it.
---
--- Resampling has no window. The read pointer moves at a different speed and
--- the sound comes out now — which is what every hardware sampler, every
--- tracker and every launcher's repitch mode has always done, and the only
--- rate change that can be sample-exact by construction.
---
--- Stretch stays available per clip, because a melodic loop that must not
--- change key is a real need. It is late by its stretcher's window and it
--- cannot be compensated from here, which the menu and the help both say.
-local function audioBuild(a, t)
-    local prev = r.CF_CreatePreview(a.src)
-    if not prev then return nil end
-    r.CF_Preview_SetValue(prev, "D_VOLUME", 1)
-    if a.rt ~= 1.0 then
-        r.CF_Preview_SetValue(prev, "D_PLAYRATE", a.rt)
-        if a.stretch then r.CF_Preview_SetValue(prev, "B_PPITCH", 1) end
-    end
-    r.CF_Preview_SetValue(prev, "B_LOOP", 1)
-    -- A few milliseconds of fade at the start: SWS opens on a raw sample edge,
-    -- which clicks on anything that does not begin at zero.
-    r.CF_Preview_SetValue(prev, "D_FADEINLEN", FADE_IN)
-    -- No D_MEASUREALIGN. It holds EVERY loop pass to the bar grid, not only the
-    -- first, so a sample that is not exactly N measures long waits at the end
-    -- of each pass — the gap between two instances. And it can only align to a
-    -- MEASURE, which is why a sound ignored the Q while every MIDI clip obeyed
-    -- it. The boundary is ours to pick (launchBeat), on the engine's clock and
-    -- by the engine's rule, so the launch is quantized and the loop runs.
-    -- Route it through a TRACK, always. A preview with no output track goes
-    -- straight to the hardware: not through the column's fader, not through
-    -- the master, not into anything you record — the sound is audible and
-    -- nowhere. previewDest finds the nearest thing downstream that can take
-    -- audio, which for an ordinary column is the column's own track.
-    local tr = previewDest(Loop.GetLaneDest(t))
-    if tr and r.CF_Preview_SetOutputTrack then
-        -- and that track stops being rendered ahead of the playhead, or the
-        -- sound lands wherever REAPER had got to rather than where we put it
-        liveTrack(tr)
-        r.CF_Preview_SetOutputTrack(prev, 0, tr)
-    end
-    a.pdc = tr and chainLatency(tr) or 0
-    return prev
-end
-
--- ---------------------------------------------------------------------------
--- THE LAUNCH PROBE — the "Activity" toggle in the bar.
---
--- A timing argument cannot be settled from a waveform: a recording shows where
--- a sound LANDED, never which of the dozen quantities between the click and the
--- card was wrong. This logs, per launch, every one of them, and then answers the
--- one question that matters:
---
---     AT WHAT INSTANT, ON THE PROJECT'S OWN TIMELINE, DID THE SOUND START?
---
--- It is answered without believing anything we computed. On a later frame the
--- preview is asked where its read head is (D_POSITION) and REAPER is asked where
--- the transport is (GetPlayPosition2). Where the head SHOULD be, if the sound
--- were exactly in time, is `now - boundary` — real seconds, because a preview
--- counts the seconds it has been PLAYING. The gap between the two is the error
--- in milliseconds, signed, positive for a sound running ahead.
---
--- The probe found that units question in this window's own arithmetic before it
--- found anything else, which is the argument for having built it.
---
---   err = 0        the launch is exact and anything still heard late is
---                  DOWNSTREAM of us: REAPER's mixing, the driver, or the way
---                  the measurement itself is recorded.
---   err < 0        the sound really did start late, by that much, and the log
---                  line above it says which term is responsible.
---
--- It also prints GetPlayPosition2 minus GetPlayPosition — REAPER's own opinion
--- of its output latency — beside what the driver claims. Two numbers that
--- disagree there explain an entire class of "everything is late" reports.
---
--- Off by default and it costs one boolean test per frame; nothing is formatted,
--- allocated or read unless it is on.
--- ---------------------------------------------------------------------------
-local diag_on = Core.LoadPersistent("CP_Session", "diag", false)
-
-local function diagLaunch(a, t, e, off, clamped, pos)
-    local tempo = r.Master_GetTempo() or 0
-    local beat  = Loop.EngineBeat()
-    local pp2   = r.GetPlayPosition2() or 0
-    local pp    = r.GetPlayPosition() or 0
-    local olat  = r.GetOutputLatency and (r.GetOutputLatency() or 0) or -1
-    local _, bs = r.GetAudioDeviceInfo("BSIZE", "")
-    local _, sr = r.GetAudioDeviceInfo("SRATE", "")
-    -- how far the FIRE was from the boundary, on the engine's own clock
-    local fire = (tempo > 1) and ((beat - (a.at or 0)) * 60 / tempo * 1000) or 0
-    r.ShowConsoleMsg(string.format(
-        "[CP_Session] LAUNCH tr=%d clock=%s bpm=%.2f rt=%.4f slen=%.3f\n" ..
-        "   frame=%.1fms\n" ..
-        "   at=%.4f beat=%.4f fire=%+.1fms | t0=%s pp2=%.4f pp=%.4f pp2-pp=%+.1fms" ..
-        " outlat=%.1fms bsize=%s sr=%s\n" ..
-        "   e=%s halfblock=%.1fms(unused) pdc=%+.1fms off=%+.1fms clamped=%d pos=%.4f\n",
-        t, Loop.GetFreeRun() and "FREE" or "FOLLOW", tempo, a.rt or 0, a.slen or 0,
-        frame_s * 1000,
-        a.at or 0, beat, fire,
-        a.t0 and string.format("%.4f", a.t0) or "-", pp2, pp, (pp2 - pp) * 1000,
-        olat * 1000, bs or "?", sr or "?",
-        e and string.format("%+.1fms", e * 1000) or "nil",
-        blockSlack() * 1000, (a.pdc or 0) * 1000, off * 1000,
-        clamped and 1 or 0, pos))
-    -- WHICH SECONDS D_POSITION COUNTS. The one thing the whole alignment rests
-    -- on and the one thing never verified: a position handed to a preview that
-    -- plays at 1.07x is either a place in the SOURCE or a duration of PLAYBACK,
-    -- and the two differ by exactly the rate. D_LENGTH answers it in one line —
-    -- it is the source's own length if the first, the source over the rate if
-    -- the second — and the answer decides whether the launch must multiply by
-    -- the rate or divide by it.
-    local okl, rvl, plen = pcall(r.CF_Preview_GetValue, a.prev, "D_LENGTH")
-    r.ShowConsoleMsg(string.format(
-        "   D_LENGTH=%s  source=%.4f  source/rate=%.4f\n",
-        (okl and rvl and plen) and string.format("%.4f", plen) or "?",
-        a.slen or 0, (a.slen or 0) / ((a.rt and a.rt > 0) and a.rt or 1)))
-    a.dg = { pos = pos, n = 0 }
-end
-
--- Two samples: the frame after the launch, and two seconds in. One says whether
--- the START was in time, the other whether the SPEED is.
---
--- Two seconds, not ten frames, because D_POSITION is reported a whole audio
--- block at a time: over a third of a second a 1024-sample buffer is worth 6% of
--- the answer, which reads as a drift that is not there. Over two seconds it is
--- worth 1%, and a preview that is genuinely starved shows up as what it is.
-local DIAG_LATE = 60
-local function diagFollow(a)
-    local dg = a.dg
-    dg.n = dg.n + 1
-    if dg.n ~= 1 and dg.n ~= DIAG_LATE then return end
-    local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
-    if not (ok and rv and pos) then a.dg = nil return end
-    local plen = (a.plen and a.plen > 0) and a.plen or 1
-    -- where the read head must be for the sound to be exactly in time
-    local ref  = a.t0 and ((r.GetPlayPosition2() or 0) - a.t0)
-                      or ((Loop.EngineBeat() - (a.at or 0))
-                          * 60 / math.max(Loop.Tempo() or 120, 1))
-    local want = ref % plen
-    local err  = pos - want
-    local half = plen * 0.5
-    if err > half then err = err - plen elseif err < -half then err = err + plen end
-    -- The loop's own DOWNBEAT, on the project's timeline: the read head IS how
-    -- long ago it last crossed zero. Put the edit cursor on the bar line and
-    -- this number is directly comparable to what the ruler says — no recording,
-    -- no driver, no compensation in between.
-    local down = a.t0 and ((r.GetPlayPosition2() or 0) - pos) or nil
-    r.ShowConsoleMsg(string.format(
-        "[CP_Session] +%-2dF ref=%+.4fs pos=%.4f want=%.4f  START ERROR=%+.1fms%s\n",
-        dg.n, ref, pos, want, err * 1000,
-        down and string.format("  (loop zero at %.4f, boundary %.4f)", down, a.t0) or ""))
-    -- THE SLOPE, WHICH IS WORTH MORE THAN EITHER POINT. A preview counts the
-    -- seconds it has been PLAYING, so its head must move at exactly one second
-    -- per second whatever the rate. Below that it is being STARVED — the audio
-    -- thread cannot feed it — and that is a machine fact, not an arithmetic
-    -- one: 0.53x on a 64-sample ASIO buffer, 1.0000x on 1024.
-    if dg.n == 1 then
-        dg.ref1, dg.pos1 = ref, pos
-    elseif dg.ref1 then
-        local dref = ref - dg.ref1
-        if dref > 0.05 then
-            -- the head has looped in between, so the raw difference is short by
-            -- whole passes: put them back, the count being however many fit in
-            -- the real time that went by
-            local dpos = (pos - dg.pos1) % plen
-            dpos = dpos + plen * floor((dref - dpos) / plen + 0.5)
-            local sp = dpos / dref
-            r.ShowConsoleMsg(string.format(
-                "[CP_Session]      read speed = %.4f x real time (wanted 1.0000)%s\n",
-                sp, (sp < 0.95) and "   *** STARVED: the audio thread cannot"
-                                .. " feed this preview at this buffer size ***" or ""))
-        end
-    end
-    if dg.n == DIAG_LATE then a.dg = nil end
-end
-
--- START IT EARLY, IN THE TAIL OF ITS OWN LOOP.
---
--- The engine fires a clip on an AUDIO BLOCK — three milliseconds wide. This
--- window fires a sound on a DISPLAY FRAME, thirty. That one difference is the
--- whole of the 21-41 ms that was left, and no amount of arithmetic after the
--- fact can recover it: by the time we know the boundary has passed, it has.
---
--- So we stop arriving after it. The launch happens up to LEAD seconds BEFORE
--- the boundary, and the preview is positioned that far from the END of its
--- source: it loops, so it reaches its own zero exactly ON the beat. What is
--- heard in between is the loop's own tail — which is what a loop sounds like,
--- and it is at most a frame of it.
---
--- The position is then one formula for both sides of the boundary, because
--- `elapsed` is signed: negative before it (the tail), positive after (the
--- overshoot, taken off the front as it always was).
---
---     position = (elapsed * rate) mod source_length
---
--- OFF_MAX is the sanity bound. Beyond it the reference is not something to
--- believe, and moving the sound on its word is worse than starting it whole.
--- A quarter of a second, not a tenth: now that a boundary taken at a transport
--- start is the moment the transport REALLY started (see TS), a launch can be
--- honestly late by more than a frame — a slow frame, a project loading its
--- first buffer — and skipping that far in is the right answer, not a reason to
--- disbelieve the reference. TS itself is what bounds the nonsense, at half a
--- second, and it does it where the number is still meaningful.
-local LEAD    = 0.045
-local OFF_MAX = 0.250
-
--- AND THE LEAD MUST COVER A FRAME, WHATEVER A FRAME COSTS TODAY.
---
--- 45 ms was a guess at what a display frame is worth, and a guess is exactly
--- what it must not be: the measured delay tracks the FRAME, not the audio
--- block. Shrinking the audio buffer does not shorten the wait, it lengthens it
--- — a smaller buffer means more callbacks per second, a machine closer to the
--- edge, and a defer loop that slows to a crawl. 64 samples measured 182 ms and
--- 1024 measured 30 ms on the same machine and the same file, and 30 ms is one
--- frame. So the lead is the frame itself, measured, with the old constant as
--- its floor.
---
--- A ceiling too, because the lead is played from the loop's own tail: an eighth
--- of a second of tail is still a loop, half a second is a different sound.
--- Beyond the ceiling the launch is simply late and `off` skips it into phase,
--- which costs the attack but never the grid.
-local LEAD_MAX = 0.150
-local last_tp  = nil
-
-local function frameLead()
-    local now = r.time_precise()
-    if last_tp then
-        local d = now - last_tp
-        -- averaged, so one stalled frame sets no policy and one fast one
-        -- does not undo the caution either
-        if d > 0 and d < 0.5 then frame_s = frame_s + (d - frame_s) * 0.25 end
-    end
-    last_tp = now
-    local l = frame_s * 1.5
-    if l < LEAD then return LEAD end
-    if l > LEAD_MAX then return LEAD_MAX end
-    return l
-end
-
-local function audioStart(t)
-    local a = aplay[t]
-    if not a then return end
-    audioOpen(a)                          -- normally already done, so free
-    if not a.src then aplay[t] = nil return end
-    local prev = audioBuild(a, t)
-    if not prev then aplay[t] = nil return end
-    -- Where the boundary is, in the terms of whichever clock we are on: a
-    -- project TIME when we follow the transport, a beat on the engine's own
-    -- clock when we do not. `elapsed` reads one or the other from this.
-    a.t0     = (not Loop.GetFreeRun()) and r.TimeMap2_QNToTime(0, a.at or 0) or nil
-    a.locked = false
-
-    -- Where the boundary stands relative to us — behind (we are late) or ahead
-    -- (we fired early, on purpose) — plus the chain's own latency.
-    --
-    -- NO HALF-BLOCK. It was there because the preview is picked up on the next
-    -- audio block, so its first sample would land half a block late on average.
-    -- But the reference it is being added to is GetPlayPosition2, which IS the
-    -- next block: the two are the same instant, and adding the block to itself
-    -- put every launch that far ahead of its own boundary. The probe reads it
-    -- back as exactly that, +10.7 ms on a 1024-sample buffer.
-    local e = elapsed(a)
-    local off = (e or 0) + a.pdc
-    local clamped = false
-    if off > OFF_MAX or off < -OFF_MAX then off = 0 clamped = true end
-    local pos = 0
-    if a.plen and a.plen > 0 then
-        -- REAL SECONDS, signed, and the modulo does the rest: past the boundary
-        -- it takes the overshoot off the front, before it lands in the tail.
-        pos = off % a.plen
-        r.CF_Preview_SetValue(prev, "D_POSITION", pos)
-    end
-
-    -- The session starts sounding HERE, not when the cell was clicked. Said
-    -- any earlier, the engine's free clock would leave zero while we were
-    -- still opening the file — and the sound would then have to skip the
-    -- opening of its own file to stay in phase with a clock that had started
-    -- without it. Zero of that clock and the first sample of this sound are
-    -- now the same instant, which is exactly what a downbeat is.
-    Loop.SetAudioRun(true)
-    r.CF_Preview_Play(prev)
-    a.prev = prev
-    if diag_on then diagLaunch(a, t, e, off, clamped, pos) end
-end
-
--- ONE correction, on the frame after the launch, and never again.
---
--- The alignment that matters happens BEFORE the sound starts: D_POSITION is
--- set on a preview that has not begun, which costs nothing and is the only
--- moment a position can be chosen freely. This is the single catch-up for what
--- that calculation could not know — how long the file took to open, where the
--- audio buffer actually picked the preview up — measured one frame later, when
--- the sound has barely begun.
---
---    position = (elapsed_since_the_boundary * rate) mod source_length
---
--- WHAT IT NO LONGER DOES is police the sound for the rest of its life. Seeking
--- a preview that is already playing is not a free operation: SWS re-primes its
--- buffer, and a correction every half-second is a hole in the music every
--- half-second — which is exactly what a drift watch with a 30 ms slack was
--- doing to every tempo-matched loop. A loop and the project run off the SAME
--- sound card clock, so there is no drift to catch; what looked like drift was
--- the watch itself. If a loop really does walk away, its tempo match is wrong
--- and the fix belongs there, not in a sound chopped twice a second to hide it.
---
--- 20 ms of tolerance: under that, correcting costs more than it is worth.
--- And a ceiling, because a correction bigger than a start-up latency is not a
--- correction — it is a reference we should not have believed, and moving the
--- sound a quarter second on its word would be worse than leaving it alone.
-local LOCK_TOL = 0.020
-local LOCK_MAX = 0.250
-
-local function lockPhase(a)
-    if a.locked or not a.prev or not a.plen or a.plen <= 0 then return end
-    local e = elapsed(a)
-    -- A sound launched EARLY has not reached its boundary yet: there is nothing
-    -- to check against, and burning the one correction here would spend it on a
-    -- question that has no answer. Wait for the beat to arrive.
-    if not e or e < 0 then return end
-    a.locked = true                    -- once, whatever comes of it
-    -- + the chain's latency: the sample handed over now is the one that has to
-    -- be HEARD after that delay, so the clip must already be that far ahead.
-    -- Real seconds, like every other position: see a.plen.
-    local want = (e + (a.pdc or 0)) % a.plen
-    local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
-    if not (ok and rv and pos) then return end
-    local err = want - pos
-    local half = a.plen * 0.5
-    if err > half then err = err - a.plen elseif err < -half then err = err + a.plen end
-    if (err > LOCK_TOL or err < -LOCK_TOL)
-       and err < LOCK_MAX and err > -LOCK_MAX then
-        pcall(r.CF_Preview_SetValue, a.prev, "D_POSITION", want)
-    end
-end
-
--- Is the clock RUNNING? Free run has its own, which never stops; following
--- means there is nothing to follow until the transport rolls.
-local function clockRolling()
-    if Loop.GetFreeRun() then return true end
-    return (r.GetPlayState() & 1) == 1
-end
-
--- A sound that has been replaced, still playing out its last frame. A launch
--- fires up to one frame EARLY (see LEAD), so stopping the outgoing one there
--- would cut it a frame short of the boundary it was told to leave on. It is
--- stashed instead and released on the next frame — the two overlap for exactly
--- the span between the early start and the beat, which is what a swap sounds
--- like on a console rather than a hole.
-local dying = {}
-
-local function reapDying()
-    for i = #dying, 1, -1 do
-        freeAudio(dying[i])
-        dying[i] = nil
-    end
-end
-
--- The waiting half becomes the sounding one. Whatever the track was playing
--- leaves in the SAME call, so the swap is one boundary and not two.
-local function audioFire(t)
-    local q = aqueue[t]
-    if not q then return end
-    local out = aplay[t]
-    if out then dying[#dying + 1] = out end
-    aqueue[t] = nil
-    aplay[t] = q
-    audioStart(t)
-end
-
--- Queue a launch. It is ARMED here and fires on the Q boundary, exactly as a
--- MIDI clip is queued and fires on the boundary — with the clock following a
--- STOPPED transport there is no beat to land on, so it simply waits for one.
-local function audioArm(t, s, c)
-    if not HAS_CF then flash("Audio cells need the SWS extension") return end
-    audioCancel(t)
-    local q = { s = s, c = c }
-    aqueue[t] = q
-    -- Opened and tempo-matched NOW, while there is time to spare: a boundary
-    -- must never cost a disk read nor REAPER's tempo analysis. The boundary
-    -- itself is asked for AFTER that work, so it is the clock as it is when the
-    -- launch is really armed.
-    audioOpen(q)
-    -- Q: Off means NOW, and now is this frame — waiting for the next poll
-    -- would put a frame of silence under every unquantized launch.
-    if clockRolling() then
-        q.at = launchBeat()
-        if Loop.EngineBeat() >= q.at then audioFire(t) end
-    end
-end
-
--- Queue the stop of what sounds. A clip does not stop under your finger — it
--- finishes on the boundary — and a sound has no reason to be the exception.
-local function audioQueueStop(t)
-    local a = aplay[t]
-    if not a or a.stop_at then return end
-    if not clockRolling() then audioStop(t) return end
-    a.stop_at = launchBeat()
-    if Loop.EngineBeat() >= a.stop_at then audioStop(t) end
-end
-
--- Everything this track sounds LEAVES on the next boundary: what is queued
--- simply drops, what sounds is queued to stop. The MIDI half of the same move
--- is Loop.StopClip, which the engine has always honoured on the boundary.
-local function audioYield(t)
-    audioCancel(t)
-    audioQueueStop(t)
-end
-
--- THE CLOCK CHANGED UNDER A SOUND THAT IS PLAYING. Every beat we were holding
--- was a position on the OTHER clock and means nothing on this one — so the
--- reference moves and the SOUND DOES NOT: where it is now becomes where it was
--- launched, minus what it has already played. The engine does the same thing
--- for its lanes (it re-anchors every record start by the same jump), and for
--- the same reason: a clock is a way of counting, not a thing to be dragged by.
-local function reanchor(a)
-    if not a.prev then return end
-    local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
-    -- already real seconds — no division by the rate, see a.plen
-    local played = (ok and rv and pos) and (pos - (a.pdc or 0)) or 0
-    if Loop.GetFreeRun() then
-        local tempo = Loop.Tempo() or 0
-        a.t0 = nil
-        a.at = Loop.EngineBeat() - ((tempo > 1) and (played * tempo / 60) or 0)
-    else
-        a.at = Loop.EngineBeat()
-        a.t0 = (r.GetPlayPosition2() or 0) - played
-    end
-    -- the reference was moved TO the sound, so there is nothing to correct:
-    -- the one catch-up stays spent
-    a.locked = true
-end
-
--- Per-frame reconciliation of the sound cells with the clock:
---   * clock stopped                 → give the preview back, keep the cell
---   * sounding + a stop queued      → stop it on the boundary
---   * waiting + its boundary passed → fire (which evicts the sounding one)
---
--- Targets are dropped whenever the clock is not rolling and taken again when
--- it is. A boundary computed on a frozen playhead is a beat number in a past
--- the transport is about to leave: pressing play would either fire the clip at
--- once or, worse, leave it waiting for a beat that will not come round for
--- another minute.
-local last_free = nil
-local last_bpm  = nil
-
-local function pollAudio()
-    reapDying()      -- whatever was replaced last frame has now had its beat
-    local free = Loop.GetFreeRun()
-    if free ~= last_free then
-        if last_free ~= nil then
-            for t = 0, TRACKS - 1 do
-                local a, q = aplay[t], aqueue[t]
-                if q and q.at then q.at = launchBeat() end
-                if a then
-                    if a.stop_at then a.stop_at = launchBeat() end
-                    reanchor(a)
-                end
-            end
-        end
-        last_free = free
-    end
-
-    -- THE PROJECT TEMPO CHANGED, AND A SOUND IS PLAYING AT THE OLD ONE.
-    -- The rate was decided when the file was opened, so a running loop kept the
-    -- tempo it was launched at until it was stopped and relaunched by hand. It
-    -- follows now: the source's own BPM was derived at open time (tempo over
-    -- rate, exact and free), so the new rate is one division — no reopening, no
-    -- second analysis. The reference moves with it rather than the sound, as it
-    -- does on a clock change.
-    local bpm = r.Master_GetTempo() or 0
-    if bpm ~= last_bpm then
-        if last_bpm and bpm > 1 then
-            for t = 0, TRACKS - 1 do
-                local a = aplay[t] or aqueue[t]
-                if a and a.bpm and a.bpm > 0 then
-                    a.rt = bpm / a.bpm
-                    -- a pass now takes a different time to play; every position
-                    -- this window holds is measured against it
-                    a.plen = (a.slen and a.rt > 0) and (a.slen / a.rt) or a.plen
-                    if a.prev then
-                        pcall(r.CF_Preview_SetValue, a.prev, "D_PLAYRATE", a.rt)
-                        reanchor(a)
-                    end
-                end
-            end
-        end
-        last_bpm = bpm
-    end
-
-    local rolling = clockRolling()
-    local beat = rolling and Loop.EngineBeat() or 0
-    -- How far ahead of a boundary we are allowed to fire, in beats. A sound
-    -- starts EARLY and lands on the beat from inside its own tail; see LEAD.
-    -- Called every frame whether or not anything is queued, because it is also
-    -- what measures the frame.
-    local lead = frameLead()
-    local lead_beats = (bpm > 1) and (lead * bpm / 60) or 0
-    local any  = false
-    for t = 0, TRACKS - 1 do
-        local a, q = aplay[t], aqueue[t]
-        if not rolling then
-            if a then
-                -- it becomes a sound WAITING, which is what it now is — unless
-                -- a launch was already queued over it (the newer word), or it
-                -- was on its way out anyway, in which case the transport
-                -- stopping is simply where it goes
-                local leaving = a.stop_at ~= nil
-                audioRelease(a)          -- frees; the cell itself is kept
-                if not q and not leaving then aqueue[t] = a end
-                aplay[t] = nil
-            end
-            local w = aqueue[t]
-            if w then
-                w.at = nil
-                -- and its file is reopened while the transport is stopped, so
-                -- the moment it rolls there is nothing left to read
-                audioOpen(w)
-            end
-        else
-            if a and a.stop_at and beat >= a.stop_at then
-                audioStop(t)
-                a = nil
-            end
-            if q then
-                -- No target means it was queued with no clock to land on. The
-                -- clock is here now, so it takes a real boundary — the same
-                -- one the engine gives its lanes at the same moment, which is
-                -- the whole reason a sound and a clip launched together arrive
-                -- together. The transport rolling mid-bar is not a bar line —
-                -- but a transport that started ON one, and was heard about a
-                -- frame later, IS: that is what qSlop is for.
-                if not q.at then
-                    q.at = launchBeat()
-                    -- The one decision the probe could not see, and the only
-                    -- place a launch can lose a whole bar rather than a few
-                    -- milliseconds: how far past a boundary still counts as on
-                    -- it, against how far past we actually are.
-                    if diag_on then
-                        local qv = Loop.GetLaunchQ() or 0
-                        r.ShowConsoleMsg(string.format(
-                            "[CP_Session] QUEUE tr=%d Q=%.3f beats  beat=%.4f"
-                         .. "  phase=%.4f slop=%.4f -> target=%.4f  (%+.0f ms away)\n",
-                            t, qv, beat,
-                            (qv > 0.001) and (beat - floor(beat / qv) * qv) or 0,
-                            (qv > 0.001) and qSlop(qv) or 0,
-                            q.at,
-                            (bpm > 1) and ((q.at - beat) * 60 / bpm * 1000) or 0))
-                    end
-                end
-                -- EARLY, by up to one display frame: firing on the boundary
-                -- means firing after it, because that is when we learn it has
-                -- passed. The preview starts inside its own tail and reaches
-                -- its zero on the beat.
-                if beat >= q.at - lead_beats then audioFire(t) end
-            end
-        end
-        -- Whatever is sounding is kept ON the clock, not merely started on it
-        -- — and it is what the flag below reports. SOUNDING, not merely
-        -- queued: a launch still waiting for a clock must not be what starts
-        -- the clock it is waiting for.
-        local live = aplay[t]
-        if live and live.prev then
-            if rolling then lockPhase(live) end
-            if live.dg then diagFollow(live) end
-            any = true
-        end
-    end
-    -- The engine cannot see a CF preview, so it is told: its free clock is the
-    -- session's transport, and a sound cell is as much of a session as a lane.
-    Loop.SetAudioRun(any)
-end
-
 local function isAudio(c) return c and c.kind == "audio" and c.path end
 
 local function cellBars(c)
@@ -1383,25 +470,163 @@ local function cellNotes(c)
 end
 
 -- ---------------------------------------------------------------------------
+-- A SOUND CELL IS A CLIP OF ONE NOTE, AND A SAMPLER THAT HOLDS THE FILE.
+--
+-- The whole reason: a preview is read on demand inside the audio thread, and at
+-- a 64-sample buffer — which is what anyone performing actually uses — it misses
+-- its deadlines and simply STOPS ADVANCING. Measured at 0.54x real time, against
+-- 1.0000x at 1024. A sampler cannot be starved: its sample is in memory and it
+-- runs in the normal render pass, which is exactly why a MIDI clip measured 1 ms
+-- through the same track, the same card and the same buffer.
+--
+-- So a sound stops being a second engine and becomes CONTENT for the one that
+-- already works. Everything a clip gets for free comes with it: the quantized
+-- launch, the queued stop, the swap on one boundary, the scene, the countdown —
+-- none of it written twice. And everything the preview needed in order to guess
+-- where it was (elapsed, offsets, the phase lock, the early fire, the frame
+-- measurement) goes away, because you only compensate for what you could not
+-- place.
+--
+-- The note is a FIXED root on every column. Columns are told apart by CHANNEL,
+-- not by pitch, so nothing in the clip is column-specific — which is what lets a
+-- cell be copied, pasted or dragged to another column and still be right.
+-- ---------------------------------------------------------------------------
+local RS5K_ADD   = "ReaSamplOmatic5000 (Cockos)"
+local AUDIO_NOTE = 60
+-- The note stops slightly before the loop does, for two reasons: the engine's
+-- gate only retriggers a note it has seen END (a note as long as the loop is
+-- held forever and the sample free-runs, drifting with nothing to re-anchor it),
+-- and obeying the note-off is what lets the sample release before the next pass
+-- instead of being cut by voice stealing.
+local AUDIO_GATE = 0.97
+
+-- RS5K parameter indices — Kit's table, which is verified against
+-- mpl_RS5K_manager. Duplicated rather than imported because CP_Session must not
+-- depend on the kit being present.
+local P_NOTE_LO, P_NOTE_HI, P_MAXV = 3, 4, 8
+local P_OBEY, P_LOOP, P_SOFFS, P_EOFFS, P_TUNE = 11, 12, 13, 14, 15
+-- normalized pitch: 0.5 is no shift, +/-80 semitones across the full range
+local function pitchNorm(st)
+    local n = 0.5 + (st or 0) / 160
+    if n < 0 then return 0 elseif n > 1 then return 1 end
+    return n
+end
+
+local function samplerGuid(t)
+    local _, g = r.GetProjExtState(0, "CP_Session", "smp" .. t)
+    return (g ~= "" ) and g or nil
+end
+
+local function trackByGuid(g)
+    if not g then return nil end
+    for i = 0, r.CountTracks(0) - 1 do
+        local tr = r.GetTrack(0, i)
+        if r.GetTrackGUID(tr) == g then return tr end
+    end
+    return nil
+end
+
+-- The column's sampler track: a FOLDER CHILD of the column's own track, so its
+-- audio passes through that column's fader, FX and meter. A sibling would reach
+-- the master while skipping all three — which is the defect the preview had, not
+-- a fix for it. Sending its audio INTO the column instead does not work either:
+-- a track whose chain holds an instrument swallows audio put into it.
+local function samplerTrack(t, make)
+    local tr = trackByGuid(samplerGuid(t))
+    if tr and r.ValidatePtr2(0, tr, "MediaTrack*") then return tr end
+    if not make then return nil end
+    local dest = Loop.GetLaneDest(t)
+    if not (dest and r.ValidatePtr2(0, dest, "MediaTrack*")) then return nil end
+    local idx = floor(r.GetMediaTrackInfo_Value(dest, "IP_TRACKNUMBER") + 0.5)
+    if idx < 1 then return nil end
+    local depth = r.GetMediaTrackInfo_Value(dest, "I_FOLDERDEPTH") or 0
+    r.InsertTrackAtIndex(idx, false)          -- IP_TRACKNUMBER is 1-based: this IS "just after"
+    local child = r.GetTrack(0, idx)
+    if not child then return nil end
+    if depth < 1 then
+        -- the column becomes a folder and this child closes it — plus whatever
+        -- the column itself used to close, or the folders above lose their end
+        r.SetMediaTrackInfo_Value(dest, "I_FOLDERDEPTH", 1)
+        r.SetMediaTrackInfo_Value(child, "I_FOLDERDEPTH", depth - 1)
+    end
+    local nm = trackName(t)
+    r.GetSetMediaTrackInfo_String(child, "P_NAME",
+                                  (nm ~= "" and nm or ("Track " .. (t + 1))) .. " smp", true)
+    r.SetProjExtState(0, "CP_Session", "smp" .. t, r.GetTrackGUID(child))
+    return child
+end
+
+-- Load the cell's file into the column's sampler and aim it at the project
+-- tempo. Everything here is a main-thread cost paid when a cell is ARMED, which
+-- is a click and not a boundary.
+local function samplerLoad(t, c)
+    local tr = samplerTrack(t, true)
+    if not tr then flash("No track for this column — click its name to route it") return nil end
+    local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
+    if fx < 0 then flash("ReaSamplOmatic5000 not found") return nil end
+    r.TrackFX_SetNamedConfigParm(tr, fx, "FILE0", c.path)
+    r.TrackFX_SetNamedConfigParm(tr, fx, "DONE", "")
+    -- RS5K keeps the PREVIOUS sample's start/end offsets when the file changes,
+    -- so a shorter file would play a slice of itself. Full range, every time.
+    r.TrackFX_SetParamNormalized(tr, fx, P_SOFFS, 0)
+    r.TrackFX_SetParamNormalized(tr, fx, P_EOFFS, 1)
+    r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, AUDIO_NOTE / 127)
+    r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, AUDIO_NOTE / 127)
+    r.TrackFX_SetParamNormalized(tr, fx, P_OBEY, 1)     -- the note's length gates it
+    r.TrackFX_SetParamNormalized(tr, fx, P_LOOP, 0)     -- the ENGINE loops it, per pass
+    r.TrackFX_SetParamNormalized(tr, fx, P_MAXV, 2 / 64)
+    -- Tempo match is REPITCH: the rate follows the pitch, the vinyl trade. It is
+    -- the same answer the cell menu already gives, and the only one a sampler
+    -- can give without a stretcher's window of latency.
+    local rt = rateFor(c)
+    local st = (rt and rt > 0) and (12 * (math.log(rt) / math.log(2))) or 0
+    r.TrackFX_SetParamNormalized(tr, fx, P_TUNE, pitchNorm(st))
+    Loop.WireAudio(t, tr)
+    return tr
+end
+
+-- The one-note clip, synthesized and never stored: a cell keeps its PATH, and
+-- the note is an implementation of playing it. Reused in place, so arming costs
+-- no allocation.
+local AUDIO_CLIP = { kind = "midi", bars = 4,
+                     notes = { s = { 0 }, l = { 4 }, p = { AUDIO_NOTE }, v = { 127 } } }
+local function audioClip(c)
+    local bars = cellBars(c)
+    AUDIO_CLIP.bars = bars
+    AUDIO_CLIP.notes.l[1] = bars * (Loop.TsNum() or 4) * AUDIO_GATE
+    return AUDIO_CLIP
+end
+
+-- ---------------------------------------------------------------------------
 -- Launching — the heart of the thing
 -- ---------------------------------------------------------------------------
 -- Write a clip into a lane WITHOUT playing it (the lane is the silent twin,
 -- so the write timing is free) and leave it "stopped with content", which is
 -- the state the engine can launch from.
+--
+-- A SOUND cell passes through here like any other: its file goes into the
+-- column's sampler, its clip is the one note, and BOTH halves of the pair are
+-- flagged so the engine speaks them on the column's sound channel. Both halves,
+-- because a swap moves the clip to the twin and the sound must not change
+-- channel — nor sampler — halfway through a bar.
 local function armLane(lane, c, t, s)
-    Loop.ApplyClip(lane, c)
+    local audio = isAudio(c)
+    if audio and not samplerLoad(t, c) then return false end
+    Loop.SetLaneAudio(t, audio and true or false)
+    Loop.SetLaneAudio(t + TRACKS, audio and true or false)
+    Loop.ApplyClip(lane, audio and audioClip(c) or c)
     Loop.SetLengthBars(lane, cellBars(c))
     -- stamp WHICH cell this lane now holds: it is how CP_Editor finds the
     -- clip again after a swap moved it to the other half, and how it knows
     -- to stop writing when the lane got reused for something else
     Loop.SetLaneTag(lane, cellTag(t, s))
-    if cellNotes(c) > 0 and floor(Loop.Mode(lane) + 0.5) == 0 then
+    if (audio or cellNotes(c) > 0) and floor(Loop.Mode(lane) + 0.5) == 0 then
         Loop.SetMode(lane, 2)
     end
+    return true
 end
 
 local function stopTrack(t)
-    audioYield(t)  -- a track plays ONE thing, whatever its kind
     local lane = liveLane(t)
     local m = floor(Loop.Mode(lane) + 0.5)
     if m == 3 or m == 5 then Loop.StopClip(lane)
@@ -1413,32 +638,11 @@ end
 -- buffers so the change happens on the boundary instead of mid-loop.
 local function launchCell(t, s)
     local c = cells[t][s]
-    if isAudio(c) then
-        -- Sound cell: different engine, SAME grammar. The three answers a clip
-        -- gives to a click are the three this gives — cancel what is only
-        -- queued, queue the stop of what plays, or queue a launch and let the
-        -- outgoing one leave on that same boundary.
-        local q = aqueue[t]
-        if q and q.s == s then
-            audioCancel(t)                        -- cancel the queued launch…
-            local a = aplay[t]
-            if a then a.stop_at = nil end         -- …and keep what was playing
-            local live = liveLane(t)              -- MIDI outgoing: same rescue
-            if Loop.Pending(live) == 2 then Loop.Play(live) end
-            return
-        end
-        local a = aplay[t]
-        if a and a.s == s then
-            if a.stop_at then a.stop_at = nil     -- take the queued stop back
-            else audioQueueStop(t) end
-            return
-        end
-        stopTrack(t)                              -- whatever plays leaves on the boundary
-        audioArm(t, s, c)
-        cur[t] = s
-        return
-    end
-    if not c or cellNotes(c) == 0 then
+    -- A sound cell answers a click through the SAME six branches below. The
+    -- three answers it used to re-implement — cancel what is only queued, take
+    -- back the stop of what plays, swap on one boundary — are the engine's, and
+    -- were only ever written twice because a preview was not a clip.
+    if not c or (cellNotes(c) == 0 and not isAudio(c)) then
         flash("Empty cell — click the cell to write something in it")
         return
     end
@@ -1465,13 +669,11 @@ local function launchCell(t, s)
             return
         end
         if isRunning(mine) then                         -- playing: this click stops it
-            audioYield(t)
             Loop.StopClip(mine)
             return
         end
     end
 
-    audioYield(t)  -- a sound on this track leaves on the same boundary
     local live = liveLane(t)
     -- a launch queued on the other half loses: a track plays ONE clip, and
     -- this click is what chose which
@@ -1611,7 +813,6 @@ end
 -- whenever the live half is busy, exactly as launchCell does. Sending REC to
 -- the live half instead would have cleared the clip the track was playing.
 local function recCell(t, s)
-    audioYield(t)                           -- on the boundary the take arrives on
     local live = liveLane(t)
     local other = (live == t) and (t + TRACKS) or t
     if Loop.Pending(other) == 1 then Loop.StopClip(other) end
@@ -1703,9 +904,6 @@ local function clearCell(t, s)
     if lane then Loop.Clear(lane) end
     -- a deleted clip stops NOW, boundary or not: there is nothing left to
     -- finish, and waiting would play a cell the grid no longer has
-    local a, q = aplay[t], aqueue[t]
-    if a and a.s == s then audioStop(t) end
-    if q and q.s == s then audioCancel(t) end
     if cur[t] == s then cur[t] = nil end
 end
 
@@ -1770,19 +968,14 @@ end
 -- A running sound takes a new RATE immediately (it is a number). It does not
 -- change ENGINE under itself: turning stretch on or off waits for the next
 -- launch, which is one boundary away.
-local function applyTempoMode(a, c)
-    if not a or a.c ~= c or not a.src then return end
-    local rt, st = rateFor(c)
-    if a.prev and st ~= a.stretch then return end
-    local pb = r.Master_GetTempo() or 0
-    a.rt      = rt
-    a.stretch = st
-    a.plen    = (a.slen and rt > 0) and (a.slen / rt) or a.plen
-    a.bpm     = (c.tempo_mode ~= "none" and pb > 1 and rt > 0) and (pb / rt) or nil
-    if a.prev then
-        pcall(r.CF_Preview_SetValue, a.prev, "D_PLAYRATE", rt)
-        reanchor(a)
-    end
+local function retune(t, c)
+    local tr = samplerTrack(t, false)
+    if not tr then return end
+    local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, 0)   -- query only
+    if fx < 0 then return end
+    local rt = rateFor(c)
+    local st = (rt and rt > 0) and (12 * (math.log(rt) / math.log(2))) or 0
+    r.TrackFX_SetParamNormalized(tr, fx, P_TUNE, pitchNorm(st))
 end
 
 local function setCellTempoMode(t, s, mode)
@@ -1790,8 +983,9 @@ local function setCellTempoMode(t, s, mode)
     if not c then return end
     c.tempo_mode = (mode ~= "repitch") and mode or nil
     saveGrid()
-    applyTempoMode(aplay[t], c)
-    applyTempoMode(aqueue[t], c)
+    -- A sound already playing takes the new rate at once — it is one parameter
+    -- on the sampler, not a reload and not a relaunch.
+    if isAudio(c) then retune(t, c) end
 end
 
 local function cellMenu(t, s)
@@ -1945,7 +1139,7 @@ local function drawCell(theme, t, s, x, y, w, h)
     -- Nil means the engine is not holding this clip at all: stopped, and
     -- honestly so.
     local lane
-    if c and not audio then
+    if c then
         lane = Loop.LaneOfTag(t, cellTag(t, s))
         if not lane and cur[t] == s and Loop.GetLaneTag(liveLane(t)) == 0 then
             -- Untagged engine state: loops recalled from a project saved
@@ -1962,24 +1156,14 @@ local function drawCell(theme, t, s, x, y, w, h)
     -- A queue with no boundary yet: it is waiting for the CLOCK, not for a
     -- beat. The cell has to say which, or "queued" looks like "stuck".
     local wait_clock = false
-    if audio then
-        -- The two halves say exactly what the engine's two say: a queued
-        -- launch is pending 1, a queued stop pending 2, and a sound whose
-        -- preview the transport took back is queued again — same states, same
-        -- colours, whatever kind of thing the cell holds.
-        local a, q = aplay[t], aqueue[t]
-        playing = (a ~= nil and a.s == s and a.prev ~= nil)
-        if q and q.s == s then
-            pend = 1
-            wait_clock = (q.at == nil)
-        elseif a and a.s == s then
-            if a.stop_at then pend = 2
-            elseif not a.prev then pend = 1; wait_clock = true end
-        end
-    else
-        playing = (mode == 3 or mode == 5)
-        if pend == 1 and lane then wait_clock = Loop.PendingWaitsClock(lane) end
-    end
+    -- ONE fork fewer. A sound cell used to answer these three questions from
+    -- its own two preview objects, in states that had to be kept parallel to
+    -- the engine's by hand. It is a lane now, so it answers the way everything
+    -- else does — and a cell that holds a sound blinks, counts down and lights
+    -- up because the same three lines say so, not because they were written
+    -- twice and happened to agree.
+    playing = (mode == 3 or mode == 5)
+    if pend == 1 and lane then wait_clock = Loop.PendingWaitsClock(lane) end
     -- A capture ARMS first and turns into a take on the quantize boundary.
     -- Painting both red made a recording that had not started look exactly
     -- like one that had — so a cell could blink for a whole bar, capture
@@ -2086,14 +1270,7 @@ local function drawCell(theme, t, s, x, y, w, h)
         if playing then
             local a = C.accent
             local prog
-            if audio then
-                local ap = aplay[t]
-                local ok, rv, pos = pcall(r.CF_Preview_GetValue, ap.prev, "D_POSITION")
-                local ok2, rv2, len = pcall(r.CF_Preview_GetValue, ap.prev, "D_LENGTH")
-                if ok and rv and ok2 and rv2 and len and len > 0 then
-                    prog = (pos % len) / len
-                end
-            elseif lane then
+            if lane then
                 local L = Loop.LenBeats(lane)
                 if L > 0 then prog = Loop.Phase(lane) / L end
             end
@@ -2815,6 +1992,20 @@ local function frame(theme)
             if Loop.HasContent(l) then empty = false break end
         end
         if empty and Loop.HasSavedState() then Loop.LoadState(false) end
+        -- RE-STAMP THE SOUND FLAG BEFORE ANYTHING CAN SOUND. It lives in gmem,
+        -- which belongs to the REAPER session and not to the project, while the
+        -- recall restores a lane that was PLAYING straight back to playing. A
+        -- project reopened cold would therefore fire a trigger note, at velocity
+        -- 127, into whatever instrument the column is routed to. The grid knows
+        -- which cell each lane holds, so it says so first.
+        for t = 0, TRACKS - 1 do
+            local lane = Loop.LaneOfTag(t, Loop.GetLaneTag(liveLane(t)))
+            local sc = lane and sceneOfLane(lane, t) or nil
+            local audio = sc and isAudio(cells[t][sc]) or false
+            Loop.SetLaneAudio(t, audio)
+            Loop.SetLaneAudio(t + TRACKS, audio)
+            if audio then samplerLoad(t, cells[t][sc]) end
+        end
     end
 
     -- COMMAND ZONE. Same shape, same height, same right-hand rank as every
@@ -2823,19 +2014,6 @@ local function frame(theme)
     UI.BeginBar("cmd", TITLE_OPTS)
     UI.BarRight()
     if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
-    UI.BarSep()
-    -- The launch probe. It stays in the bar rather than in a hidden switch:
-    -- an engine whose timing is the whole point owes an answer to "prove it".
-    if UI.BarToggle("diag", "Activity", nil, diag_on,
-                    "Log every sound launch to the console: the boundary, the "
-                 .. "clocks, the offset applied, and the START ERROR measured "
-                 .. "one frame later") then
-        diag_on = not diag_on
-        Core.SavePersistent("CP_Session", "diag", diag_on)
-        if diag_on then
-            r.ShowConsoleMsg("[CP_Session] launch probe ON — launch a sound cell.\n")
-        end
-    end
     UI.BarSep()
     -- A view toggle, so it sits with the meta controls at the right end. The
     -- strip costs 28 px of height permanently, which on a short window is the
@@ -2919,15 +2097,12 @@ local function frame(theme)
     Loop.Poll()
     -- Follow the engine rather than argue with it: a launch fired from
     -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
-    -- know. (Sound cells are this window's own business — skip those.)
+    -- know. Sound cells included: they are lanes like any other now.
     for t = 0, TRACKS - 1 do
-        if not aplay[t] and not aqueue[t] then
-            local s = sceneOfLane(liveLane(t), t)
-            if s and s ~= cur[t] then cur[t] = s end
-        end
+        local s = sceneOfLane(liveLane(t), t)
+        if s and s ~= cur[t] then cur[t] = s end
     end
     pollRec()
-    pollAudio()
 
     -- edits coming home from CP_Editor (own channel: see the editor's
     -- flushApply — a shared one would let CP_Looper consume our cells)
@@ -3113,13 +2288,9 @@ local function frame(theme)
 
     -- A meter that only moves when the mouse does is worse than no meter, so
     -- the strip asks for frames of its own whenever anything can be making
-    -- sound — the engine, the transport, or a sound cell (which plays through
-    -- CF_Preview and needs neither of the other two).
-    local audio_on = false
-    for t = 0, TRACKS - 1 do
-        if aplay[t] or aqueue[t] then audio_on = true break end
-    end
-    if Loop.Playing() or mix_hot or audio_on then
+    -- sound. One question now instead of two: sounds are lanes, so the engine
+    -- answers for them as well.
+    if Loop.Playing() or mix_hot then
         UI.RequestRedraw()
     elseif mix_open and (r.GetPlayState() & 1) == 1 then
         UI.RequestRedraw()
@@ -3135,11 +2306,7 @@ UI.Init("CP Session", 580, 400, {
 })
 
 UI.OnClose(function()
-    for t = 0, TRACKS - 1 do audioStop(t) audioCancel(t) end
-    reapDying()
-    -- our sounds leave with us, so the engine's clock must not keep running
-    -- for them: a flag that is only ever set is a clock that never stops
-    Loop.SetAudioRun(false)
+    -- our sounds are lanes now, and lanes outlive this window on purpose
     if state.registered then pcall(DragBus.Unregister, "session") end
 end)
 
