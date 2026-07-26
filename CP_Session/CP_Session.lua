@@ -143,6 +143,26 @@ it. Use it where the key matters more than the grid.
 
 DON'T FOLLOW plays the file at its own tempo.
 
+## The launch probe (the pulse icon, top right)
+It logs every sound launch to REAPER's console: the boundary it was
+given, both clocks as they read at that instant, every term of the
+offset applied, and — one frame later and ten frames later — the START
+ERROR: how far the preview's own read head is from where it must be to
+be exactly in time. Signed, positive for a sound running ahead.
+
+An error near zero means the launch is exact and anything still heard
+late is DOWNSTREAM of this window: REAPER's mixing, the driver, or the
+way the measurement itself is recorded. The line also prints REAPER's
+own idea of its output latency (GetPlayPosition2 minus GetPlayPosition)
+beside what the driver claims, which is where "everything is late by a
+constant" usually comes from.
+
+To tell a late LAUNCH from a late MEASUREMENT with no code at all: put
+the same file as an ordinary item on the bar line, record what you
+hear, and look at where THAT lands. Whatever it is off by is your
+recording path, not this window. The difference between the two is
+ours.
+
 A sound plays THROUGH the column's track — its fader, its FX, and so
 into the master and into anything you record. When that track holds an
 instrument it cannot take audio (a synth replaces its input with its
@@ -755,6 +775,88 @@ local function audioBuild(a, t)
     return prev
 end
 
+-- ---------------------------------------------------------------------------
+-- THE LAUNCH PROBE — the "Activity" toggle in the bar.
+--
+-- A timing argument cannot be settled from a waveform: a recording shows where
+-- a sound LANDED, never which of the dozen quantities between the click and the
+-- card was wrong. This logs, per launch, every one of them, and then answers the
+-- one question that matters:
+--
+--     AT WHAT INSTANT, ON THE PROJECT'S OWN TIMELINE, DID THE SOUND START?
+--
+-- It is answered without believing anything we computed. On a later frame the
+-- preview is asked where its read head is (D_POSITION) and REAPER is asked where
+-- the transport is (GetPlayPosition2). Where the head SHOULD be, if the sound
+-- were exactly in time, is `(now - boundary) * rate`. The gap between the two,
+-- divided by the rate, is the error in real milliseconds — signed, positive for
+-- a sound running ahead.
+--
+--   err = 0        the launch is exact and anything still heard late is
+--                  DOWNSTREAM of us: REAPER's mixing, the driver, or the way
+--                  the measurement itself is recorded.
+--   err < 0        the sound really did start late, by that much, and the log
+--                  line above it says which term is responsible.
+--
+-- It also prints GetPlayPosition2 minus GetPlayPosition — REAPER's own opinion
+-- of its output latency — beside what the driver claims. Two numbers that
+-- disagree there explain an entire class of "everything is late" reports.
+--
+-- Off by default and it costs one boolean test per frame; nothing is formatted,
+-- allocated or read unless it is on.
+-- ---------------------------------------------------------------------------
+local diag_on = Core.LoadPersistent("CP_Session", "diag", false)
+
+local function diagLaunch(a, t, e, off, clamped, pos)
+    local tempo = r.Master_GetTempo() or 0
+    local beat  = Loop.EngineBeat()
+    local pp2   = r.GetPlayPosition2() or 0
+    local pp    = r.GetPlayPosition() or 0
+    local olat  = r.GetOutputLatency and (r.GetOutputLatency() or 0) or -1
+    local _, bs = r.GetAudioDeviceInfo("BSIZE", "")
+    local _, sr = r.GetAudioDeviceInfo("SRATE", "")
+    -- how far the FIRE was from the boundary, on the engine's own clock
+    local fire = (tempo > 1) and ((beat - (a.at or 0)) * 60 / tempo * 1000) or 0
+    r.ShowConsoleMsg(string.format(
+        "[CP_Session] LAUNCH tr=%d clock=%s bpm=%.2f rt=%.4f slen=%.3f\n" ..
+        "   at=%.4f beat=%.4f fire=%+.1fms | t0=%s pp2=%.4f pp=%.4f pp2-pp=%+.1fms" ..
+        " outlat=%.1fms bsize=%s sr=%s\n" ..
+        "   e=%s slack=%+.1fms pdc=%+.1fms off=%+.1fms clamped=%d pos=%.4f\n",
+        t, Loop.GetFreeRun() and "FREE" or "FOLLOW", tempo, a.rt or 0, a.slen or 0,
+        a.at or 0, beat, fire,
+        a.t0 and string.format("%.4f", a.t0) or "-", pp2, pp, (pp2 - pp) * 1000,
+        olat * 1000, bs or "?", sr or "?",
+        e and string.format("%+.1fms", e * 1000) or "nil",
+        blockSlack() * 1000, (a.pdc or 0) * 1000, off * 1000,
+        clamped and 1 or 0, pos))
+    a.dg = { pos = pos, n = 0 }
+end
+
+-- Two samples: the frame after the launch, and ten frames in. One says whether
+-- the START was in time, the other whether the RATE is (a loop that reads at
+-- the wrong speed drifts between the two, and the second line says so).
+local function diagFollow(a)
+    local dg = a.dg
+    dg.n = dg.n + 1
+    if dg.n ~= 1 and dg.n ~= 10 then return end
+    local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
+    if not (ok and rv and pos) then a.dg = nil return end
+    local rt   = (a.rt and a.rt > 0) and a.rt or 1
+    local slen = (a.slen and a.slen > 0) and a.slen or 1
+    -- where the read head must be for the sound to be exactly in time
+    local ref  = a.t0 and ((r.GetPlayPosition2() or 0) - a.t0)
+                      or ((Loop.EngineBeat() - (a.at or 0))
+                          * 60 / math.max(Loop.Tempo() or 120, 1))
+    local want = (ref * rt) % slen
+    local err  = pos - want
+    local half = slen * 0.5
+    if err > half then err = err - slen elseif err < -half then err = err + slen end
+    r.ShowConsoleMsg(string.format(
+        "[CP_Session] +%-2dF ref=%+.4fs pos=%.4f want=%.4f  START ERROR=%+.1fms\n",
+        dg.n, ref, pos, want, err / rt * 1000))
+    if dg.n == 10 then a.dg = nil end
+end
+
 -- START IT EARLY, IN THE TAIL OF ITS OWN LOOP.
 --
 -- The engine fires a clip on an AUDIO BLOCK — three milliseconds wide. This
@@ -797,11 +899,14 @@ local function audioStart(t)
     -- picked up on the NEXT one, plus the chain's own latency.
     local e = elapsed(a)
     local off = (e or 0) + blockSlack() + a.pdc
-    if off > OFF_MAX or off < -OFF_MAX then off = 0 end
+    local clamped = false
+    if off > OFF_MAX or off < -OFF_MAX then off = 0 clamped = true end
+    local pos = 0
     if a.slen and a.slen > 0 then
         -- signed, and the modulo does the rest: past the boundary it takes the
         -- overshoot off the front, before it lands in the loop's tail
-        r.CF_Preview_SetValue(prev, "D_POSITION", (off * a.rt) % a.slen)
+        pos = (off * a.rt) % a.slen
+        r.CF_Preview_SetValue(prev, "D_POSITION", pos)
     end
 
     -- The session starts sounding HERE, not when the cell was clicked. Said
@@ -813,6 +918,7 @@ local function audioStart(t)
     Loop.SetAudioRun(true)
     r.CF_Preview_Play(prev)
     a.prev = prev
+    if diag_on then diagLaunch(a, t, e, off, clamped, pos) end
 end
 
 -- ONE correction, on the frame after the launch, and never again.
@@ -1066,6 +1172,7 @@ local function pollAudio()
         local live = aplay[t]
         if live and live.prev then
             if rolling then lockPhase(live) end
+            if live.dg then diagFollow(live) end
             any = true
         end
     end
@@ -2527,6 +2634,19 @@ local function frame(theme)
     UI.BeginBar("cmd", TITLE_OPTS)
     UI.BarRight()
     if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
+    UI.BarSep()
+    -- The launch probe. It stays in the bar rather than in a hidden switch:
+    -- an engine whose timing is the whole point owes an answer to "prove it".
+    if UI.BarToggle("diag", "Activity", nil, diag_on,
+                    "Log every sound launch to the console: the boundary, the "
+                 .. "clocks, the offset applied, and the START ERROR measured "
+                 .. "one frame later") then
+        diag_on = not diag_on
+        Core.SavePersistent("CP_Session", "diag", diag_on)
+        if diag_on then
+            r.ShowConsoleMsg("[CP_Session] launch probe ON — launch a sound cell.\n")
+        end
+    end
     UI.BarSep()
     -- A view toggle, so it sits with the meta controls at the right end. The
     -- strip costs 28 px of height permanently, which on a short window is the
