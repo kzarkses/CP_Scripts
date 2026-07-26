@@ -559,25 +559,65 @@ end
 -- Load the cell's file into the column's sampler and aim it at the project
 -- tempo. Everything here is a main-thread cost paid when a cell is ARMED, which
 -- is a click and not a boundary.
+-- FIND the sampler before adding one, and find it by IDENTITY.
+--
+-- Two traps, one behind the other. TrackFX_AddByName's "create if absent" did
+-- not recognise the instance it had itself added, so every launch added another
+-- one and every one of them opened a window. And matching on the displayed name
+-- would only have moved the bug: RS5K RENAMES ITS INSTANCE to the loaded
+-- sample's filename, so the second file would have missed again — the rule is
+-- written at the top of Engine/Kit, which solved this once already.
+-- fx_ident / fx_name are the immutable identity; the alias stays as the last
+-- resort for an instance with nothing loaded yet.
+local function isSampler(tr, i)
+    local ok, s = r.TrackFX_GetNamedConfigParm(tr, i, "fx_ident")
+    if ok and s and s:lower():find("samplomatic", 1, true) then return true end
+    ok, s = r.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
+    if ok and s and s:lower():find("samplomatic", 1, true) then return true end
+    local _, nm = r.TrackFX_GetFXName(tr, i, "")
+    return nm ~= nil and nm:lower():find("samplomatic", 1, true) ~= nil
+end
+
+local function samplerFx(tr)
+    for i = 0, r.TrackFX_GetCount(tr) - 1 do
+        if isSampler(tr, i) then return i end
+    end
+    return -1
+end
+
+-- Aim the sampler at this cell's file and at the project tempo. Called on every
+-- arm, so it must be IDEMPOTENT and silent: the file is only re-read when it
+-- actually changes, and the plugin's window is never opened. A launcher that
+-- pops a plugin editor on every click is not a launcher.
 local function samplerLoad(t, c)
     local tr = samplerTrack(t, true)
     if not tr then flash("No track for this column — click its name to route it") return nil end
-    local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
-    if fx < 0 then flash("ReaSamplOmatic5000 not found") return nil end
-    r.TrackFX_SetNamedConfigParm(tr, fx, "FILE0", c.path)
-    r.TrackFX_SetNamedConfigParm(tr, fx, "DONE", "")
-    -- RS5K keeps the PREVIOUS sample's start/end offsets when the file changes,
-    -- so a shorter file would play a slice of itself. Full range, every time.
-    r.TrackFX_SetParamNormalized(tr, fx, P_SOFFS, 0)
-    r.TrackFX_SetParamNormalized(tr, fx, P_EOFFS, 1)
-    r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, AUDIO_NOTE / 127)
-    r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, AUDIO_NOTE / 127)
-    r.TrackFX_SetParamNormalized(tr, fx, P_OBEY, 1)     -- the note's length gates it
-    r.TrackFX_SetParamNormalized(tr, fx, P_LOOP, 0)     -- the ENGINE loops it, per pass
-    r.TrackFX_SetParamNormalized(tr, fx, P_MAXV, 2 / 64)
-    -- Tempo match is REPITCH: the rate follows the pitch, the vinyl trade. It is
-    -- the same answer the cell menu already gives, and the only one a sampler
-    -- can give without a stretcher's window of latency.
+    local fx = samplerFx(tr)
+    if fx < 0 then
+        fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
+        if fx < 0 then flash("ReaSamplOmatic5000 not found") return nil end
+    end
+    -- REAPER floats a freshly added plugin by preference, and re-reading FILE0
+    -- can raise it again. Neither belongs on a launch: close both, every time.
+    r.TrackFX_Show(tr, fx, 2)      -- no floating window
+    r.TrackFX_Show(tr, fx, 0)      -- and not in the chain window either
+    local _, loaded = r.TrackFX_GetNamedConfigParm(tr, fx, "FILE0")
+    if loaded ~= c.path then
+        r.TrackFX_SetNamedConfigParm(tr, fx, "FILE0", c.path)
+        r.TrackFX_SetNamedConfigParm(tr, fx, "DONE", "")
+        -- RS5K keeps the PREVIOUS sample's start/end offsets across a file
+        -- change, so a shorter file would play a slice of itself.
+        r.TrackFX_SetParamNormalized(tr, fx, P_SOFFS, 0)
+        r.TrackFX_SetParamNormalized(tr, fx, P_EOFFS, 1)
+        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, AUDIO_NOTE / 127)
+        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, AUDIO_NOTE / 127)
+        r.TrackFX_SetParamNormalized(tr, fx, P_OBEY, 1)   -- the note's length gates it
+        r.TrackFX_SetParamNormalized(tr, fx, P_LOOP, 0)   -- the ENGINE loops it, per pass
+        r.TrackFX_SetParamNormalized(tr, fx, P_MAXV, 2 / 64)
+        r.TrackFX_Show(tr, fx, 2)
+    end
+    -- The tune is re-aimed every time, because the project tempo can have moved
+    -- since the last launch and it costs one parameter write.
     local rt = rateFor(c)
     local st = (rt and rt > 0) and (12 * (math.log(rt) / math.log(2))) or 0
     r.TrackFX_SetParamNormalized(tr, fx, P_TUNE, pitchNorm(st))
@@ -971,7 +1011,7 @@ end
 local function retune(t, c)
     local tr = samplerTrack(t, false)
     if not tr then return end
-    local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, 0)   -- query only
+    local fx = samplerFx(tr)
     if fx < 0 then return end
     local rt = rateFor(c)
     local st = (rt and rt > 0) and (12 * (math.log(rt) / math.log(2))) or 0
