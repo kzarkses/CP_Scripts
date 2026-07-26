@@ -661,11 +661,13 @@ local function drawToolbar(attached, theme)
     end
 
     -- Clock: an icon PAIR would be wrong here (both states are a clock), so it
-    -- is a lit toggle — free run on, follow off — with the meaning in the tip.
+    -- is a lit toggle. LIT = there is a clock and we follow it, which is the
+    -- only reading a button called "Clock" can have; unlit = free run, the
+    -- engine on its own. Lighting it for FREE said the opposite of its name.
     local free = Loop.GetFreeRun()
-    if UI.BarToggle("clock", "Clock", nil, free,
+    if UI.BarToggle("clock", "Clock", nil, not free,
                     free and "Free run: clips launch with the transport stopped"
-                          or "Follow the host transport (locks to external clock)") then
+                          or "Following the host transport (locks to external clock)") then
         Loop.SetFreeRun(not free)
         persist_dirty = true
         flash(free and "Follow host transport" or "Free run (launch without transport)")

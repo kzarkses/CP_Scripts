@@ -32,11 +32,16 @@ local Clip   = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Mix    = dofile(cp_root .. "CP_Engine/Mix.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Bus    = dofile(cp_root .. "CP_Engine/Bus.lua")
+-- for its tempo-match routine ONLY: the browser decides how fast a file is,
+-- and this grid must reach the same answer for the same file. Its playback
+-- half is never used here (sound cells own their previews).
+local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
 Tracks.init(r)
 Loop.init(r, Tracks)
 Mix.init(r)
 DragBus.init(r)
 Bus.init(r, DragBus, Clip)
+Preview.init(r)
 
 local Core = UI.Core
 local sin, floor = math.sin, math.floor
@@ -436,8 +441,20 @@ local function audioStart(t, beat)
     -- drop the cell rather than leave it armed: a start that cannot succeed
     -- would be retried on every frame, disk open included
     if not prev then r.PCM_Source_Destroy(src) aplay[t] = nil return end
-    local ok, _, rate = pcall(r.GetTempoMatchPlayRate, src, 1.0, 0, 1.0)
-    local rt = (ok and rate and rate > 0.05 and rate < 20) and rate or 1.0
+    -- HOW FAST. The clip's own announced tempo wins when it carries one;
+    -- otherwise the SAME routine the browser used to audition this file
+    -- decides. Two windows disagreeing about how fast a file is was one of the
+    -- ways a sound could be in time in the arrange and out of it here: the
+    -- browser falls back to the BPM written in the filename when REAPER's
+    -- tempo-match declines to guess, and this window did not.
+    local rt
+    if c.src_bpm and c.src_bpm > 0 then
+        local pb = r.Master_GetTempo()
+        rt = (pb and pb > 0) and (pb / c.src_bpm) or 1.0
+    else
+        rt = Preview.TempoSyncRate(c.path, 1.0)
+    end
+    if not (rt and rt > 0.05 and rt < 20) then rt = 1.0 end
     r.CF_Preview_SetValue(prev, "D_VOLUME", 1)
     if rt ~= 1.0 then
         r.CF_Preview_SetValue(prev, "D_PLAYRATE", rt)
@@ -451,13 +468,24 @@ local function audioStart(t, beat)
     -- it. The boundary is ours to pick now (launchBeat), on the engine's clock
     -- and by the engine's rule, so the launch is quantized and the loop runs.
     local skip = 0
-    if beat and a.at then
-        local tempo = Loop.Tempo()
-        if tempo and tempo > 1 then
-            skip = (beat - a.at) * (60 / tempo) * rt
-            if skip < 0 or skip > 0.25 then skip = 0 end
+    if a.at then
+        if Loop.GetFreeRun() then
+            local tempo = Loop.Tempo()
+            if beat and tempo and tempo > 1 then
+                skip = (beat - a.at) * (60 / tempo) * rt
+            end
+        else
+            -- Measured in PROJECT TIME against the position the audio thread
+            -- is about to render — GetPlayPosition2, not GetPlayPosition. The
+            -- preview's first sample lands exactly there, so that is the
+            -- reference: it already contains the output buffer, which the beat
+            -- read from the engine did not, and which is most of the flam.
+            local tb = r.TimeMap2_QNToTime(0, a.at)
+            local p  = r.GetPlayPosition2()
+            if tb and p then skip = (p - tb) * rt end
         end
     end
+    if skip < 0 or skip > 0.25 then skip = 0 end
     if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
     -- Route through the track this column stands for, so its FX apply — but
     -- NOT when that track hosts a virtual instrument: a VSTi replaces its
@@ -857,7 +885,15 @@ local function pollRec()
         flash("The engine never took the record command")
         return
     end
-    if m == 0 then rec = nil return end     -- cleared under us
+    if m == 0 then
+        -- The engine settles an empty take back to "no clip". Saying so
+        -- matters: with Rec: 1 bar the whole thing is over two seconds after
+        -- the transport rolls, and a cell that simply stopped blinking read as
+        -- "the recording was deleted" rather than "nothing was played into it".
+        rec = nil
+        flash("Nothing played — the slot stays empty")
+        return
+    end
     local c = Loop.LaneToClip(rec.lane)
     if c then
         c.cell = rec.t .. "," .. rec.s
@@ -1467,10 +1503,13 @@ local function frame(theme)
     end
     UI.BarLeft()
     if attached then
+        -- LIT = there is a clock and we follow it. A button called "Clock" that
+        -- lights up to mean "no clock, we run free" says the opposite of its
+        -- own name, and the eye reads the light before the tooltip.
         local free = Loop.GetFreeRun()
-        if UI.BarToggle("clock", "Clock", nil, free,
+        if UI.BarToggle("clock", "Clock", nil, not free,
                         free and "Free run: clips launch with the transport stopped"
-                              or "Follow the host transport") then
+                              or "Following the host transport") then
             Loop.SetFreeRun(not free)
         end
         -- Q says WHEN a take starts, Rec says how long it runs. Together they
