@@ -46,9 +46,11 @@ version: 0.8
 // WHAT A LAUNCH WAITS FOR — one rule, both clocks, and the whole of it:
 //
 //   * STARTING needs a downbeat. With no clock there is none yet, so a start
-//     WAITS FOR THE CLOCK (pend_target = WAIT_CLOCK) and fires with its very
-//     first block — not a bar after it. That first block IS a boundary: the
-//     transport rolling is the downbeat everyone was waiting for.
+//     WAITS FOR THE CLOCK (pend_target = WAIT_CLOCK). The moment one appears
+//     the wait becomes an ordinary one: the pending takes the next quantize
+//     boundary from wherever the transport started. Rolling exactly on a bar
+//     line fires it there and then; rolling mid-bar does not make that instant
+//     a bar line, and Q: Bar still means the next bar.
 //   * STOPPING needs no downbeat. With no clock there is nothing left to
 //     finish, so a stop happens now.
 //   * FREE RUN is the session's own transport, and a transport nothing is
@@ -146,7 +148,7 @@ LAYOUT_VER = 6;
 // an older run keeps playing the old code until something notices — this is
 // what lets Loop.Ensure notice, and refresh WITHOUT marking the block cold
 // (the loops survive, which bumping LAYOUT_VER would not allow).
-BUILD_VER = 4;
+BUILD_VER = 5;
 
 // A pending target that has no date yet: it fires on the clock's first block.
 // Real targets are beat positions and never negative, so any target below
@@ -190,17 +192,22 @@ function finalize_note(cl, p, endphase, Lb, heldstop) local(n, ln, na) (
   );
 );
 
-// WHERE A START LANDS. Three answers, and only three:
-//   * no clock            -> WAIT_CLOCK: it starts WITH the clock, whenever
-//                            that is. A start with no downbeat is not a start.
-//   * the clock's own      -> pb: the first block of a clock IS a boundary, so
-//     first block             what waited for the transport starts with it
-//                             rather than a bar after it.
-//   * otherwise            -> the next quantize boundary (a position within
-//                             0.05 beat past one counts as ON it).
+// WHERE A START LANDS. Two answers, and only two:
+//   * no clock   -> WAIT_CLOCK: it waits for one. A start with no downbeat is
+//                   not a start. It is given a real boundary the moment the
+//                   clock appears (see the pending section).
+//   * a clock    -> the next quantize boundary (a position within 0.05 beat
+//                   past one counts as ON it, so a launch that lands a block
+//                   late still belongs to the boundary it aimed at).
+//
+// Note what this does NOT do: treat the clock's first block as a boundary of
+// its own. An external clock starting IS a downbeat, but REAPER's transport
+// starts wherever the cursor was left — and the bar grid exists whether or not
+// the transport is rolling. Press play between two bars with Q: Bar and the
+// wait continues to the next bar, which is what Q: Bar says.
 function launch_target() local(qph) (
   !active ? WAIT_CLOCK : (
-    (clock_start || launch_q <= 0.001) ? pb : (
+    launch_q <= 0.001 ? pb : (
       qph = pb - floor(pb / launch_q) * launch_q;
       qph < 0.05 ? pb - qph : pb - qph + launch_q;
     );
@@ -211,7 +218,7 @@ function launch_target() local(qph) (
 // its bar — but NOW when there is none: nothing is sounding, so there is
 // nothing left to finish and waiting would only strand the lane.
 function stop_target() local(qph) (
-  (!active || clock_start || launch_q <= 0.001) ? pb : (
+  (!active || launch_q <= 0.001) ? pb : (
     qph = pb - floor(pb / launch_q) * launch_q;
     qph < 0.05 ? pb - qph : pb - qph + launch_q;
   );
@@ -314,9 +321,6 @@ free_beat = sbusy ? free_beat + block_beats : 0;
 gmem[GMEM_FREEBEAT] = free_beat;   // mirrored so a plugin reset resumes in place
 pb = freerun ? free_beat : beat_position;
 active = freerun || playing;
-// The clock's FIRST block: a boundary in its own right, and the one every
-// start that had no clock to land on has been waiting for.
-clock_start = (active >= 0.5 && prev_active < 0.5);
 
 // Clock-source switch: pb jumps to a different timebase. Re-anchor every lane's
 // record start — and any pending-launch target — by the SAME jump so an
@@ -598,9 +602,9 @@ active ? (
     // armed -> recording. With a launch quantize the arm converts into a
     // queued rec at the next boundary instead of firing on the first block.
     (gmem[GMEM_LANE_STATE + li*8 + 0] == 4 && gmem[GMEM_LANE_STATE + li*8 + 6] == 0) ? (
-      // On the clock's first block launch_target answers pb, so a take armed
-      // against a stopped transport starts WITH it. Waiting a whole bar after
-      // pressing play is not a quantize, it is a bar of missing music.
+      // A take armed against a stopped transport converts the moment the clock
+      // appears, and lands on the first boundary from there — the transport
+      // rolling mid-bar does not make that instant a bar line.
       tq = launch_target();
       tq > pb + 0.0005 ? (
         gmem[GMEM_LANE_STATE + li*8 + 6] = 3;
@@ -623,11 +627,15 @@ active ? (
     // granularity as the gate. Phase math uses the TARGET, not pb, so a
     // block-late fire still lands exactly on the grid.
     pnd = gmem[GMEM_LANE_STATE + li*8 + 6];
+    // It was waiting for a CLOCK, and here is one: give it a real boundary
+    // now. Not this instant — this instant is only a boundary if the transport
+    // happened to roll on one. Between two bars, Q: Bar still means the next
+    // bar, and the cell can go back to counting beats instead of waiting.
+    (pnd > 0 && gmem[GMEM_LANE_STATE + li*8 + 7] < WAIT_TEST) ? (
+      gmem[GMEM_LANE_STATE + li*8 + 7] = launch_target();
+    );
     (pnd > 0 && pb >= gmem[GMEM_LANE_STATE + li*8 + 7] - 0.0005) ? (
       tgt = gmem[GMEM_LANE_STATE + li*8 + 7];
-      // it was waiting for a clock, not for a beat: the clock is here, so the
-      // beat it lands on is this one
-      tgt < WAIT_TEST ? tgt = pb;
       pnd == 1 ? (
         gmem[GMEM_LANE_STATE + li*8 + 0] == 2 ? gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
       );

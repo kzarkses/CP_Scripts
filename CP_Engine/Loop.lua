@@ -60,7 +60,7 @@ local G_VERSION    = 3099
 -- like Lua bugs (a shortened loop folding its later bars onto the first one
 -- was exactly that). Bumping this makes Loop.Ensure refresh the engine, which
 -- the loops survive; bumping the JSFX's LAYOUT_VER would wipe them.
-Loop.ENGINE_BUILD = 4
+Loop.ENGINE_BUILD = 5
 local G_NOTE_BASE  = 10000
 
 local GMEM_NAME  = "CP_MidiLooper"

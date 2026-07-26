@@ -1310,6 +1310,14 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   à la frame suivant le départ, sous 20 ms d'insensibilité et plafonné à 250 ms.
   Une boucle et le projet tournent sur **la même horloge de carte son** : il n'y
   avait pas de dérive à surveiller, la dérive *était* la surveillance.
+- [x] **« Le premier bloc de l'horloge EST une frontière » était une règle trop
+  maligne, et elle est retirée.** C'est vrai d'une horloge externe — un
+  démarrage d'horloge externe *est* un temps fort. C'est faux du transport de
+  REAPER, qui démarre là où le curseur traîne. La grille de mesures existe que
+  le transport roule ou non : une attente prend donc une **vraie frontière** au
+  moment où l'horloge apparaît. Sur une mesure, ça part ; entre deux mesures,
+  Q: Bar veut toujours dire la mesure suivante. Corrigé des deux côtés (JSFX et
+  cellules sonores) pour qu'un son et un clip lancés ensemble arrivent ensemble.
 - [x] **Le vrai calage se fait avant que le son parte** — `D_POSITION` sur un
   aperçu qui n'a pas commencé, seul moment où une position se choisit
   librement. Et le drapeau « la session sonne » est posé **juste avant** le

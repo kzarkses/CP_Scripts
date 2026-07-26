@@ -188,8 +188,11 @@ One rule, both clocks, and the whole of it:
 
 STARTING needs a downbeat. Following a transport that is not running
 there is none yet, so a launch WAITS FOR THE TRANSPORT — the cell says
-so — and starts with its first beat, not a bar after it. Clips, sounds
-and takes all wait together, and all land together.
+so. The moment it rolls, the wait becomes an ordinary one: the launch
+takes the next Q boundary from wherever the transport started. Press
+play on a bar line with Q: Bar and it goes now; press it between two
+bars and it waits for the next one, because that is what Q: Bar says.
+Clips, sounds and takes all wait together, and all land together.
 
 STOPPING needs no downbeat. On a running clock a clip finishes its bar;
 with no clock there is nothing left to finish, so it stops now.
@@ -828,11 +831,12 @@ local function pollAudio()
                 a = nil
             end
             if q then
-                -- No target means it was queued with no clock to land on: the
-                -- clock is here now, and its first beat IS the boundary it was
-                -- waiting for. Sending it to the NEXT one instead is what left
-                -- a sound a whole bar behind the clip it was launched with.
-                if not q.at then q.at = beat end
+                -- No target means it was queued with no clock to land on. The
+                -- clock is here now, so it takes a real boundary — the same
+                -- one the engine gives its lanes at the same moment, which is
+                -- the whole reason a sound and a clip launched together arrive
+                -- together. The transport rolling mid-bar is not a bar line.
+                if not q.at then q.at = launchBeat() end
                 if beat >= q.at then audioFire(t) end
             end
         end
