@@ -1332,6 +1332,18 @@ local function pollAudio()
                     local base = (not free) and TS.at
                                  and r.TimeMap2_timeToQN(0, TS.at) or nil
                     q.at = launchBeat(base)
+                    -- The one decision the probe could not see, and the only
+                    -- place a launch can lose a whole bar rather than a few
+                    -- milliseconds: which beat the boundary was quantized FROM.
+                    if diag_on then
+                        r.ShowConsoleMsg(string.format(
+                            "[CP_Session] QUEUE tr=%d Q=%.3f beats  base=%s"
+                         .. "  beat=%.4f -> target=%.4f  (%+.0f ms away)\n",
+                            t, Loop.GetLaunchQ() or 0,
+                            base and string.format("%.4f", base) or "now",
+                            beat, q.at,
+                            (bpm > 1) and ((q.at - beat) * 60 / bpm * 1000) or 0))
+                    end
                 end
                 -- EARLY, by up to one display frame: firing on the boundary
                 -- means firing after it, because that is when we learn it has
