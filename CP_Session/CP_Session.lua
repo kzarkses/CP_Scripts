@@ -135,6 +135,15 @@ instrument it cannot take audio (a synth replaces its input with its
 own output), so the sound goes to the nearest thing downstream that
 can: the folder it lives in, or the master.
 
+That track is then marked LIVE (its performance options: no anticipative
+FX, no media buffering) and stays marked. It has to be: REAPER normally
+renders a track ahead of the play cursor and keeps the result in a
+buffer, which is right for items — they carry their timeline position
+with them — and wrong for a sound mixed in as it plays, which would come
+out however far ahead REAPER had got. It is the same treatment REAPER
+already gives a record-armed track, and the reason MIDI was never out of
+time: the engine lives on one.
+
 A sound answers a click exactly as a clip does, because it lives in the
 same two halves: launching is QUEUED to the Q boundary and blinks until
 it lands, STOPPING is queued too (a clip finishes its bar, it does not
@@ -504,6 +513,35 @@ local function previewDest(tr)
     return r.GetMasterTrack and r.GetMasterTrack(0) or nil
 end
 
+-- A TRACK FED BY A PREVIEW IS A LIVE TRACK, and REAPER has to be told.
+--
+-- By default REAPER runs a track's FX AHEAD of the play cursor and keeps the
+-- result in a buffer (anticipative processing, 200 ms by default) so a CPU
+-- spike cannot cause a dropout. Items on that track are rendered at their
+-- timeline position, so they come out on time. A preview is not: it is mixed
+-- in at the moment the audio thread happens to be computing that track — which
+-- is the position it will reach in 200 ms. The sound is therefore LATE by
+-- whatever REAPER managed to render ahead.
+--
+-- Which is why the offset grew as the buffer SHRANK: 147 ms on a 3 ms ASIO
+-- buffer, 67 ms on a 200 ms DirectSound one. Nothing downstream of the sound
+-- can behave that way; only something that runs ahead of it can. And it is
+-- exactly why MIDI was never affected — the engine lives on a record-armed,
+-- input-monitored router track, and REAPER already runs those live.
+--
+-- I_PERFFLAGS is the per-track answer REAPER gives its own live tracks:
+-- &1 no media buffering, &2 no anticipative FX. Set once, left set: a column
+-- that plays sounds is a live column, and the flags are visible in the track's
+-- own performance options if the user ever wants them back.
+local PERF_LIVE = 3
+local function liveTrack(tr)
+    if not tr then return end
+    local f = floor((r.GetMediaTrackInfo_Value(tr, "I_PERFFLAGS") or 0) + 0.5)
+    if (f & PERF_LIVE) ~= PERF_LIVE then
+        r.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", f | PERF_LIVE)
+    end
+end
+
 -- Half an audio block: the preview is picked up by the audio thread on its
 -- NEXT block, so where it actually starts is somewhere in [now, now + block].
 -- Read once — the device does not change under a running script.
@@ -622,15 +660,12 @@ local function audioStart(t)
     -- audio, which for an ordinary column is the column's own track.
     local tr = previewDest(Loop.GetLaneDest(t))
     if tr and r.CF_Preview_SetOutputTrack then
+        -- and that track stops being rendered ahead of the playhead, or the
+        -- sound lands wherever REAPER had got to rather than where we put it
+        liveTrack(tr)
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
 
-    -- No D_MEASUREALIGN. It holds EVERY loop pass to the bar grid, not only the
-    -- first, so a sample that is not exactly N measures long waits at the end
-    -- of each pass — the gap between two instances. And it can only align to a
-    -- MEASURE, which is why a sound ignored the Q while every MIDI clip obeyed
-    -- it. The boundary is ours to pick now (launchBeat), on the engine's clock
-    -- and by the engine's rule, so the launch is quantized and the loop runs.
     a.rt   = rt
     a.slen = r.GetMediaSourceLength(src)
     a.pdc  = tr and chainLatency(tr) or 0

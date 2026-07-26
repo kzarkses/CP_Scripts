@@ -1318,6 +1318,25 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   moment où l'horloge apparaît. Sur une mesure, ça part ; entre deux mesures,
   Q: Bar veut toujours dire la mesure suivante. Corrigé des deux côtés (JSFX et
   cellules sonores) pour qu'un son et un clip lancés ensemble arrivent ensemble.
+- [x] **LE DÉCALAGE, ENFIN MESURÉ ET COMPRIS.** 147 ms avec un buffer ASIO de
+  3 ms ; 67 ms avec un buffer DirectSound de 200 ms. **L'écart grandit quand la
+  latence rétrécit** — ce qui élimine d'un coup le buffer, la latence de sortie,
+  le PDC et l'étireur : rien en aval du son ne peut être inversement
+  proportionnel à la taille du bloc. Seule quelque chose qui court *devant* lui
+  le peut.
+  C'est le **traitement anticipatif** de REAPER : une piste est rendue en avance
+  sur le curseur (200 ms par défaut) et mise en tampon. Un item y arrive à sa
+  position de timeline, donc à l'heure ; un aperçu, lui, est mélangé au moment
+  où le thread audio calcule cette piste — c'est-à-dire à la position qu'elle
+  atteindra 200 ms plus tard. Le son est donc en retard de tout ce que REAPER a
+  réussi à rendre en avance, et il en rend d'autant plus que les blocs sont
+  petits.
+  Et c'est exactement pourquoi le MIDI n'a JAMAIS été touché : le moteur vit sur
+  une piste armée et monitorée, que REAPER joue déjà en direct.
+  Correctif : `I_PERFFLAGS` (&1 pas de mise en tampon média, &2 pas de
+  traitement anticipatif) sur la piste de destination — la réponse que REAPER
+  donne lui-même à ses pistes live. Une colonne qui joue des sons est une
+  colonne live.
 - [x] **Le vrai calage se fait avant que le son parte** — `D_POSITION` sur un
   aperçu qui n'a pas commencé, seul moment où une position se choisit
   librement. Et le drapeau « la session sonne » est posé **juste avant** le
