@@ -433,7 +433,7 @@ local HAS_CF = r.CF_CreatePreview ~= nil
 -- is written against that pair so a sound answers a click exactly as a clip
 -- does: launches queued, stops queued, swaps landing on one boundary, and a
 -- second click taking back whichever of the two is still only queued.
-local aplay  = {}  -- [t] = { s, c, at, prev, src, stop_at }  the sound heard
+local aplay  = {}  -- [t] = { s,c,at,prev,src,stop_at,t0,rt,slen,pdc,locked }
 local aqueue = {}  -- [t] = { s, c, at }                      the sound waiting
 
 local function audioStop(t)
@@ -631,12 +631,11 @@ local function audioStart(t)
     a.rt   = rt
     a.slen = r.GetMediaSourceLength(src)
     a.pdc  = tr and chainLatency(tr) or 0
-    -- The position is a FORMULA from here on, not a one-off calculation: it
-    -- started at the boundary and has run at `rt` ever since. lockPhase holds
-    -- the preview to it, so what follows is only a good first guess.
-    a.t0   = (not Loop.GetFreeRun()) and r.TimeMap2_QNToTime(0, a.at or 0) or nil
-    a.lock = 0
-    a.settled = false
+    -- Where the boundary is, in the terms of whichever clock we are on: a
+    -- project TIME when we follow the transport, a beat on the engine's own
+    -- clock when we do not. `elapsed` reads one or the other from this.
+    a.t0     = (not Loop.GetFreeRun()) and r.TimeMap2_QNToTime(0, a.at or 0) or nil
+    a.locked = false
 
     -- What the boundary already owes us, plus half a block (the preview is
     -- picked up on the NEXT one) and the chain's own latency.
@@ -645,30 +644,47 @@ local function audioStart(t)
     if skip < 0 or skip > 0.25 then skip = 0 end
     if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
 
+    -- The session starts sounding HERE, not when the cell was clicked. Said
+    -- any earlier, the engine's free clock would leave zero while we were
+    -- still opening the file — and the sound would then have to skip the
+    -- opening of its own file to stay in phase with a clock that had started
+    -- without it. Zero of that clock and the first sample of this sound are
+    -- now the same instant, which is exactly what a downbeat is.
+    Loop.SetAudioRun(true)
     r.CF_Preview_Play(prev)
     a.prev, a.src = prev, src
 end
 
--- PHASE LOCK. Everything before this computed the start and hoped: how late
--- the call was, what the buffer did with it, whether the tempo match made a
--- loop of exactly the right length. Hope is not a clock — so the position is
--- now DERIVED from the transport on every pass and put back when it drifts:
+-- ONE correction, on the frame after the launch, and never again.
+--
+-- The alignment that matters happens BEFORE the sound starts: D_POSITION is
+-- set on a preview that has not begun, which costs nothing and is the only
+-- moment a position can be chosen freely. This is the single catch-up for what
+-- that calculation could not know — how long the file took to open, where the
+-- audio buffer actually picked the preview up — measured one frame later, when
+-- the sound has barely begun.
 --
 --    position = (elapsed_since_the_boundary * rate) mod source_length
 --
--- Nothing in that line can be late. The first check runs on the frame after
--- the launch with a 4 ms tolerance, which is where the whole start-up latency
--- lands and where correcting it is inaudible (a few ms into the attack, and
--- the preview fades in over 3). After that it is a drift watch: half a second
--- apart, 30 ms of slack, so a loop whose tempo match is a hair off is pulled
--- back onto the grid instead of walking away from it.
+-- WHAT IT NO LONGER DOES is police the sound for the rest of its life. Seeking
+-- a preview that is already playing is not a free operation: SWS re-primes its
+-- buffer, and a correction every half-second is a hole in the music every
+-- half-second — which is exactly what a drift watch with a 30 ms slack was
+-- doing to every tempo-matched loop. A loop and the project run off the SAME
+-- sound card clock, so there is no drift to catch; what looked like drift was
+-- the watch itself. If a loop really does walk away, its tempo match is wrong
+-- and the fix belongs there, not in a sound chopped twice a second to hide it.
 --
--- It holds on BOTH clocks now. It used to give up in free run for want of a
--- transport to measure against — which is exactly where a sound was left to
--- guess its own position, and exactly where it wandered.
-local function lockPhase(a, now)
-    if not a.slen or a.slen <= 0 or not a.prev then return end
-    if now < a.lock then return end
+-- 20 ms of tolerance: under that, correcting costs more than it is worth.
+-- And a ceiling, because a correction bigger than a start-up latency is not a
+-- correction — it is a reference we should not have believed, and moving the
+-- sound a quarter second on its word would be worse than leaving it alone.
+local LOCK_TOL = 0.020
+local LOCK_MAX = 0.250
+
+local function lockPhase(a)
+    if a.locked or not a.prev or not a.slen or a.slen <= 0 then return end
+    a.locked = true                    -- once, whatever comes of it
     local e = elapsed(a)
     if not e then return end
     -- + the chain's latency: the sample handed over now is the one that has to
@@ -681,12 +697,10 @@ local function lockPhase(a, now)
     local err = want - pos
     local half = a.slen * 0.5
     if err > half then err = err - a.slen elseif err < -half then err = err + a.slen end
-    local tol = a.settled and 0.030 or 0.004
-    if err > tol or err < -tol then
+    if (err > LOCK_TOL or err < -LOCK_TOL)
+       and err < LOCK_MAX and err > -LOCK_MAX then
         pcall(r.CF_Preview_SetValue, a.prev, "D_POSITION", want)
     end
-    a.settled = true
-    a.lock = now + 0.5
 end
 
 -- Is the clock RUNNING? Free run has its own, which never stops; following
@@ -714,12 +728,6 @@ local function audioArm(t, s, c)
     if not HAS_CF then flash("Audio cells need the SWS extension") return end
     local q = { s = s, c = c }
     aqueue[t] = q
-    -- Say it BEFORE the sound exists: the engine holds its free clock at zero
-    -- while the session is silent, and this is the word that makes the session
-    -- no longer silent. Said afterwards, the first samples would be measured
-    -- against a clock that had not started — and pulled back to a zero they
-    -- had already left.
-    Loop.SetAudioRun(true)
     -- Q: Off means NOW, and now is this frame — waiting for the next poll
     -- would put a frame of silence under every unquantized launch.
     if clockRolling() then
@@ -764,8 +772,9 @@ local function reanchor(a)
         a.at = Loop.EngineBeat()
         a.t0 = (r.GetPlayPosition2() or 0) - played
     end
-    a.lock = 0
-    a.settled = true
+    -- the reference was moved TO the sound, so there is nothing to correct:
+    -- the one catch-up stays spent
+    a.locked = true
 end
 
 -- Per-frame reconciliation of the sound cells with the clock:
@@ -797,7 +806,6 @@ local function pollAudio()
     end
     local rolling = clockRolling()
     local beat = rolling and Loop.EngineBeat() or 0
-    local now  = r.time_precise()
     local any  = false
     for t = 0, TRACKS - 1 do
         local a, q = aplay[t], aqueue[t]
@@ -834,7 +842,7 @@ local function pollAudio()
         -- the clock it is waiting for.
         local live = aplay[t]
         if live and live.prev then
-            if rolling then lockPhase(live, now) end
+            if rolling then lockPhase(live) end
             any = true
         end
     end

@@ -1288,3 +1288,30 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
 - [x] **Changer d'horloge sous un son qui joue** ne le déplace plus : c'est la
   référence qui bouge (`reanchor`), et les cibles en attente sont recalculées
   sur la nouvelle horloge. Le moteur fait déjà ça pour ses lanes.
+
+### Correctifs de la même session
+
+- [x] **EEL n'a pas de notation scientifique.** `-1e9` se lit `-1` suivi d'un
+  identifiant parasite : le JSFX ne compilait plus du tout, donc le moteur ne
+  répondait plus rien — ni sa version, ni ses lanes, ni une seule commande. Les
+  sentinelles sont écrites en toutes lettres.
+- [x] **Un moteur MUET se répare tout seul.** La vérification de fraîcheur était
+  conditionnée à « le moteur est vivant » — donc le seul cas qu'on ne réparait
+  pas était celui d'un moteur qui avait échoué à se charger. Il est toujours
+  dans la chaîne, il répond toujours à son nom, il ne dit simplement rien. Un
+  moteur muet annonce zéro lane : il tombe dans la même branche qu'un moteur
+  périmé.
+- [x] **La veille de dérive hachait le son.** Déplacer un aperçu **déjà en train
+  de jouer** n'est pas gratuit : SWS réamorce son tampon, et une correction
+  toutes les demi-secondes est un trou dans la musique toutes les demi-secondes.
+  Sur une boucle tempo-matchée en Free, l'écart systématique (le temps
+  d'ouverture du fichier) restait juste au-dessus de la tolérance de 30 ms :
+  la veille corrigeait *à chaque passe*, indéfiniment. Il reste **UN** rattrapage,
+  à la frame suivant le départ, sous 20 ms d'insensibilité et plafonné à 250 ms.
+  Une boucle et le projet tournent sur **la même horloge de carte son** : il n'y
+  avait pas de dérive à surveiller, la dérive *était* la surveillance.
+- [x] **Le vrai calage se fait avant que le son parte** — `D_POSITION` sur un
+  aperçu qui n'a pas commencé, seul moment où une position se choisit
+  librement. Et le drapeau « la session sonne » est posé **juste avant** le
+  départ, plus à l'armement : le zéro de l'horloge libre et le premier
+  échantillon du son sont désormais le même instant, ce qu'est un temps fort.
