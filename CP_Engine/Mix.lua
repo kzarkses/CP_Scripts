@@ -317,7 +317,11 @@ end
 -- and the vendor in brackets is the same for a whole shelf of them.
 local function shortFx(n)
     if not n or n == "" then return "?" end
-    n = n:gsub("^%u+i?:%s*", "")       -- VST:, VST3:, JS:, AU:, CLAP:, VSTi:
+    -- VST:, VST3:, VST3i:, JS:, AU:, AUi:, CLAP:, LV2: — letters AND digits,
+    -- because "VST3i" is the one that matters most and %u alone never matched
+    -- it (the 3 stops the class), so the strip showed the format and cut the
+    -- plugin's own name off the right edge.
+    n = n:gsub("^[%u%d]+i?:%s*", "")
     n = n:gsub("%s*%b()%s*$", "")      -- trailing (Vendor)
     if n == "" then return "?" end
     return n

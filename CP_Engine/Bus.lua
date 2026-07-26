@@ -88,6 +88,35 @@ end
 -- OpenEditor STARTS it when it is not running, then mails the clip — the
 -- 5 s TTL covers the boot.
 -- ---------------------------------------------------------------------------
+-- Bring another CP window to the FRONT — the gesture behind every "click an
+-- empty slot and the browser appears". Two halves, and both are needed:
+--   * running → raise its window. That needs js_ReaScriptAPI (a gfx script
+--     cannot focus another one), and without the extension the call simply
+--     says no rather than doing something surprising.
+--   * not running → its registered action starts it, exactly as OpenEditor
+--     does. Re-running the action of a LIVE script would toggle it off, which
+--     is why the two halves are told apart by the heartbeat first.
+-- Returns true when something was actually done.
+function Bus.FocusApp(app, title)
+    local alive = tonumber(r.GetExtState(app, "alive"))
+    local running = alive and (r.time_precise() - alive < 2.0)
+    if running then
+        if not (r.JS_Window_FindTop or r.JS_Window_Find) then return false end
+        local h = r.JS_Window_FindTop and r.JS_Window_FindTop(title, true) or nil
+        if not h and r.JS_Window_Find then h = r.JS_Window_Find(title, true) end
+        if not h then return false end
+        if r.JS_Window_SetForeground then r.JS_Window_SetForeground(h) end
+        if r.JS_Window_SetFocus then r.JS_Window_SetFocus(h) end
+        return true
+    end
+    local named = r.GetExtState(app, "cmd")
+    if named ~= "" then
+        local id = r.NamedCommandLookup(named)
+        if id and id ~= 0 then r.Main_OnCommand(id, 0) return true end
+    end
+    return false
+end
+
 function Bus.OpenEditor(clip)
     local alive = tonumber(r.GetExtState("CP_Editor", "alive"))
     if not (alive and r.time_precise() - alive < 2.0) then

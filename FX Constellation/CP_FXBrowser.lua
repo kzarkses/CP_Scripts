@@ -1730,12 +1730,31 @@ UI.Init("FX Browser", 555, 750, {
     padding    = 0,                    -- handled per-section so the body fills
 })
 
+-- Advertise this script's registered action, so any CP window can RAISE the
+-- browser — or start it when it is not running. Same two lines the editor
+-- carries, and the same reason: an empty FX slot in the session mixer has to
+-- lead somewhere, and it leads here.
+local _, _, _boot_sec, _boot_cmd = r.get_action_context()
+if _boot_cmd and _boot_cmd ~= 0 and _boot_sec == 0 then
+    local named = r.ReverseNamedCommandLookup(_boot_cmd)
+    if named then r.SetExtState("CP_FXBrowser", "cmd", "_" .. named, true) end
+end
+
 UI.OnClose(function()
     persistConfig()
     Persistence.saveSettings()
+    r.DeleteExtState("CP_FXBrowser", "alive", false)
 end)
+
+-- The heartbeat that tells the difference between "raise it" and "start it".
+local alive_t = 0
 
 UI.Run(function(theme)
     UI.CheckThemeUpdates()
+    local now = r.time_precise()
+    if now >= alive_t then
+        alive_t = now + 0.5
+        r.SetExtState("CP_FXBrowser", "alive", tostring(now), false)
+    end
     frame(theme)
 end)

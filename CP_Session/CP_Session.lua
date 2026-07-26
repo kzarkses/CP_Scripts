@@ -165,12 +165,14 @@ quiet too, exactly as in Ableton. Ctrl-click it for exclusive.
 
 FX CHAIN. Click a plugin to open it, Ctrl-click to bypass, Alt-click
 to remove, right-click for all three. DRAG one to reorder it, or onto
-another column to MOVE it there (Ctrl: copy). "+ FX" opens the track's
-own chain window, and an FX dragged from the Media Explorer lands in
-the strip you drop it on.
+another column to MOVE it there (Ctrl: copy). An FX dragged from the
+Media Explorer lands in the strip you drop it on. Clicking an EMPTY
+SLOT opens CP_FX Browser (raised if it is running, started if not).
+When the chain is longer than the slots on screen, the thin bar on the
+right says so and the wheel walks it.
 
 SENDS. Each row is the send itself: drag it to set its level, right-
-click to mute or remove it. To create one, drag "+ send" onto the
+click to mute or remove it. To create one, drag an EMPTY SLOT onto the
 column you want to send TO — the gesture says from here to there.
 Clicking it instead lists the destinations.
 
@@ -1547,18 +1549,23 @@ local MIX_PAD   = 4
 local MIX_BTN   = 18
 local MIX_MET   = 11       -- meter width beside the vertical fader
 local MIX_GAP   = 3
+local SEC_GAP   = 6        -- BETWEEN sections: FX | sends | fader block
 local MIX_FADW  = 21       -- the fader's own width (cap included)
-local MIX_ROW   = 13       -- one list row
+local MIX_ROW   = 15       -- one slot
+local MIX_BAR   = 5        -- the scroll bar of a list that overflows
 local MIX_PAN   = 12       -- the pan bar
+local MIX_DB    = 11       -- the level readout, on a line of its own
+local MIX_SENDS = 4        -- most send slots shown before the list scrolls
 local MIX_FADMIN = 30
-local MIX_ROWS  = 14       -- most rows a list will ever draw (id tables)
+local MIX_ROWS  = 24       -- most rows a list will ever draw (id/label tables)
 -- How much of a strip the two LISTS may take. The fader gets everything else:
 -- it is the control you reach for a hundred times an hour, and on a console it
 -- is the tallest thing in the strip for exactly that reason. A list that grew
 -- at its expense would be a directory with a fader stapled to it.
 local MIX_LISTS = 0.55
 -- The shortest the zone can be: pan + a usable fader + M/S + the padding.
-local MIX_MIN   = MIX_PAD * 2 + MIX_PAN + MIX_GAP + MIX_FADMIN + MIX_GAP + MIX_H
+local MIX_MIN   = MIX_PAD * 2 + MIX_H + MIX_GAP + MIX_PAN + MIX_GAP
+                  + MIX_DB + MIX_FADMIN
 -- …and what it opens at: enough for a chain, a couple of sends and a fader
 -- worth grabbing. It was opening at its MINIMUM, which showed the strip at its
 -- least useful and left the seam to be discovered before anything worked.
@@ -1593,23 +1600,13 @@ end
 -- Truncation caches, one slot per (column, row): a name is cut once for a
 -- width and stays cut until one of the two changes. Built here, never in the
 -- draw path — the strip redraws thirty times a second.
-local fx_lbl, sd_lbl, more_lbl = {}, {}, {}
+local fx_lbl, sd_lbl = {}, {}
+local mix_scroll = {}      -- [t] = { fx, sd } first row shown in each list
 for t = 0, TRACKS - 1 do
     local a, b = {}, {}
     for i = 1, MIX_ROWS do a[i] = {} b[i] = {} end
     fx_lbl[t], sd_lbl[t] = a, b
-    more_lbl[t] = { n = -1, s = "" }
-end
-
--- "+3 more" is a string, and a string built in a draw path is an allocation
--- thirty times a second for a number that changes when a human adds a plugin.
-local function moreLabel(t, n)
-    local c = more_lbl[t]
-    if c.n ~= n then
-        c.n = n
-        c.s = "+" .. n .. " more"
-    end
-    return c.s
+    mix_scroll[t] = { fx = 0, sd = 0 }
 end
 
 local function fitLabel(cache, s, w)
@@ -1685,19 +1682,31 @@ local function sendMenu(t, tr, i)
     UI.NativeMenu(items)
 end
 
--- One list row: a name, a state, and nothing else. The row IS the hit target
--- (no widget id): rows come and go with the chain, and an id that changes
--- meaning between frames is worse than no id at all.
-local function listRow(theme, x, y, w, label, dim, lit, hot)
+-- ONE SLOT — filled or empty, and both are a real object with a border, the
+-- way a console's chain reads. The row IS the hit target (no widget id): slots
+-- come and go with the chain, and an id that changes meaning between frames is
+-- worse than no id at all. An empty one is drawn hollow: a place where
+-- something can go, not a thing that is missing.
+local function slotRow(theme, x, y, w, label, dim, lit, hot, empty)
     local C = theme.colors
-    if hot then
-        Core.DrawRect(x, y, w, MIX_ROW - 1, 1, 1, 1, 0.07)
+    local iy, ih = y + 1, MIX_ROW - 2
+    if empty then
+        local bd = C.border
+        Core.DrawRect(x + 2, iy, w - 4, ih, bd[1], bd[2], bd[3],
+                      (bd[4] or 1) * (hot and 0.85 or 0.35), false)
+        if hot then Core.DrawRect(x + 2, iy, w - 4, ih, 1, 1, 1, 0.07) end
+        return
     end
+    local sf = C.frame_bg
+    Core.DrawRect(x + 2, iy, w - 4, ih, sf[1], sf[2], sf[3], dim and 0.5 or 1)
+    if hot then Core.DrawRect(x + 2, iy, w - 4, ih, 1, 1, 1, 0.08) end
     if lit then
-        Core.DrawRect(x, y, 2, MIX_ROW - 1, C.accent[1], C.accent[2], C.accent[3], 0.9)
+        Core.DrawRect(x + 2, iy, 2, ih, C.accent[1], C.accent[2], C.accent[3], 0.9)
     end
-    local ink = dim and (C.text_disabled or C.text_mute) or C.text
-    Core.DrawText(label, x + 5, y + 1, ink[1], ink[2], ink[3], dim and 0.7 or 0.95)
+    if label then
+        local ink = dim and (C.text_disabled or C.text_mute) or C.text
+        Core.DrawText(label, x + 7, iy + 1, ink[1], ink[2], ink[3], dim and 0.6 or 0.95)
+    end
 end
 
 local function drawMix(theme, t, x, y, w, h)
@@ -1716,105 +1725,149 @@ local function drawMix(theme, t, x, y, w, h)
     -- glance rather than an audit of four buttons.
     local dulled = live and (muted or (Mix.AnySolo() and not soloed))
 
-    -- ---- geometry, laid out from the BOTTOM: the fader block is what a strip
-    -- is for, so it is the last thing to give ground.
+    -- ---- geometry. Three sections, each with its own ground and a real gap
+    -- between them: FX, then sends, then the fader block. A strip whose parts
+    -- touch is a strip you have to decode before you can use it.
     local ms_y  = y + h - MIX_H
     local pan_y = ms_y - MIX_GAP - MIX_PAN
-    local avail = pan_y - MIX_GAP - y          -- lists + fader
+    local db_y  = pan_y - MIX_GAP - MIX_DB       -- the readout has its own line
+    local avail = db_y - SEC_GAP - y             -- lists + fader
 
-    -- The lists ask for exactly what they HOLD (plus one row to add with) and
-    -- never for more than MIX_LISTS of the strip; the fader takes everything
-    -- else. Neither list scrolls — a strip is a glance, and a list you have to
-    -- scroll is not one — so what does not fit is counted, not hidden.
     local nfx  = live and Mix.FxCount(tr) or 0
     local nsnd = live and Mix.SendCount(tr) or 0
+    -- The lists never take more than MIX_LISTS of the strip and the FADER TAKES
+    -- EVERYTHING ELSE. Within their share the sends ask for what they hold plus
+    -- one empty slot (capped: a session sends to a handful of places, not to
+    -- twenty) and the chain takes the rest — as SLOTS, filled or not, exactly
+    -- as a console does. What does not fit is reachable by scrolling the list,
+    -- which is what the thin bar on its right edge is for.
     local cap = floor(avail * MIX_LISTS)
-    if avail - cap < MIX_FADMIN then cap = avail - MIX_FADMIN end
+    if avail - cap < MIX_FADMIN + SEC_GAP then cap = avail - MIX_FADMIN - SEC_GAP end
     if cap < 0 then cap = 0 end
-    local fx_h, sd_h = 0, 0
-    if cap >= MIX_ROW then
-        local want_s = (nsnd + 1) * MIX_ROW
-        local want_f = (nfx + 1) * MIX_ROW
-        sd_h = want_s
-        if sd_h > cap - MIX_ROW then sd_h = cap - MIX_ROW end
-        if want_f + sd_h > cap then sd_h = cap - want_f end
-        if sd_h < 0 then sd_h = 0 end
-        sd_h = sd_h - sd_h % MIX_ROW
-        fx_h = cap - sd_h
-        if fx_h > want_f then fx_h = want_f end
-        fx_h = fx_h - fx_h % MIX_ROW
+    local fx_rows, sd_rows = 0, 0
+    if cap >= MIX_ROW * 2 + SEC_GAP then
+        local want_s = nsnd + 1
+        if want_s > MIX_SENDS then want_s = MIX_SENDS end
+        local room = floor((cap - SEC_GAP) / MIX_ROW)
+        sd_rows = want_s
+        if sd_rows > room - 1 then sd_rows = room - 1 end
+        if sd_rows < 1 then sd_rows = 1 end
+        fx_rows = room - sd_rows
+    elseif cap >= MIX_ROW then
+        fx_rows = floor(cap / MIX_ROW)
     end
-    local fad_h = avail - fx_h - sd_h - MIX_GAP
+    local fx_h = fx_rows * MIX_ROW
+    local sd_h = sd_rows * MIX_ROW
+    local sd_y = y + fx_h + (sd_rows > 0 and SEC_GAP or 0)
+    local fad_h = db_y - SEC_GAP - (sd_y + sd_h)
     if fad_h < MIX_FADMIN then fad_h = MIX_FADMIN end
-    local fad_y = pan_y - MIX_GAP - fad_h
-    -- where a carried FX can be dropped, remembered for pollMixDrag: the
-    -- strip knows its own rows, and the carry must not recompute them
-    g.fx_y = (fx_h >= MIX_ROW) and y or nil
-    g.fx_rows = floor(fx_h / MIX_ROW)
+    local fad_y = db_y - fad_h
 
-    -- ---- the chain
+    local sc = mix_scroll[t]
+    -- clamp the scroll to what the list can actually show, so a chain that
+    -- shrank does not leave the view parked past its end
+    if sc.fx > nfx - fx_rows + 1 then sc.fx = nfx - fx_rows + 1 end
+    if sc.fx < 0 then sc.fx = 0 end
+    if sc.sd > nsnd - sd_rows + 1 then sc.sd = nsnd - sd_rows + 1 end
+    if sc.sd < 0 then sc.sd = 0 end
+
+    -- where a carried FX can be dropped, remembered for pollMixDrag
+    g.fx_y = (fx_rows > 0) and y or nil
+    g.fx_rows = fx_rows
+    g.fx_scroll = sc.fx
+
     local mxp, myp = Core.GetMousePos()
+
+    -- ---- the chain, as SLOTS
     local over_fx = nil
-    if fx_h >= MIX_ROW then
-        local rows = floor(fx_h / MIX_ROW)
-        local ly = y
+    if fx_rows > 0 then
+        local bar = (nfx > fx_rows) and MIX_BAR or 0
+        local rw = w - bar
         local bg = C.list_bg or C.frame_bg
+        local bd = C.border
         Core.DrawRect(x, y, w, fx_h, bg[1], bg[2], bg[3], live and 1 or 0.5)
-        for i = 1, rows do
-            local hot = live and not Core.HasPopup()
-                and mxp >= x and mxp < x + w and myp >= ly and myp < ly + MIX_ROW
-            if i <= nfx and i <= MIX_ROWS then
+        local inlist = live and not Core.HasPopup()
+            and mxp >= x and mxp < x + w and myp >= y and myp < y + fx_h
+        for row = 1, fx_rows do
+            local ly = y + (row - 1) * MIX_ROW
+            local i  = sc.fx + row
+            local hot = inlist and myp >= ly and myp < ly + MIX_ROW
+            if i <= nfx then
                 local nm, off = Mix.Fx(tr, i)
-                -- the last visible row says how many are hidden rather than
-                -- pretending the chain ends there
-                if i == rows and nfx > rows then
-                    listRow(theme, x, ly, w, moreLabel(t, nfx - rows + 1),
-                            true, false, hot)
-                    if hot and Core.MouseClicked(1) then r.TrackFX_Show(tr, 0, 1) end
-                else
-                    listRow(theme, x, ly, w, fitLabel(fx_lbl[t][i], nm or "?", w - 8),
-                            off, not off, hot)
-                    if hot then
-                        over_fx = i
-                        if Core.MouseClicked(1) then
-                            if Core.ModAlt() then Mix.FxDelete(tr, i)
-                            elseif Core.ModCtrl() then Mix.FxToggle(tr, i)
-                            else
-                                fxdrag = { tr = tr, i = i, t = t,
-                                           x = mxp, y = myp, moved = false }
-                            end
-                        elseif Core.MouseClicked(2) then
-                            fxMenu(tr, i)
+                slotRow(theme, x, ly, rw, fitLabel(fx_lbl[t][row], nm or "?", rw - 9),
+                        off, not off, hot, false)
+                if hot then
+                    over_fx = row
+                    if Core.MouseClicked(1) then
+                        if Core.ModAlt() then Mix.FxDelete(tr, i)
+                        elseif Core.ModCtrl() then Mix.FxToggle(tr, i)
+                        else
+                            fxdrag = { tr = tr, i = i, t = t,
+                                       x = mxp, y = myp, moved = false }
                         end
+                    elseif Core.MouseClicked(2) then
+                        fxMenu(tr, i)
                     end
                 end
-            elseif i == nfx + 1 then
-                listRow(theme, x, ly, w, "+ FX", true, false, hot)
+            else
+                -- an EMPTY SLOT, and it does what an empty slot does on every
+                -- console: it opens the browser. CP_FXBrowser is that browser
+                -- here — raised if it runs, started if it does not.
+                slotRow(theme, x, ly, rw, nil, true, false, hot, true)
                 if hot then
-                    over_fx = i
-                    if Core.MouseClicked(1) then r.TrackFX_Show(tr, 0, 1)
-                    elseif Core.MouseClicked(2) then fxMenu(tr, nil) end
+                    over_fx = row
+                    if Core.MouseClicked(1) then
+                        if not Bus.FocusApp("CP_FXBrowser", "FX Browser") then
+                            r.TrackFX_Show(tr, 0, 1)   -- no browser: REAPER's own
+                        end
+                    elseif Core.MouseClicked(2) then
+                        fxMenu(tr, nil)
+                    end
                 end
             end
-            ly = ly + MIX_ROW
         end
+        -- the scroll bar, and the wheel that goes with it
+        if bar > 0 then
+            local th = floor(fx_h * fx_rows / nfx)
+            if th < 10 then th = 10 end
+            local span = fx_h - th
+            local den  = nfx - fx_rows
+            local ty = y + ((den > 0) and floor(span * sc.fx / den) or 0)
+            local ac = C.text_mute or C.text_disabled
+            Core.DrawRect(x + rw + 1, y, bar - 1, fx_h, 0, 0, 0, 0.25)
+            Core.DrawRect(x + rw + 1, ty, bar - 1, th, ac[1], ac[2], ac[3], 0.65)
+        end
+        if inlist and not Core.IsWheelConsumed() then
+            local wh = Core.GetState().mouse_wheel
+            if wh ~= 0 then
+                sc.fx = sc.fx - ((wh > 0) and 1 or -1)
+                if sc.fx < 0 then sc.fx = 0 end
+                if sc.fx > nfx - fx_rows then sc.fx = nfx - fx_rows end
+                if sc.fx < 0 then sc.fx = 0 end
+                Core.ConsumeWheel()
+            end
+        end
+        Core.DrawRect(x, y, w, fx_h, bd[1], bd[2], bd[3], (bd[4] or 1) * 0.7, false)
         -- where a carried FX would land
         if fxdrag and fxdrag.moved and over_fx then
             local iy = y + (over_fx - 1) * MIX_ROW
             Core.DrawRect(x, iy, w, 2, C.accent[1], C.accent[2], C.accent[3], 1)
         end
-        local bd = C.border
-        Core.DrawRect(x, y, w, fx_h, bd[1], bd[2], bd[3], (bd[4] or 1) * 0.6, false)
     end
 
-    -- ---- the sends
-    if sd_h >= MIX_ROW then
-        local sy = y + fx_h + (fx_h > 0 and 1 or 0)
-        local rows = floor(sd_h / MIX_ROW)
-        for i = 1, rows do
-            local ly = sy + (i - 1) * MIX_ROW
-            local hot = live and not Core.HasPopup()
-                and mxp >= x and mxp < x + w and myp >= ly and myp < ly + MIX_ROW
+    -- ---- the sends, same grammar
+    if sd_rows > 0 then
+        local bar = (nsnd > sd_rows) and MIX_BAR or 0
+        local rw = w - bar
+        local bg = C.list_bg or C.frame_bg
+        local bd = C.border
+        Core.DrawRect(x, sd_y, w, sd_h, bg[1], bg[2], bg[3], live and 1 or 0.5)
+        local inlist = live and not Core.HasPopup()
+            and mxp >= x and mxp < x + w and myp >= sd_y and myp < sd_y + sd_h
+        for row = 1, sd_rows do
+            local ly = sd_y + (row - 1) * MIX_ROW
+            local i  = sc.sd + row
+            local hot = inlist and myp >= ly and myp < ly + MIX_ROW
             if i <= nsnd and i <= MIX_ROWS then
                 local nm, _, lvl = Mix.Send(tr, i)
                 MIX_SD_OPTS.accent = Mix.SendMute(tr, i) and C.mute or C.mod
@@ -1822,22 +1875,23 @@ local function drawMix(theme, t, x, y, w, h)
                 -- The send IS its level: the row is a fader with the
                 -- destination written on it, so reading and setting are the
                 -- same object rather than a name and a number somewhere else.
-                local ch, nv, rel = UI.FaderAt(mix_id.sd[t][i], x, ly, w,
-                                               MIX_ROW - 1, lvl or 0, MIX_SD_OPTS)
+                local ch, nv, rel = UI.FaderAt(mix_id.sd[t][i], x + 1, ly + 1,
+                                               rw - 2, MIX_ROW - 2, lvl or 0,
+                                               MIX_SD_OPTS)
                 if ch then Mix.SetSendNorm(tr, i, nv) mix_moved = true end
                 if rel then
                     if mix_moved then Mix.CommitSend() end
                     mix_moved = false
                 end
-                Core.DrawText(fitLabel(sd_lbl[t][i], nm or "send", w - 8),
-                              x + 4, ly + 1, C.text[1], C.text[2], C.text[3], 0.95)
+                Core.DrawText(fitLabel(sd_lbl[t][row], nm or "send", rw - 10),
+                              x + 5, ly + 2, C.text[1], C.text[2], C.text[3], 0.95)
                 if hot and Core.MouseClicked(2) then sendMenu(t, tr, i) end
-            elseif i == nsnd + 1 then
-                listRow(theme, x, ly, w, "+ send", true, false, hot)
+            else
+                slotRow(theme, x, ly, rw, nil, true, false, hot, true)
                 if hot then
-                    -- click opens the list of destinations, DRAG draws the
-                    -- send to the column you drop it on — the gesture says
-                    -- "from here to there", which is what a send is
+                    -- click asks where to, DRAG draws the send to the column
+                    -- you drop it on — the gesture says "from here to there",
+                    -- which is what a send is
                     if Core.MouseClicked(1) then
                         snddrag = { t = t, tr = tr, x = mxp, y = myp, moved = false }
                     elseif Core.MouseClicked(2) then
@@ -1846,6 +1900,27 @@ local function drawMix(theme, t, x, y, w, h)
                 end
             end
         end
+        if bar > 0 then
+            local th = floor(sd_h * sd_rows / nsnd)
+            if th < 10 then th = 10 end
+            local span = sd_h - th
+            local den  = nsnd - sd_rows
+            local ty = sd_y + ((den > 0) and floor(span * sc.sd / den) or 0)
+            local ac = C.text_mute or C.text_disabled
+            Core.DrawRect(x + rw + 1, sd_y, bar - 1, sd_h, 0, 0, 0, 0.25)
+            Core.DrawRect(x + rw + 1, ty, bar - 1, th, ac[1], ac[2], ac[3], 0.65)
+        end
+        if inlist and not Core.IsWheelConsumed() then
+            local wh = Core.GetState().mouse_wheel
+            if wh ~= 0 then
+                sc.sd = sc.sd - ((wh > 0) and 1 or -1)
+                if sc.sd < 0 then sc.sd = 0 end
+                if sc.sd > nsnd - sd_rows then sc.sd = nsnd - sd_rows end
+                if sc.sd < 0 then sc.sd = 0 end
+                Core.ConsumeWheel()
+            end
+        end
+        Core.DrawRect(x, sd_y, w, sd_h, bd[1], bd[2], bd[3], (bd[4] or 1) * 0.7, false)
     end
 
     -- ---- pan
@@ -1903,16 +1978,15 @@ local function drawMix(theme, t, x, y, w, h)
             UI.MeterAt(mx, fad_y, met_w, fad_h, 0, 0, true)
         end
     end
-    -- the number, under the fader block and above the pan: a strip says its
-    -- level in decibels or it is a guess
-    if live and fad_h >= 40 then
-        UI.SetFontCaption()
+    -- The number, on a LINE OF ITS OWN under the fader: a strip says its level
+    -- in decibels or it is a guess — and it had been sharing a line with the
+    -- sends, which is how two readable things become one unreadable one.
+    if live then
         local s = Mix.DbLabel(t, n)
         local tw = Core.MeasureText(s)
         local ink = dulled and C.mute or C.text_mute or C.text
-        Core.DrawText(s, x + floor((w - tw) / 2), fad_y - 11,
+        Core.DrawText(s, x + floor((w - tw) / 2), db_y,
                       ink[1], ink[2], ink[3], 0.85)
-        UI.SetFontBody()
     end
 
     -- ---- M and S. Letters, not glyphs: they are a PAIR, and the two
@@ -1962,8 +2036,14 @@ local function pollMixDrag()
                         if Mix.Valid(dst) then
                             local to = Mix.FxCount(dst) + 1
                             if g.fx_y and my >= g.fx_y then
-                                local k = floor((my - g.fx_y) / MIX_ROW) + 1
-                                if k >= 1 and k <= to then to = k end
+                                -- the row under the cursor, offset by what the
+                                -- list is scrolled to: the slot you see is the
+                                -- slot it lands in
+                                local row = floor((my - g.fx_y) / MIX_ROW) + 1
+                                if row >= 1 and row <= (g.fx_rows or 0) then
+                                    local k = (g.fx_scroll or 0) + row
+                                    if k >= 1 and k <= to then to = k end
+                                end
                             end
                             if Mix.FxMove(fxdrag.tr, fxdrag.i, dst, to,
                                           Core.ModCtrl()) then
