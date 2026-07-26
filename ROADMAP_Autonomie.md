@@ -1421,3 +1421,47 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   Un son qui joue prend un nouveau **taux** tout de suite (c'est un nombre) mais
   ne change pas de **machine** sous lui-même : basculer l'étirement attend le
   prochain lancement, à une frontière de là.
+- [x] **LA FRONTIÈRE SE DÉFINISSAIT ELLE-MÊME — le défaut de fond.** Analyse
+  transversale (25 agents, 15 hypothèses confrontées au corpus complet des
+  mesures ; une seule survit). Un son armé transport arrêté n'a pas de
+  frontière : il en prend une à la **première frame qui voit le transport
+  rouler**. Cette frame est en retard d'une frame, et la frontière était
+  quantifiée depuis le beat tel qu'il se lisait **à cet instant** — la cible
+  était donc « là où j'ai regardé ». Tout l'aval mesurait ensuite son propre
+  retard contre cette cible et trouvait **zéro**, par construction. Le lancement
+  ne pouvait pas percevoir qu'il était en retard, la compensation n'avait rien à
+  compenser, et **tirer en avance ne pouvait rien y faire** : avec la cible
+  égale à maintenant, « tirer avant la cible » est déjà vrai. C'est ce qui
+  survivait à tous les correctifs précédents.
+  Or le transport ne démarre pas là où on l'a remarqué : il démarre **au
+  curseur**, ce qui est connaissable *avant* le fait. Le curseur est donc
+  mémorisé à chaque frame tant que l'horloge est arrêtée, et la première frame
+  qui roule quantifie depuis **lui**. La frontière tombe alors dans le passé de
+  la durée exacte du délai de constat, `elapsed` le rapporte comme un vrai
+  retard positif, et le son saute d'autant dans lui-même pour rester en phase.
+  Ce à quoi l'arithmétique servait depuis le début.
+  Gardé : si la position de lecture ne suit pas plausiblement le curseur (moins
+  d'une demi-seconde derrière), on retombe sur « maintenant ». Et `OFF_MAX`
+  passe à 250 ms, parce qu'un retard honnête peut désormais dépasser une frame
+  et que sauter d'autant est la bonne réponse, pas une raison de douter.
+- [x] **Ce que l'analyse a aussi établi, et qui n'est PAS du code.** Le corpus
+  se lit en quatre termes qui s'empilent, et le plus gros est le montage de
+  mesure : REAPER décale une prise de la latence que le **pilote déclare**, et
+  ASIO4All en enveloppant du WDM/KS sous-déclare massivement (4,3 ms annoncés
+  pour un aller-retour réel de 150 ms et plus). D'où l'inversion : DirectSound
+  annonce 255 ms et il reste 40-67 ms, ASIO4All annonce 4 ms et il reste
+  150-180 ms ; d'où le fait qu'un buffer plus gros donne **moins** de retard ;
+  d'où la dépendance à la mesure du morceau où l'on enregistre. Le « MIDI à
+  0 ms » a été mesuré sur **DirectSound** — il n'innocente donc pas ASIO4All.
+  Le test décisif, sans code : enregistrer dans la même prise un item ordinaire
+  posé sur la barre, un clip MIDI, et une case audio. Les trois décalés
+  pareillement = c'est le montage. Item et MIDI sur la ligne, case en retard =
+  c'est nous, et l'écart entre le premier et le troisième transitoire est la
+  seule mesure immunisée contre le pilote.
+- [x] **Une sonde de lancement** (icône de pouls, barre du haut). Chaque
+  lancement journalise : où le transport a **réellement** démarré et de combien
+  on l'a remarqué en retard, les deux horloges, chaque terme de l'offset, puis à
+  +1 et +10 frames l'**ERREUR DE DÉPART** — mesurée sans croire aucun de nos
+  calculs : `D_POSITION` contre `(maintenant − frontière) × taux`. Et le zéro de
+  la boucle en temps projet, directement comparable à la règle de REAPER.
+  Éteinte, elle coûte un test booléen par frame.

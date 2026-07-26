@@ -521,13 +521,52 @@ end
 -- now, in phase, and it is what starts the clock. Nothing special is needed
 -- for that case — it falls out of asking the same question.
 local Q_SLOP = 0.05
-local function launchBeat()
-    local pb = Loop.EngineBeat()
+local function launchBeat(pb)
+    pb = pb or Loop.EngineBeat()
     local q = Loop.GetLaunchQ() or 0
     if q <= 0.001 then return pb end
     local qph = pb - floor(pb / q) * q
     if qph < Q_SLOP then return pb - qph end
     return pb - qph + q
+end
+
+-- WHERE THE TRANSPORT ACTUALLY STARTED — not where we noticed that it had.
+--
+-- THE DEFECT THIS EXISTS TO KILL. A sound armed while the transport is stopped
+-- has no boundary; it takes one on the first frame that sees the transport
+-- rolling. That frame is up to a display frame LATE, and the boundary was being
+-- quantized from the beat as it read AT THAT MOMENT — so the target was, in
+-- effect, "wherever I happened to look". Everything downstream then measured
+-- its own lateness against that target and found zero, because the target had
+-- been defined as now. The launch could not perceive that it was late, the
+-- compensation had nothing to compensate, and firing early could not help:
+-- with the target equal to now, "fire before the target" is already true.
+--
+-- The transport does not start where we noticed it. It starts at the CURSOR,
+-- which is knowable before the fact — so it is latched every frame while the
+-- clock is stopped, and the first rolling frame quantizes from THAT. The
+-- boundary then lands in the past by however long the notice took, `elapsed`
+-- reports that as a real positive lateness, and the sound skips exactly that
+-- far into itself to stay in phase. Which is what the arithmetic was for.
+--
+-- Guarded, because the cursor is not the only way a transport starts: if the
+-- play position is not plausibly just after it, we are back to trusting now.
+local TS = { cur = 0, at = nil, notice = 0 }
+
+local function transportEdge(rolling)
+    if not rolling then
+        TS.cur = r.GetCursorPosition() or 0
+        TS.at, TS.notice = nil, 0
+        return
+    end
+    if TS.at then return end                    -- latched once per run
+    local pp2 = r.GetPlayPosition2() or 0
+    local lag = pp2 - TS.cur
+    if lag < 0 or lag > 0.5 then
+        TS.at, TS.notice = pp2, 0
+    else
+        TS.at, TS.notice = TS.cur, lag
+    end
 end
 
 -- WHERE THE SOUND COMES OUT. A column's own track when it can take audio —
@@ -819,10 +858,12 @@ local function diagLaunch(a, t, e, off, clamped, pos)
     local fire = (tempo > 1) and ((beat - (a.at or 0)) * 60 / tempo * 1000) or 0
     r.ShowConsoleMsg(string.format(
         "[CP_Session] LAUNCH tr=%d clock=%s bpm=%.2f rt=%.4f slen=%.3f\n" ..
+        "   transport started %s, noticed %+.1fms later\n" ..
         "   at=%.4f beat=%.4f fire=%+.1fms | t0=%s pp2=%.4f pp=%.4f pp2-pp=%+.1fms" ..
         " outlat=%.1fms bsize=%s sr=%s\n" ..
         "   e=%s slack=%+.1fms pdc=%+.1fms off=%+.1fms clamped=%d pos=%.4f\n",
         t, Loop.GetFreeRun() and "FREE" or "FOLLOW", tempo, a.rt or 0, a.slen or 0,
+        TS.at and string.format("%.4f", TS.at) or "-", TS.notice * 1000,
         a.at or 0, beat, fire,
         a.t0 and string.format("%.4f", a.t0) or "-", pp2, pp, (pp2 - pp) * 1000,
         olat * 1000, bs or "?", sr or "?",
@@ -851,9 +892,15 @@ local function diagFollow(a)
     local err  = pos - want
     local half = slen * 0.5
     if err > half then err = err - slen elseif err < -half then err = err + slen end
+    -- The loop's own DOWNBEAT, on the project's timeline: the read head divided
+    -- by the rate is how long ago it last crossed zero. Put the edit cursor on
+    -- the bar line and this number is directly comparable to what the ruler
+    -- says — no recording, no driver, no compensation in between.
+    local down = a.t0 and ((r.GetPlayPosition2() or 0) - pos / rt) or nil
     r.ShowConsoleMsg(string.format(
-        "[CP_Session] +%-2dF ref=%+.4fs pos=%.4f want=%.4f  START ERROR=%+.1fms\n",
-        dg.n, ref, pos, want, err / rt * 1000))
+        "[CP_Session] +%-2dF ref=%+.4fs pos=%.4f want=%.4f  START ERROR=%+.1fms%s\n",
+        dg.n, ref, pos, want, err / rt * 1000,
+        down and string.format("  (loop zero at %.4f, boundary %.4f)", down, a.t0) or ""))
     if dg.n == 10 then a.dg = nil end
 end
 
@@ -878,8 +925,14 @@ end
 --
 -- OFF_MAX is the sanity bound. Beyond it the reference is not something to
 -- believe, and moving the sound on its word is worse than starting it whole.
+-- A quarter of a second, not a tenth: now that a boundary taken at a transport
+-- start is the moment the transport REALLY started (see TS), a launch can be
+-- honestly late by more than a frame — a slow frame, a project loading its
+-- first buffer — and skipping that far in is the right answer, not a reason to
+-- disbelieve the reference. TS itself is what bounds the nonsense, at half a
+-- second, and it does it where the number is still meaningful.
 local LEAD    = 0.045
-local OFF_MAX = 0.120
+local OFF_MAX = 0.250
 
 local function audioStart(t)
     local a = aplay[t]
@@ -1081,6 +1134,11 @@ local last_bpm  = nil
 
 local function pollAudio()
     reapDying()      -- whatever was replaced last frame has now had its beat
+    -- Before anything else, so a launch this frame reads a fresh edge. REAPER's
+    -- OWN transport, not clockRolling(): the free clock is always rolling, and
+    -- a latch taken on it would still be there, stale, when the window is put
+    -- back on Follow.
+    transportEdge((r.GetPlayState() & 1) == 1)
     local free = Loop.GetFreeRun()
     if free ~= last_free then
         if last_free ~= nil then
@@ -1157,7 +1215,16 @@ local function pollAudio()
                 -- one the engine gives its lanes at the same moment, which is
                 -- the whole reason a sound and a clip launched together arrive
                 -- together. The transport rolling mid-bar is not a bar line.
-                if not q.at then q.at = launchBeat() end
+                --
+                -- Quantized from WHERE THE TRANSPORT STARTED, not from where it
+                -- has got to while we were not looking (see TS): otherwise the
+                -- boundary is defined as the moment we noticed, and a launch
+                -- that measures its lateness against it always finds zero.
+                if not q.at then
+                    local base = (not free) and TS.at
+                                 and r.TimeMap2_timeToQN(0, TS.at) or nil
+                    q.at = launchBeat(base)
+                end
                 -- EARLY, by up to one display frame: firing on the boundary
                 -- means firing after it, because that is when we learn it has
                 -- passed. The preview starts inside its own tail and reaches
