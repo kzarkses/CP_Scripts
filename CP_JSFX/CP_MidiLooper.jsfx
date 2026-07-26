@@ -127,7 +127,8 @@ GMEM_CMDQ       = 400;  // stride 3: +0 cmd, +1 lane, +2 arg
 CMDQ_SLOTS      = 32;   // one gesture is at most 2 per track; 32 is four scenes
 GMEM_CMD_W      = 9;    // write cursor (monotonic; the ring is its modulo)
 
-GMEM_LANE_CTRL  = 100;  // stride 8: +0 length_bars, +1 muted   (Lua -> JSFX)
+GMEM_LANE_CTRL  = 100;  // stride 8: +0 length_bars, +1 muted, +2 tag,
+                        //           +3 audio (see AUDIO_CH)   (Lua -> JSFX)
 GMEM_LANE_STATE = 200;  // stride 8: +0 mode,+1 nev(SHARED),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 GMEM_TRANSPORT  = 3000;
 GMEM_INIT_COUNT = 3095;
@@ -148,7 +149,7 @@ LAYOUT_VER = 6;
 // an older run keeps playing the old code until something notices — this is
 // what lets Loop.Ensure notice, and refresh WITHOUT marking the block cold
 // (the loops survive, which bumping LAYOUT_VER would not allow).
-BUILD_VER = 5;
+BUILD_VER = 6;
 
 // A pending target that has no date yet: it fires on the clock's first block.
 // Real targets are beat positions and never negative, so any target below
@@ -166,7 +167,31 @@ WAIT_TEST  =  -100000000;
 // Mirror of Kit.UI_CHAN. Lanes use channels 1..MAX_LANES, so 16 stays clear.
 UI_CHAN = 15;
 
+// A LANE THAT PLAYS A SOUND SPEAKS ON ANOTHER CHANNEL.
+//
+// A sound cell is an ordinary one-note clip whose note is meant for a sampler,
+// not for the column's instrument. Both live on the same column, and the router
+// feeds each destination ONE filtered channel (Loop.makeLaneSend: I_MIDIFLAGS =
+// lane+1), so the way to keep them apart is simply to speak elsewhere: the
+// sampler's track is fed a send filtered to AUDIO_CH + column, and the
+// instrument never hears a syllable of it. Not a convention — wiring.
+//
+// Lanes hold channels 0..7 and the preview tag holds 15, so 8..14 are free.
+// Four columns take 8..11. Growing the grid past four would run into UI_CHAN,
+// which is the same wall that MAX_LANES already meets.
+AUDIO_CH = 8;
+TRACKS   = MAX_LANES / 2;
+
 MAGIC      = 8451000 + LAYOUT_VER;
+
+// Which MIDI channel lane `li` speaks on. Both halves of a column's lane pair
+// answer with the SAME channel — a pair is one musical track, and a clip swap
+// must not move the sound to another sampler halfway through.
+function lane_chan(li) (
+  gmem[GMEM_LANE_CTRL + li*8 + 3] >= 0.5
+    ? AUDIO_CH + (li - floor(li / TRACKS) * TRACKS)
+    : li;
+);
 
 // Finalize the pending note of (cl, p): append a note object ending at endphase.
 // heldstop=1 means the note was still held when recording stopped, so a ~0 span
@@ -368,7 +393,7 @@ last_pb = pb;
     );
     ni = 0;
     loop(128,
-      ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+      ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(li), ni, 0); ACTIVE[li*128+ni] = 0; );
       ni += 1;
     );
     li += 1;
@@ -415,7 +440,7 @@ while (last_w < wcur) (
         ) : (
           ni = 0;
           loop(128,
-            ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+            ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(cl), ni, 0); ACTIVE[cl*128+ni] = 0; );
             PEND_ST[cl*128+ni] = -1;
             ni += 1;
           );
@@ -495,7 +520,7 @@ while (last_w < wcur) (
           gmem[GMEM_LANE_STATE + cl*8 + 0] = 2;
           ni = 0;
           loop(128,
-            ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+            ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(cl), ni, 0); ACTIVE[cl*128+ni] = 0; );
             ni += 1;
           );
         );
@@ -545,7 +570,7 @@ while (last_w < wcur) (
       gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;
       ni = 0;
       loop(128,
-        ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + cl, ni, 0); ACTIVE[cl*128+ni] = 0; );
+        ACTIVE[cl*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(cl), ni, 0); ACTIVE[cl*128+ni] = 0; );
         PEND_ST[cl*128+ni] = -1;
         ni += 1;
       );
@@ -565,7 +590,7 @@ while (last_w < wcur) (
         gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
         ni = 0;
         loop(128,
-          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(li), ni, 0); ACTIVE[li*128+ni] = 0; );
           ni += 1;
         );
         li += 1;
@@ -580,7 +605,7 @@ while (last_w < wcur) (
         gmem[GMEM_LANE_STATE + li*8 + 6] = 0;
         ni = 0;
         loop(128,
-          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(li), ni, 0); ACTIVE[li*128+ni] = 0; );
           PEND_ST[li*128+ni] = -1;
           ni += 1;
         );
@@ -612,7 +637,7 @@ active ? (
       ) : (
         ni = 0;
         loop(128,
-          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(li), ni, 0); ACTIVE[li*128+ni] = 0; );
           PEND_ST[li*128+ni] = -1;
           ni += 1;
         );
@@ -649,7 +674,7 @@ active ? (
           gmem[GMEM_LANE_STATE + li*8 + 0] = 2;
           ni = 0;
           loop(128,
-            ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+            ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(li), ni, 0); ACTIVE[li*128+ni] = 0; );
             ni += 1;
           );
         );
@@ -657,7 +682,7 @@ active ? (
       pnd == 3 ? (
         ni = 0;
         loop(128,
-          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+          ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(li), ni, 0); ACTIVE[li*128+ni] = 0; );
           PEND_ST[li*128+ni] = -1;
           ni += 1;
         );
@@ -704,7 +729,7 @@ loop(MAX_LANES,
   (muted && PREV_MUTE[li] < 0.5) ? (
     ni = 0;
     loop(128,
-      ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + li, ni, 0); ACTIVE[li*128+ni] = 0; );
+      ACTIVE[li*128+ni] > 0 ? ( midisend(0, 0x80 + lane_chan(li), ni, 0); ACTIVE[li*128+ni] = 0; );
       ni += 1;
     );
   );
@@ -795,8 +820,8 @@ active ? (
         des = DESIRE[p];
         cur = ACTIVE[li*128+p];
         des != cur ? (
-          cur > 0 ? midisend(0, 0x80 + li, p, 0);
-          des > 0 ? midisend(0, 0x90 + li, p, DVEL[p]);
+          cur > 0 ? midisend(0, 0x80 + lane_chan(li), p, 0);
+          des > 0 ? midisend(0, 0x90 + lane_chan(li), p, DVEL[p]);
           ACTIVE[li*128+p] = des;
         );
         p += 1;

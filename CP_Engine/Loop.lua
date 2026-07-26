@@ -60,7 +60,7 @@ local G_VERSION    = 3099
 -- like Lua bugs (a shortened loop folding its later bars onto the first one
 -- was exactly that). Bumping this makes Loop.Ensure refresh the engine, which
 -- the loops survive; bumping the JSFX's LAYOUT_VER would wipe them.
-Loop.ENGINE_BUILD = 5
+Loop.ENGINE_BUILD = 6
 local G_NOTE_BASE  = 10000
 
 local GMEM_NAME  = "CP_MidiLooper"
@@ -251,6 +251,61 @@ local function makeLaneSend(router, lane, track)
     r.SetTrackSendInfo_Value(router, 0, si, "I_SRCCHAN", -1)          -- no audio
     r.SetTrackSendInfo_Value(router, 0, si, "I_MIDIFLAGS", lane + 1)  -- only ch L+1
     return si
+end
+
+-- ---------------------------------------------------------------------------
+-- THE SOUND CHANNEL. A column that plays a SOUND cell speaks on a channel of
+-- its own, and its sampler is fed by a send filtered to that channel alone.
+--
+-- The whole point is that the column's INSTRUMENT never hears it. Every send
+-- this module makes is already narrowed to one source channel, so keeping the
+-- two apart is not a convention to remember — it is the wiring. A trigger note
+-- aimed at the sampler is inaudible to the synth on the same column because it
+-- is not on the wire that reaches it.
+--
+-- Lanes hold channels 1..8 and the suite's preview tag holds 16 (Kit.UI_CHAN,
+-- mirrored in the engine, which swallows it), so 9..15 are free and the four
+-- columns take 9..12. The engine computes the same number in lane_chan().
+Loop.AUDIO_CH = 8          -- 0-based base; column c speaks on MIDI channel c+9
+
+local function findAudioSend(router, col)
+    local want = Loop.AUDIO_CH + col + 1
+    local n = r.GetTrackNumSends(router, 0)
+    for i = 0, n - 1 do
+        local mf = r.GetTrackSendInfo_Value(router, 0, i, "I_MIDIFLAGS")
+        local sc = r.GetTrackSendInfo_Value(router, 0, i, "I_SRCCHAN")
+        if (math.floor(mf) & 0x1F) == want and sc == -1 then return i end
+    end
+    return -1
+end
+
+-- Point column `col`'s sound channel at `track` (nil = nowhere). Idempotent:
+-- an existing send to the same track is left alone, so calling this every time
+-- a cell is armed costs a scan and nothing else, and never dirties the project.
+function Loop.WireAudio(col, track)
+    local router = Loop.track
+    if not valid(router) then return false end
+    local i = findAudioSend(router, col)
+    if i >= 0 then
+        local cur = r.GetTrackSendInfo_Value(router, 0, i, "P_DESTTRACK")
+        if valid(track) and cur == track then return true end
+        r.RemoveTrackSend(router, 0, i)
+    end
+    if not (valid(track) and track ~= router) then return false end
+    local si = r.CreateTrackSend(router, track)
+    if si < 0 then return false end
+    r.SetTrackSendInfo_Value(router, 0, si, "I_SRCCHAN", -1)
+    r.SetTrackSendInfo_Value(router, 0, si, "I_MIDIFLAGS", Loop.AUDIO_CH + col + 1)
+    return true
+end
+
+function Loop.AudioDest(col)
+    local router = Loop.track
+    if not valid(router) then return nil end
+    local i = findAudioSend(router, col)
+    if i < 0 then return nil end
+    local tr = r.GetTrackSendInfo_Value(router, 0, i, "P_DESTTRACK")
+    return valid(tr) and tr or nil
 end
 
 -- resolve every lane's cached destination pointer from the stored GUIDs (called
@@ -709,6 +764,23 @@ function Loop.SetMute(lane, on)
 end
 function Loop.GetMute(lane)
     return attached and gread(G_LANE_CTRL + lane * 8 + 1) >= 0.5
+end
+
+-- THIS LANE CARRIES A SOUND, so the engine speaks it on the column's sound
+-- channel instead of the lane's own (see Loop.AUDIO_CH and lane_chan in the
+-- .jsfx). Set on BOTH halves of a pair by the caller — a clip swap must not
+-- move the sound to another sampler halfway through.
+--
+-- It lives in gmem, which belongs to the REAPER session and not to the project,
+-- so a project reopened cold comes back with the flag CLEAR while its lanes may
+-- be restored as playing. A host that owns sound cells must therefore re-stamp
+-- the flag before anything can sound, or the first launch after a reload fires
+-- a trigger note at the column's instrument.
+function Loop.SetLaneAudio(lane, on)
+    if attached then gwrite(G_LANE_CTRL + lane * 8 + 3, on and 1 or 0) end
+end
+function Loop.GetLaneAudio(lane)
+    return attached and gread(G_LANE_CTRL + lane * 8 + 3) >= 0.5
 end
 
 -- ---------------------------------------------------------------------------
