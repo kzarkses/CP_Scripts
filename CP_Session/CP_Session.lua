@@ -167,14 +167,17 @@ FX CHAIN. Click a plugin to open it, Ctrl-click to bypass, Alt-click
 to remove, right-click for all three. DRAG one to reorder it, or onto
 another column to MOVE it there (Ctrl: copy). An FX dragged from the
 Media Explorer lands in the strip you drop it on. Clicking an EMPTY
-SLOT opens CP_FX Browser (raised if it is running, started if not).
-When the chain is longer than the slots on screen, the thin bar on the
-right says so and the wheel walks it.
+SLOT selects that column's track and opens REAPER's FX browser, so
+what you pick lands in the slot you clicked; right-click it for
+CP_FX Browser or the track's own chain. When the chain is longer than
+the slots on screen, the thin bar on the right says so and the wheel
+walks it.
 
-SENDS. Each row is the send itself: drag it to set its level, right-
+SENDS. Each row is the send itself: DRAG it to set its level, CLICK it
+to open REAPER's routing window (pre/post, channels, MIDI), right-
 click to mute or remove it. To create one, drag an EMPTY SLOT onto the
 column you want to send TO — the gesture says from here to there.
-Clicking it instead lists the destinations.
+Clicking an empty slot instead lists the destinations.
 
 ## Clock
 Free = clips play without the transport. Follow = REAPER transport,
@@ -1551,7 +1554,10 @@ local MIX_MET   = 11       -- meter width beside the vertical fader
 local MIX_GAP   = 3
 local SEC_GAP   = 6        -- BETWEEN sections: FX | sends | fader block
 local MIX_FADW  = 21       -- the fader's own width (cap included)
-local MIX_ROW   = 15       -- one slot
+-- One slot. The caption font is 10 px and REAPER reports it about 13 tall, so
+-- a 16-px slot leaves a pixel of air above and below the glyphs — text that
+-- touches its own border reads as text that overflowed, even when it did not.
+local MIX_ROW   = 16
 local MIX_BAR   = 5        -- the scroll bar of a list that overflows
 local MIX_PAN   = 12       -- the pan bar
 local MIX_DB    = 11       -- the level readout, on a line of its own
@@ -1644,7 +1650,18 @@ local function fxMenu(tr, i)
                               action = function() Mix.FxDelete(tr, i) end }
         items[#items + 1] = { separator = true }
     end
-    items[#items + 1] = { label = "Add FX… (opens the track's chain)",
+    items[#items + 1] = { label = "FX browser (REAPER)",
+                          action = function()
+                              r.SetOnlyTrackSelected(tr)
+                              r.Main_OnCommand(40271, 0)
+                          end }
+    items[#items + 1] = { label = "CP_FX Browser",
+                          action = function()
+                              if not Bus.FocusApp("CP_FXBrowser", "FX Browser") then
+                                  flash("CP_FX Browser is not registered as an action yet")
+                              end
+                          end }
+    items[#items + 1] = { label = "Open this track's FX chain",
                           action = function() r.TrackFX_Show(tr, 0, 1) end }
     UI.NativeMenu(items)
 end
@@ -1705,7 +1722,12 @@ local function slotRow(theme, x, y, w, label, dim, lit, hot, empty)
     end
     if label then
         local ink = dim and (C.text_disabled or C.text_mute) or C.text
-        Core.DrawText(label, x + 7, iy + 1, ink[1], ink[2], ink[3], dim and 0.6 or 0.95)
+        -- centred in the box it lives in, measured rather than guessed: the
+        -- glyph height is the font's business and it changes with the theme
+        local _, th = Core.MeasureText(label)
+        local ty = iy + floor((ih - th) / 2)
+        if ty < iy then ty = iy end
+        Core.DrawText(label, x + 7, ty, ink[1], ink[2], ink[3], dim and 0.6 or 0.95)
     end
 end
 
@@ -1811,15 +1833,16 @@ local function drawMix(theme, t, x, y, w, h)
                 end
             else
                 -- an EMPTY SLOT, and it does what an empty slot does on every
-                -- console: it opens the browser. CP_FXBrowser is that browser
-                -- here — raised if it runs, started if it does not.
+                -- console: it opens the FX browser. REAPER's own — and the
+                -- column's track is SELECTED first, because that browser
+                -- inserts into the selection, so without it the gesture would
+                -- open a browser aimed at whatever was clicked last.
                 slotRow(theme, x, ly, rw, nil, true, false, hot, true)
                 if hot then
                     over_fx = row
                     if Core.MouseClicked(1) then
-                        if not Bus.FocusApp("CP_FXBrowser", "FX Browser") then
-                            r.TrackFX_Show(tr, 0, 1)   -- no browser: REAPER's own
-                        end
+                        r.SetOnlyTrackSelected(tr)
+                        r.Main_OnCommand(40271, 0)   -- View: Show FX browser
                     elseif Core.MouseClicked(2) then
                         fxMenu(tr, nil)
                     end
@@ -1875,16 +1898,28 @@ local function drawMix(theme, t, x, y, w, h)
                 -- The send IS its level: the row is a fader with the
                 -- destination written on it, so reading and setting are the
                 -- same object rather than a name and a number somewhere else.
-                local ch, nv, rel = UI.FaderAt(mix_id.sd[t][i], x + 1, ly + 1,
-                                               rw - 2, MIX_ROW - 2, lvl or 0,
+                local ch, nv, rel = UI.FaderAt(mix_id.sd[t][i], x + 2, ly + 1,
+                                               rw - 4, MIX_ROW - 2, lvl or 0,
                                                MIX_SD_OPTS)
                 if ch then Mix.SetSendNorm(tr, i, nv) mix_moved = true end
                 if rel then
-                    if mix_moved then Mix.CommitSend() end
+                    -- A DRAG set the level; a CLICK — released without having
+                    -- moved anything — opens REAPER's routing window, which is
+                    -- where a send's real parameters live (pre/post, channels,
+                    -- MIDI). One gesture each, told apart by what happened
+                    -- between press and release.
+                    if mix_moved then
+                        Mix.CommitSend()
+                    else
+                        r.SetOnlyTrackSelected(tr)
+                        r.Main_OnCommand(40293, 0)   -- Track: routing and I/O
+                    end
                     mix_moved = false
                 end
-                Core.DrawText(fitLabel(sd_lbl[t][row], nm or "send", rw - 10),
-                              x + 5, ly + 2, C.text[1], C.text[2], C.text[3], 0.95)
+                local lbl = fitLabel(sd_lbl[t][row], nm or "send", rw - 12)
+                local _, th = Core.MeasureText(lbl)
+                Core.DrawText(lbl, x + 6, ly + 1 + floor((MIX_ROW - 2 - th) / 2),
+                              C.text[1], C.text[2], C.text[3], 0.95)
                 if hot and Core.MouseClicked(2) then sendMenu(t, tr, i) end
             else
                 slotRow(theme, x, ly, rw, nil, true, false, hot, true)
