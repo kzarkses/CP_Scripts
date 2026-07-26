@@ -538,14 +538,21 @@ function Loop.Ensure(create)
         return true, "Looper engine created"
     end
     -- The engine loaded in the chain can be OLDER than this build (the .jsfx
-    -- is only recopied on create/reload), in two ways that both misbehave in
+    -- is only recopied on create/reload), in three ways that all misbehave in
     -- silence: too few lanes, so every command aimed at the upper half is
     -- dropped (a clip that never starts, a column that stops instead of
-    -- switching), or an out-of-date behaviour revision. Refresh it; the loops
-    -- live in gmem and survive the swap.
-    if Loop.EngineAlive()
-       and (Loop.EngineLanes() < Loop.MAX_LANES
-            or Loop.EngineBuild() < Loop.ENGINE_BUILD) then
+    -- switching); an out-of-date behaviour revision; or NOT RUNNING AT ALL —
+    -- a JSFX that failed to compile is still in the chain, still answers to
+    -- its name, and says nothing at all. Refresh it; the loops live in gmem
+    -- and survive the swap.
+    --
+    -- That last case used to be the one we did NOT refresh (the check was
+    -- gated on the engine being alive), so the only way out of a bad build was
+    -- to go and press a button in another window — which is precisely the
+    -- situation where the suite has to repair itself. A silent engine reports
+    -- zero lanes, so it now falls into the same branch as an old one.
+    if Loop.EngineLanes() < Loop.MAX_LANES
+       or Loop.EngineBuild() < Loop.ENGINE_BUILD then
         -- Builds before 3 had no "nobody armed": the arm sitting in gmem right
         -- now is the engine's own clamp, not a decision, and carrying it across
         -- the reload would leave a lane monitoring in every project that ever

@@ -150,8 +150,11 @@ BUILD_VER = 4;
 
 // A pending target that has no date yet: it fires on the clock's first block.
 // Real targets are beat positions and never negative, so any target below
-// -1e8 is this and nothing else.
-WAIT_CLOCK = -1e9;
+// WAIT_TEST is this and nothing else.
+// (Written out in full: EEL has no scientific notation — it reads -1e9 as -1
+// followed by a stray identifier, and the whole engine then fails to compile.)
+WAIT_CLOCK = -1000000000;
+WAIT_TEST  =  -100000000;
 
 // The channel the CP suite tags its own PREVIEW notes with (a sampler pad, an
 // editor audition). Those travel the virtual-keyboard queue, which is a
@@ -217,7 +220,7 @@ function stop_target() local(qph) (
 // Does this target mean "queue it"? A real boundary ahead of us, or the
 // no-date one that waits for the clock.
 function is_queued(tq) (
-  tq < -1e8 || tq > pb + 0.0005;
+  tq < WAIT_TEST || tq > pb + 0.0005;
 );
 
 // @init is NOT only "the looper was created". REAPER re-runs it whenever the
@@ -329,7 +332,7 @@ clock_start = (active >= 0.5 && prev_active < 0.5);
     // a target with no date yet keeps having none: it waits for a clock, not
     // for a beat, so there is nothing in it to re-anchor
     (gmem[GMEM_LANE_STATE + li*8 + 6] > 0
-     && gmem[GMEM_LANE_STATE + li*8 + 7] > -1e8) ? (
+     && gmem[GMEM_LANE_STATE + li*8 + 7] > WAIT_TEST) ? (
       gmem[GMEM_LANE_STATE + li*8 + 7] = gmem[GMEM_LANE_STATE + li*8 + 7] + pbd;
     );
     li += 1;
@@ -624,7 +627,7 @@ active ? (
       tgt = gmem[GMEM_LANE_STATE + li*8 + 7];
       // it was waiting for a clock, not for a beat: the clock is here, so the
       // beat it lands on is this one
-      tgt < -1e8 ? tgt = pb;
+      tgt < WAIT_TEST ? tgt = pb;
       pnd == 1 ? (
         gmem[GMEM_LANE_STATE + li*8 + 0] == 2 ? gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
       );
