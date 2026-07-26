@@ -669,6 +669,11 @@ function UI.FaderAt(id, x, y, w, h, value, opts)
     return Widgets.FaderAt(id, x, y, w, h, value, UI._theme, opts)
 end
 
+--- Vertical fader (a console's own geometry). Returns changed, value, released.
+function UI.VFaderAt(id, x, y, w, h, value, opts)
+    return Widgets.VFaderAt(id, x, y, w, h, value, UI._theme, opts)
+end
+
 function UI.MeterAt(x, y, w, h, peak_l, peak_r, vertical, hold_l, hold_r)
     return Widgets.MeterAt(x, y, w, h, peak_l, peak_r, UI._theme, vertical,
                            hold_l, hold_r)

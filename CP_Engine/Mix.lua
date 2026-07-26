@@ -1,10 +1,21 @@
 -- CP_Engine — Mix
--- The three controls a session column needs, and the meter that makes them
--- readable: volume, mute, solo. Nothing else. A full console would be a
--- proprietary container re-implementing what REAPER already has — the whole
--- direction of the suite is that the value is the VIEW, not the format
--- (ANALYSE_Design.md §7, decision consignée ROADMAP_Autonomie session 7:
--- "Mixer: pas de console… le reste vit dans le mixer de REAPER").
+-- The channel strip of a session column: volume, mute, solo, pan, the meter
+-- that makes them readable, and the two LISTS a strip is really about — the
+-- FX chain and the sends.
+--
+-- This module used to stop at three controls, on the reasoning that a console
+-- would re-implement what REAPER already has (ROADMAP session 7, "Mixer: pas
+-- de console"). That was right about the FORMAT and wrong about the VIEW: what
+-- a session needs is not a second mixer engine — everything below is REAPER's
+-- own track state, written through REAPER's own API — but the chain and the
+-- sends of the thing you are launching, next to the thing you are launching.
+-- Reaching them meant leaving the window, and leaving the window is exactly
+-- what a session view exists to avoid.
+--
+-- Nothing here is a copy of REAPER's state: every read goes to the track, and
+-- the only things cached are the STRINGS (FX and send names allocate on every
+-- call, and a strip draws thirty times a second) — keyed on the project's own
+-- change counter, so a chain edited anywhere is a chain redrawn here.
 --
 -- Domain layer: this talks to REAPER tracks. The widgets that draw it live in
 -- CP_Toolkit and know nothing about tracks. One direction only.
@@ -105,6 +116,43 @@ function Mix.DbLabel(key, n)
     if q ~= c.q then
         c.q = q
         c.s = (q == Q_SILENT) and "-inf" or string.format("%.1f", q / 10)
+    end
+    return c.s
+end
+
+-- ---------------------------------------------------------------------------
+-- Pan
+-- ---------------------------------------------------------------------------
+-- Held as 0..1 for the knob (0.5 = centre), stored as REAPER's -1..1.
+function Mix.GetPan(tr)
+    if not valid(tr) then return 0.5 end
+    return (r.GetMediaTrackInfo_Value(tr, "D_PAN") + 1) * 0.5
+end
+
+function Mix.SetPan(tr, n)
+    if not valid(tr) then return end
+    if n < 0 then n = 0 elseif n > 1 then n = 1 end
+    -- a detent AT centre, not near it: a pan knob that cannot be put back to
+    -- the middle by hand is the oldest annoyance in the list
+    if n > 0.485 and n < 0.515 then n = 0.5 end
+    r.SetMediaTrackInfo_Value(tr, "D_PAN", n * 2 - 1)
+end
+
+function Mix.CommitPan()
+    r.Undo_OnStateChangeEx2(0, "Change track pan", 1, -1)
+end
+
+local pan_lbl = {}   -- [key] = { q, s }
+
+function Mix.PanLabel(key, n)
+    local c = pan_lbl[key]
+    if not c then c = { q = 1e9, s = "" }; pan_lbl[key] = c end
+    local q = floor((n * 2 - 1) * 100 + 0.5)
+    if q ~= c.q then
+        c.q = q
+        if q == 0 then c.s = "C"
+        elseif q < 0 then c.s = tostring(-q) .. "L"
+        else c.s = tostring(q) .. "R" end
     end
     return c.s
 end
@@ -240,6 +288,197 @@ function Mix.ResetMeter(key)
     local m = mtr[key]
     if not m then return end
     m.l, m.r, m.hl, m.hr = 0, 0, 0, 0
+end
+
+-- ---------------------------------------------------------------------------
+-- The two lists — FX chain and sends
+-- ---------------------------------------------------------------------------
+-- Names are the only thing kept: every count, every level, every bypass is
+-- read live from the track. A name costs a string allocation per call, and a
+-- strip asks for all of them every frame, so they are cached against the
+-- project's change counter — the one number REAPER already bumps whenever
+-- anything at all moves, wherever it was moved from.
+-- One entry per track a strip actually draws — four to eight of them, so the
+-- table is bounded by the view and never needs pruning.
+local chain = {}     -- [guid] = { stamp, n, name[i], off[i] }
+local sends = {}     -- [guid] = { stamp, n, name[i], dest[i] }
+
+local function stamp()
+    return r.GetProjectStateChangeCount(0)
+end
+
+local function guidOf(tr)
+    local _, g = r.GetSetMediaTrackInfo_String(tr, "GUID", "", false)
+    return g
+end
+
+-- Shorten "VST3: Pro-Q 3 (FabFilter)" to "Pro-Q 3": the prefix says what
+-- PLUGIN FORMAT it is, which is never what you are looking for in a chain,
+-- and the vendor in brackets is the same for a whole shelf of them.
+local function shortFx(n)
+    if not n or n == "" then return "?" end
+    n = n:gsub("^%u+i?:%s*", "")       -- VST:, VST3:, JS:, AU:, CLAP:, VSTi:
+    n = n:gsub("%s*%b()%s*$", "")      -- trailing (Vendor)
+    if n == "" then return "?" end
+    return n
+end
+Mix.ShortFxName = shortFx
+
+local function chainOf(tr)
+    if not valid(tr) then return nil end
+    local g = guidOf(tr)
+    local c = chain[g]
+    local st = stamp()
+    if c and c.stamp == st then return c end
+    if not c then c = { name = {}, off = {} }; chain[g] = c end
+    c.stamp = st
+    local n = r.TrackFX_GetCount(tr)
+    c.n = n
+    for i = 1, n do
+        local ok, nm = r.TrackFX_GetFXName(tr, i - 1, "")
+        c.name[i] = shortFx(ok and nm or nil)
+        c.off[i]  = not r.TrackFX_GetEnabled(tr, i - 1)
+    end
+    for i = n + 1, #c.name do c.name[i] = nil c.off[i] = nil end
+    return c
+end
+
+function Mix.FxCount(tr)
+    local c = chainOf(tr)
+    return c and c.n or 0
+end
+
+-- name, bypassed — for slot i (1-based).
+function Mix.Fx(tr, i)
+    local c = chainOf(tr)
+    if not c or i < 1 or i > c.n then return nil end
+    return c.name[i], c.off[i]
+end
+
+function Mix.FxToggle(tr, i)
+    if not valid(tr) then return end
+    local on = r.TrackFX_GetEnabled(tr, i - 1)
+    r.TrackFX_SetEnabled(tr, i - 1, not on)
+    r.Undo_OnStateChangeEx2(0, on and "Bypass FX" or "Un-bypass FX", 2, -1)
+end
+
+function Mix.FxShow(tr, i)
+    if not valid(tr) then return end
+    r.TrackFX_Show(tr, i - 1, 3)
+end
+
+function Mix.FxDelete(tr, i)
+    if not valid(tr) then return end
+    r.Undo_BeginBlock()
+    r.TrackFX_Delete(tr, i - 1)
+    r.Undo_EndBlock("Delete FX", 2)
+end
+
+function Mix.FxAdd(tr, name)
+    if not valid(tr) or not name or name == "" then return -1 end
+    r.Undo_BeginBlock()
+    local fx = r.TrackFX_AddByName(tr, name, false, -1)
+    r.Undo_EndBlock("Add FX", 2)
+    return fx
+end
+
+-- Move (or copy) slot `from` of `src` to slot `to` of `dst`. `to` is where it
+-- LANDS, 1-based, and may be one past the end. Same track = a reorder, and
+-- REAPER's own CopyToTrack does both — no delete-then-insert, so an FX keeps
+-- its parameters, its automation and its window.
+function Mix.FxMove(src, from, dst, to, copy)
+    if not valid(src) or not valid(dst) then return false end
+    local n = r.TrackFX_GetCount(src)
+    if from < 1 or from > n then return false end
+    if to < 1 then to = 1 end
+    r.Undo_BeginBlock()
+    r.TrackFX_CopyToTrack(src, from - 1, dst, to - 1, not copy)
+    r.Undo_EndBlock(copy and "Copy FX" or "Move FX", 2)
+    return true
+end
+
+-- ---- sends -----------------------------------------------------------------
+local function sendsOf(tr)
+    if not valid(tr) then return nil end
+    local g = guidOf(tr)
+    local s = sends[g]
+    local st = stamp()
+    if s and s.stamp == st then return s end
+    if not s then s = { name = {}, dest = {} }; sends[g] = s end
+    s.stamp = st
+    local n = r.GetTrackNumSends(tr, 0)
+    s.n = n
+    for i = 1, n do
+        local d = r.GetTrackSendInfo_Value(tr, 0, i - 1, "P_DESTTRACK")
+        s.dest[i] = d
+        local nm = ""
+        if d and valid(d) then
+            local _, tn = r.GetTrackName(d)
+            nm = tn
+        end
+        s.name[i] = (nm ~= "" and nm) or "send"
+    end
+    for i = n + 1, #s.name do s.name[i] = nil s.dest[i] = nil end
+    return s
+end
+
+function Mix.SendCount(tr)
+    local s = sendsOf(tr)
+    return s and s.n or 0
+end
+
+-- name, destination track, level (0..1 on the FADER scale, so a send reads
+-- against the same geometry as everything else in the strip).
+function Mix.Send(tr, i)
+    local s = sendsOf(tr)
+    if not s or i < 1 or i > s.n then return nil end
+    local v = r.GetTrackSendInfo_Value(tr, 0, i - 1, "D_VOL")
+    return s.name[i], s.dest[i], Mix.DbToNorm(gainToDb(v))
+end
+
+function Mix.SetSendNorm(tr, i, n)
+    if not valid(tr) then return end
+    if n < 0 then n = 0 elseif n > 1 then n = 1 end
+    r.SetTrackSendInfo_Value(tr, 0, i - 1, "D_VOL", dbToGain(Mix.NormToDb(n)))
+end
+
+function Mix.CommitSend()
+    r.Undo_OnStateChangeEx2(0, "Change send level", 1, -1)
+end
+
+function Mix.SendMute(tr, i)
+    if not valid(tr) then return false end
+    return r.GetTrackSendInfo_Value(tr, 0, i - 1, "B_MUTE") > 0.5
+end
+
+function Mix.SetSendMute(tr, i, on)
+    if not valid(tr) then return end
+    r.SetTrackSendInfo_Value(tr, 0, i - 1, "B_MUTE", on and 1 or 0)
+    r.Undo_OnStateChangeEx2(0, "Mute send", 1, -1)
+end
+
+function Mix.SendRemove(tr, i)
+    if not valid(tr) then return end
+    r.Undo_BeginBlock()
+    r.RemoveTrackSend(tr, 0, i - 1)
+    r.Undo_EndBlock("Remove send", 1)
+end
+
+-- A send from src to dst, refusing the two that cannot exist: to itself, and
+-- one that already does. Returns the index (1-based) or nil.
+function Mix.SendCreate(src, dst)
+    if not valid(src) or not valid(dst) or src == dst then return nil end
+    local n = r.GetTrackNumSends(src, 0)
+    for i = 0, n - 1 do
+        if r.GetTrackSendInfo_Value(src, 0, i, "P_DESTTRACK") == dst then
+            return i + 1
+        end
+    end
+    r.Undo_BeginBlock()
+    local i = r.CreateTrackSend(src, dst)
+    r.Undo_EndBlock("Create send", 1)
+    if not i or i < 0 then return nil end
+    return i + 1
 end
 
 return Mix

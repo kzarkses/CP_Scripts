@@ -6331,6 +6331,93 @@ function Widgets.FaderAt(id, x, y, w, h, value, theme, opts)
     return changed, nv, released
 end
 
+-- The same fader stood up. Same value model, same gestures, mirrored: the
+-- travel runs BOTTOM-UP, which is the direction every console moved before
+-- there were screens, and it is drawn with a CAP rather than a filled bar —
+-- a mixer's fader is a thing you grab, and the grab point has to be visible
+-- from across the room. The groove keeps a filled part below the cap so the
+-- level still reads at a glance on a strip too narrow for a number.
+function Widgets.VFaderAt(id, x, y, w, h, value, theme, opts)
+    opts = opts or EMPTY_OPTS
+    local c = theme.colors
+    local disabled = opts.disabled or Core.IsDisabled()
+    local hovered = (not disabled)
+        and Core.MouseInClippedRect(x, y, w, h) and not Core.HasPopup()
+    local active = Core.IsActive(id)
+    local changed, released = false, false
+    local nv = value
+
+    if hovered then Core.SetHot(id) end
+    if hovered and Core.MouseClicked(1) then
+        Core.SetActive(id)
+        active = true
+    end
+    if active then
+        if Core.MouseDown(1) then
+            local _, dy = Core.MouseDelta()
+            if dy ~= 0 and h > 1 then
+                nv = value - (dy / (h - 1)) * (Core.ModShift() and 0.1 or 1)
+                if nv < 0 then nv = 0 elseif nv > 1 then nv = 1 end
+                if nv ~= value then changed = true end
+            end
+        else
+            Core.ClearActive()
+            active = false
+            released = true
+        end
+    end
+    if hovered and Core.MouseDoubleClicked() and opts.default then
+        nv = opts.default
+        if nv ~= value then changed = true end
+        released = true
+    end
+    if hovered and not Core.IsWheelConsumed() then
+        local wheel = Core.GetState().mouse_wheel
+        if wheel ~= 0 then
+            local step = (opts.wheel_step or 0.02) * (Core.ModCtrl() and 0.25 or 1)
+            nv = value + wheel_notches(wheel) * step
+            if nv < 0 then nv = 0 elseif nv > 1 then nv = 1 end
+            if nv ~= value then changed = true; released = true end
+            Core.ConsumeWheel()
+        end
+    end
+    if hovered or active then Core.SetCursor("size_ns") end
+
+    if Core.IsVisible(x, y, w, h) then
+        local disp = changed and nv or value
+        local cap  = opts.cap_h or 9
+        local half = floor(cap / 2)
+        local trav = h - cap                     -- the cap's centre travels this
+        local cy   = y + half + floor(trav * (1 - disp) + 0.5)
+        -- groove: a narrow channel down the middle, so the cap has a rail
+        local gw = opts.groove_w or 3
+        local gx = x + floor((w - gw) / 2)
+        local g = c.frame_bg
+        Core.DrawRect(gx, y + 1, gw, h - 2, g[1], g[2], g[3], disabled and 0.45 or 1)
+        local a = opts.accent or c.accent
+        local col = a
+        if disabled then col = scaledColor(a, 0.55)
+        elseif active then col = scaledColor(a, 0.84)
+        elseif hovered then col = scaledColor(a, 1.12) end
+        if cy < y + h - 1 then
+            Core.DrawRect(gx, cy, gw, y + h - 1 - cy, col[1], col[2], col[3], 1)
+        end
+        if opts.mark then
+            local my = y + half + floor(trav * (1 - opts.mark) + 0.5)
+            Core.DrawRect(x + 1, my, w - 2, 1, 0, 0, 0, 0.45)
+        end
+        -- the cap
+        local cc = c.surface or c.frame_bg
+        local ca = disabled and 0.5 or 1
+        Core.DrawRect(x, cy - half, w, cap, cc[1], cc[2], cc[3], ca)
+        local bd = c.border
+        Core.DrawRect(x, cy - half, w, cap, bd[1], bd[2], bd[3], (bd[4] or 1) * ca, false)
+        Core.DrawRect(x + 1, cy, w - 2, 1, col[1], col[2], col[3], ca)
+    end
+    if hovered and opts.tip then Widgets.Tooltip(opts.tip, theme) end
+    return changed, nv, released
+end
+
 -- A level meter at a rect: two channels split along the SHORT axis, the fill
 -- running bottom-up when vertical and left-right when horizontal. `hold` is
 -- the peak line — on a meter this small it is the only thing that makes a

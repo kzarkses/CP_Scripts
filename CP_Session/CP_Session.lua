@@ -56,6 +56,10 @@ local SCENES = 8
 local cells = {}     -- [t][s] = clip descriptor or nil
 local cur   = {}     -- [t] = scene whose clip is loaded, or nil
 local cdrag = nil    -- { t, s } source cell while a Ctrl-drag copy is in flight
+-- Geometry of each mixer strip as it was last drawn. Declared up here because
+-- the drop consumer runs before the strips do: what lands on a strip has to be
+-- resolved against where that strip WAS, which is the only place it can be.
+local mix_col = {}   -- [t] = { x, y, w, h, fx_y, fx_rows }
 for t = 0, TRACKS - 1 do cells[t] = {} end
 
 local state = {
@@ -125,6 +129,12 @@ Any cell takes either. Drop a sound from the Media Explorer and it
 loops TEMPO-MATCHED (native stretch) through that column's track. Drop
 or write MIDI and it plays through the engine.
 
+A sound plays THROUGH the column's track — its fader, its FX, and so
+into the master and into anything you record. When that track holds an
+instrument it cannot take audio (a synth replaces its input with its
+own output), so the sound goes to the nearest thing downstream that
+can: the folder it lives in, or the master.
+
 A sound answers a click exactly as a clip does, because it lives in the
 same two halves: launching is QUEUED to the Q boundary and blinks until
 it lands, STOPPING is queued too (a clip finishes its bar, it does not
@@ -139,16 +149,29 @@ later — one visible seam is left: after the transport stops and rolls
 again, a sound restarts from its beginning where a clip resumes in
 phase with the beat.)
 
-## The mixer strip
-The band under the grid (toggle it beside the "?") balances what you
-are launching: per column, VOLUME, M and S, and a meter. It acts on
-the track the column is routed to — so it is also the level of
-whatever CP_Sampler or CP_Editor sends there. Drag the fader,
-Shift for fine, double-click for 0 dB, wheel to step. Solo is
-REAPER's solo: the arrangement goes quiet too, exactly as in Ableton.
-Ctrl-click it for exclusive. Everything else a console has is a
-keystroke away in REAPER's own mixer, which is better than anything
-this window would draw.
+## The mixer
+The zone under the grid (toggle it beside the "?") is a channel strip
+per column, acting on the track that column is routed to — so it is
+also the level of whatever CP_Sampler or CP_Editor sends there.
+
+DRAG ITS SEAM to say how much of a strip you want. Short, it is the
+fader block alone; taller, the sends appear, then the FX chain. The
+height is the only control there is.
+
+Fader, meter, pan, M and S: Shift for fine, double-click for 0 dB (or
+centre), wheel to step. Solo is REAPER's solo — the arrangement goes
+quiet too, exactly as in Ableton. Ctrl-click it for exclusive.
+
+FX CHAIN. Click a plugin to open it, Ctrl-click to bypass, Alt-click
+to remove, right-click for all three. DRAG one to reorder it, or onto
+another column to MOVE it there (Ctrl: copy). "+ FX" opens the track's
+own chain window, and an FX dragged from the Media Explorer lands in
+the strip you drop it on.
+
+SENDS. Each row is the send itself: drag it to set its level, right-
+click to mute or remove it. To create one, drag "+ send" onto the
+column you want to send TO — the gesture says from here to there.
+Clicking it instead lists the destinations.
 
 ## Clock
 Free = clips play without the transport. Follow = REAPER transport,
@@ -424,6 +447,46 @@ local function launchBeat()
     return pb - qph + q
 end
 
+-- WHERE THE SOUND COMES OUT. A column's own track when it can take audio —
+-- its fader, its FX, its place in the mixer, and it lands in anything you
+-- record. When it cannot, the sound must still reach the mixer rather than
+-- leave by the back door: a track whose chain holds an INSTRUMENT swallows
+-- audio put into it (a synth replaces its input with its own output), so the
+-- preview goes to the nearest thing downstream that has no instrument — the
+-- folder the track lives in, and the master as the last resort.
+--
+-- This is also why a sound could be out of time with everything else: a
+-- preview sent straight to the hardware skips the whole output path the
+-- project is aligned on.
+local function previewDest(tr)
+    if not tr or not r.TrackFX_GetInstrument then return tr end
+    local ok, ins = pcall(r.TrackFX_GetInstrument, tr)
+    if not (ok and ins and ins >= 0) then return tr end
+    local par = r.GetParentTrack and r.GetParentTrack(tr) or nil
+    local guard = 0
+    while par and guard < 8 do
+        local ok2, i2 = pcall(r.TrackFX_GetInstrument, par)
+        if not (ok2 and i2 and i2 >= 0) then return par end
+        par = r.GetParentTrack(par)
+        guard = guard + 1
+    end
+    return r.GetMasterTrack and r.GetMasterTrack(0) or nil
+end
+
+-- Half an audio block: the preview is picked up by the audio thread on its
+-- NEXT block, so where it actually starts is somewhere in [now, now + block].
+-- Read once — the device does not change under a running script.
+local block_s = nil
+local function blockSlack()
+    if block_s then return block_s end
+    block_s = 0
+    local ok, bs = r.GetAudioDeviceInfo("BSIZE", "")
+    local ok2, sr = r.GetAudioDeviceInfo("SRATE", "")
+    local b, s = tonumber(ok and bs or ""), tonumber(ok2 and sr or "")
+    if b and s and b > 0 and s > 0 then block_s = (b / s) * 0.5 end
+    return block_s
+end
+
 -- Actually make the sound, at the beat we have REACHED — which is a hair past
 -- the boundary we aimed at, because a frame is 16 ms wide. Starting there and
 -- then would leave the sound late by that hair for as long as it loops, so the
@@ -482,22 +545,17 @@ local function audioStart(t, beat)
             -- read from the engine did not, and which is most of the flam.
             local tb = r.TimeMap2_QNToTime(0, a.at)
             local p  = r.GetPlayPosition2()
-            if tb and p then skip = (p - tb) * rt end
+            if tb and p then skip = (p - tb + blockSlack()) * rt end
         end
     end
     if skip < 0 or skip > 0.25 then skip = 0 end
     if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
-    -- Route through the track this column stands for, so its FX apply — but
-    -- NOT when that track hosts a virtual instrument: a VSTi replaces its
-    -- input with its own output, so the sound would simply vanish into it.
-    -- And no falling back to "whatever track happens to be selected": that
-    -- put a sound through an unrelated chain depending on where the user had
-    -- last clicked.
-    local tr = Loop.GetLaneDest(t)
-    if tr and r.TrackFX_GetInstrument then
-        local ok, ins = pcall(r.TrackFX_GetInstrument, tr)
-        if ok and ins and ins >= 0 then tr = nil end
-    end
+    -- Route it through a TRACK, always. A preview with no output track goes
+    -- straight to the hardware: not through the column's fader, not through
+    -- the master, not into anything you record — the sound is audible and
+    -- nowhere. previewDest finds the nearest thing downstream that can take
+    -- audio, which for an ordinary column is the column's own track.
+    local tr = previewDest(Loop.GetLaneDest(t))
     if tr and r.CF_Preview_SetOutputTrack then
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
@@ -1054,7 +1112,27 @@ local function busConsume()
         state.registered = DragBus.Register("session")
     end
     DragBus.RectSync("session")
-    local clip, sx, sy = Bus.TakeDrop("session")
+    local clip, sx, sy, kind, payload, fsx, fsy = Bus.TakeDrop("session")
+    -- An FX dragged from the Media Explorer or the FX browser is not a clip
+    -- and never was: it lands in the CHAIN of the strip it was dropped on,
+    -- which is the only thing "here" can mean over a mixer.
+    if not clip and kind == "fx" and payload and payload ~= "" then
+        local cx, cy = Core.ScreenToClient(fsx, fsy)
+        for t = 0, TRACKS - 1 do
+            local g = mix_col[t]
+            if g and g.y and cx >= g.x and cx < g.x + g.w
+               and cy >= g.y and cy < g.y + g.h then
+                local tr = Loop.GetLaneDest(t)
+                if Mix.Valid(tr) and Mix.FxAdd(tr, payload) >= 0 then
+                    flash("FX -> " .. trackName(t))
+                else
+                    flash("This column has no track to put an FX on")
+                end
+                break
+            end
+        end
+        return
+    end
     if not clip then return end
     local g = state.grid
     if not g then return end
@@ -1351,118 +1429,475 @@ local function drawCell(theme, t, s, x, y, w, h)
 end
 
 -- ---------------------------------------------------------------------------
--- The mixer strip
+-- The mixer — a real channel strip per column
 --
--- Three controls per column and the meter that makes them readable. Not a
--- console: what a session needs is to balance what it is launching, and
--- everything else is one keystroke away in REAPER's own mixer, which is better
--- than anything we would draw here.
+-- This started as three controls on the reasoning that a console would
+-- re-implement what REAPER already has. That was right about the FORMAT and
+-- wrong about the VIEW. Nothing below is a second mixer engine: every value is
+-- REAPER's own track state, read and written through REAPER's own API, and the
+-- FX chain window that opens is REAPER's. What the session needed was the
+-- CHAIN and the SENDS of the thing it is launching, beside the thing it is
+-- launching — reaching them meant leaving the window, and not leaving the
+-- window is what a session view is for.
 --
 -- A column mixes the track it is ROUTED TO — the same track its clips play
 -- into, so this is also the level of whatever CP_Sampler or CP_Editor sends
 -- there. A column with no destination has nothing to mix and says so by being
 -- disabled, not by showing a fader that quietly does nothing.
+--
+-- The zone's HEIGHT is the only control over how much of the strip you see:
+-- drag its seam. Short, it is the fader block alone (what it always was);
+-- taller, the sends appear, then the chain. No sub-toggles — the height IS
+-- the answer, and it is one gesture instead of three checkboxes.
 -- ---------------------------------------------------------------------------
-local MIX_H     = 18       -- control height
-local MIX_PAD   = 4        -- so the zone is 26 px: the rhythm of a command bar
+local MIX_H     = 18       -- the M/S row
+local MIX_PAD   = 4
 local MIX_BTN   = 18
-local MIX_MET   = 7
+local MIX_MET   = 9        -- meter width beside the vertical fader
 local MIX_GAP   = 3
-local MIX_MIN_F = 24       -- below this a fader is a decoration, not a control
-local MIX_ZONE  = 2 + MIX_PAD * 2 + MIX_H   -- seam + ground
+local MIX_FADW  = 15       -- the fader's own width (cap included)
+local MIX_ROW   = 13       -- one list row
+local MIX_PAN   = 12       -- the pan bar
+local MIX_FAD   = 78       -- the fader block at full height
+local MIX_FADMIN = 26
+local MIX_ROWS  = 14       -- most rows a list will ever draw (id tables)
+-- The shortest the zone can be: pan + a usable fader + M/S + the padding.
+local MIX_MIN   = MIX_PAD * 2 + MIX_PAN + MIX_GAP + MIX_FADMIN + MIX_GAP + MIX_H
+local MIX_MAX   = 520
+local SEAM_GRAB = 5        -- the band of the seam that resizes the zone
 
 local mix_open  = Core.LoadPersistent("CP_Session", "mix", true)
+local mix_h     = Core.LoadPersistent("CP_Session", "mixh", MIX_MIN)
 local mix_moved = false    -- did the fader gesture in flight change anything
 local mix_hot   = false    -- is any meter still above zero (so still falling)
+local mix_seam  = nil      -- { y0, h0 } while the seam is being dragged
+local fxdrag    = nil      -- { tr, i, t, x, y } an FX being carried
+local snddrag   = nil      -- { t } a send being drawn from this column
+if type(mix_h) ~= "number" then mix_h = MIX_MIN end
+if mix_h < MIX_MIN then mix_h = MIX_MIN elseif mix_h > MIX_MAX then mix_h = MIX_MAX end
 
 -- Ids are identity, and identity must not be rebuilt every frame.
-local mix_id = { v = {}, m = {}, s = {} }
+local mix_id = { v = {}, m = {}, s = {}, p = {}, sd = {} }
 for t = 0, TRACKS - 1 do
     mix_id.v[t] = "mixv" .. t
     mix_id.m[t] = "mixm" .. t
     mix_id.s[t] = "mixs" .. t
+    mix_id.p[t] = "mixp" .. t
+    local row = {}
+    for i = 1, MIX_ROWS do row[i] = "mixsd" .. t .. "_" .. i end
+    mix_id.sd[t] = row
+end
+
+-- Truncation caches, one slot per (column, row): a name is cut once for a
+-- width and stays cut until one of the two changes. Built here, never in the
+-- draw path — the strip redraws thirty times a second.
+local fx_lbl, sd_lbl, more_lbl = {}, {}, {}
+for t = 0, TRACKS - 1 do
+    local a, b = {}, {}
+    for i = 1, MIX_ROWS do a[i] = {} b[i] = {} end
+    fx_lbl[t], sd_lbl[t] = a, b
+    more_lbl[t] = { n = -1, s = "" }
+end
+
+-- "+3 more" is a string, and a string built in a draw path is an allocation
+-- thirty times a second for a number that changes when a human adds a plugin.
+local function moreLabel(t, n)
+    local c = more_lbl[t]
+    if c.n ~= n then
+        c.n = n
+        c.s = "+" .. n .. " more"
+    end
+    return c.s
+end
+
+local function fitLabel(cache, s, w)
+    if cache.src ~= s or cache.w ~= w then
+        cache.src, cache.w = s, w
+        cache.s = Core.TruncateText(s, w)
+    end
+    return cache.s
 end
 
 -- Shared option tables: every field is written on every call, so nothing
 -- stale survives — and no table is built in a draw path.
-local MIX_F_OPTS = { mark = Mix.UNITY, default = Mix.UNITY, text = nil,
-                     disabled = false, accent = nil }
+local MIX_F_OPTS = { mark = Mix.UNITY, default = Mix.UNITY,
+                     disabled = false, accent = nil,
+                     tip = "Volume — Shift: fine, double-click: 0 dB, wheel: step" }
+local MIX_P_OPTS = { mark = 0.5, default = 0.5, text = nil,
+                     disabled = false, accent = nil,
+                     tip = "Pan — double-click: centre" }
 local MIX_M_OPTS = { accent = nil, tip = "Mute this column's track" }
 local MIX_S_OPTS = { accent = nil,
     tip = "Solo — REAPER's solo, so the arrangement goes quiet too. Ctrl: exclusive" }
+local MIX_SD_OPTS = { mark = Mix.UNITY, default = Mix.UNITY, accent = nil,
+                      disabled = false }
 
-local function drawMix(theme, t, x, y, w)
+local function fxMenu(tr, i)
+    local items = {}
+    if i then
+        local nm = Mix.Fx(tr, i)
+        items[#items + 1] = { label = "Open " .. (nm or "FX"),
+                              action = function() Mix.FxShow(tr, i) end }
+        items[#items + 1] = { label = "Bypass",
+                              checked = select(2, Mix.Fx(tr, i)) and true or false,
+                              action = function() Mix.FxToggle(tr, i) end }
+        items[#items + 1] = { label = "Delete",
+                              action = function() Mix.FxDelete(tr, i) end }
+        items[#items + 1] = { separator = true }
+    end
+    items[#items + 1] = { label = "Add FX… (opens the track's chain)",
+                          action = function() r.TrackFX_Show(tr, 0, 1) end }
+    UI.NativeMenu(items)
+end
+
+local function sendMenu(t, tr, i)
+    local items = {}
+    if i then
+        items[#items + 1] = { label = "Mute send", checked = Mix.SendMute(tr, i),
+                              action = function()
+                                  Mix.SetSendMute(tr, i, not Mix.SendMute(tr, i))
+                              end }
+        items[#items + 1] = { label = "Remove send",
+                              action = function() Mix.SendRemove(tr, i) end }
+        items[#items + 1] = { separator = true }
+    end
+    -- Every OTHER column is a candidate: those are the destinations this
+    -- window actually knows about, and the ones a session sends to.
+    local any = false
+    for d = 0, TRACKS - 1 do
+        local dtr = (d ~= t) and Loop.GetLaneDest(d) or nil
+        if dtr and Mix.Valid(dtr) and dtr ~= tr then
+            any = true
+            items[#items + 1] = { label = "Send to " .. trackName(d),
+                                  action = function()
+                                      if Mix.SendCreate(tr, dtr) then
+                                          flash("Send -> " .. trackName(d))
+                                      end
+                                  end }
+        end
+    end
+    if not any then
+        items[#items + 1] = { label = "(route another column to a track first)",
+                              disabled = true }
+    end
+    UI.NativeMenu(items)
+end
+
+-- One list row: a name, a state, and nothing else. The row IS the hit target
+-- (no widget id): rows come and go with the chain, and an id that changes
+-- meaning between frames is worse than no id at all.
+local function listRow(theme, x, y, w, label, dim, lit, hot)
+    local C = theme.colors
+    if hot then
+        Core.DrawRect(x, y, w, MIX_ROW - 1, 1, 1, 1, 0.07)
+    end
+    if lit then
+        Core.DrawRect(x, y, 2, MIX_ROW - 1, C.accent[1], C.accent[2], C.accent[3], 0.9)
+    end
+    local ink = dim and (C.text_disabled or C.text_mute) or C.text
+    Core.DrawText(label, x + 5, y + 1, ink[1], ink[2], ink[3], dim and 0.7 or 0.95)
+end
+
+local function drawMix(theme, t, x, y, w, h)
     local C = theme.colors
     local tr = Loop.GetLaneDest(t)
     local live = Mix.Valid(tr)
+    local g = mix_col[t]
+    if not g then g = {}; mix_col[t] = g end
+    g.x, g.w, g.y, g.h = x, w, y, h
 
-    -- Widths, dropped from the right as the column narrows: a control that no
-    -- longer fits is simply not placed, exactly as in a command bar.
-    local bw = MIX_BTN * 2 + 1
-    local fx = x + bw + MIX_GAP
-    local fw = w - bw - MIX_GAP
-    local mx
-    if fw - MIX_MET - MIX_GAP >= MIX_MIN_F then
-        fw = fw - MIX_MET - MIX_GAP
-        mx = x + w - MIX_MET
-    end
-    if fw < MIX_MIN_F then fw = 0 end
-
-    -- M and S. Letters, not glyphs: they are a PAIR, and the two universal
-    -- letters of every console read at 18 px where two different picture
-    -- families would only read as two different things.
-    -- The colour is the point — `mute` and `solo` have been sitting in the
-    -- theme since the palette work with nobody reading them.
-    MIX_M_OPTS.accent = C.mute
-    MIX_S_OPTS.accent = C.solo
-    local muted = live and Mix.IsMute(tr)
-    if UI.ChipAt(mix_id.m[t], x, y, MIX_BTN, MIX_H, nil, "M", muted, not live,
-                 MIX_M_OPTS) then
-        Mix.SetMute(tr, not muted)
-    end
+    local muted  = live and Mix.IsMute(tr)
     local soloed = live and Mix.IsSolo(tr)
-    if UI.ChipAt(mix_id.s[t], x + MIX_BTN + 1, y, MIX_BTN, MIX_H, nil, "S",
-                 soloed, not live, MIX_S_OPTS) then
-        Mix.SetSolo(tr, not soloed, Core.ModCtrl())
+    -- A column can be silent for two reasons, and the second one is not on
+    -- this column: its own mute, or somebody else's solo. The level wears the
+    -- mute colour either way, so "which of these do I actually hear" is one
+    -- glance rather than an audit of four buttons.
+    local dulled = live and (muted or (Mix.AnySolo() and not soloed))
+
+    -- ---- geometry, laid out from the BOTTOM: the fader block is what a strip
+    -- is for, so it is the last thing to give ground.
+    local ms_y  = y + h - MIX_H
+    local pan_y = ms_y - MIX_GAP - MIX_PAN
+    local avail = pan_y - MIX_GAP - y          -- lists + fader
+    local fad_h = MIX_FAD
+    if avail < fad_h then fad_h = avail end
+    if fad_h < MIX_FADMIN then fad_h = MIX_FADMIN end
+    local lists_h = avail - fad_h - MIX_GAP
+    if lists_h < MIX_ROW then lists_h = 0 end
+    local fad_y = pan_y - MIX_GAP - fad_h
+
+    -- The two lists share what is left: the sends ask for what they hold plus
+    -- one row to add with, the chain takes the rest. Neither scrolls — a strip
+    -- is a glance, and a list you have to scroll is not one.
+    local nfx  = live and Mix.FxCount(tr) or 0
+    local nsnd = live and Mix.SendCount(tr) or 0
+    local fx_h, sd_h = 0, 0
+    if lists_h > 0 then
+        local want_s = (nsnd + 1) * MIX_ROW
+        local want_f = (nfx + 1) * MIX_ROW
+        sd_h = want_s
+        if sd_h > lists_h - MIX_ROW then sd_h = lists_h - MIX_ROW end
+        if want_f + sd_h > lists_h then sd_h = lists_h - want_f end
+        if sd_h < 0 then sd_h = 0 end
+        sd_h = sd_h - sd_h % MIX_ROW
+        fx_h = lists_h - sd_h
+        if fx_h > want_f then fx_h = want_f end
+        fx_h = fx_h - fx_h % MIX_ROW
+    end
+    -- where a carried FX can be dropped, remembered for pollMixDrag: the
+    -- strip knows its own rows, and the carry must not recompute them
+    g.fx_y = (fx_h >= MIX_ROW) and y or nil
+    g.fx_rows = floor(fx_h / MIX_ROW)
+
+    -- ---- the chain
+    local mxp, myp = Core.GetMousePos()
+    local over_fx = nil
+    if fx_h >= MIX_ROW then
+        local rows = floor(fx_h / MIX_ROW)
+        local ly = y
+        local bg = C.list_bg or C.frame_bg
+        Core.DrawRect(x, y, w, fx_h, bg[1], bg[2], bg[3], live and 1 or 0.5)
+        for i = 1, rows do
+            local hot = live and not Core.HasPopup()
+                and mxp >= x and mxp < x + w and myp >= ly and myp < ly + MIX_ROW
+            if i <= nfx and i <= MIX_ROWS then
+                local nm, off = Mix.Fx(tr, i)
+                -- the last visible row says how many are hidden rather than
+                -- pretending the chain ends there
+                if i == rows and nfx > rows then
+                    listRow(theme, x, ly, w, moreLabel(t, nfx - rows + 1),
+                            true, false, hot)
+                    if hot and Core.MouseClicked(1) then r.TrackFX_Show(tr, 0, 1) end
+                else
+                    listRow(theme, x, ly, w, fitLabel(fx_lbl[t][i], nm or "?", w - 8),
+                            off, not off, hot)
+                    if hot then
+                        over_fx = i
+                        if Core.MouseClicked(1) then
+                            if Core.ModAlt() then Mix.FxDelete(tr, i)
+                            elseif Core.ModCtrl() then Mix.FxToggle(tr, i)
+                            else
+                                fxdrag = { tr = tr, i = i, t = t,
+                                           x = mxp, y = myp, moved = false }
+                            end
+                        elseif Core.MouseClicked(2) then
+                            fxMenu(tr, i)
+                        end
+                    end
+                end
+            elseif i == nfx + 1 then
+                listRow(theme, x, ly, w, "+ FX", true, false, hot)
+                if hot then
+                    over_fx = i
+                    if Core.MouseClicked(1) then r.TrackFX_Show(tr, 0, 1)
+                    elseif Core.MouseClicked(2) then fxMenu(tr, nil) end
+                end
+            end
+            ly = ly + MIX_ROW
+        end
+        -- where a carried FX would land
+        if fxdrag and fxdrag.moved and over_fx then
+            local iy = y + (over_fx - 1) * MIX_ROW
+            Core.DrawRect(x, iy, w, 2, C.accent[1], C.accent[2], C.accent[3], 1)
+        end
+        local bd = C.border
+        Core.DrawRect(x, y, w, fx_h, bd[1], bd[2], bd[3], (bd[4] or 1) * 0.6, false)
     end
 
-    if fw > 0 then
-        local n = Mix.GetNorm(tr)
-        MIX_F_OPTS.text = live and Mix.DbLabel(t, n) or nil
-        MIX_F_OPTS.disabled = not live
-        -- A column can be silent for two reasons, and the second one is not
-        -- on this column: its own mute, or somebody else's solo. The level
-        -- wears the mute colour either way, so "which of these do I actually
-        -- hear" is one glance rather than an audit of four buttons.
-        MIX_F_OPTS.accent = (live and (muted or (Mix.AnySolo() and not soloed)))
-                            and C.mute or nil
-        local ch, nv, rel = UI.FaderAt(mix_id.v[t], fx, y, fw, MIX_H, n,
-                                       MIX_F_OPTS)
-        if ch then
-            Mix.SetNorm(tr, nv)
-            mix_moved = true
+    -- ---- the sends
+    if sd_h >= MIX_ROW then
+        local sy = y + fx_h + (fx_h > 0 and 1 or 0)
+        local rows = floor(sd_h / MIX_ROW)
+        for i = 1, rows do
+            local ly = sy + (i - 1) * MIX_ROW
+            local hot = live and not Core.HasPopup()
+                and mxp >= x and mxp < x + w and myp >= ly and myp < ly + MIX_ROW
+            if i <= nsnd and i <= MIX_ROWS then
+                local nm, _, lvl = Mix.Send(tr, i)
+                MIX_SD_OPTS.accent = Mix.SendMute(tr, i) and C.mute or C.mod
+                MIX_SD_OPTS.disabled = not live
+                -- The send IS its level: the row is a fader with the
+                -- destination written on it, so reading and setting are the
+                -- same object rather than a name and a number somewhere else.
+                local ch, nv, rel = UI.FaderAt(mix_id.sd[t][i], x, ly, w,
+                                               MIX_ROW - 1, lvl or 0, MIX_SD_OPTS)
+                if ch then Mix.SetSendNorm(tr, i, nv) mix_moved = true end
+                if rel then
+                    if mix_moved then Mix.CommitSend() end
+                    mix_moved = false
+                end
+                Core.DrawText(fitLabel(sd_lbl[t][i], nm or "send", w - 8),
+                              x + 4, ly + 1, C.text[1], C.text[2], C.text[3], 0.95)
+                if hot and Core.MouseClicked(2) then sendMenu(t, tr, i) end
+            elseif i == nsnd + 1 then
+                listRow(theme, x, ly, w, "+ send", true, false, hot)
+                if hot then
+                    -- click opens the list of destinations, DRAG draws the
+                    -- send to the column you drop it on — the gesture says
+                    -- "from here to there", which is what a send is
+                    if Core.MouseClicked(1) then
+                        snddrag = { t = t, tr = tr, x = mxp, y = myp, moved = false }
+                    elseif Core.MouseClicked(2) then
+                        sendMenu(t, tr, nil)
+                    end
+                end
+            end
         end
-        -- One undo point per gesture, and only if the gesture did something:
-        -- a click that moved nothing should not enter the history.
+    end
+
+    -- ---- pan
+    if live then
+        local pn = Mix.GetPan(tr)
+        MIX_P_OPTS.text = Mix.PanLabel(t, pn)
+        MIX_P_OPTS.disabled = false
+        MIX_P_OPTS.accent = dulled and C.mute or C.mod
+        local ch, nv, rel = UI.FaderAt(mix_id.p[t], x, pan_y, w, MIX_PAN, pn,
+                                       MIX_P_OPTS)
+        if ch then Mix.SetPan(tr, nv) mix_moved = true end
         if rel then
-            if mix_moved and live then Mix.CommitVol() end
+            if mix_moved then Mix.CommitPan() end
             mix_moved = false
         end
+    else
+        MIX_P_OPTS.text, MIX_P_OPTS.disabled, MIX_P_OPTS.accent = nil, true, nil
+        UI.FaderAt(mix_id.p[t], x, pan_y, w, MIX_PAN, 0.5, MIX_P_OPTS)
     end
 
-    if mx then
+    -- ---- fader + meter, side by side as on any console
+    local fw = MIX_FADW
+    local met_w = MIX_MET
+    if fw + MIX_GAP + met_w > w then met_w = w - fw - MIX_GAP end
+    if met_w < 4 then met_w = 0 end
+    local fx0 = x + floor((w - fw - (met_w > 0 and (met_w + MIX_GAP) or 0)) / 2)
+    local n = Mix.GetNorm(tr)
+    MIX_F_OPTS.disabled = not live
+    MIX_F_OPTS.accent = dulled and C.mute or nil
+    local ch, nv, rel = UI.VFaderAt(mix_id.v[t], fx0, fad_y, fw, fad_h, n,
+                                    MIX_F_OPTS)
+    if ch then
+        Mix.SetNorm(tr, nv)
+        mix_moved = true
+    end
+    -- One undo point per gesture, and only if the gesture did something: a
+    -- click that moved nothing should not enter the history.
+    if rel then
+        if mix_moved and live then Mix.CommitVol() end
+        mix_moved = false
+    end
+    if met_w > 0 then
+        local mx = fx0 + fw + MIX_GAP
         if live then
             local ml, mr, hl, hr = Mix.Meter(t, tr)
             -- A meter still above zero is a meter still FALLING, and it needs
             -- frames to fall in. Without this the strip freezes lit the moment
             -- the transport stops, which reads as "still playing".
             if ml > 0 or mr > 0 or hl > 0 or hr > 0 then mix_hot = true end
-            UI.MeterAt(mx, y, MIX_MET, MIX_H, ml, mr, true, hl, hr)
+            UI.MeterAt(mx, fad_y, met_w, fad_h, ml, mr, true, hl, hr)
         else
             -- Unrouted: clear rather than fade, so nothing is left showing a
             -- level from a track this column no longer plays into.
             Mix.ResetMeter(t)
-            UI.MeterAt(mx, y, MIX_MET, MIX_H, 0, 0, true)
+            UI.MeterAt(mx, fad_y, met_w, fad_h, 0, 0, true)
+        end
+    end
+    -- the number, under the fader block and above the pan: a strip says its
+    -- level in decibels or it is a guess
+    if live and fad_h >= 40 then
+        UI.SetFontCaption()
+        local s = Mix.DbLabel(t, n)
+        local tw = Core.MeasureText(s)
+        local ink = dulled and C.mute or C.text_mute or C.text
+        Core.DrawText(s, x + floor((w - tw) / 2), fad_y - 11,
+                      ink[1], ink[2], ink[3], 0.85)
+        UI.SetFontBody()
+    end
+
+    -- ---- M and S. Letters, not glyphs: they are a PAIR, and the two
+    -- universal letters of every console read at 18 px where two different
+    -- picture families would only read as two different things.
+    MIX_M_OPTS.accent = C.mute
+    MIX_S_OPTS.accent = C.solo
+    local bw = floor((w - 1) / 2)
+    if bw > MIX_BTN + 6 then bw = MIX_BTN + 6 end
+    local bx = x + floor((w - bw * 2 - 1) / 2)
+    if UI.ChipAt(mix_id.m[t], bx, ms_y, bw, MIX_H, nil, "M", muted, not live,
+                 MIX_M_OPTS) then
+        Mix.SetMute(tr, not muted)
+    end
+    if UI.ChipAt(mix_id.s[t], bx + bw + 1, ms_y, bw, MIX_H, nil, "S",
+                 soloed, not live, MIX_S_OPTS) then
+        Mix.SetSolo(tr, not soloed, Core.ModCtrl())
+    end
+
+    -- what a carried thing would land on
+    if (fxdrag and fxdrag.moved and fxdrag.t ~= t)
+       or (snddrag and snddrag.moved and snddrag.t ~= t) then
+        if mxp >= x and mxp < x + w and myp >= y and myp < y + h then
+            Core.DrawRect(x, y, w, h, C.accent[1], C.accent[2], C.accent[3], 0.10)
+            Core.DrawRect(x, y, w, h, C.accent[1], C.accent[2], C.accent[3], 0.9, false)
+        end
+    end
+end
+
+-- The two carries, resolved once per frame after every strip has drawn (each
+-- one knows its own rect by then). A drag only becomes a drag past a few
+-- pixels: a click that wandered is still a click.
+local function pollMixDrag()
+    local mx, my = Core.GetMousePos()
+    if fxdrag then
+        if not fxdrag.moved then
+            local dx, dy = mx - fxdrag.x, my - fxdrag.y
+            if dx * dx + dy * dy > 16 then fxdrag.moved = true end
+        end
+        if fxdrag.moved then UI.SetCursor("hand") UI.RequestRedraw() end
+        if not Core.MouseDown(1) then
+            if fxdrag.moved then
+                for t = 0, TRACKS - 1 do
+                    local g = mix_col[t]
+                    if g and mx >= g.x and mx < g.x + g.w then
+                        local dst = Loop.GetLaneDest(t)
+                        if Mix.Valid(dst) then
+                            local to = Mix.FxCount(dst) + 1
+                            if g.fx_y and my >= g.fx_y then
+                                local k = floor((my - g.fx_y) / MIX_ROW) + 1
+                                if k >= 1 and k <= to then to = k end
+                            end
+                            if Mix.FxMove(fxdrag.tr, fxdrag.i, dst, to,
+                                          Core.ModCtrl()) then
+                                flash(Core.ModCtrl() and "FX copied" or "FX moved")
+                            end
+                        end
+                        break
+                    end
+                end
+            elseif fxdrag.tr then
+                Mix.FxShow(fxdrag.tr, fxdrag.i)   -- a plain click OPENS it
+            end
+            fxdrag = nil
+        end
+    end
+    if snddrag then
+        if not snddrag.moved then
+            local dx, dy = mx - snddrag.x, my - snddrag.y
+            if dx * dx + dy * dy > 16 then snddrag.moved = true end
+        end
+        if snddrag.moved then UI.SetCursor("hand") UI.RequestRedraw() end
+        if not Core.MouseDown(1) then
+            if snddrag.moved then
+                for t = 0, TRACKS - 1 do
+                    local g = mix_col[t]
+                    if g and t ~= snddrag.t and mx >= g.x and mx < g.x + g.w then
+                        local dst = Loop.GetLaneDest(t)
+                        if Mix.Valid(dst) and Mix.SendCreate(snddrag.tr, dst) then
+                            flash("Send -> " .. trackName(t))
+                        end
+                        break
+                    end
+                end
+            else
+                sendMenu(snddrag.t, snddrag.tr, nil)   -- a plain click asks
+            end
+            snddrag = nil
         end
     end
 end
@@ -1698,26 +2133,53 @@ local function frame(theme)
     end
 
     -- ---- mixer zone. Its own ground and its own seam: it is not the grid,
-    -- and a zone that shares its neighbour's ground is not a zone.
-    local mix_h = 0
+    -- and a zone that shares its neighbour's ground is not a zone. Its seam is
+    -- also its GRIP: the height decides how much of a strip is on screen, from
+    -- the fader alone to the whole channel, and one drag says which.
+    local zone_h = 0
     mix_hot = false
     if mix_open then
-        mix_h = MIX_ZONE
         local my = sy + sh + 4
-        local win_w = Core.GetWindowSize()
+        local win_w, win_h = Core.GetWindowSize()
+        local room = win_h - my - 2 - 22        -- the status zone keeps its own
+        if room > MIX_MAX then room = MIX_MAX end
+        if room < MIX_MIN then room = MIX_MIN end
+        if mix_h > room then mix_h = room end
+        zone_h = 2 + mix_h
         local surf = C.surface or C.frame_bg
         UI.SeamH(0, my, win_w)
         local zy = my + 2
-        Core.DrawRect(0, zy, win_w, MIX_PAD * 2 + MIX_H, surf[1], surf[2], surf[3], 1)
+        Core.DrawRect(0, zy, win_w, mix_h, surf[1], surf[2], surf[3], 1)
+
+        local _, smy = Core.GetMousePos()
+        local on_seam = (not Core.HasPopup())
+            and smy >= my - SEAM_GRAB and smy < my + SEAM_GRAB
+        if on_seam or mix_seam then UI.SetCursor("size_ns") end
+        if on_seam and Core.MouseClicked(1) then
+            mix_seam = { y0 = smy, h0 = mix_h }
+        end
+        if mix_seam then
+            if Core.MouseDown(1) then
+                local nh = mix_seam.h0 + (mix_seam.y0 - smy)
+                if nh < MIX_MIN then nh = MIX_MIN elseif nh > room then nh = room end
+                mix_h = nh
+                UI.RequestRedraw()
+            else
+                mix_seam = nil
+                Core.SavePersistent("CP_Session", "mixh", mix_h)
+            end
+        end
+
         UI.SetFontCaption()
         for t = 0, TRACKS - 1 do
             local cx = x + scene_w + gap + t * (cell_w + gap)
-            drawMix(theme, t, cx, zy + MIX_PAD, cell_w)
+            drawMix(theme, t, cx, zy + MIX_PAD, cell_w, mix_h - MIX_PAD * 2)
         end
         UI.SetFontBody()
+        pollMixDrag()
     end
 
-    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 4 + mix_h)
+    UI.Layout.AdvanceCursor(w, head_h + SCENES * (cell_h + gap) + 2 + sh + 4 + zone_h)
 
     -- status zone
     local msg
