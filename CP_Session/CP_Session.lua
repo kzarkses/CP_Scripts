@@ -179,9 +179,26 @@ click to mute or remove it. To create one, drag an EMPTY SLOT onto the
 column you want to send TO — the gesture says from here to there.
 Clicking an empty slot instead lists the destinations.
 
-## Clock
-Free = clips play without the transport. Follow = REAPER transport,
-locks to an external MIDI clock when slaved.
+## Clock, and what a launch waits for
+The button says WHO OWNS THE CLOCK. Lit = FOLLOW: REAPER's transport,
+which locks to an external MIDI clock when REAPER is slaved. Unlit =
+FREE: the session runs on its own.
+
+One rule, both clocks, and the whole of it:
+
+STARTING needs a downbeat. Following a transport that is not running
+there is none yet, so a launch WAITS FOR THE TRANSPORT — the cell says
+so — and starts with its first beat, not a bar after it. Clips, sounds
+and takes all wait together, and all land together.
+
+STOPPING needs no downbeat. On a running clock a clip finishes its bar;
+with no clock there is nothing left to finish, so it stops now.
+
+FREE RUN is the session's own transport, and it SITS STILL while the
+session is silent. So the first thing you launch starts at once and is
+itself the downbeat — a quantize is an agreement between clips, and it
+costs nothing when there is no one to agree with. Everything launched
+after it lands on the Q, against what is already playing.
 
 ## One engine
 This grid, CP_Looper and CP_Editor drive the SAME engine and read the
@@ -443,6 +460,11 @@ end
 -- position within 0.05 beat past a boundary counts as ON it, anything else
 -- waits for the next one. A sound and a MIDI clip launched together must land
 -- together, and they only do if they answer the same question the same way.
+--
+-- The engine holds its free clock at ZERO while the session is silent, so the
+-- first launch of a silent session reads pb = 0 here and lands on 0: it starts
+-- now, in phase, and it is what starts the clock. Nothing special is needed
+-- for that case — it falls out of asking the same question.
 local Q_SLOP = 0.05
 local function launchBeat()
     local pb = Loop.EngineBeat()
@@ -523,6 +545,26 @@ local function chainLatency(tr)
     return secs
 end
 
+-- HOW LONG the sound has been running, in seconds — the one question the
+-- whole alignment rests on, and it has two answers because there are two
+-- clocks. Both come from the AUDIO thread rather than from the frame we happen
+-- to be drawing, which is what makes them usable at all:
+--   * following the transport → the play position the audio thread is ABOUT
+--     to render (GetPlayPosition2), measured from the time of the boundary.
+--   * free-running → the engine's own beat, which the JSFX advances one audio
+--     block at a time, measured from the beat of that boundary.
+-- Nil when there is nothing to measure from yet.
+local function elapsed(a)
+    if a.t0 then
+        local p = r.GetPlayPosition2()
+        return p and (p - a.t0) or nil
+    end
+    if not a.at then return nil end
+    local tempo = Loop.Tempo()
+    if not tempo or tempo <= 1 then return nil end
+    return (Loop.EngineBeat() - a.at) * (60 / tempo)
+end
+
 -- Actually make the sound, at the beat we have REACHED — which is a hair past
 -- the boundary we aimed at, because a frame is 16 ms wide. Starting there and
 -- then would leave the sound late by that hair for as long as it loops, so the
@@ -530,7 +572,7 @@ end
 -- phase, at the cost of a few ms of attack nobody hears. (A jump in the
 -- transport can make the overshoot enormous; past a quarter second it is not
 -- an overshoot any more, and the clip starts whole.)
-local function audioStart(t, beat)
+local function audioStart(t)
     local a = aplay[t]
     if not a or a.prev then return end
     local c = a.c
@@ -596,22 +638,10 @@ local function audioStart(t, beat)
     a.lock = 0
     a.settled = false
 
-    local skip = 0
-    if a.at then
-        if a.t0 then
-            -- PROJECT TIME against the position the audio thread is about to
-            -- render — GetPlayPosition2, not GetPlayPosition — plus half a
-            -- block (the preview is picked up on the next one) and the chain's
-            -- own latency.
-            local p = r.GetPlayPosition2()
-            if p then skip = (p - a.t0 + blockSlack() + a.pdc) * rt end
-        else
-            local tempo = Loop.Tempo()
-            if beat and tempo and tempo > 1 then
-                skip = (beat - a.at) * (60 / tempo) * rt
-            end
-        end
-    end
+    -- What the boundary already owes us, plus half a block (the preview is
+    -- picked up on the NEXT one) and the chain's own latency.
+    local e = elapsed(a)
+    local skip = e and ((e + blockSlack() + a.pdc) * rt) or 0
     if skip < 0 or skip > 0.25 then skip = 0 end
     if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
 
@@ -624,7 +654,7 @@ end
 -- loop of exactly the right length. Hope is not a clock — so the position is
 -- now DERIVED from the transport on every pass and put back when it drifts:
 --
---    position = ((play_position - launch_boundary) * rate) mod source_length
+--    position = (elapsed_since_the_boundary * rate) mod source_length
 --
 -- Nothing in that line can be late. The first check runs on the frame after
 -- the launch with a 4 ms tolerance, which is where the whole start-up latency
@@ -632,14 +662,18 @@ end
 -- the preview fades in over 3). After that it is a drift watch: half a second
 -- apart, 30 ms of slack, so a loop whose tempo match is a hair off is pulled
 -- back onto the grid instead of walking away from it.
+--
+-- It holds on BOTH clocks now. It used to give up in free run for want of a
+-- transport to measure against — which is exactly where a sound was left to
+-- guess its own position, and exactly where it wandered.
 local function lockPhase(a, now)
-    if not a.t0 or not a.slen or a.slen <= 0 or not a.prev then return end
+    if not a.slen or a.slen <= 0 or not a.prev then return end
     if now < a.lock then return end
-    local p = r.GetPlayPosition2()
-    if not p then return end
+    local e = elapsed(a)
+    if not e then return end
     -- + the chain's latency: the sample handed over now is the one that has to
     -- be HEARD after that delay, so the clip must already be that far ahead
-    local want = (p - a.t0 + (a.pdc or 0)) * a.rt
+    local want = (e + (a.pdc or 0)) * a.rt
     if want < 0 then return end
     want = want % a.slen
     local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
@@ -664,13 +698,13 @@ end
 
 -- The waiting half becomes the sounding one. Whatever the track was playing
 -- leaves in the SAME call, so the swap is one boundary and not two.
-local function audioFire(t, beat)
+local function audioFire(t)
     local q = aqueue[t]
     if not q then return end
     if aplay[t] then audioStop(t) end
     aqueue[t] = nil
     aplay[t] = q
-    audioStart(t, beat)
+    audioStart(t)
 end
 
 -- Queue a launch. It is ARMED here and fires on the Q boundary, exactly as a
@@ -680,12 +714,17 @@ local function audioArm(t, s, c)
     if not HAS_CF then flash("Audio cells need the SWS extension") return end
     local q = { s = s, c = c }
     aqueue[t] = q
+    -- Say it BEFORE the sound exists: the engine holds its free clock at zero
+    -- while the session is silent, and this is the word that makes the session
+    -- no longer silent. Said afterwards, the first samples would be measured
+    -- against a clock that had not started — and pulled back to a zero they
+    -- had already left.
+    Loop.SetAudioRun(true)
     -- Q: Off means NOW, and now is this frame — waiting for the next poll
     -- would put a frame of silence under every unquantized launch.
     if clockRolling() then
         q.at = launchBeat()
-        local beat = Loop.EngineBeat()
-        if beat >= q.at then audioFire(t, beat) end
+        if Loop.EngineBeat() >= q.at then audioFire(t) end
     end
 end
 
@@ -707,6 +746,28 @@ local function audioYield(t)
     audioQueueStop(t)
 end
 
+-- THE CLOCK CHANGED UNDER A SOUND THAT IS PLAYING. Every beat we were holding
+-- was a position on the OTHER clock and means nothing on this one — so the
+-- reference moves and the SOUND DOES NOT: where it is now becomes where it was
+-- launched, minus what it has already played. The engine does the same thing
+-- for its lanes (it re-anchors every record start by the same jump), and for
+-- the same reason: a clock is a way of counting, not a thing to be dragged by.
+local function reanchor(a)
+    if not a.prev then return end
+    local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
+    local played = (ok and rv and pos) and (pos / a.rt - (a.pdc or 0)) or 0
+    if Loop.GetFreeRun() then
+        local tempo = Loop.Tempo() or 0
+        a.t0 = nil
+        a.at = Loop.EngineBeat() - ((tempo > 1) and (played * tempo / 60) or 0)
+    else
+        a.at = Loop.EngineBeat()
+        a.t0 = (r.GetPlayPosition2() or 0) - played
+    end
+    a.lock = 0
+    a.settled = true
+end
+
 -- Per-frame reconciliation of the sound cells with the clock:
 --   * clock stopped                 → give the preview back, keep the cell
 --   * sounding + a stop queued      → stop it on the boundary
@@ -717,10 +778,27 @@ end
 -- the transport is about to leave: pressing play would either fire the clip at
 -- once or, worse, leave it waiting for a beat that will not come round for
 -- another minute.
+local last_free = nil
+
 local function pollAudio()
+    local free = Loop.GetFreeRun()
+    if free ~= last_free then
+        if last_free ~= nil then
+            for t = 0, TRACKS - 1 do
+                local a, q = aplay[t], aqueue[t]
+                if q and q.at then q.at = launchBeat() end
+                if a then
+                    if a.stop_at then a.stop_at = launchBeat() end
+                    reanchor(a)
+                end
+            end
+        end
+        last_free = free
+    end
     local rolling = clockRolling()
     local beat = rolling and Loop.EngineBeat() or 0
     local now  = r.time_precise()
+    local any  = false
     for t = 0, TRACKS - 1 do
         local a, q = aplay[t], aqueue[t]
         if not rolling then
@@ -742,15 +820,27 @@ local function pollAudio()
                 a = nil
             end
             if q then
-                if not q.at then q.at = launchBeat() end
-                if beat >= q.at then audioFire(t, beat) end
+                -- No target means it was queued with no clock to land on: the
+                -- clock is here now, and its first beat IS the boundary it was
+                -- waiting for. Sending it to the NEXT one instead is what left
+                -- a sound a whole bar behind the clip it was launched with.
+                if not q.at then q.at = beat end
+                if beat >= q.at then audioFire(t) end
             end
-            -- and whatever is sounding is kept ON the transport, not merely
-            -- started on it
-            local live = aplay[t]
-            if live and live.prev then lockPhase(live, now) end
+        end
+        -- Whatever is sounding is kept ON the clock, not merely started on it
+        -- — and it is what the flag below reports. SOUNDING, not merely
+        -- queued: a launch still waiting for a clock must not be what starts
+        -- the clock it is waiting for.
+        local live = aplay[t]
+        if live and live.prev then
+            if rolling then lockPhase(live, now) end
+            any = true
         end
     end
+    -- The engine cannot see a CF preview, so it is told: its free clock is the
+    -- session's transport, and a sound cell is as much of a session as a lane.
+    Loop.SetAudioRun(any)
 end
 
 local function isAudio(c) return c and c.kind == "audio" and c.path end
@@ -1295,6 +1385,9 @@ local function drawCell(theme, t, s, x, y, w, h)
     local mode = lane and floor(Loop.Mode(lane) + 0.5) or 0
     local pend = lane and Loop.Pending(lane) or 0
     local playing
+    -- A queue with no boundary yet: it is waiting for the CLOCK, not for a
+    -- beat. The cell has to say which, or "queued" looks like "stuck".
+    local wait_clock = false
     if audio then
         -- The two halves say exactly what the engine's two say: a queued
         -- launch is pending 1, a queued stop pending 2, and a sound whose
@@ -1302,13 +1395,16 @@ local function drawCell(theme, t, s, x, y, w, h)
         -- colours, whatever kind of thing the cell holds.
         local a, q = aplay[t], aqueue[t]
         playing = (a ~= nil and a.s == s and a.prev ~= nil)
-        if q and q.s == s then pend = 1
+        if q and q.s == s then
+            pend = 1
+            wait_clock = (q.at == nil)
         elseif a and a.s == s then
             if a.stop_at then pend = 2
-            elseif not a.prev then pend = 1 end
+            elseif not a.prev then pend = 1; wait_clock = true end
         end
     else
         playing = (mode == 3 or mode == 5)
+        if pend == 1 and lane then wait_clock = Loop.PendingWaitsClock(lane) end
     end
     -- A capture ARMS first and turns into a take on the quantize boundary.
     -- Painting both red made a recording that had not started look exactly
@@ -1438,8 +1534,16 @@ local function drawCell(theme, t, s, x, y, w, h)
         Core.DrawText(cellLabel(t, s, nm, tw), x + bw + 2, y + 3,
                       tc[1], tc[2], tc[3], 0.95)
         UI.SetFontCaption()
-        Core.DrawText(audio and "audio" or barsLabel(cellBars(c)),
-                      x + bw + 2, y + h - 13, mc[1], mc[2], mc[3], 0.85)
+        if wait_clock then
+            -- it is not late, it is early: the clock it was launched against
+            -- has not started yet, and it will start with it
+            local pc = C.pending or C.accent
+            Core.DrawText("waiting for the transport",
+                          x + bw + 2, y + h - 13, pc[1], pc[2], pc[3], 0.9)
+        else
+            Core.DrawText(audio and "audio" or barsLabel(cellBars(c)),
+                          x + bw + 2, y + h - 13, mc[1], mc[2], mc[3], 0.85)
+        end
         UI.SetFontBody()
     end
 
@@ -2161,8 +2265,8 @@ local function frame(theme)
         -- own name, and the eye reads the light before the tooltip.
         local free = Loop.GetFreeRun()
         if UI.BarToggle("clock", "Clock", nil, not free,
-                        free and "Free run: clips launch with the transport stopped"
-                              or "Following the host transport") then
+                        free and "Free run: the session is its own clock — the first launch starts it"
+                              or "Following the host transport: a launch waits for it, then starts with it") then
             Loop.SetFreeRun(not free)
         end
         -- Q says WHEN a take starts, Rec says how long it runs. Together they
@@ -2223,8 +2327,8 @@ local function frame(theme)
         UI.Spacing(2)
     end
 
-    -- one call: gmem re-selected, one queued command out, live halves
-    -- re-derived. Everything below reads a coherent picture.
+    -- one call: gmem re-selected, live halves re-derived. Everything below
+    -- reads a coherent picture.
     Loop.Poll()
     -- Follow the engine rather than argue with it: a launch fired from
     -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
@@ -2445,6 +2549,9 @@ UI.Init("CP Session", 580, 400, {
 
 UI.OnClose(function()
     for t = 0, TRACKS - 1 do audioStop(t) audioCancel(t) end
+    -- our sounds leave with us, so the engine's clock must not keep running
+    -- for them: a flag that is only ever set is a clock that never stops
+    Loop.SetAudioRun(false)
     if state.registered then pcall(DragBus.Unregister, "session") end
 end)
 

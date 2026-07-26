@@ -43,6 +43,26 @@ version: 0.8
 // CLEAR / PANIC / transport stop drop the queue. Pending state lives in
 // gmem so the UI can show it and a warm reset keeps it.
 //
+// WHAT A LAUNCH WAITS FOR — one rule, both clocks, and the whole of it:
+//
+//   * STARTING needs a downbeat. With no clock there is none yet, so a start
+//     WAITS FOR THE CLOCK (pend_target = WAIT_CLOCK) and fires with its very
+//     first block — not a bar after it. That first block IS a boundary: the
+//     transport rolling is the downbeat everyone was waiting for.
+//   * STOPPING needs no downbeat. With no clock there is nothing left to
+//     finish, so a stop happens now.
+//   * FREE RUN is the session's own transport, and a transport nothing is
+//     running sits at ZERO — the free clock is held there while every lane is
+//     silent (and while Lua reports no sound cell playing, gmem[8]). So the
+//     first launch of a silent session lands on beat 0: immediate, in phase,
+//     and it is what starts the clock. Launch anything after that and it
+//     quantizes against what is already playing, which is the only moment a
+//     quantize means anything.
+//
+// This is what the session views do, and for the same reason: a quantize is
+// an agreement between clips, so it costs nothing when there is no one to
+// agree with.
+//
 // OVERDUB (cmd 8, mode 5): capture INTO the playing loop — gate playback
 // and MIDI capture run together, nothing is cleared on entry and the
 // gate's sounding notes are not flushed, so a playing lane slides into
@@ -59,7 +79,8 @@ options:gmem=CP_MidiLooper
 
 // 8 lanes: the Session view spends two per track (playing buffer + silent
 // twin) so a clip swap lands on the quantize boundary. Verified against the
-// gmem map below — LANE_CTRL and LANE_STATE still clear each other at 8.
+// gmem map below — LANE_CTRL 100 + 8*8 = 164 < 200, LANE_STATE 200 + 8*8 =
+// 264 < 400, the command ring 400 + 32*3 = 496 < 3000.
 MAX_LANES   = 8;
 MAX_NOTES   = 1024;
 NOTE_STRIDE = 4;           // start, length, pitch, vel
@@ -76,14 +97,34 @@ heap_top  = REC_START + MAX_LANES;
 freembuf(heap_top);
 
 // ---- gmem layout (shared with Lua) ----
-GMEM_CMD        = 0;    // edge command (1 rec, 2 stop-rec, 3 clear, 4 panic, 5 play, 6 stop, 7 clear-all, 8 overdub)
-GMEM_CMD_LANE   = 1;
-GMEM_CMD_ARG    = 2;
 GMEM_FREERUN    = 3;    // 0 = follow host transport, 1 = free internal clock
 GMEM_ARMED      = 4;    // lane monitoring live input (0..MAX_LANES-1), or <0 for NOBODY
-GMEM_CMD_SEQ    = 5;
 GMEM_LAUNCH_Q   = 6;    // launch quantize in beats (0 = immediate) — Lua-owned
-GMEM_CMD_ACK    = 7;    // seq of the last command actually consumed
+GMEM_AUDIO_RUN  = 8;    // 1 = a Lua sound cell is playing/queued (CP_Session).
+                        // The free clock is the SESSION's transport and sound
+                        // cells are part of the session, even though they never
+                        // touch a lane — without this the clock would sit at
+                        // zero under a playing sample and take its phase with it.
+// COMMAND RING. Lua writes a command and bumps the write cursor; this engine
+// drains EVERYTHING written since its last block, in order, on that block.
+//
+// It used to be one slot with a sequence number, so exactly one command could
+// travel per block and the sender had to wait for an acknowledgement before
+// sending the next. But the gestures that matter are never one command: a clip
+// swap is two (stop this half, launch that one) and a SCENE is one pair per
+// track. Trickled out one per frame, they could land on either side of a
+// quantize boundary — half the scene starting a bar before the other half, or
+// a clip stopping a bar before its replacement arrived. A gesture is one
+// intent and it now lands as one.
+//
+// Cells 0..2, 5 and 7 belonged to that protocol and are deliberately left
+// unused rather than recycled: an engine from before this change still reads
+// them, and Loop.Ensure has to be the thing that replaces it, not a stray
+// number landing in a slot it still believes in.
+GMEM_CMDQ       = 400;  // stride 3: +0 cmd, +1 lane, +2 arg
+CMDQ_SLOTS      = 32;   // one gesture is at most 2 per track; 32 is four scenes
+GMEM_CMD_W      = 9;    // write cursor (monotonic; the ring is its modulo)
+
 GMEM_LANE_CTRL  = 100;  // stride 8: +0 length_bars, +1 muted   (Lua -> JSFX)
 GMEM_LANE_STATE = 200;  // stride 8: +0 mode,+1 nev(SHARED),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 GMEM_TRANSPORT  = 3000;
@@ -105,7 +146,12 @@ LAYOUT_VER = 6;
 // an older run keeps playing the old code until something notices — this is
 // what lets Loop.Ensure notice, and refresh WITHOUT marking the block cold
 // (the loops survive, which bumping LAYOUT_VER would not allow).
-BUILD_VER = 3;
+BUILD_VER = 4;
+
+// A pending target that has no date yet: it fires on the clock's first block.
+// Real targets are beat positions and never negative, so any target below
+// -1e8 is this and nothing else.
+WAIT_CLOCK = -1e9;
 
 // The channel the CP suite tags its own PREVIEW notes with (a sampler pad, an
 // editor audition). Those travel the virtual-keyboard queue, which is a
@@ -139,6 +185,39 @@ function finalize_note(cl, p, endphase, Lb, heldstop) local(n, ln, na) (
     );
     PEND_ST[cl*128+p] = -1;
   );
+);
+
+// WHERE A START LANDS. Three answers, and only three:
+//   * no clock            -> WAIT_CLOCK: it starts WITH the clock, whenever
+//                            that is. A start with no downbeat is not a start.
+//   * the clock's own      -> pb: the first block of a clock IS a boundary, so
+//     first block             what waited for the transport starts with it
+//                             rather than a bar after it.
+//   * otherwise            -> the next quantize boundary (a position within
+//                             0.05 beat past one counts as ON it).
+function launch_target() local(qph) (
+  !active ? WAIT_CLOCK : (
+    (clock_start || launch_q <= 0.001) ? pb : (
+      qph = pb - floor(pb / launch_q) * launch_q;
+      qph < 0.05 ? pb - qph : pb - qph + launch_q;
+    );
+  );
+);
+
+// WHERE A STOP LANDS. The same boundary while a clock runs — a clip finishes
+// its bar — but NOW when there is none: nothing is sounding, so there is
+// nothing left to finish and waiting would only strand the lane.
+function stop_target() local(qph) (
+  (!active || clock_start || launch_q <= 0.001) ? pb : (
+    qph = pb - floor(pb / launch_q) * launch_q;
+    qph < 0.05 ? pb - qph : pb - qph + launch_q;
+  );
+);
+
+// Does this target mean "queue it"? A real boundary ahead of us, or the
+// no-date one that waits for the clock.
+function is_queued(tq) (
+  tq < -1e8 || tq > pb + 0.0005;
 );
 
 // @init is NOT only "the looper was created". REAPER re-runs it whenever the
@@ -184,9 +263,9 @@ loop(MAX_LANES,
   li += 1;
 );
 
-// adopt the command cursor rather than -1: a reset must not re-dispatch the last
-// command, and the free clock must not jump back to 0 mid-jam.
-last_seq  = gmem[GMEM_CMD_SEQ];
+// adopt the command cursor rather than 0: a reset must not re-dispatch what the
+// ring still holds, and the free clock must not jump back to 0 mid-jam.
+last_w    = gmem[GMEM_CMD_W];
 free_beat = cold ? 0 : gmem[GMEM_FREEBEAT];
 // A cold block is all zeros, and 0 is a valid lane index — so leaving it alone
 // would arm lane 0 by accident, which is the whole defect. Say "nobody".
@@ -210,10 +289,31 @@ block_beats = samplesblock / spb;
 // stopped. `active` = the looper is advancing; `pb` = its beat position.
 freerun = gmem[GMEM_FREERUN] >= 0.5;
 launch_q = gmem[GMEM_LAUNCH_Q];
-free_beat += block_beats;
+
+// IS THE SESSION RUNNING? A lane sounding or capturing, or a sound cell Lua is
+// playing. SOUNDING, not merely queued: a launch waiting for a clock must not
+// be what starts it, or the wait would move the very boundary it waits for.
+//
+// The free clock is the session's own transport, so it only advances while
+// there is a session to keep time for — held at zero otherwise. That is what
+// makes the first launch of a silent session land on beat 0: immediate, in
+// phase, and itself the thing that starts the clock. Everything launched after
+// it quantizes against what is already playing, which is the only moment a
+// quantize means anything.
+sbusy = gmem[GMEM_AUDIO_RUN] >= 0.5;
+li = 0;
+loop(MAX_LANES,
+  m = gmem[GMEM_LANE_STATE + li*8 + 0];
+  (m == 1 || m == 3 || m == 5) ? sbusy = 1;
+  li += 1;
+);
+free_beat = sbusy ? free_beat + block_beats : 0;
 gmem[GMEM_FREEBEAT] = free_beat;   // mirrored so a plugin reset resumes in place
 pb = freerun ? free_beat : beat_position;
 active = freerun || playing;
+// The clock's FIRST block: a boundary in its own right, and the one every
+// start that had no clock to land on has been waiting for.
+clock_start = (active >= 0.5 && prev_active < 0.5);
 
 // Clock-source switch: pb jumps to a different timebase. Re-anchor every lane's
 // record start — and any pending-launch target — by the SAME jump so an
@@ -226,7 +326,10 @@ active = freerun || playing;
   li = 0;
   loop(MAX_LANES,
     REC_START[li] = REC_START[li] + pbd;
-    gmem[GMEM_LANE_STATE + li*8 + 6] > 0 ? (
+    // a target with no date yet keeps having none: it waits for a clock, not
+    // for a beat, so there is nothing in it to re-anchor
+    (gmem[GMEM_LANE_STATE + li*8 + 6] > 0
+     && gmem[GMEM_LANE_STATE + li*8 + 7] > -1e8) ? (
       gmem[GMEM_LANE_STATE + li*8 + 7] = gmem[GMEM_LANE_STATE + li*8 + 7] + pbd;
     );
     li += 1;
@@ -274,12 +377,17 @@ gmem[GMEM_TRANSPORT + 4] = ts_num;
 gmem[GMEM_TRANSPORT + 5] = ts_denom;
 gmem[GMEM_TRANSPORT + 6] = srate;
 
-// ---- edge command ----
-seq = gmem[GMEM_CMD_SEQ];
-seq != last_seq ? (
-  last_seq = seq;
-  cmd = gmem[GMEM_CMD];
-  cl  = gmem[GMEM_CMD_LANE];
+// ---- commands: drain the whole ring, so one gesture is one block ----
+wcur = gmem[GMEM_CMD_W];
+// Overrun (more written in one block than the ring holds — it cannot happen
+// with 32 slots and gestures of at most 16, but a lost engine block would):
+// keep the NEWEST, since the oldest are the ones already overwritten.
+(wcur - last_w) > CMDQ_SLOTS ? last_w = wcur - CMDQ_SLOTS;
+while (last_w < wcur) (
+  ci  = (last_w - floor(last_w / CMDQ_SLOTS) * CMDQ_SLOTS) * 3;
+  cmd = gmem[GMEM_CMDQ + ci + 0];
+  cl  = gmem[GMEM_CMDQ + ci + 1];
+  last_w += 1;
   (cl >= 0 && cl < MAX_LANES) ? (
     Lbc = max(gmem[GMEM_LANE_CTRL + cl*8 + 0], 0.125) * max(ts_num, 1);
 
@@ -292,12 +400,8 @@ seq != last_seq ? (
         gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // queued rec -> cancel (toggle)
       ) : (
       active ? (
-        tq = pb;
-        launch_q > 0.001 ? (
-          qph = pb - floor(pb / launch_q) * launch_q;
-          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
-        );
-        tq > pb + 0.0005 ? (
+        tq = launch_target();
+        is_queued(tq) ? (
           // the lane keeps playing (or stays idle) until the boundary
           gmem[GMEM_LANE_STATE + cl*8 + 6] = 3;
           gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
@@ -324,11 +428,7 @@ seq != last_seq ? (
         gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // a queued rec/overdub: just drop it
       );
       (gmem[GMEM_LANE_STATE + cl*8 + 0] == 1 || gmem[GMEM_LANE_STATE + cl*8 + 0] == 5) ? (
-        tq = pb;
-        (active && launch_q > 0.001) ? (
-          qph = pb - floor(pb / launch_q) * launch_q;
-          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
-        );
+        tq = stop_target();
         tq > pb + 0.0005 ? (
           gmem[GMEM_LANE_STATE + cl*8 + 6] = 4;   // keep capturing till the boundary
           gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
@@ -354,12 +454,12 @@ seq != last_seq ? (
         gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // cancel a queued stop: keep playing
       ) : (
       gmem[GMEM_LANE_STATE + cl*8 + 0] == 2 ? (
-        tq = pb;
-        (active && launch_q > 0.001) ? (
-          qph = pb - floor(pb / launch_q) * launch_q;
-          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
-        );
-        tq > pb + 0.0005 ? (
+        // With no clock this queues rather than fires: a clip that "plays"
+        // against a stopped transport is a clip that lies — it sounds nothing,
+        // and it enters wherever the transport happens to land later. It waits,
+        // visibly, and starts WITH the transport.
+        tq = launch_target();
+        is_queued(tq) ? (
           gmem[GMEM_LANE_STATE + cl*8 + 6] = 1;
           gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
         ) : (
@@ -375,11 +475,7 @@ seq != last_seq ? (
         gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // cancel a queued play/rec/overdub
       ) : (
       (gmem[GMEM_LANE_STATE + cl*8 + 0] == 3 || gmem[GMEM_LANE_STATE + cl*8 + 0] == 5) ? (
-        tq = pb;
-        (active && launch_q > 0.001) ? (
-          qph = pb - floor(pb / launch_q) * launch_q;
-          tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
-        );
+        tq = stop_target();
         tq > pb + 0.0005 ? (
           gmem[GMEM_LANE_STATE + cl*8 + 6] = 2;
           gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
@@ -405,15 +501,10 @@ seq != last_seq ? (
       pnd == 5 ? (
         gmem[GMEM_LANE_STATE + cl*8 + 6] = 0;   // queued overdub -> cancel (toggle)
       ) : (
-      active ? (
         gmem[GMEM_LANE_STATE + cl*8 + 0] == 5 ? (
           // toggle off: finalize held notes, keep the loop playing —
           // same quantize discipline as STOP-REC
-          tq = pb;
-          launch_q > 0.001 ? (
-            qph = pb - floor(pb / launch_q) * launch_q;
-            tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
-          );
+          tq = stop_target();
           tq > pb + 0.0005 ? (
             gmem[GMEM_LANE_STATE + cl*8 + 6] = 4;
             gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
@@ -425,13 +516,10 @@ seq != last_seq ? (
         ) : (
           // enter: NO clearing and NO flush of the gate's sounding notes —
           // a playing lane slides into overdub without retriggering; a
-          // stopped/empty lane starts playing and capturing at once.
-          tq = pb;
-          launch_q > 0.001 ? (
-            qph = pb - floor(pb / launch_q) * launch_q;
-            tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
-          );
-          tq > pb + 0.0005 ? (
+          // stopped/empty lane starts playing and capturing at once. Entering
+          // is a START, so with no clock it waits for one like any other.
+          tq = launch_target();
+          is_queued(tq) ? (
             gmem[GMEM_LANE_STATE + cl*8 + 6] = 5;
             gmem[GMEM_LANE_STATE + cl*8 + 7] = tq;
           ) : (
@@ -441,7 +529,6 @@ seq != last_seq ? (
             gmem[GMEM_LANE_STATE + cl*8 + 4] = gmem[GMEM_LANE_STATE + cl*8 + 4] + 1;
           );
         );
-      );
       );
     );
 
@@ -495,12 +582,6 @@ seq != last_seq ? (
       );
     );
   );
-  gmem[GMEM_CMD] = 0;
-  // Acknowledge: the host reads ONE command per block, so a sender that
-  // needs two (swap a clip: stop one lane, launch another) must know this
-  // one was consumed before writing the next — otherwise it overwrites it
-  // and the command is simply lost.
-  gmem[GMEM_CMD_ACK] = seq;
 );
 
 // ---- armed lanes start capturing as soon as the clock runs (quantized to the
@@ -514,11 +595,10 @@ active ? (
     // armed -> recording. With a launch quantize the arm converts into a
     // queued rec at the next boundary instead of firing on the first block.
     (gmem[GMEM_LANE_STATE + li*8 + 0] == 4 && gmem[GMEM_LANE_STATE + li*8 + 6] == 0) ? (
-      tq = pb;
-      launch_q > 0.001 ? (
-        qph = pb - floor(pb / launch_q) * launch_q;
-        tq = qph < 0.05 ? pb - qph : pb - qph + launch_q;
-      );
+      // On the clock's first block launch_target answers pb, so a take armed
+      // against a stopped transport starts WITH it. Waiting a whole bar after
+      // pressing play is not a quantize, it is a bar of missing music.
+      tq = launch_target();
       tq > pb + 0.0005 ? (
         gmem[GMEM_LANE_STATE + li*8 + 6] = 3;
         gmem[GMEM_LANE_STATE + li*8 + 7] = tq;
@@ -542,6 +622,9 @@ active ? (
     pnd = gmem[GMEM_LANE_STATE + li*8 + 6];
     (pnd > 0 && pb >= gmem[GMEM_LANE_STATE + li*8 + 7] - 0.0005) ? (
       tgt = gmem[GMEM_LANE_STATE + li*8 + 7];
+      // it was waiting for a clock, not for a beat: the clock is here, so the
+      // beat it lands on is this one
+      tgt < -1e8 ? tgt = pb;
       pnd == 1 ? (
         gmem[GMEM_LANE_STATE + li*8 + 0] == 2 ? gmem[GMEM_LANE_STATE + li*8 + 0] = 3;
       );

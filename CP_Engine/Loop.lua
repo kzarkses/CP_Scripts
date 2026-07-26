@@ -38,11 +38,13 @@ Loop.NOTE_STRIDE = 4       -- start, length, pitch, vel (all in beats/0..127)
 -- is playing.
 Loop.TRACKS = Loop.MAX_LANES // 2
 
-local G_CMD, G_CMD_LANE, G_CMD_ARG, G_CMD_SEQ = 0, 1, 2, 5
-local G_CMD_ACK    = 7     -- seq the JSFX last consumed (command pacing)
+local G_CMD_W      = 9     -- command ring: write cursor (see sendCmd)
+local G_CMDQ       = 400   -- command ring: stride 3 (cmd, lane, arg)
+local CMDQ_SLOTS   = 32
 local G_FREERUN    = 3     -- 0 = follow host transport, 1 = free internal clock
 local G_ARMED      = 4     -- lane monitoring live input, or -1 for NOBODY
 local G_LAUNCH_Q   = 6     -- launch quantize in beats (0 = immediate)
+local G_AUDIO_RUN  = 8     -- 1 = a host is playing a sound cell (see SetAudioRun)
 local G_LANE_CTRL  = 100   -- stride 8: +0 length_bars, +1 muted
 local G_LANE_STATE = 200   -- stride 8: +0 mode,+1 nev(shared),+2 phase,+3 lenbeats,+4 evtver,+5 hascontent,+6 pending,+7 pend_target
 local G_TRANSPORT  = 3000  -- +0 tempo,+1 play_state,+2 beat,+3 spb,+4 ts_num,+5 ts_denom,+6 srate
@@ -58,7 +60,7 @@ local G_VERSION    = 3099
 -- like Lua bugs (a shortened loop folding its later bars onto the first one
 -- was exactly that). Bumping this makes Loop.Ensure refresh the engine, which
 -- the loops survive; bumping the JSFX's LAYOUT_VER would wipe them.
-Loop.ENGINE_BUILD = 3
+Loop.ENGINE_BUILD = 4
 local G_NOTE_BASE  = 10000
 
 local GMEM_NAME  = "CP_MidiLooper"
@@ -68,7 +70,6 @@ local EXT_TAG    = "CP_LOOPER"
 -- bound for speed (rebound in init once reaper is known)
 local gread, gwrite
 
-local seq = 0
 local attached = false        -- did gmem_attach succeed
 local Tracks                  -- optional Engine/Tracks (CP folder + mark)
 
@@ -559,52 +560,26 @@ function Loop.Ensure(create)
 end
 
 -- ---------------------------------------------------------------------------
--- Commands (payload first, seq last — the JSFX acts on the seq bump)
+-- Commands (payload first, cursor last — the engine drains on the bump)
 -- ---------------------------------------------------------------------------
--- The engine consumes ONE command per audio block, from a single slot. Two
--- commands written in the same script frame therefore lose the first — and
--- the gestures that matter most need two or more (swapping a clip = stop
--- one lane + launch another; firing a scene = one pair per track). So they
--- QUEUE here, and leave one at a time as the engine acknowledges them.
-local cq, cq_head, cq_tail = {}, 1, 0
-local wait_seq, wait_t = 0, 0
-
--- Push the next queued command if the engine is done with the previous one.
--- The gate reads the SLOT, not a private tally of what we sent: the slot is
--- shared by every CP window, and waiting only on our own commands would let
--- the Session overwrite the Looper's un-consumed one (and the other way
--- round) with nothing to show for it. The ack is the reliable signal; the
--- timeout is the fallback for an engine too old to send one (a frame is
--- ~33 ms, an audio block ~12 ms, so 60 ms means it has certainly run).
-function Loop.PumpCmd()
-    if not attached or cq_head > cq_tail then return end
-    local cur = gread(G_CMD_SEQ) or 0
-    if cur > 0 and (gread(G_CMD_ACK) or 0) ~= cur then
-        if cur ~= wait_seq then wait_seq, wait_t = cur, r.time_precise() end
-        if (r.time_precise() - wait_t) < 0.06 then return end
-    end
-    local c = cq[cq_head]
-    cq[cq_head] = nil
-    cq_head = cq_head + 1
-    if cq_head > cq_tail then cq_head, cq_tail = 1, 0 end   -- keep indices small
-    gwrite(G_CMD, c[1])
-    gwrite(G_CMD_LANE, c[2])
-    gwrite(G_CMD_ARG, c[3])
-    -- The counter must advance from what is IN gmem, not from a per-script
-    -- tally: the slot is shared by every CP window, and a script that kept
-    -- its own count would eventually write a number the engine has already
-    -- seen (it fires on `seq != last_seq`) — the command would vanish with
-    -- no trace. Reading it back makes the sequence global by construction.
-    seq = cur + 1
-    wait_seq, wait_t = seq, r.time_precise()
-    gwrite(G_CMD_SEQ, seq)
-end
-
+-- A RING, and the engine takes everything new on its next block. That is the
+-- whole point: the gestures that matter are never one command. Swapping a
+-- clip is two (stop this half, launch that one) and a scene is one pair per
+-- track — and while they left one at a time, one per frame, they could land on
+-- either side of a quantize boundary. Half a scene starting a bar before the
+-- other half is not a quantize, it is a bug with good manners.
+--
+-- The cursor is read from gmem rather than kept here: the ring is shared by
+-- every CP window, and a script counting on its own would write over another's
+-- un-drained command. Reading it back makes the order global by construction.
 local function sendCmd(cmd, lane, arg)
     if not attached then return end
-    cq_tail = cq_tail + 1
-    cq[cq_tail] = { cmd, lane or 0, arg or 0 }
-    Loop.PumpCmd()   -- an idle engine takes it immediately
+    local w = gread(G_CMD_W) or 0
+    local a = G_CMDQ + (w % CMDQ_SLOTS) * 3
+    gwrite(a + 0, cmd)
+    gwrite(a + 1, lane or 0)
+    gwrite(a + 2, arg or 0)
+    gwrite(G_CMD_W, w + 1)
 end
 
 -- REC: clears + captures when the clock runs; ARMS (non-destructive, mode 4)
@@ -660,6 +635,24 @@ end
 -- slaved) or run free so clips launch with the transport stopped.
 function Loop.SetFreeRun(on) if attached then gwrite(G_FREERUN, on and 1 or 0) end end
 function Loop.GetFreeRun()   return attached and gread(G_FREERUN) >= 0.5 end
+
+-- "Something of MINE is sounding" — said by a host that plays audio cells,
+-- which the engine cannot see (they are CF previews, not lanes). The free
+-- clock is the SESSION's transport and it sits at zero while the session is
+-- silent, so a sample playing with no lane running would otherwise take its
+-- phase reference with it. Written every frame while such a host runs, and
+-- cleared when it closes: a flag that is only ever set is a clock that never
+-- stops.
+function Loop.SetAudioRun(on) if attached then gwrite(G_AUDIO_RUN, on and 1 or 0) end end
+function Loop.GetAudioRun()   return attached and gread(G_AUDIO_RUN) >= 0.5 end
+
+-- A queued launch with no date: it is waiting for the CLOCK itself (Follow,
+-- with a transport that is not running) and fires with its first block. The
+-- UI says so instead of counting down to a beat that has no date.
+function Loop.PendingWaitsClock(lane)
+    if not attached then return false end
+    return (gread(G_LANE_STATE + lane * 8 + 7) or 0) < -1e8
+end
 
 -- Armed lane: the lane whose routed instrument you hear while playing live (the
 -- JSFX re-channels incoming MIDI onto that lane's channel). NOBODY is a real
@@ -827,9 +820,9 @@ end
 -- ---------------------------------------------------------------------------
 -- Per-frame pump — the ONE call every host makes before reading anything
 -- ---------------------------------------------------------------------------
--- Re-selects our gmem block (Engine/Tempo steals it), lets one queued command
--- leave, and re-derives the live half of each pair. Hosts used to do these
--- separately, or not at all, which is precisely how they drifted apart.
+-- Re-selects our gmem block (Engine/Tempo steals it) and re-derives the live
+-- half of each pair. Hosts used to do these separately, or not at all, which
+-- is precisely how they drifted apart.
 -- Lane destinations live on the router (P_EXT GUIDs) and are resolved to
 -- track pointers by a scan, so they are cached rather than re-read per frame.
 -- But the cache MUST follow the project: another window routing a column
@@ -881,7 +874,6 @@ end
 function Loop.Poll()
     if not attached then return end
     r.gmem_attach(GMEM_NAME)
-    Loop.PumpCmd()
     resolveLive()
     local c = r.GetProjectStateChangeCount(0)
     pollDests(c)

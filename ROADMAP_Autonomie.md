@@ -1219,3 +1219,72 @@ view.
   `TrackFX_GetFXName` alloue à chaque appel.
 - [x] **Le fader vertical manquait au toolkit** : `Widgets.VFaderAt`, avec un
   **cap** plutôt qu'une barre pleine — le point de prise doit se voir.
+- [x] **Des slots, trois sections, et le texte qui tient dans sa case.** La
+  chaîne se dessine en slots pleins ou vides, comme sur toute console — donc
+  plus de « + FX » : un slot vide *est* le bouton. Un slot vide sélectionne la
+  piste de la colonne et ouvre le **FX browser natif** (40271) ; un clic sur un
+  send ouvre la **fenêtre de routage** de REAPER (40293), où vivent ses vrais
+  paramètres. Une barre fine paraît quand la chaîne dépasse les slots visibles.
+- [x] **La position du son est une formule, pas un espoir** : `lockPhase`
+  redérive la position depuis le transport à chaque passe (4 ms de tolérance au
+  départ, veille de dérive à 30 ms toutes les demi-secondes), et la latence de
+  la chaîne (`pdc`) est compensée en nourrissant l'aperçu **plus loin dedans**.
+
+## Session 16 (2026-07-26) — une seule règle de lancement, et une geste = un bloc
+
+Le constat, posé à sa demande : en **Follow** avec le transport arrêté, un clip
+ne *attendait* pas — il passait en « playing » sans rien jouer, puis entrait au
+play là où le transport tombait. En **Free**, il attendait le Q alors que rien
+ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
+
+### La règle, et il n'y en a qu'une
+
+- [x] **DÉMARRER a besoin d'un temps fort.** Sans horloge il n'y en a pas encore,
+  donc un lancement **attend l'horloge** (`WAIT_CLOCK`) et part avec son
+  **premier bloc** — pas une mesure après. Ce premier bloc *est* une frontière :
+  le transport qui démarre est le temps fort que tout le monde attendait. Clips,
+  sons et prises attendent ensemble et atterrissent ensemble.
+- [x] **ARRÊTER n'a besoin de rien.** Sur une horloge qui tourne un clip finit sa
+  mesure ; sans horloge il n'y a plus rien à finir, donc il s'arrête tout de
+  suite. (`launch_target` / `stop_target` : deux fonctions, et les huit blocs de
+  quantize recopiés dans le JSFX deviennent huit appels.)
+- [x] **L'horloge libre est le transport de la session, et un transport que rien
+  ne fait tourner est à ZÉRO.** Elle est tenue là tant qu'aucune lane ne sonne
+  et qu'aucune cellule sonore ne joue — donc le premier lancement d'une session
+  silencieuse tombe sur le temps 0 : immédiat, en phase, et c'est lui qui
+  démarre l'horloge. Tout ce qui suit se quantifie contre ce qui joue déjà, ce
+  qui est le seul moment où une quantification veut dire quelque chose.
+- [x] **Le moteur ne voit pas un aperçu CF**, donc on le lui dit :
+  `Loop.SetAudioRun` (gmem 8), écrit chaque frame, posé *avant* que le son
+  existe, et effacé à la fermeture (`atexit`, donc même sur erreur).
+- [x] **La cellule dit ce qu'elle attend** : « waiting for the transport » au
+  lieu d'un clignotement qui se lit comme « bloqué ».
+
+### Un geste est une intention, il doit tenir en un bloc
+
+- [x] **File de commandes en ANNEAU** (gmem 400, 32 slots × 3 ; curseur en 9).
+  Le moteur draine tout ce qui a été écrit depuis son dernier bloc. Avant :
+  une seule case et un accusé de réception, donc **une commande par frame** —
+  or les gestes qui comptent n'en sont jamais une seule. Un échange de clip en
+  fait deux (arrêter cette moitié, lancer l'autre) et une **scène** en fait une
+  paire par piste : distillées une par frame, elles pouvaient tomber de part et
+  d'autre d'une frontière. Une demi-scène qui part une mesure avant l'autre
+  n'est pas une quantification, c'est un bug bien élevé.
+- [x] Disparaissent avec : `Loop.PumpCmd`, la file Lua, l'attente d'ACK et son
+  timeout de 60 ms. Les cases 0..2, 5 et 7 sont **laissées inutilisées** plutôt
+  que recyclées — un moteur d'avant y croit encore, et c'est `Loop.Ensure` qui
+  doit le remplacer, pas un nombre égaré.
+
+### Le son sur les deux horloges
+
+- [x] **Une seule question, deux réponses** : `elapsed(a)` rend le temps écoulé
+  depuis la frontière, mesuré sur le **thread audio** dans les deux cas —
+  `GetPlayPosition2` en Follow, le beat du moteur (que le JSFX avance un bloc à
+  la fois) en Free. `lockPhase` tient donc **aussi en Free**, où il renonçait
+  faute de transport : c'est exactement là que le son partait à la dérive.
+- [x] **Un lancement mis en attente sans horloge part au premier temps de
+  celle-ci**, et non à la frontière *suivante* — c'est ce qui laissait un son
+  une mesure entière derrière le clip lancé avec lui.
+- [x] **Changer d'horloge sous un son qui joue** ne le déplace plus : c'est la
+  référence qui bouge (`reanchor`), et les cibles en attente sont recalculées
+  sur la nouvelle horloge. Le moteur fait déjà ça pour ses lanes.
