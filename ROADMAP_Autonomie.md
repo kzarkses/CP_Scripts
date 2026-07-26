@@ -1158,3 +1158,64 @@ Reste **une** couture assumée, écrite dans l'aide : après un arrêt puis un
 redépart du transport, un son repart de son début là où un clip reprend en phase
 avec le beat. C'est le moteur intérimaire ; le moteur verrouillé à
 l'échantillon est ce qui la ferme.
+
+## Session 15 (2026-07-26) — la sortie du son, et le mixer qui devient une console
+
+### Le son sortait par la porte de derrière
+
+- [x] **Un aperçu sans piste de sortie part DIRECTEMENT au matériel** : pas par
+  le fader de la colonne, pas par le master, pas dans ce qu'on enregistre. Le
+  son était audible et *nulle part* — et c'est très probablement pourquoi il
+  était aussi décalé, puisqu'il sautait le chemin de sortie sur lequel tout le
+  projet est aligné.
+  La règle « pas de piste quand elle porte un instrument » était juste sur le
+  fait (un synth remplace son entrée par sa propre sortie, l'audio y disparaît)
+  et fausse sur la conclusion. `previewDest` cherche le premier endroit **en
+  aval** qui peut prendre de l'audio : la piste elle-même, sinon le dossier où
+  elle vit, sinon le master.
+- [x] **Le tempo se décide au même endroit que dans le navigateur.**
+  `Preview.TempoSyncRate` connaît le tempo-match de REAPER **et** le BPM écrit
+  dans le nom de fichier ; la grille n'appelait que le premier et jouait donc à
+  1.0 ce que le navigateur étirait. Le `src_bpm` porté par le clip gagne quand
+  il y en a un.
+- [x] **Le rattrapage de phase se mesure en temps projet** contre
+  `GetPlayPosition2` (la position que le thread audio s'apprête à rendre, donc
+  celle où le premier échantillon tombe), **plus une demi-frame audio** :
+  l'aperçu est ramassé au bloc suivant, son vrai départ est quelque part dans
+  `[maintenant, maintenant + un bloc]`.
+- [x] **Un REC qui n'a rien capturé le dit.** Avec Rec: 1 bar tout est fini deux
+  secondes après le play, et une cellule qui cesse simplement de clignoter se
+  lit comme « l'enregistrement a été supprimé ».
+- [x] **Le toggle Clock est allumé quand on SUIT l'horloge.** Un bouton appelé
+  Clock qui s'allume pour dire « pas d'horloge » dit le contraire de son nom, et
+  l'œil lit la lumière avant l'infobulle. (Corrigé aussi dans CP_Looper.)
+
+### Le mixer : la décision de la session 7 est révisée, à sa demande
+
+« Mixer : pas de console » était vrai du **format** et faux de la **vue**. Rien
+dans ce qui suit n'est un second moteur de mixage : chaque valeur est l'état de
+piste de REAPER, lu et écrit par son API, et la fenêtre de chaîne qui s'ouvre est
+la sienne. Ce qui manquait à la session, c'était la **chaîne** et les **sends**
+de ce qu'elle lance, *à côté* de ce qu'elle lance — y accéder demandait de
+quitter la fenêtre, et ne pas quitter la fenêtre est ce à quoi sert une session
+view.
+
+- [x] **Une tranche par colonne** : chaîne FX, sends, pan, fader vertical +
+  vumètre, M/S.
+- [x] **La hauteur de la zone est le seul réglage.** On tire son seam et, de bas
+  en haut, apparaissent le bloc de fader, puis les sends, puis la chaîne. Pas de
+  sous-cases à cocher : la hauteur *est* la réponse, et c'est un geste au lieu de
+  trois cases.
+- [x] **FX** : clic pour ouvrir, Ctrl-clic bypass, Alt-clic supprimer, clic droit
+  pour les trois. Glisser réordonne ; glisser sur une autre colonne **déplace**
+  (Ctrl : copie) — `TrackFX_CopyToTrack`, donc le plugin garde ses paramètres,
+  son automation et sa fenêtre. Un FX glissé depuis le Media Explorer atterrit
+  dans la tranche où on le lâche (le bus de drag portait déjà le type `fx`).
+- [x] **Sends** : chaque ligne EST le send — on la tire pour régler son niveau,
+  clic droit pour muter ou retirer. Pour en créer un, on tire « + send » sur la
+  colonne destinataire : le geste dit *d'ici vers là*.
+- [x] **Les seules chaînes de caractères du lot sont cachées** contre le compteur
+  de changements du projet. Une tranche se redessine trente fois par seconde et
+  `TrackFX_GetFXName` alloue à chaque appel.
+- [x] **Le fader vertical manquait au toolkit** : `Widgets.VFaderAt`, avec un
+  **cap** plutôt qu'une barre pleine — le point de prise doit se voir.
