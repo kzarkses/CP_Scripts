@@ -118,13 +118,21 @@ the copy keeps it.
 ## Sound or MIDI, same cell
 Any cell takes either. Drop a sound from the Media Explorer and it
 loops TEMPO-MATCHED (native stretch) through that column's track. Drop
-or write MIDI and it plays through the engine. A track still plays ONE
-thing at a time, whichever kind — launching a sound stops the MIDI
-under it and the other way round. A sound obeys the clock like
-everything else: it lands on the Q boundary, and with Clock: Follow and
-the transport stopped it is ARMED and blinks until the transport rolls.
+or write MIDI and it plays through the engine.
+
+A sound answers a click exactly as a clip does, because it lives in the
+same two halves: launching is QUEUED to the Q boundary and blinks until
+it lands, STOPPING is queued too (a clip finishes its bar, it does not
+stop under your finger), swapping one sound for another happens on ONE
+boundary with no gap, and clicking again takes back whatever is still
+only queued. A track plays ONE thing at a time whichever kind, so a
+sound leaves on the boundary the MIDI arrives on, and the other way
+round. With Clock: Follow and the transport stopped, a sound is ARMED
+and waits for the transport, as everything else does.
 (Sounds use the interim preview engine; the sample-locked one comes
-later.)
+later — one visible seam is left: after the transport stops and rolls
+again, a sound restarts from its beginning where a clip resumes in
+phase with the beat.)
 
 ## The mixer strip
 The band under the grid (toggle it beside the "?") balances what you
@@ -368,7 +376,14 @@ end
 -- track plays one thing, whatever its kind.
 -- ---------------------------------------------------------------------------
 local HAS_CF = r.CF_CreatePreview ~= nil
-local aplay = {}   -- [t] = { s, c, at, prev, src } the sound this track holds
+-- A sound cell lives in the SAME two states a MIDI clip does, because a track
+-- has the same two halves whatever it plays: one sounding, one waiting for the
+-- boundary. aplay is the live half, aqueue the twin — and every gesture below
+-- is written against that pair so a sound answers a click exactly as a clip
+-- does: launches queued, stops queued, swaps landing on one boundary, and a
+-- second click taking back whichever of the two is still only queued.
+local aplay  = {}  -- [t] = { s, c, at, prev, src, stop_at }  the sound heard
+local aqueue = {}  -- [t] = { s, c, at }                      the sound waiting
 
 local function audioStop(t)
     local a = aplay[t]
@@ -378,14 +393,15 @@ local function audioStop(t)
     aplay[t] = nil
 end
 
--- Give back the preview but KEEP the cell armed: what the transport took away
--- it can give back. Used when the clock follows a transport that stopped.
-local function audioRelease(t)
-    local a = aplay[t]
+local function audioCancel(t) aqueue[t] = nil end
+
+-- Give the preview back without forgetting the cell: what the transport took
+-- away it can give back. Used when the clock follows a transport that stopped.
+local function audioRelease(a)
     if not a then return end
     if a.prev then pcall(r.CF_Preview_Stop, a.prev) end
     if a.src then r.PCM_Source_Destroy(a.src) end
-    a.prev, a.src, a.at = nil, nil, nil
+    a.prev, a.src, a.at, a.stop_at = nil, nil, nil, nil
 end
 
 -- WHERE A LAUNCH LANDS, on the engine's own clock (host beat when following,
@@ -468,32 +484,57 @@ local function clockRolling()
     return (r.GetPlayState() & 1) == 1
 end
 
--- Launch a sound cell: it is ARMED here and pollAudio starts it on the Q
--- boundary, exactly as a MIDI clip is queued and fires on the boundary. Two
--- things follow from that and both were wrong before: a launch with the clock
--- following a STOPPED transport waits for the transport (there is no beat to
--- land on until then), and a launch with Q: 2 bars waits two bars instead of
--- landing on whatever measure came next.
-local function audioPlay(t, s, c)
-    audioStop(t)
+-- The waiting half becomes the sounding one. Whatever the track was playing
+-- leaves in the SAME call, so the swap is one boundary and not two.
+local function audioFire(t, beat)
+    local q = aqueue[t]
+    if not q then return end
+    if aplay[t] then audioStop(t) end
+    aqueue[t] = nil
+    aplay[t] = q
+    audioStart(t, beat)
+end
+
+-- Queue a launch. It is ARMED here and fires on the Q boundary, exactly as a
+-- MIDI clip is queued and fires on the boundary — with the clock following a
+-- STOPPED transport there is no beat to land on, so it simply waits for one.
+local function audioArm(t, s, c)
     if not HAS_CF then flash("Audio cells need the SWS extension") return end
-    local a = { s = s, c = c }
-    aplay[t] = a
+    local q = { s = s, c = c }
+    aqueue[t] = q
     -- Q: Off means NOW, and now is this frame — waiting for the next poll
     -- would put a frame of silence under every unquantized launch.
     if clockRolling() then
-        a.at = launchBeat()
+        q.at = launchBeat()
         local beat = Loop.EngineBeat()
-        if beat >= a.at then audioStart(t, beat) end
+        if beat >= q.at then audioFire(t, beat) end
     end
 end
 
+-- Queue the stop of what sounds. A clip does not stop under your finger — it
+-- finishes on the boundary — and a sound has no reason to be the exception.
+local function audioQueueStop(t)
+    local a = aplay[t]
+    if not a or a.stop_at then return end
+    if not clockRolling() then audioStop(t) return end
+    a.stop_at = launchBeat()
+    if Loop.EngineBeat() >= a.stop_at then audioStop(t) end
+end
+
+-- Everything this track sounds LEAVES on the next boundary: what is queued
+-- simply drops, what sounds is queued to stop. The MIDI half of the same move
+-- is Loop.StopClip, which the engine has always honoured on the boundary.
+local function audioYield(t)
+    audioCancel(t)
+    audioQueueStop(t)
+end
+
 -- Per-frame reconciliation of the sound cells with the clock:
---   * armed, clock stopped          → no target yet (see below)
---   * armed, clock rolling          → take a target, start when it is reached
---   * playing, the transport left   → give the preview back, stay armed
+--   * clock stopped                 → give the preview back, keep the cell
+--   * sounding + a stop queued      → stop it on the boundary
+--   * waiting + its boundary passed → fire (which evicts the sounding one)
 --
--- The target is dropped whenever the clock is not rolling and taken again when
+-- Targets are dropped whenever the clock is not rolling and taken again when
 -- it is. A boundary computed on a frozen playhead is a beat number in a past
 -- the transport is about to leave: pressing play would either fire the clip at
 -- once or, worse, leave it waiting for a beat that will not come round for
@@ -502,17 +543,28 @@ local function pollAudio()
     local rolling = clockRolling()
     local beat = rolling and Loop.EngineBeat() or 0
     for t = 0, TRACKS - 1 do
-        local a = aplay[t]
-        if a then
-            if not a.prev then
-                if not rolling then
-                    a.at = nil
-                else
-                    if not a.at then a.at = launchBeat() end
-                    if beat >= a.at then audioStart(t, beat) end
-                end
-            elseif not rolling then
-                audioRelease(t)
+        local a, q = aplay[t], aqueue[t]
+        if not rolling then
+            if a then
+                -- it becomes a sound WAITING, which is what it now is — unless
+                -- a launch was already queued over it (the newer word), or it
+                -- was on its way out anyway, in which case the transport
+                -- stopping is simply where it goes
+                local leaving = a.stop_at ~= nil
+                audioRelease(a)
+                if not q and not leaving then aqueue[t] = a end
+                aplay[t] = nil
+            end
+            local w = aqueue[t]
+            if w then w.at = nil end
+        else
+            if a and a.stop_at and beat >= a.stop_at then
+                audioStop(t)
+                a = nil
+            end
+            if q then
+                if not q.at then q.at = launchBeat() end
+                if beat >= q.at then audioFire(t, beat) end
             end
         end
     end
@@ -550,7 +602,7 @@ local function armLane(lane, c, t, s)
 end
 
 local function stopTrack(t)
-    audioStop(t)   -- a track plays ONE thing, whatever its kind
+    audioYield(t)  -- a track plays ONE thing, whatever its kind
     local lane = liveLane(t)
     local m = floor(Loop.Mode(lane) + 0.5)
     if m == 3 or m == 5 then Loop.StopClip(lane)
@@ -563,12 +615,27 @@ end
 local function launchCell(t, s)
     local c = cells[t][s]
     if isAudio(c) then
-        -- sound cell: same gestures, different engine. Re-launching the one
-        -- that plays stops it, and starting it evicts whatever the track had.
+        -- Sound cell: different engine, SAME grammar. The three answers a clip
+        -- gives to a click are the three this gives — cancel what is only
+        -- queued, queue the stop of what plays, or queue a launch and let the
+        -- outgoing one leave on that same boundary.
+        local q = aqueue[t]
+        if q and q.s == s then
+            aqueue[t] = nil                       -- cancel the queued launch…
+            local a = aplay[t]
+            if a then a.stop_at = nil end         -- …and keep what was playing
+            local live = liveLane(t)              -- MIDI outgoing: same rescue
+            if Loop.Pending(live) == 2 then Loop.Play(live) end
+            return
+        end
         local a = aplay[t]
-        if a and a.s == s then audioStop(t) return end
-        stopTrack(t)
-        audioPlay(t, s, c)
+        if a and a.s == s then
+            if a.stop_at then a.stop_at = nil     -- take the queued stop back
+            else audioQueueStop(t) end
+            return
+        end
+        stopTrack(t)                              -- whatever plays leaves on the boundary
+        audioArm(t, s, c)
         cur[t] = s
         return
     end
@@ -599,13 +666,13 @@ local function launchCell(t, s)
             return
         end
         if isRunning(mine) then                         -- playing: this click stops it
-            audioStop(t)
+            audioYield(t)
             Loop.StopClip(mine)
             return
         end
     end
 
-    audioStop(t)   -- this track was playing a sound: it leaves
+    audioYield(t)  -- a sound on this track leaves on the same boundary
     local live = liveLane(t)
     -- a launch queued on the other half loses: a track plays ONE clip, and
     -- this click is what chose which
@@ -634,7 +701,10 @@ end
 -- track without one STOPS (Ableton's default — a scene is a full picture).
 local function sceneLaunch(s)
     for t = 0, TRACKS - 1 do
-        if cells[t][s] and cellNotes(cells[t][s]) > 0 then
+        -- a sound counts as a clip here: asking for the NOTES of an audio cell
+        -- answers zero, and a scene holding sounds stopped those tracks
+        local c = cells[t][s]
+        if c and (isAudio(c) or cellNotes(c) > 0) then
             launchCell(t, s)
         else
             stopTrack(t)
@@ -742,7 +812,7 @@ end
 -- whenever the live half is busy, exactly as launchCell does. Sending REC to
 -- the live half instead would have cleared the clip the track was playing.
 local function recCell(t, s)
-    audioStop(t)                            -- a sound cell on this track leaves
+    audioYield(t)                           -- on the boundary the take arrives on
     local live = liveLane(t)
     local other = (live == t) and (t + TRACKS) or t
     if Loop.Pending(other) == 1 then Loop.StopClip(other) end
@@ -824,10 +894,12 @@ local function clearCell(t, s)
     cells[t][s] = nil
     saveGrid()
     if lane then Loop.Clear(lane) end
-    if cur[t] == s then
-        audioStop(t)
-        cur[t] = nil
-    end
+    -- a deleted clip stops NOW, boundary or not: there is nothing left to
+    -- finish, and waiting would play a cell the grid no longer has
+    local a, q = aplay[t], aqueue[t]
+    if a and a.s == s then audioStop(t) end
+    if q and q.s == s then audioCancel(t) end
+    if cur[t] == s then cur[t] = nil end
 end
 
 -- Deep copy of a clip descriptor: the copy must own its notes, or editing one
@@ -1013,11 +1085,17 @@ local function drawCell(theme, t, s, x, y, w, h)
     local pend = lane and Loop.Pending(lane) or 0
     local playing
     if audio then
-        local a = aplay[t]
-        -- armed but not started (the clock follows a stopped transport) is
-        -- the same state a queued MIDI launch is in, and wears its colour
+        -- The two halves say exactly what the engine's two say: a queued
+        -- launch is pending 1, a queued stop pending 2, and a sound whose
+        -- preview the transport took back is queued again — same states, same
+        -- colours, whatever kind of thing the cell holds.
+        local a, q = aplay[t], aqueue[t]
         playing = (a ~= nil and a.s == s and a.prev ~= nil)
-        if a and a.s == s and not a.prev then pend = 1 end
+        if q and q.s == s then pend = 1
+        elseif a and a.s == s then
+            if a.stop_at then pend = 2
+            elseif not a.prev then pend = 1 end
+        end
     else
         playing = (mode == 3 or mode == 5)
     end
@@ -1460,7 +1538,7 @@ local function frame(theme)
     -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
     -- know. (Sound cells are this window's own business — skip those.)
     for t = 0, TRACKS - 1 do
-        if not aplay[t] then
+        if not aplay[t] and not aqueue[t] then
             local s = sceneOfLane(liveLane(t), t)
             if s and s ~= cur[t] then cur[t] = s end
         end
@@ -1620,7 +1698,7 @@ local function frame(theme)
     -- CF_Preview and needs neither of the other two).
     local audio_on = false
     for t = 0, TRACKS - 1 do
-        if aplay[t] then audio_on = true break end
+        if aplay[t] or aqueue[t] then audio_on = true break end
     end
     if Loop.Playing() or mix_hot or audio_on then
         UI.RequestRedraw()
@@ -1638,7 +1716,7 @@ UI.Init("CP Session", 580, 400, {
 })
 
 UI.OnClose(function()
-    for t = 0, TRACKS - 1 do audioStop(t) end
+    for t = 0, TRACKS - 1 do audioStop(t) audioCancel(t) end
     if state.registered then pcall(DragBus.Unregister, "session") end
 end)
 

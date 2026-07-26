@@ -1124,3 +1124,37 @@ séparément puisque l'audio de l'instrument passait par le fader du kit.
   fait rien parce qu'une fenêtre était fermée serait pire que pas de
   double-clic du tout. Le choix est dans les options (éditeur / insertion au
   curseur), et un `.mid` prend l'autre route quoi qu'il arrive.
+
+### CP_Session — parité complète entre un son et un clip
+
+Le Q réglé, restait le reste : un son ne répondait pas à un clic comme un clip,
+et l'écart se sentait sans se nommer. Il tenait à une asymétrie de structure —
+une piste MIDI a **deux moitiés** (celle qui sonne, la jumelle qui attend), un
+son n'en avait qu'une. Il en a deux maintenant, `aplay` et `aqueue`, et chaque
+geste est écrit contre cette paire.
+
+- [x] **L'arrêt est mis en file, comme le lancement.** Un clip ne s'arrête pas
+  sous le doigt, il finit sa mesure ; un son n'avait aucune raison d'être
+  l'exception. Deuxième clic sur un son qui joue = arrêt à la frontière (le
+  clignotement *pending 2*, la couleur du texte, exactement comme une lane).
+- [x] **L'échange se fait sur UNE frontière.** Lancer un son sur une piste qui
+  en jouait déjà un coupait le premier **tout de suite** et faisait attendre le
+  second : un trou de silence long comme le Q. Le sortant est maintenant mis en
+  file sur la frontière du rentrant, et le poll fait les deux dans la même
+  frame. Idem dans les deux sens entre MIDI et son.
+- [x] **Annuler ce qui n'est que mis en file rend ce qui jouait.** C'était déjà
+  la discipline des lanes (`Pending(twin) == 2 → Loop.Play(twin)`) ; le son la
+  suit, et un clic sur un arrêt en attente le reprend.
+- [x] **Un scene launch lance enfin les sons.** `sceneLaunch` demandait les
+  NOTES de la cellule pour décider si elle avait du contenu — une cellule audio
+  en a zéro, donc une scène contenant des sons **arrêtait** ces pistes-là.
+- [x] **Supprimer une cellule arrête tout de suite** (frontière ou pas : il n'y
+  a plus rien à finir), et une cellule dont l'aperçu a été repris par un
+  transport arrêté redevient une cellule *en attente* — sauf si elle était déjà
+  en train de sortir, auquel cas l'arrêt du transport est simplement là où elle
+  va.
+
+Reste **une** couture assumée, écrite dans l'aide : après un arrêt puis un
+redépart du transport, un son repart de son début là où un clip reprend en phase
+avec le beat. C'est le moteur intérimaire ; le moteur verrouillé à
+l'échantillon est ce qui la ferme.
