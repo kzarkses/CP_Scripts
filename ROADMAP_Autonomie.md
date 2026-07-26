@@ -1352,6 +1352,31 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   plus un bloc, 60 ms — parce qu'au-delà ce n'est plus du dépassement, c'est
   notre propre lenteur, et la retirer du début du son ne corrige rien : ça
   creuse un trou là où était le temps fort.
+- [x] **LE RÉSIDU ÉTAIT UNE FRAME D'AFFICHAGE, et on ne l'attend plus.** Après
+  tout ce qui précède il restait 21-41 ms — et 0 ms en MIDI. La différence est
+  entière : le moteur tire sur un **bloc audio** (3 ms), cette fenêtre tirait sur
+  une **frame** (30 ms). Aucune arithmétique après coup ne récupère ça : quand on
+  apprend que la frontière est passée, elle est passée.
+  Donc on n'arrive plus après elle. Le lancement se fait jusqu'à **45 ms AVANT**
+  la frontière, et l'aperçu est positionné d'autant depuis la **fin** de sa
+  source : il boucle, donc il atteint son propre zéro *sur* le temps. Ce qu'on
+  entend entre-temps est la queue de la boucle — ce qu'une boucle *est*, et au
+  plus une frame de queue.
+  La position devient une seule formule des deux côtés de la frontière, parce
+  que `elapsed` est **signé** : négatif avant (la queue), positif après (le
+  dépassement, retiré du début comme avant). `position = (elapsed × taux) mod
+  longueur`.
+- [x] **Un son remplacé finit sa frame.** Puisqu'on tire en avance, arrêter le
+  sortant au moment du tir le couperait une frame avant la frontière qu'on lui
+  avait donnée. Il est mis de côté et libéré à la frame suivante : les deux se
+  chevauchent exactement sur l'avance, ce qui est ce qu'un échange fait sur une
+  console — pas un trou.
+- [x] **Le tempo du projet change sous un son qui joue, et le son suit.** Le taux
+  était décidé à l'ouverture, donc une boucle gardait le tempo de son lancement
+  jusqu'à ce qu'on l'arrête et la relance à la main. Le BPM propre de la source
+  est dérivé à l'ouverture (tempo ÷ taux, exact et gratuit), donc le nouveau taux
+  est une division — pas de réouverture, pas de seconde analyse. Et c'est la
+  référence qui bouge, pas le son.
 - [x] **Ce qui ne peut PAS être préparé d'avance : l'objet aperçu lui-même.**
   SWS balaie un aperçu créé et jamais démarré à la fin du cycle defer — la règle
   était déjà écrite en tête de `Engine/Preview`, et je l'ai enfreinte. Construit

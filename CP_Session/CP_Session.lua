@@ -661,6 +661,11 @@ local function audioOpen(a)
     a.src  = src
     a.rt   = rt
     a.slen = r.GetMediaSourceLength(src)
+    -- The source's OWN tempo, derived rather than asked for again: the rate is
+    -- the project's tempo over it. Keeping it is what lets a playing loop
+    -- follow a tempo change with one division instead of a second analysis.
+    local pb = r.Master_GetTempo() or 0
+    a.bpm = (pb > 1 and rt > 0) and (pb / rt) or nil
 end
 
 -- Build the preview and hand it its settings. Cheap — no disk, no analysis —
@@ -699,17 +704,29 @@ local function audioBuild(a, t)
     return prev
 end
 
--- Actually make the sound, at the beat we have REACHED — which is a hair past
--- the boundary we aimed at, because a frame is 16 ms wide. Starting there and
--- then would leave the sound late by that hair for as long as it loops, so the
--- overshoot is taken off the FRONT of the sample instead: the clip lands in
--- phase, at the cost of a few ms of attack nobody hears.
+-- START IT EARLY, IN THE TAIL OF ITS OWN LOOP.
 --
--- And that overshoot is bounded by what it IS: one frame of waiting, plus a
--- block. Anything past OVERSHOOT_MAX cannot be overshoot — it is our own
--- slowness — and taking it off the front of the sample is not a correction,
--- it is a hole where the downbeat was.
-local OVERSHOOT_MAX = 0.060
+-- The engine fires a clip on an AUDIO BLOCK — three milliseconds wide. This
+-- window fires a sound on a DISPLAY FRAME, thirty. That one difference is the
+-- whole of the 21-41 ms that was left, and no amount of arithmetic after the
+-- fact can recover it: by the time we know the boundary has passed, it has.
+--
+-- So we stop arriving after it. The launch happens up to LEAD seconds BEFORE
+-- the boundary, and the preview is positioned that far from the END of its
+-- source: it loops, so it reaches its own zero exactly ON the beat. What is
+-- heard in between is the loop's own tail — which is what a loop sounds like,
+-- and it is at most a frame of it.
+--
+-- The position is then one formula for both sides of the boundary, because
+-- `elapsed` is signed: negative before it (the tail), positive after (the
+-- overshoot, taken off the front as it always was).
+--
+--     position = (elapsed * rate) mod source_length
+--
+-- OFF_MAX is the sanity bound. Beyond it the reference is not something to
+-- believe, and moving the sound on its word is worse than starting it whole.
+local LEAD    = 0.045
+local OFF_MAX = 0.120
 
 local function audioStart(t)
     local a = aplay[t]
@@ -724,13 +741,17 @@ local function audioStart(t)
     a.t0     = (not Loop.GetFreeRun()) and r.TimeMap2_QNToTime(0, a.at or 0) or nil
     a.locked = false
 
-    -- What the boundary already owes us, plus half a block (the preview is
-    -- picked up on the NEXT one) and the chain's own latency.
+    -- Where the boundary stands relative to us — behind (we are late) or ahead
+    -- (we fired early, on purpose) — plus half a block, because the preview is
+    -- picked up on the NEXT one, plus the chain's own latency.
     local e = elapsed(a)
-    local over = (e or 0) + blockSlack() + a.pdc
-    if over < 0 or over > OVERSHOOT_MAX then over = 0 end
-    local skip = over * a.rt
-    if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
+    local off = (e or 0) + blockSlack() + a.pdc
+    if off > OFF_MAX or off < -OFF_MAX then off = 0 end
+    if a.slen and a.slen > 0 then
+        -- signed, and the modulo does the rest: past the boundary it takes the
+        -- overshoot off the front, before it lands in the loop's tail
+        r.CF_Preview_SetValue(prev, "D_POSITION", (off * a.rt) % a.slen)
+    end
 
     -- The session starts sounding HERE, not when the cell was clicked. Said
     -- any earlier, the engine's free clock would leave zero while we were
@@ -772,14 +793,15 @@ local LOCK_MAX = 0.250
 
 local function lockPhase(a)
     if a.locked or not a.prev or not a.slen or a.slen <= 0 then return end
-    a.locked = true                    -- once, whatever comes of it
     local e = elapsed(a)
-    if not e then return end
+    -- A sound launched EARLY has not reached its boundary yet: there is nothing
+    -- to check against, and burning the one correction here would spend it on a
+    -- question that has no answer. Wait for the beat to arrive.
+    if not e or e < 0 then return end
+    a.locked = true                    -- once, whatever comes of it
     -- + the chain's latency: the sample handed over now is the one that has to
     -- be HEARD after that delay, so the clip must already be that far ahead
-    local want = (e + (a.pdc or 0)) * a.rt
-    if want < 0 then return end
-    want = want % a.slen
+    local want = ((e + (a.pdc or 0)) * a.rt) % a.slen
     local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
     if not (ok and rv and pos) then return end
     local err = want - pos
@@ -798,12 +820,28 @@ local function clockRolling()
     return (r.GetPlayState() & 1) == 1
 end
 
+-- A sound that has been replaced, still playing out its last frame. A launch
+-- fires up to one frame EARLY (see LEAD), so stopping the outgoing one there
+-- would cut it a frame short of the boundary it was told to leave on. It is
+-- stashed instead and released on the next frame — the two overlap for exactly
+-- the span between the early start and the beat, which is what a swap sounds
+-- like on a console rather than a hole.
+local dying = {}
+
+local function reapDying()
+    for i = #dying, 1, -1 do
+        freeAudio(dying[i])
+        dying[i] = nil
+    end
+end
+
 -- The waiting half becomes the sounding one. Whatever the track was playing
 -- leaves in the SAME call, so the swap is one boundary and not two.
 local function audioFire(t)
     local q = aqueue[t]
     if not q then return end
-    if aplay[t] then audioStop(t) end
+    local out = aplay[t]
+    if out then dying[#dying + 1] = out end
     aqueue[t] = nil
     aplay[t] = q
     audioStart(t)
@@ -882,8 +920,10 @@ end
 -- once or, worse, leave it waiting for a beat that will not come round for
 -- another minute.
 local last_free = nil
+local last_bpm  = nil
 
 local function pollAudio()
+    reapDying()      -- whatever was replaced last frame has now had its beat
     local free = Loop.GetFreeRun()
     if free ~= last_free then
         if last_free ~= nil then
@@ -898,8 +938,36 @@ local function pollAudio()
         end
         last_free = free
     end
+
+    -- THE PROJECT TEMPO CHANGED, AND A SOUND IS PLAYING AT THE OLD ONE.
+    -- The rate was decided when the file was opened, so a running loop kept the
+    -- tempo it was launched at until it was stopped and relaunched by hand. It
+    -- follows now: the source's own BPM was derived at open time (tempo over
+    -- rate, exact and free), so the new rate is one division — no reopening, no
+    -- second analysis. The reference moves with it rather than the sound, as it
+    -- does on a clock change.
+    local bpm = r.Master_GetTempo() or 0
+    if bpm ~= last_bpm then
+        if last_bpm and bpm > 1 then
+            for t = 0, TRACKS - 1 do
+                local a = aplay[t] or aqueue[t]
+                if a and a.bpm and a.bpm > 0 then
+                    a.rt = bpm / a.bpm
+                    if a.prev then
+                        pcall(r.CF_Preview_SetValue, a.prev, "D_PLAYRATE", a.rt)
+                        reanchor(a)
+                    end
+                end
+            end
+        end
+        last_bpm = bpm
+    end
+
     local rolling = clockRolling()
     local beat = rolling and Loop.EngineBeat() or 0
+    -- How far ahead of a boundary we are allowed to fire, in beats. A sound
+    -- starts EARLY and lands on the beat from inside its own tail; see LEAD.
+    local lead_beats = (bpm > 1) and (LEAD * bpm / 60) or 0
     local any  = false
     for t = 0, TRACKS - 1 do
         local a, q = aplay[t], aqueue[t]
@@ -933,7 +1001,11 @@ local function pollAudio()
                 -- the whole reason a sound and a clip launched together arrive
                 -- together. The transport rolling mid-bar is not a bar line.
                 if not q.at then q.at = launchBeat() end
-                if beat >= q.at then audioFire(t) end
+                -- EARLY, by up to one display frame: firing on the boundary
+                -- means firing after it, because that is when we learn it has
+                -- passed. The preview starts inside its own tail and reaches
+                -- its zero on the beat.
+                if beat >= q.at - lead_beats then audioFire(t) end
             end
         end
         -- Whatever is sounding is kept ON the clock, not merely started on it
@@ -2657,6 +2729,7 @@ UI.Init("CP Session", 580, 400, {
 
 UI.OnClose(function()
     for t = 0, TRACKS - 1 do audioStop(t) audioCancel(t) end
+    reapDying()
     -- our sounds leave with us, so the engine's clock must not keep running
     -- for them: a flag that is only ever set is a clock that never stops
     Loop.SetAudioRun(false)
