@@ -908,13 +908,18 @@ local function diagLaunch(a, t, e, off, clamped, pos)
     a.dg = { pos = pos, n = 0 }
 end
 
--- Two samples: the frame after the launch, and ten frames in. One says whether
--- the START was in time, the other whether the RATE is (a loop that reads at
--- the wrong speed drifts between the two, and the second line says so).
+-- Two samples: the frame after the launch, and two seconds in. One says whether
+-- the START was in time, the other whether the SPEED is.
+--
+-- Two seconds, not ten frames, because D_POSITION is reported a whole audio
+-- block at a time: over a third of a second a 1024-sample buffer is worth 6% of
+-- the answer, which reads as a drift that is not there. Over two seconds it is
+-- worth 1%, and a preview that is genuinely starved shows up as what it is.
+local DIAG_LATE = 60
 local function diagFollow(a)
     local dg = a.dg
     dg.n = dg.n + 1
-    if dg.n ~= 1 and dg.n ~= 10 then return end
+    if dg.n ~= 1 and dg.n ~= DIAG_LATE then return end
     local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
     if not (ok and rv and pos) then a.dg = nil return end
     local plen = (a.plen and a.plen > 0) and a.plen or 1
@@ -945,12 +950,19 @@ local function diagFollow(a)
     elseif dg.ref1 then
         local dref = ref - dg.ref1
         if dref > 0.05 then
+            -- the head has looped in between, so the raw difference is short by
+            -- whole passes: put them back, the count being however many fit in
+            -- the real time that went by
+            local dpos = (pos - dg.pos1) % plen
+            dpos = dpos + plen * floor((dref - dpos) / plen + 0.5)
+            local sp = dpos / dref
             r.ShowConsoleMsg(string.format(
-                "[CP_Session]      read speed = %.4f x real time (wanted 1.0000)\n",
-                (pos - dg.pos1) / dref))
+                "[CP_Session]      read speed = %.4f x real time (wanted 1.0000)%s\n",
+                sp, (sp < 0.95) and "   *** STARVED: the audio thread cannot"
+                                .. " feed this preview at this buffer size ***" or ""))
         end
     end
-    if dg.n == 10 then a.dg = nil end
+    if dg.n == DIAG_LATE then a.dg = nil end
 end
 
 -- START IT EARLY, IN THE TAIL OF ITS OWN LOOP.

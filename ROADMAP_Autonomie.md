@@ -1510,3 +1510,17 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   (1,0000× à 1024, sur les deux pilotes), et la frame passe de 32 à 74 ms. Ce
   buffer n'est pas utilisable sur cette machine, et aucun correctif de lancement
   ne le rendra utilisable. La sonde le dit maintenant en toutes lettres.
+- [x] **Le lancement est exact, et la sonde le prouve.** Relevé à 1024 :
+  `+1 F START ERROR = +0.0ms (loop zero at 8.5714, boundary 8.5714)`. Zéro de la
+  boucle et frontière au même instant, sur la timeline du projet, à la quatrième
+  décimale. Le calage n'est plus la question.
+- [x] **Ce qui reste est une FAMINE, pas un calage.** À 64 échantillons la
+  vitesse de lecture mesurée est **0,54×** le temps réel : l'aperçu joue à
+  moitié vitesse parce que le fil audio ne peut pas le nourrir. À 1024 elle est
+  à 1,0000×. Deux des trois relevés (et toute la campagne précédente) étaient à
+  64 — donc « le même ressenti » se juge, pour l'instant, sur un aperçu qui ne
+  tourne pas en temps réel. La sonde le crie maintenant en toutes lettres
+  (`*** STARVED ***`) pour que ce ne soit plus jamais confondu avec un défaut de
+  calage, et le second échantillon passe de 10 frames à **2 secondes** : sur un
+  tiers de seconde, la granularité de bloc de `D_POSITION` vaut 6 % de la
+  réponse et se lit comme une dérive qui n'existe pas.
