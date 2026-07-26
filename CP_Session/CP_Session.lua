@@ -846,6 +846,10 @@ end
 -- ---------------------------------------------------------------------------
 local diag_on = Core.LoadPersistent("CP_Session", "diag", false)
 
+-- What a display frame currently costs, averaged. Declared here because the
+-- probe reports it; maintained by frameLead below, which is what uses it.
+local frame_s = 0.033
+
 local function diagLaunch(a, t, e, off, clamped, pos)
     local tempo = r.Master_GetTempo() or 0
     local beat  = Loop.EngineBeat()
@@ -858,12 +862,13 @@ local function diagLaunch(a, t, e, off, clamped, pos)
     local fire = (tempo > 1) and ((beat - (a.at or 0)) * 60 / tempo * 1000) or 0
     r.ShowConsoleMsg(string.format(
         "[CP_Session] LAUNCH tr=%d clock=%s bpm=%.2f rt=%.4f slen=%.3f\n" ..
-        "   transport started %s, noticed %+.1fms later\n" ..
+        "   transport started %s, noticed %+.1fms later | frame=%.1fms\n" ..
         "   at=%.4f beat=%.4f fire=%+.1fms | t0=%s pp2=%.4f pp=%.4f pp2-pp=%+.1fms" ..
         " outlat=%.1fms bsize=%s sr=%s\n" ..
         "   e=%s slack=%+.1fms pdc=%+.1fms off=%+.1fms clamped=%d pos=%.4f\n",
         t, Loop.GetFreeRun() and "FREE" or "FOLLOW", tempo, a.rt or 0, a.slen or 0,
         TS.at and string.format("%.4f", TS.at) or "-", TS.notice * 1000,
+        frame_s * 1000,
         a.at or 0, beat, fire,
         a.t0 and string.format("%.4f", a.t0) or "-", pp2, pp, (pp2 - pp) * 1000,
         olat * 1000, bs or "?", sr or "?",
@@ -933,6 +938,39 @@ end
 -- second, and it does it where the number is still meaningful.
 local LEAD    = 0.045
 local OFF_MAX = 0.250
+
+-- AND THE LEAD MUST COVER A FRAME, WHATEVER A FRAME COSTS TODAY.
+--
+-- 45 ms was a guess at what a display frame is worth, and a guess is exactly
+-- what it must not be: the measured delay tracks the FRAME, not the audio
+-- block. Shrinking the audio buffer does not shorten the wait, it lengthens it
+-- — a smaller buffer means more callbacks per second, a machine closer to the
+-- edge, and a defer loop that slows to a crawl. 64 samples measured 182 ms and
+-- 1024 measured 30 ms on the same machine and the same file, and 30 ms is one
+-- frame. So the lead is the frame itself, measured, with the old constant as
+-- its floor.
+--
+-- A ceiling too, because the lead is played from the loop's own tail: an eighth
+-- of a second of tail is still a loop, half a second is a different sound.
+-- Beyond the ceiling the launch is simply late and `off` skips it into phase,
+-- which costs the attack but never the grid.
+local LEAD_MAX = 0.150
+local last_tp  = nil
+
+local function frameLead()
+    local now = r.time_precise()
+    if last_tp then
+        local d = now - last_tp
+        -- averaged, so one stalled frame sets no policy and one fast one
+        -- does not undo the caution either
+        if d > 0 and d < 0.5 then frame_s = frame_s + (d - frame_s) * 0.25 end
+    end
+    last_tp = now
+    local l = frame_s * 1.5
+    if l < LEAD then return LEAD end
+    if l > LEAD_MAX then return LEAD_MAX end
+    return l
+end
 
 local function audioStart(t)
     local a = aplay[t]
@@ -1182,7 +1220,10 @@ local function pollAudio()
     local beat = rolling and Loop.EngineBeat() or 0
     -- How far ahead of a boundary we are allowed to fire, in beats. A sound
     -- starts EARLY and lands on the beat from inside its own tail; see LEAD.
-    local lead_beats = (bpm > 1) and (LEAD * bpm / 60) or 0
+    -- Called every frame whether or not anything is queued, because it is also
+    -- what measures the frame.
+    local lead = frameLead()
+    local lead_beats = (bpm > 1) and (lead * bpm / 60) or 0
     local any  = false
     for t = 0, TRACKS - 1 do
         local a, q = aplay[t], aqueue[t]

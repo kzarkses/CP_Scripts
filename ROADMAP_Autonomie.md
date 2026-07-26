@@ -1465,3 +1465,18 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   calculs : `D_POSITION` contre `(maintenant − frontière) × taux`. Et le zéro de
   la boucle en temps projet, directement comparable à la règle de REAPER.
   Éteinte, elle coûte un test booléen par frame.
+- [x] **LE RELEVÉ PAR BUFFER TRANCHE : le retard suit la FRAME, pas le bloc.**
+  Même machine, même fichier, même barre : ASIO 64 → 182 ms, 128 → 63, 256 →
+  50, 512 → 30, 1024 → 30, DirectSound → 62. Et surtout, **un kick MIDI routé
+  dans une piste et enregistré en audio : 1 ms.** Le chemin d'enregistrement
+  est donc propre — l'hypothèse du montage de mesure tombe entièrement, et la
+  cible est 1 ms.
+  Réduire le buffer audio n'accélère rien, ça ralentit : plus de rappels par
+  seconde, une machine plus près du bord, et une boucle defer qui traîne. Le
+  plancher à 30 ms est **une frame**. Donc le lead cesse d'être une constante
+  devinée et devient **la frame elle-même, mesurée** (moyenne glissante,
+  plancher à 45 ms, plafond à 150 ms parce qu'il est joué depuis la queue de la
+  boucle : un huitième de seconde de queue est encore une boucle, une
+  demi-seconde est un autre son). Au-delà du plafond, le lancement est
+  simplement en retard et `off` le fait sauter en phase — ça coûte l'attaque,
+  jamais la grille.
