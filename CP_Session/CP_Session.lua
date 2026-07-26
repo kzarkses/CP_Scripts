@@ -126,8 +126,22 @@ the copy keeps it.
 
 ## Sound or MIDI, same cell
 Any cell takes either. Drop a sound from the Media Explorer and it
-loops TEMPO-MATCHED (native stretch) through that column's track. Drop
-or write MIDI and it plays through the engine.
+loops TEMPO-MATCHED through that column's track. Drop or write MIDI
+and it plays through the engine.
+
+## How a sound follows the tempo — right-click, Tempo
+REPITCH is the default and it is the one that is IN TIME. The file is
+read faster or slower, which moves its pitch with it, exactly as every
+hardware sampler and every tracker has always done. Nothing is
+buffered, so the first sample comes out on the beat.
+
+STRETCH keeps the key. It runs the sound through REAPER's time
+stretcher, and a stretcher cannot emit anything until it has filled its
+analysis window: the sound is LATE by that window — a fixed few tens of
+milliseconds — and no API reports it, so this window cannot correct for
+it. Use it where the key matters more than the grid.
+
+DON'T FOLLOW plays the file at its own tempo.
 
 A sound plays THROUGH the column's track — its fader, its FX, and so
 into the master and into anything you record. When that track holds an
@@ -615,6 +629,32 @@ local function elapsed(a)
     return (Loop.EngineBeat() - a.at) * (60 / tempo)
 end
 
+-- HOW FAST a sound must run to sit at the project's tempo, and whether that
+-- rate is allowed to move its pitch. The clip's own announced tempo wins when
+-- it carries one; otherwise the SAME routine the browser used to audition this
+-- file decides. Two windows disagreeing about how fast a file is was one of the
+-- ways a sound could be in time in the arrange and out of it here: the browser
+-- falls back to the BPM written in the filename when REAPER's tempo-match
+-- declines to guess, and this window did not.
+--
+-- One answer for the whole window: the launch asks it when it opens the file,
+-- the cell menu asks it again when the mode changes under a sound that is
+-- already playing. Costly (REAPER analyses the source), so it is asked once
+-- per open and once per menu click, never per frame.
+local function rateFor(c)
+    local mode = c.tempo_mode or "repitch"
+    if mode == "none" then return 1.0, false end
+    local rt
+    if c.src_bpm and c.src_bpm > 0 then
+        local pb = r.Master_GetTempo()
+        rt = (pb and pb > 0) and (pb / c.src_bpm) or 1.0
+    else
+        rt = Preview.TempoSyncRate(c.path, 1.0)
+    end
+    if not (rt and rt > 0.05 and rt < 20) then rt = 1.0 end
+    return rt, (mode == "stretch")
+end
+
 -- OPEN THE FILE WHEN THE LAUNCH IS ARMED, NOT WHEN IT FIRES.
 --
 -- Two things here are slow, and neither of them is the launch: opening the WAV,
@@ -644,39 +684,50 @@ local function audioOpen(a)
         flash("Cannot open: " .. (c.path or "?"))
         return
     end
-    -- HOW FAST. The clip's own announced tempo wins when it carries one;
-    -- otherwise the SAME routine the browser used to audition this file
-    -- decides. Two windows disagreeing about how fast a file is was one of the
-    -- ways a sound could be in time in the arrange and out of it here: the
-    -- browser falls back to the BPM written in the filename when REAPER's
-    -- tempo-match declines to guess, and this window did not.
-    local rt
-    if c.src_bpm and c.src_bpm > 0 then
-        local pb = r.Master_GetTempo()
-        rt = (pb and pb > 0) and (pb / c.src_bpm) or 1.0
-    else
-        rt = Preview.TempoSyncRate(c.path, 1.0)
-    end
-    if not (rt and rt > 0.05 and rt < 20) then rt = 1.0 end
-    a.src  = src
-    a.rt   = rt
-    a.slen = r.GetMediaSourceLength(src)
+    local rt, st = rateFor(c)
+    a.src     = src
+    a.rt      = rt
+    a.stretch = st
+    a.slen    = r.GetMediaSourceLength(src)
     -- The source's OWN tempo, derived rather than asked for again: the rate is
     -- the project's tempo over it. Keeping it is what lets a playing loop
     -- follow a tempo change with one division instead of a second analysis.
+    -- Not matching means not following: a clip told to keep the file's own
+    -- tempo has no BPM of its own to be re-rated against.
     local pb = r.Master_GetTempo() or 0
-    a.bpm = (pb > 1 and rt > 0) and (pb / rt) or nil
+    a.bpm = (c.tempo_mode ~= "none" and pb > 1 and rt > 0) and (pb / rt) or nil
 end
 
 -- Build the preview and hand it its settings. Cheap — no disk, no analysis —
 -- and it MUST happen in the tick that plays it.
+--
+-- REPITCH, NOT STRETCH — and this is where the last fixed offset was.
+--
+-- Preserving pitch across a rate change is not arithmetic on a read pointer:
+-- it runs the sound through REAPER's TIME STRETCHER, and every time stretcher
+-- works on a window it must fill before it can emit anything. That fill is a
+-- LATENCY — tens of milliseconds, fixed for a given mode — and nothing in the
+-- API reports it: D_POSITION reports where the stretcher is READING, which
+-- keeps running ahead of what anyone hears. So the sound came out late by that
+-- window, every single time, identically, whatever the Q and whatever the
+-- clock. It is exactly why MIDI measured zero through the same track on the
+-- same card: a sampler plays the file, it does not stretch it.
+--
+-- Resampling has no window. The read pointer moves at a different speed and
+-- the sound comes out now — which is what every hardware sampler, every
+-- tracker and every launcher's repitch mode has always done, and the only
+-- rate change that can be sample-exact by construction.
+--
+-- Stretch stays available per clip, because a melodic loop that must not
+-- change key is a real need. It is late by its stretcher's window and it
+-- cannot be compensated from here, which the menu and the help both say.
 local function audioBuild(a, t)
     local prev = r.CF_CreatePreview(a.src)
     if not prev then return nil end
     r.CF_Preview_SetValue(prev, "D_VOLUME", 1)
     if a.rt ~= 1.0 then
         r.CF_Preview_SetValue(prev, "D_PLAYRATE", a.rt)
-        r.CF_Preview_SetValue(prev, "B_PPITCH", 1)
+        if a.stretch then r.CF_Preview_SetValue(prev, "B_PPITCH", 1) end
     end
     r.CF_Preview_SetValue(prev, "B_LOOP", 1)
     -- A few milliseconds of fade at the start: SWS opens on a raw sample edge,
@@ -1412,6 +1463,41 @@ local function setCellColor(t, s, i)
     saveGrid()
 end
 
+-- HOW A SOUND FOLLOWS THE PROJECT'S TEMPO — and it is a real choice, not a
+-- preference, because the two answers are two different machines:
+--   repitch  the read pointer moves faster. No window, no latency, exact.
+--   stretch  REAPER's time stretcher. Keeps the key, and is late by the
+--            window that stretcher must fill before it can emit anything —
+--            fixed, tens of milliseconds, and reported by no API.
+--   none     the file plays at its own tempo.
+-- Repitch is the default because a launcher's job is to be in time.
+--
+-- A running sound takes a new RATE immediately (it is a number). It does not
+-- change ENGINE under itself: turning stretch on or off waits for the next
+-- launch, which is one boundary away.
+local function applyTempoMode(a, c)
+    if not a or a.c ~= c or not a.src then return end
+    local rt, st = rateFor(c)
+    if a.prev and st ~= a.stretch then return end
+    local pb = r.Master_GetTempo() or 0
+    a.rt      = rt
+    a.stretch = st
+    a.bpm     = (c.tempo_mode ~= "none" and pb > 1 and rt > 0) and (pb / rt) or nil
+    if a.prev then
+        pcall(r.CF_Preview_SetValue, a.prev, "D_PLAYRATE", rt)
+        reanchor(a)
+    end
+end
+
+local function setCellTempoMode(t, s, mode)
+    local c = cells[t][s]
+    if not c then return end
+    c.tempo_mode = (mode ~= "repitch") and mode or nil
+    saveGrid()
+    applyTempoMode(aplay[t], c)
+    applyTempoMode(aqueue[t], c)
+end
+
 local function cellMenu(t, s)
     local c = cells[t][s]
     local has = c ~= nil
@@ -1424,11 +1510,23 @@ local function cellMenu(t, s)
     cols[#cols + 1] = { separator = true }
     cols[#cols + 1] = { label = "None", checked = (cur_col == nil),
                         action = function() setCellColor(t, s, nil) end }
+    local snd = has and c.kind ~= "midi" and c.path ~= nil
+    local tm  = snd and (c.tempo_mode or "repitch") or nil
+    local tmodes = snd and {
+        { label = "Repitch (in time)", checked = (tm == "repitch"),
+          action = function() setCellTempoMode(t, s, "repitch") end },
+        { label = "Stretch (keeps the key, plays late)", checked = (tm == "stretch"),
+          action = function() setCellTempoMode(t, s, "stretch") end },
+        { separator = true },
+        { label = "Don't follow the tempo", checked = (tm == "none"),
+          action = function() setCellTempoMode(t, s, "none") end },
+    } or nil
     UI.NativeMenu({
         { label = "Edit in CP_Editor", action = function() editCell(t, s) end },
         { label = "Rename clip…", disabled = not has,
           action = function() renameCell(t, s) end },
         { label = "Color", disabled = not has, children = cols },
+        { label = "Tempo", disabled = not snd, children = tmodes },
         { label = "Stop this track", action = function() stopTrack(t) end },
         { separator = true },
         { label = "Clear cell", disabled = not has,

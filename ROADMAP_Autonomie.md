@@ -1391,3 +1391,33 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   librement. Et le drapeau « la session sonne » est posé **juste avant** le
   départ, plus à l'armement : le zéro de l'horloge libre et le premier
   échantillon du son sont désormais le même instant, ce qu'est un temps fort.
+- [x] **ET LE DERNIER RÉSIDU N'ÉTAIT PAS DU TIMING : c'était l'ÉTIREUR.**
+  Après le tir en avance, les 21-41 ms se sont effondrés en **40 ms constants**,
+  identiques d'une prise à l'autre — et une variance qui disparaît en laissant
+  une constante ne désigne plus une logique, elle désigne une **latence fixe**
+  dans le chemin du son. Trois faits la localisent, et un seul endroit les
+  explique tous les trois : le son est *toujours en retard* alors qu'on part
+  maintenant 45 ms *en avance* (quelque chose en aval mange l'avance) ; le MIDI
+  mesure 0 ms sur la même piste, la même carte, le même montage de mesure ; Q
+  Off et Q 2 bars donnent le même chiffre.
+  La seule chose que le son traversait et que le MIDI ne traversait pas :
+  `B_PPITCH`. Préserver la hauteur pendant un changement de vitesse n'est pas de
+  l'arithmétique sur un pointeur de lecture — c'est **l'étireur temporel de
+  REAPER**, et un étireur ne peut rien émettre avant d'avoir rempli sa fenêtre
+  d'analyse. Cette fenêtre est une latence : quelques dizaines de millisecondes,
+  fixe pour un mode donné, et **aucune API ne la rapporte** — `D_POSITION` dit
+  où l'étireur *lit*, ce qui court devant ce qu'on entend. D'où un calage qui se
+  croyait juste et un son qui sortait en retard, toujours du même montant.
+  Un échantillonneur ne fait pas ça : il lit le fichier plus vite. C'est
+  précisément pourquoi le MIDI était à zéro.
+- [x] **`tempo_mode` devient réel, et son défaut est le mode exact.** Le champ
+  existait dans le vocabulaire de `Engine/Clip` (`none | repitch | stretch`) et
+  n'était honoré nulle part. Clic droit sur une case → **Tempo** :
+  *Repitch* (défaut) lit plus vite et déplace la hauteur avec — aucune fenêtre,
+  aucune latence, exact par construction, et c'est ce que fait tout
+  échantillonneur matériel ; *Stretch* garde la tonalité et sort en retard de la
+  fenêtre de son étireur, ce que le menu et l'aide disent tous les deux ;
+  *Don't follow* joue le fichier à son propre tempo.
+  Un son qui joue prend un nouveau **taux** tout de suite (c'est un nombre) mais
+  ne change pas de **machine** sous lui-même : basculer l'étirement attend le
+  prochain lancement, à une frontière de là.
