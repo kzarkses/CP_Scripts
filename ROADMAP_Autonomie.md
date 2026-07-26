@@ -1480,3 +1480,33 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   demi-seconde est un autre son). Au-delà du plafond, le lancement est
   simplement en retard et `off` le fait sauter en phase — ça coûte l'attaque,
   jamais la grille.
+- [x] **LES POSITIONS N'ÉTAIENT PAS DANS LA BONNE UNITÉ — la cause exacte.**
+  La sonde a mesuré la **pente** au lieu du départ, et c'est elle qui parle :
+  l'erreur au départ valait −1 à +11 ms, l'erreur à dix frames −17 à −157 ms.
+  Une erreur qui grandit n'est pas un départ raté, c'est une **vitesse**. Or
+  entre les deux points, sur les trois relevés où la machine tient, `D_POSITION`
+  avance **exactement autant que le temps réel** — 0,2773 s de tête pour
+  0,2773 s d'horloge, à quatre décimales, alors que le taux demandé est 1,0667.
+  Le rapport n'est pas approximatif : il est 1,0000.
+  `D_LENGTH = 4,2857` pour une source de 4,5714 s à 1,0667 tranche : **un aperçu
+  compte les secondes qu'il a PASSÉ À JOUER, pas celles du fichier qu'il lit.**
+  Toute position remise à un aperçu est donc du **temps réel**, et le taux n'a
+  rien à y faire. Il était dans les trois : `audioStart` (`off × rt`),
+  `lockPhase` (`(e+pdc) × rt`), `reanchor` (`pos ÷ rt`) — chacun multipliant par
+  le taux ce qu'il fallait laisser tel quel. **Chaque offset était donc rt fois
+  trop grand** : 6 % à 112 BPM, quatre fois à 400 BPM contre une boucle à 100.
+  C'est la forme exacte du couple 220 ms / 460 ms mesuré à 170 et 400 BPM, que
+  j'avais attribué à l'ouverture du fichier — le symptôme avait rétréci parce
+  que `e` avait rétréci, le facteur était resté.
+  Une seule longueur désormais, `a.plen = source ÷ taux`, et une seule unité
+  partout : la seconde.
+- [x] **Le demi-bloc s'annulait avec sa propre référence.** Il compensait le
+  fait qu'un aperçu est ramassé au bloc SUIVANT — mais la référence à laquelle
+  on l'ajoutait est `GetPlayPosition2`, qui **est** ce bloc suivant. Ajouter le
+  bloc à lui-même mettait chaque lancement d'un demi-bloc en avance : +10,7 ms
+  sur un buffer de 1024, exactement ce que la sonde relit.
+- [x] **Et une chose qui n'est pas du code : à 64 échantillons, l'aperçu est
+  affamé.** La vitesse de lecture mesurée y tombe à **0,53×** le temps réel
+  (1,0000× à 1024, sur les deux pilotes), et la frame passe de 32 à 74 ms. Ce
+  buffer n'est pas utilisable sur cette machine, et aucun correctif de lancement
+  ne le rendra utilisable. La sonde le dit maintenant en toutes lettres.

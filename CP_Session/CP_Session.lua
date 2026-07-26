@@ -748,6 +748,21 @@ local function audioOpen(a)
     a.rt      = rt
     a.stretch = st
     a.slen    = r.GetMediaSourceLength(src)
+    -- HOW LONG ONE PASS TAKES TO PLAY — and the only length this window ever
+    -- needs. A preview counts its position in the seconds it has been PLAYING,
+    -- not in the seconds of the file it is reading: D_LENGTH comes back as the
+    -- source over the rate, and D_POSITION advances at one second per second
+    -- whatever the rate is. Both facts measured, not assumed (D_LENGTH 4.2857
+    -- for a 4.5714 s source at 1.0667, and a read head that moved 0.2773 s
+    -- while 0.2773 s of clock passed, three times running on two drivers).
+    --
+    -- Which means every position handed to a preview is simply REAL TIME, and
+    -- the playrate has no business anywhere near it. It was in all of them:
+    -- start, phase lock, re-anchor — each multiplying by the rate what it
+    -- should have left alone, so every offset was rate times too big. At 400
+    -- BPM against a 100 BPM loop that is four times, which is the shape of the
+    -- 220 ms / 460 ms pair measured at 170 and 400 BPM.
+    a.plen = (rt > 0) and (a.slen / rt) or a.slen
     -- The source's OWN tempo, derived rather than asked for again: the rate is
     -- the project's tempo over it. Keeping it is what lets a playing loop
     -- follow a tempo change with one division instead of a second analysis.
@@ -827,9 +842,12 @@ end
 -- It is answered without believing anything we computed. On a later frame the
 -- preview is asked where its read head is (D_POSITION) and REAPER is asked where
 -- the transport is (GetPlayPosition2). Where the head SHOULD be, if the sound
--- were exactly in time, is `(now - boundary) * rate`. The gap between the two,
--- divided by the rate, is the error in real milliseconds — signed, positive for
--- a sound running ahead.
+-- were exactly in time, is `now - boundary` — real seconds, because a preview
+-- counts the seconds it has been PLAYING. The gap between the two is the error
+-- in milliseconds, signed, positive for a sound running ahead.
+--
+-- The probe found that units question in this window's own arithmetic before it
+-- found anything else, which is the argument for having built it.
 --
 --   err = 0        the launch is exact and anything still heard late is
 --                  DOWNSTREAM of us: REAPER's mixing, the driver, or the way
@@ -865,7 +883,7 @@ local function diagLaunch(a, t, e, off, clamped, pos)
         "   transport started %s, noticed %+.1fms later | frame=%.1fms\n" ..
         "   at=%.4f beat=%.4f fire=%+.1fms | t0=%s pp2=%.4f pp=%.4f pp2-pp=%+.1fms" ..
         " outlat=%.1fms bsize=%s sr=%s\n" ..
-        "   e=%s slack=%+.1fms pdc=%+.1fms off=%+.1fms clamped=%d pos=%.4f\n",
+        "   e=%s halfblock=%.1fms(unused) pdc=%+.1fms off=%+.1fms clamped=%d pos=%.4f\n",
         t, Loop.GetFreeRun() and "FREE" or "FOLLOW", tempo, a.rt or 0, a.slen or 0,
         TS.at and string.format("%.4f", TS.at) or "-", TS.notice * 1000,
         frame_s * 1000,
@@ -899,39 +917,37 @@ local function diagFollow(a)
     if dg.n ~= 1 and dg.n ~= 10 then return end
     local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
     if not (ok and rv and pos) then a.dg = nil return end
-    local rt   = (a.rt and a.rt > 0) and a.rt or 1
-    local slen = (a.slen and a.slen > 0) and a.slen or 1
+    local plen = (a.plen and a.plen > 0) and a.plen or 1
     -- where the read head must be for the sound to be exactly in time
     local ref  = a.t0 and ((r.GetPlayPosition2() or 0) - a.t0)
                       or ((Loop.EngineBeat() - (a.at or 0))
                           * 60 / math.max(Loop.Tempo() or 120, 1))
-    local want = (ref * rt) % slen
+    local want = ref % plen
     local err  = pos - want
-    local half = slen * 0.5
-    if err > half then err = err - slen elseif err < -half then err = err + slen end
-    -- The loop's own DOWNBEAT, on the project's timeline: the read head divided
-    -- by the rate is how long ago it last crossed zero. Put the edit cursor on
-    -- the bar line and this number is directly comparable to what the ruler
-    -- says — no recording, no driver, no compensation in between.
-    local down = a.t0 and ((r.GetPlayPosition2() or 0) - pos / rt) or nil
+    local half = plen * 0.5
+    if err > half then err = err - plen elseif err < -half then err = err + plen end
+    -- The loop's own DOWNBEAT, on the project's timeline: the read head IS how
+    -- long ago it last crossed zero. Put the edit cursor on the bar line and
+    -- this number is directly comparable to what the ruler says — no recording,
+    -- no driver, no compensation in between.
+    local down = a.t0 and ((r.GetPlayPosition2() or 0) - pos) or nil
     r.ShowConsoleMsg(string.format(
         "[CP_Session] +%-2dF ref=%+.4fs pos=%.4f want=%.4f  START ERROR=%+.1fms%s\n",
-        dg.n, ref, pos, want, err / rt * 1000,
+        dg.n, ref, pos, want, err * 1000,
         down and string.format("  (loop zero at %.4f, boundary %.4f)", down, a.t0) or ""))
-    -- THE SLOPE, WHICH IS WORTH MORE THAN EITHER POINT. How much the read head
-    -- moved per second of real time between the two samples: it must equal the
-    -- playrate, and if it equals 1.00 instead then either the rate is not being
-    -- applied or the position is not counted in the source's own seconds.
-    -- Either way it is the whole error, growing, and no start correction
-    -- touches it.
+    -- THE SLOPE, WHICH IS WORTH MORE THAN EITHER POINT. A preview counts the
+    -- seconds it has been PLAYING, so its head must move at exactly one second
+    -- per second whatever the rate. Below that it is being STARVED — the audio
+    -- thread cannot feed it — and that is a machine fact, not an arithmetic
+    -- one: 0.53x on a 64-sample ASIO buffer, 1.0000x on 1024.
     if dg.n == 1 then
         dg.ref1, dg.pos1 = ref, pos
     elseif dg.ref1 then
         local dref = ref - dg.ref1
         if dref > 0.05 then
             r.ShowConsoleMsg(string.format(
-                "[CP_Session]      read speed = %.4f x real time (wanted %.4f)\n",
-                (pos - dg.pos1) / dref, rt))
+                "[CP_Session]      read speed = %.4f x real time (wanted 1.0000)\n",
+                (pos - dg.pos1) / dref))
         end
     end
     if dg.n == 10 then a.dg = nil end
@@ -1014,17 +1030,23 @@ local function audioStart(t)
     a.locked = false
 
     -- Where the boundary stands relative to us — behind (we are late) or ahead
-    -- (we fired early, on purpose) — plus half a block, because the preview is
-    -- picked up on the NEXT one, plus the chain's own latency.
+    -- (we fired early, on purpose) — plus the chain's own latency.
+    --
+    -- NO HALF-BLOCK. It was there because the preview is picked up on the next
+    -- audio block, so its first sample would land half a block late on average.
+    -- But the reference it is being added to is GetPlayPosition2, which IS the
+    -- next block: the two are the same instant, and adding the block to itself
+    -- put every launch that far ahead of its own boundary. The probe reads it
+    -- back as exactly that, +10.7 ms on a 1024-sample buffer.
     local e = elapsed(a)
-    local off = (e or 0) + blockSlack() + a.pdc
+    local off = (e or 0) + a.pdc
     local clamped = false
     if off > OFF_MAX or off < -OFF_MAX then off = 0 clamped = true end
     local pos = 0
-    if a.slen and a.slen > 0 then
-        -- signed, and the modulo does the rest: past the boundary it takes the
-        -- overshoot off the front, before it lands in the loop's tail
-        pos = (off * a.rt) % a.slen
+    if a.plen and a.plen > 0 then
+        -- REAL SECONDS, signed, and the modulo does the rest: past the boundary
+        -- it takes the overshoot off the front, before it lands in the tail.
+        pos = off % a.plen
         r.CF_Preview_SetValue(prev, "D_POSITION", pos)
     end
 
@@ -1068,7 +1090,7 @@ local LOCK_TOL = 0.020
 local LOCK_MAX = 0.250
 
 local function lockPhase(a)
-    if a.locked or not a.prev or not a.slen or a.slen <= 0 then return end
+    if a.locked or not a.prev or not a.plen or a.plen <= 0 then return end
     local e = elapsed(a)
     -- A sound launched EARLY has not reached its boundary yet: there is nothing
     -- to check against, and burning the one correction here would spend it on a
@@ -1076,13 +1098,14 @@ local function lockPhase(a)
     if not e or e < 0 then return end
     a.locked = true                    -- once, whatever comes of it
     -- + the chain's latency: the sample handed over now is the one that has to
-    -- be HEARD after that delay, so the clip must already be that far ahead
-    local want = ((e + (a.pdc or 0)) * a.rt) % a.slen
+    -- be HEARD after that delay, so the clip must already be that far ahead.
+    -- Real seconds, like every other position: see a.plen.
+    local want = (e + (a.pdc or 0)) % a.plen
     local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
     if not (ok and rv and pos) then return end
     local err = want - pos
-    local half = a.slen * 0.5
-    if err > half then err = err - a.slen elseif err < -half then err = err + a.slen end
+    local half = a.plen * 0.5
+    if err > half then err = err - a.plen elseif err < -half then err = err + a.plen end
     if (err > LOCK_TOL or err < -LOCK_TOL)
        and err < LOCK_MAX and err > -LOCK_MAX then
         pcall(r.CF_Preview_SetValue, a.prev, "D_POSITION", want)
@@ -1171,7 +1194,8 @@ end
 local function reanchor(a)
     if not a.prev then return end
     local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
-    local played = (ok and rv and pos) and (pos / a.rt - (a.pdc or 0)) or 0
+    -- already real seconds — no division by the rate, see a.plen
+    local played = (ok and rv and pos) and (pos - (a.pdc or 0)) or 0
     if Loop.GetFreeRun() then
         local tempo = Loop.Tempo() or 0
         a.t0 = nil
@@ -1234,6 +1258,9 @@ local function pollAudio()
                 local a = aplay[t] or aqueue[t]
                 if a and a.bpm and a.bpm > 0 then
                     a.rt = bpm / a.bpm
+                    -- a pass now takes a different time to play; every position
+                    -- this window holds is measured against it
+                    a.plen = (a.slen and a.rt > 0) and (a.slen / a.rt) or a.plen
                     if a.prev then
                         pcall(r.CF_Preview_SetValue, a.prev, "D_PLAYRATE", a.rt)
                         reanchor(a)
@@ -1725,6 +1752,7 @@ local function applyTempoMode(a, c)
     local pb = r.Master_GetTempo() or 0
     a.rt      = rt
     a.stretch = st
+    a.plen    = (a.slen and rt > 0) and (a.slen / rt) or a.plen
     a.bpm     = (c.tempo_mode ~= "none" and pb > 1 and rt > 0) and (pb / rt) or nil
     if a.prev then
         pcall(r.CF_Preview_SetValue, a.prev, "D_PLAYRATE", rt)
