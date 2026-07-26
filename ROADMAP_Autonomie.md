@@ -1565,3 +1565,49 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   d'échantillon dans le bloc** — c'est exactement pourquoi le kick MIDI mesure
   1 ms. Et toute la machinerie de compensation (`e`, `off`, `lockPhase`, `LEAD`,
   `qSlop`) DISPARAÎT : on ne compense que ce qu'on n'a pas pu placer.
+
+## Session 17 — Le moteur verrouille a l'echantillon (clips audio)
+
+**Décidé par la mesure, pas par le goût.** À 1024 le lanceur d'aperçu est exact
+(`START ERROR ±0,0 ms`, `read speed 1.0000`) ; à 64 il est affamé (0,54 à 0,91×)
+et **64 est le réglage de la performance live**. Un aperçu CF est lu à la demande
+dans le fil audio : à 1,3 ms d'échéance il rate ses rendez-vous, et un rendez-vous
+raté veut dire qu'il n'avance pas. Aucun réglage de lancement ne déplace ce mur.
+
+### Le résultat qui rend le chantier petit : LE JSFX N'A RIEN À APPRENDRE
+
+**Une case audio EST un clip MIDI d'UNE note, plus un RS5K qui tient le fichier.**
+Le moteur sait déjà tout faire : il émet ses notes à l'offset d'échantillon dans
+le bloc (`midisend`), il boucle une lane, il quantifie un lancement, il l'arrête
+sur la frontière. C'est exactement le chemin qui mesure **1 ms** chez lui, avec
+le même buffer et la même carte. Il suffit d'y mettre le bon contenu.
+
+Tout l'outillage existe et est vérifié :
+- `Loop.PutNote / SetNoteCount / SetMode / SetLengthBars / BumpVer / Play /
+  StopClip` — écrire une lane et la lancer.
+- `Kit.P` (SOFFS, EOFFS, NOTE_LO/HI, OBEY, MAXV, TUNE) et `pitchNorm(st)` —
+  la carte des paramètres RS5K, déjà vérifiée contre mpl_RS5K_manager.
+- `Kit` fait déjà le tempo-sync d'une boucle par le TUNE (chantier 8) : le taux
+  suit la hauteur, `st = 12·log2(taux)`. C'est du repitch, donc cohérent avec le
+  défaut posé en `c6b2228`.
+
+### Ce que ça SUPPRIME
+`elapsed`, `off`, `blockSlack`, `chainLatency`, `lockPhase`, `reanchor`, `LEAD`,
+`frameLead`, `qSlop`, `plen`, `aplay`/`aqueue`/`dying`, `Loop.SetAudioRun`, et la
+moitié calage de la sonde. **On ne compense que ce qu'on n'a pas pu placer.**
+
+### Étapes
+1. `audioArm(t,s,c)` : charger le fichier dans un RS5K sur la destination de la
+   lane (créé une fois, réutilisé), `OBEY=1`, `SOFFS=0`, `EOFFS=1`,
+   `NOTE_LO=NOTE_HI=root`, `TUNE=pitchNorm(12·log2(taux))`.
+2. Écrire dans la lane UNE note : `start=0`, `len=` la longueur de la boucle en
+   beats, `pitch=root`, `vel=127` ; `SetNoteCount(1)`, `SetLengthBars`, `BumpVer`.
+3. Lancer par `Loop.Play(lane)` — même frontière, même Q, même arrêt que le MIDI.
+4. Changement de tempo : réécrire `TUNE` (une division), rien d'autre.
+5. Retirer le chemin aperçu une fois le nouveau mesuré.
+
+### La seule vraie contrainte, à dire et non à cacher
+La note part sur le canal de la lane, donc **une colonne qui héberge déjà un
+instrument le verrait jouer cette note**. Une colonne est un instrument OU un
+lecteur de boucles ; l'usage mixte demandera une piste dédiée au sample, et c'est
+la question à trancher au moment de l'écrire.
