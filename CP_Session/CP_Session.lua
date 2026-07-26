@@ -445,26 +445,35 @@ local HAS_CF = r.CF_CreatePreview ~= nil
 -- is written against that pair so a sound answers a click exactly as a clip
 -- does: launches queued, stops queued, swaps landing on one boundary, and a
 -- second click taking back whichever of the two is still only queued.
-local aplay  = {}  -- [t] = { s,c,at,prev,src,stop_at,t0,rt,slen,pdc,locked }
-local aqueue = {}  -- [t] = { s, c, at }                      the sound waiting
+-- BOTH halves own real resources now: a waiting sound is OPENED as soon as it
+-- is armed, not when it fires (see audioPrepare). So freeing is one routine,
+-- and a cancelled launch frees exactly as a stopped one does.
+local aplay  = {}  -- [t] = { s,c,at,prev,src,rt,slen,pdc,stop_at,t0,locked }
+local aqueue = {}  -- [t] = { s,c,at, + the same, prepared but not playing }
 
-local function audioStop(t)
-    local a = aplay[t]
+local function freeAudio(a)
     if not a then return end
     if a.prev then pcall(r.CF_Preview_Stop, a.prev) end
     if a.src then r.PCM_Source_Destroy(a.src) end
+    a.prev, a.src = nil, nil
+end
+
+local function audioStop(t)
+    freeAudio(aplay[t])
     aplay[t] = nil
 end
 
-local function audioCancel(t) aqueue[t] = nil end
+local function audioCancel(t)
+    freeAudio(aqueue[t])
+    aqueue[t] = nil
+end
 
 -- Give the preview back without forgetting the cell: what the transport took
 -- away it can give back. Used when the clock follows a transport that stopped.
 local function audioRelease(a)
     if not a then return end
-    if a.prev then pcall(r.CF_Preview_Stop, a.prev) end
-    if a.src then r.PCM_Source_Destroy(a.src) end
-    a.prev, a.src, a.at, a.stop_at = nil, nil, nil, nil
+    freeAudio(a)
+    a.at, a.stop_at = nil, nil
 end
 
 -- WHERE A LAUNCH LANDS, on the engine's own clock (host beat when following,
@@ -606,23 +615,35 @@ local function elapsed(a)
     return (Loop.EngineBeat() - a.at) * (60 / tempo)
 end
 
--- Actually make the sound, at the beat we have REACHED — which is a hair past
--- the boundary we aimed at, because a frame is 16 ms wide. Starting there and
--- then would leave the sound late by that hair for as long as it loops, so the
--- overshoot is taken off the FRONT of the sample instead: the clip lands in
--- phase, at the cost of a few ms of attack nobody hears. (A jump in the
--- transport can make the overshoot enormous; past a quarter second it is not
--- an overshoot any more, and the clip starts whole.)
-local function audioStart(t)
-    local a = aplay[t]
-    if not a or a.prev then return end
+-- OPEN THE FILE WHEN THE LAUNCH IS ARMED, NOT WHEN IT FIRES.
+--
+-- Everything here is slow and none of it is the launch: opening the WAV,
+-- building the preview, and asking REAPER for the tempo-match rate — which
+-- ANALYSES the source and is the slowest of the three. It all used to sit
+-- between "the boundary just passed" and "the sound starts", so a launch cost
+-- however long that took, and the launch was late by it.
+--
+-- Worse: the overshoot is measured after this work, so its cost was read as
+-- musical time already elapsed and taken off the front of the sample —
+-- multiplied by the playrate. That is why the offset GREW with the project
+-- tempo (three measurements, 147/220/460 ms, all within a few percent of the
+-- same number once divided by their rate) and why it was unstable: the price
+-- of a disk read is not a constant.
+--
+-- So a sound is prepared as soon as it is armed. Firing it is then one call.
+-- Idempotent: re-preparing a ready sound does nothing, and a sound whose file
+-- cannot be opened is marked dead rather than retried every frame.
+local function audioPrepare(a, t)
+    if not a or a.prev or a.dead then return end
     local c = a.c
     local src = r.PCM_Source_CreateFromFile(c.path)
-    if not src then flash("Cannot open: " .. (c.path or "?")) aplay[t] = nil return end
+    if not src then
+        a.dead = true
+        flash("Cannot open: " .. (c.path or "?"))
+        return
+    end
     local prev = r.CF_CreatePreview(src)
-    -- drop the cell rather than leave it armed: a start that cannot succeed
-    -- would be retried on every frame, disk open included
-    if not prev then r.PCM_Source_Destroy(src) aplay[t] = nil return end
+    if not prev then r.PCM_Source_Destroy(src) a.dead = true return end
     -- HOW FAST. The clip's own announced tempo wins when it carries one;
     -- otherwise the SAME routine the browser used to audition this file
     -- decides. Two windows disagreeing about how fast a file is was one of the
@@ -644,15 +665,14 @@ local function audioStart(t)
     end
     r.CF_Preview_SetValue(prev, "B_LOOP", 1)
     -- A few milliseconds of fade at the start: SWS opens on a raw sample edge,
-    -- which clicks on anything that does not begin at zero — and it is also
-    -- what makes the one corrective seek below inaudible.
+    -- which clicks on anything that does not begin at zero.
     r.CF_Preview_SetValue(prev, "D_FADEINLEN", FADE_IN)
     -- No D_MEASUREALIGN. It holds EVERY loop pass to the bar grid, not only the
     -- first, so a sample that is not exactly N measures long waits at the end
     -- of each pass — the gap between two instances. And it can only align to a
     -- MEASURE, which is why a sound ignored the Q while every MIDI clip obeyed
-    -- it. The boundary is ours to pick now (launchBeat), on the engine's clock
-    -- and by the engine's rule, so the launch is quantized and the loop runs.
+    -- it. The boundary is ours to pick (launchBeat), on the engine's clock and
+    -- by the engine's rule, so the launch is quantized and the loop runs.
     -- Route it through a TRACK, always. A preview with no output track goes
     -- straight to the hardware: not through the column's fader, not through
     -- the master, not into anything you record — the sound is audible and
@@ -665,10 +685,29 @@ local function audioStart(t)
         liveTrack(tr)
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
-
     a.rt   = rt
     a.slen = r.GetMediaSourceLength(src)
     a.pdc  = tr and chainLatency(tr) or 0
+    a.prev, a.src = prev, src
+end
+
+-- Actually make the sound, at the beat we have REACHED — which is a hair past
+-- the boundary we aimed at, because a frame is 16 ms wide. Starting there and
+-- then would leave the sound late by that hair for as long as it loops, so the
+-- overshoot is taken off the FRONT of the sample instead: the clip lands in
+-- phase, at the cost of a few ms of attack nobody hears.
+--
+-- And that overshoot is bounded by what it IS: one frame of waiting, plus a
+-- block. Anything past OVERSHOOT_MAX cannot be overshoot — it is our own
+-- slowness — and taking it off the front of the sample is not a correction,
+-- it is a hole where the downbeat was.
+local OVERSHOOT_MAX = 0.060
+
+local function audioStart(t)
+    local a = aplay[t]
+    if not a then return end
+    audioPrepare(a, t)                    -- normally already done, so free
+    if not a.prev then aplay[t] = nil return end
     -- Where the boundary is, in the terms of whichever clock we are on: a
     -- project TIME when we follow the transport, a beat on the engine's own
     -- clock when we do not. `elapsed` reads one or the other from this.
@@ -678,9 +717,10 @@ local function audioStart(t)
     -- What the boundary already owes us, plus half a block (the preview is
     -- picked up on the NEXT one) and the chain's own latency.
     local e = elapsed(a)
-    local skip = e and ((e + blockSlack() + a.pdc) * rt) or 0
-    if skip < 0 or skip > 0.25 then skip = 0 end
-    if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
+    local over = (e or 0) + blockSlack() + a.pdc
+    if over < 0 or over > OVERSHOOT_MAX then over = 0 end
+    local skip = over * a.rt
+    if skip > 0 then r.CF_Preview_SetValue(a.prev, "D_POSITION", skip) end
 
     -- The session starts sounding HERE, not when the cell was clicked. Said
     -- any earlier, the engine's free clock would leave zero while we were
@@ -689,8 +729,7 @@ local function audioStart(t)
     -- without it. Zero of that clock and the first sample of this sound are
     -- now the same instant, which is exactly what a downbeat is.
     Loop.SetAudioRun(true)
-    r.CF_Preview_Play(prev)
-    a.prev, a.src = prev, src
+    r.CF_Preview_Play(a.prev)
 end
 
 -- ONE correction, on the frame after the launch, and never again.
@@ -764,8 +803,14 @@ end
 -- STOPPED transport there is no beat to land on, so it simply waits for one.
 local function audioArm(t, s, c)
     if not HAS_CF then flash("Audio cells need the SWS extension") return end
+    audioCancel(t)
     local q = { s = s, c = c }
     aqueue[t] = q
+    -- Opened, built and tempo-matched NOW, while there is time to spare. A
+    -- boundary has to cost one call — never a disk read, and never REAPER's
+    -- tempo analysis. The boundary itself is asked for AFTER that work, so it
+    -- is the clock as it is when the launch is really armed.
+    audioPrepare(q, t)
     -- Q: Off means NOW, and now is this frame — waiting for the next poll
     -- would put a frame of silence under every unquantized launch.
     if clockRolling() then
@@ -854,12 +899,17 @@ local function pollAudio()
                 -- was on its way out anyway, in which case the transport
                 -- stopping is simply where it goes
                 local leaving = a.stop_at ~= nil
-                audioRelease(a)
+                audioRelease(a)          -- frees; the cell itself is kept
                 if not q and not leaving then aqueue[t] = a end
                 aplay[t] = nil
             end
             local w = aqueue[t]
-            if w then w.at = nil end
+            if w then
+                w.at = nil
+                -- and it is rebuilt while the transport is stopped, so the
+                -- moment it rolls the sound costs one call
+                audioPrepare(w, t)
+            end
         else
             if a and a.stop_at and beat >= a.stop_at then
                 audioStop(t)
@@ -941,7 +991,7 @@ local function launchCell(t, s)
         -- outgoing one leave on that same boundary.
         local q = aqueue[t]
         if q and q.s == s then
-            aqueue[t] = nil                       -- cancel the queued launch…
+            audioCancel(t)                        -- cancel the queued launch…
             local a = aplay[t]
             if a then a.stop_at = nil end         -- …and keep what was playing
             local live = liveLane(t)              -- MIDI outgoing: same rescue

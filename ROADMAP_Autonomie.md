@@ -1337,6 +1337,21 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   traitement anticipatif) sur la piste de destination — la réponse que REAPER
   donne lui-même à ses pistes live. Une colonne qui joue des sons est une
   colonne live.
+- [x] **LA MESURE QUI A TOUT DIT : le décalage est proportionnel au TAUX DE
+  LECTURE.** 147 ms, 220 ms, 460 ms à trois tempos différents — divisés par leur
+  taux respectif, ils donnent tous ~125 ms. Or il n'y a qu'un seul endroit dans
+  le code qui multiplie par le taux : le `skip` de départ.
+  Et il était calculé **après** l'ouverture du fichier. Ouvrir le WAV, construire
+  l'aperçu et demander le tempo-match à REAPER (qui *analyse* la source, le plus
+  lent des trois) se passait entre « la frontière vient de passer » et « le son
+  démarre ». Ce coût était donc lu comme du temps musical déjà écoulé, et retiré
+  du début de l'échantillon — multiplié par le taux. D'où la croissance avec le
+  tempo, et l'instabilité : le prix d'une lecture disque n'est pas une constante.
+  Correctif : **un son est préparé dès qu'il est armé**, plus au moment où il
+  part. Une frontière coûte un appel. Et le dépassement est borné à ce qu'il
+  *est* — une frame plus un bloc, 60 ms — parce qu'au-delà ce n'est plus du
+  dépassement, c'est notre propre lenteur, et la retirer du début du son ne
+  corrige rien : ça creuse un trou là où était le temps fort.
 - [x] **Le vrai calage se fait avant que le son parte** — `D_POSITION` sur un
   aperçu qui n'a pas commencé, seul moment où une position se choisit
   librement. Et le drapeau « la session sonne » est posé **juste avant** le
