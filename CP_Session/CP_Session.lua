@@ -154,9 +154,10 @@ The zone under the grid (toggle it beside the "?") is a channel strip
 per column, acting on the track that column is routed to — so it is
 also the level of whatever CP_Sampler or CP_Editor sends there.
 
-DRAG ITS SEAM to say how much of a strip you want. Short, it is the
-fader block alone; taller, the sends appear, then the FX chain. The
-height is the only control there is.
+DRAG ITS SEAM (the three dots) to say how tall you want it. The two
+lists take exactly what they hold and never more than half the strip;
+the FADER TAKES EVERYTHING ELSE, so a taller zone is mostly a taller
+fader — which is what a console is.
 
 Fader, meter, pan, M and S: Shift for fine, double-click for 0 dB (or
 centre), wheel to step. Solo is REAPER's solo — the arrangement goes
@@ -476,15 +477,45 @@ end
 -- Half an audio block: the preview is picked up by the audio thread on its
 -- NEXT block, so where it actually starts is somewhere in [now, now + block].
 -- Read once — the device does not change under a running script.
-local block_s = nil
+-- A few milliseconds of fade at the start: SWS opens on a raw sample edge,
+-- which clicks on anything that does not begin at zero — and it is also what
+-- makes the one corrective seek of lockPhase inaudible.
+local FADE_IN = 0.003
+
+local block_s, srate_hz = nil, 48000
 local function blockSlack()
     if block_s then return block_s end
     block_s = 0
     local ok, bs = r.GetAudioDeviceInfo("BSIZE", "")
     local ok2, sr = r.GetAudioDeviceInfo("SRATE", "")
     local b, s = tonumber(ok and bs or ""), tonumber(ok2 and sr or "")
+    if s and s > 0 then srate_hz = s end
     if b and s and b > 0 and s > 0 then block_s = (b / s) * 0.5 end
     return block_s
+end
+
+-- The chain's own LATENCY, in seconds. REAPER compensates an item on a track
+-- with plugin delay by rendering it that much earlier; a preview injected at
+-- the track's input gets no such courtesy — it is simply late by the whole
+-- chain, which is exactly how a sound stays out of time on a track that has
+-- anything serious on it. We cannot feed it earlier, so we feed it FURTHER
+-- IN: the sample handed over now is the one that must be heard after the
+-- delay. Zero on a bare track, which is the common case.
+local function chainLatency(tr)
+    if not tr or not r.TrackFX_GetNamedConfigParm then return 0 end
+    blockSlack()
+    local n = r.TrackFX_GetCount(tr)
+    local sum = 0
+    for i = 0, n - 1 do
+        local ok, rv, v = pcall(r.TrackFX_GetNamedConfigParm, tr, i, "pdc")
+        if ok and rv then
+            local s = tonumber(v)
+            if s and s > 0 then sum = sum + s end
+        end
+    end
+    local secs = sum / srate_hz
+    if secs < 0 or secs > 0.5 then return 0 end
+    return secs
 end
 
 -- Actually make the sound, at the beat we have REACHED — which is a hair past
@@ -524,32 +555,16 @@ local function audioStart(t, beat)
         r.CF_Preview_SetValue(prev, "B_PPITCH", 1)
     end
     r.CF_Preview_SetValue(prev, "B_LOOP", 1)
+    -- A few milliseconds of fade at the start: SWS opens on a raw sample edge,
+    -- which clicks on anything that does not begin at zero — and it is also
+    -- what makes the one corrective seek below inaudible.
+    r.CF_Preview_SetValue(prev, "D_FADEINLEN", FADE_IN)
     -- No D_MEASUREALIGN. It holds EVERY loop pass to the bar grid, not only the
     -- first, so a sample that is not exactly N measures long waits at the end
     -- of each pass — the gap between two instances. And it can only align to a
     -- MEASURE, which is why a sound ignored the Q while every MIDI clip obeyed
     -- it. The boundary is ours to pick now (launchBeat), on the engine's clock
     -- and by the engine's rule, so the launch is quantized and the loop runs.
-    local skip = 0
-    if a.at then
-        if Loop.GetFreeRun() then
-            local tempo = Loop.Tempo()
-            if beat and tempo and tempo > 1 then
-                skip = (beat - a.at) * (60 / tempo) * rt
-            end
-        else
-            -- Measured in PROJECT TIME against the position the audio thread
-            -- is about to render — GetPlayPosition2, not GetPlayPosition. The
-            -- preview's first sample lands exactly there, so that is the
-            -- reference: it already contains the output buffer, which the beat
-            -- read from the engine did not, and which is most of the flam.
-            local tb = r.TimeMap2_QNToTime(0, a.at)
-            local p  = r.GetPlayPosition2()
-            if tb and p then skip = (p - tb + blockSlack()) * rt end
-        end
-    end
-    if skip < 0 or skip > 0.25 then skip = 0 end
-    if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
     -- Route it through a TRACK, always. A preview with no output track goes
     -- straight to the hardware: not through the column's fader, not through
     -- the master, not into anything you record — the sound is audible and
@@ -559,8 +574,80 @@ local function audioStart(t, beat)
     if tr and r.CF_Preview_SetOutputTrack then
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
+
+    -- No D_MEASUREALIGN. It holds EVERY loop pass to the bar grid, not only the
+    -- first, so a sample that is not exactly N measures long waits at the end
+    -- of each pass — the gap between two instances. And it can only align to a
+    -- MEASURE, which is why a sound ignored the Q while every MIDI clip obeyed
+    -- it. The boundary is ours to pick now (launchBeat), on the engine's clock
+    -- and by the engine's rule, so the launch is quantized and the loop runs.
+    a.rt   = rt
+    a.slen = r.GetMediaSourceLength(src)
+    a.pdc  = tr and chainLatency(tr) or 0
+    -- The position is a FORMULA from here on, not a one-off calculation: it
+    -- started at the boundary and has run at `rt` ever since. lockPhase holds
+    -- the preview to it, so what follows is only a good first guess.
+    a.t0   = (not Loop.GetFreeRun()) and r.TimeMap2_QNToTime(0, a.at or 0) or nil
+    a.lock = 0
+    a.settled = false
+
+    local skip = 0
+    if a.at then
+        if a.t0 then
+            -- PROJECT TIME against the position the audio thread is about to
+            -- render — GetPlayPosition2, not GetPlayPosition — plus half a
+            -- block (the preview is picked up on the next one) and the chain's
+            -- own latency.
+            local p = r.GetPlayPosition2()
+            if p then skip = (p - a.t0 + blockSlack() + a.pdc) * rt end
+        else
+            local tempo = Loop.Tempo()
+            if beat and tempo and tempo > 1 then
+                skip = (beat - a.at) * (60 / tempo) * rt
+            end
+        end
+    end
+    if skip < 0 or skip > 0.25 then skip = 0 end
+    if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
+
     r.CF_Preview_Play(prev)
     a.prev, a.src = prev, src
+end
+
+-- PHASE LOCK. Everything before this computed the start and hoped: how late
+-- the call was, what the buffer did with it, whether the tempo match made a
+-- loop of exactly the right length. Hope is not a clock — so the position is
+-- now DERIVED from the transport on every pass and put back when it drifts:
+--
+--    position = ((play_position - launch_boundary) * rate) mod source_length
+--
+-- Nothing in that line can be late. The first check runs on the frame after
+-- the launch with a 4 ms tolerance, which is where the whole start-up latency
+-- lands and where correcting it is inaudible (a few ms into the attack, and
+-- the preview fades in over 3). After that it is a drift watch: half a second
+-- apart, 30 ms of slack, so a loop whose tempo match is a hair off is pulled
+-- back onto the grid instead of walking away from it.
+local function lockPhase(a, now)
+    if not a.t0 or not a.slen or a.slen <= 0 or not a.prev then return end
+    if now < a.lock then return end
+    local p = r.GetPlayPosition2()
+    if not p then return end
+    -- + the chain's latency: the sample handed over now is the one that has to
+    -- be HEARD after that delay, so the clip must already be that far ahead
+    local want = (p - a.t0 + (a.pdc or 0)) * a.rt
+    if want < 0 then return end
+    want = want % a.slen
+    local ok, rv, pos = pcall(r.CF_Preview_GetValue, a.prev, "D_POSITION")
+    if not (ok and rv and pos) then return end
+    local err = want - pos
+    local half = a.slen * 0.5
+    if err > half then err = err - a.slen elseif err < -half then err = err + a.slen end
+    local tol = a.settled and 0.030 or 0.004
+    if err > tol or err < -tol then
+        pcall(r.CF_Preview_SetValue, a.prev, "D_POSITION", want)
+    end
+    a.settled = true
+    a.lock = now + 0.5
 end
 
 -- Is the clock RUNNING? Free run has its own, which never stops; following
@@ -628,6 +715,7 @@ end
 local function pollAudio()
     local rolling = clockRolling()
     local beat = rolling and Loop.EngineBeat() or 0
+    local now  = r.time_precise()
     for t = 0, TRACKS - 1 do
         local a, q = aplay[t], aqueue[t]
         if not rolling then
@@ -652,6 +740,10 @@ local function pollAudio()
                 if not q.at then q.at = launchBeat() end
                 if beat >= q.at then audioFire(t, beat) end
             end
+            -- and whatever is sounding is kept ON the transport, not merely
+            -- started on it
+            local live = aplay[t]
+            if live and live.prev then lockPhase(live, now) end
         end
     end
 end
@@ -1453,21 +1545,31 @@ end
 local MIX_H     = 18       -- the M/S row
 local MIX_PAD   = 4
 local MIX_BTN   = 18
-local MIX_MET   = 9        -- meter width beside the vertical fader
+local MIX_MET   = 11       -- meter width beside the vertical fader
 local MIX_GAP   = 3
-local MIX_FADW  = 15       -- the fader's own width (cap included)
+local MIX_FADW  = 21       -- the fader's own width (cap included)
 local MIX_ROW   = 13       -- one list row
 local MIX_PAN   = 12       -- the pan bar
-local MIX_FAD   = 78       -- the fader block at full height
-local MIX_FADMIN = 26
+local MIX_FADMIN = 30
 local MIX_ROWS  = 14       -- most rows a list will ever draw (id tables)
+-- How much of a strip the two LISTS may take. The fader gets everything else:
+-- it is the control you reach for a hundred times an hour, and on a console it
+-- is the tallest thing in the strip for exactly that reason. A list that grew
+-- at its expense would be a directory with a fader stapled to it.
+local MIX_LISTS = 0.55
 -- The shortest the zone can be: pan + a usable fader + M/S + the padding.
 local MIX_MIN   = MIX_PAD * 2 + MIX_PAN + MIX_GAP + MIX_FADMIN + MIX_GAP + MIX_H
-local MIX_MAX   = 520
+-- …and what it opens at: enough for a chain, a couple of sends and a fader
+-- worth grabbing. It was opening at its MINIMUM, which showed the strip at its
+-- least useful and left the seam to be discovered before anything worked.
+local MIX_DEF   = 300
+local MIX_MAX   = 620
 local SEAM_GRAB = 5        -- the band of the seam that resizes the zone
 
 local mix_open  = Core.LoadPersistent("CP_Session", "mix", true)
-local mix_h     = Core.LoadPersistent("CP_Session", "mixh", MIX_MIN)
+-- new key on purpose: the old one holds "as small as it goes" for everyone who
+-- opened the window before the strip had anything in it
+local mix_h     = Core.LoadPersistent("CP_Session", "mixh2", MIX_DEF)
 local mix_moved = false    -- did the fader gesture in flight change anything
 local mix_hot   = false    -- is any meter still above zero (so still falling)
 local mix_seam  = nil      -- { y0, h0 } while the seam is being dragged
@@ -1619,31 +1721,32 @@ local function drawMix(theme, t, x, y, w, h)
     local ms_y  = y + h - MIX_H
     local pan_y = ms_y - MIX_GAP - MIX_PAN
     local avail = pan_y - MIX_GAP - y          -- lists + fader
-    local fad_h = MIX_FAD
-    if avail < fad_h then fad_h = avail end
-    if fad_h < MIX_FADMIN then fad_h = MIX_FADMIN end
-    local lists_h = avail - fad_h - MIX_GAP
-    if lists_h < MIX_ROW then lists_h = 0 end
-    local fad_y = pan_y - MIX_GAP - fad_h
 
-    -- The two lists share what is left: the sends ask for what they hold plus
-    -- one row to add with, the chain takes the rest. Neither scrolls — a strip
-    -- is a glance, and a list you have to scroll is not one.
+    -- The lists ask for exactly what they HOLD (plus one row to add with) and
+    -- never for more than MIX_LISTS of the strip; the fader takes everything
+    -- else. Neither list scrolls — a strip is a glance, and a list you have to
+    -- scroll is not one — so what does not fit is counted, not hidden.
     local nfx  = live and Mix.FxCount(tr) or 0
     local nsnd = live and Mix.SendCount(tr) or 0
+    local cap = floor(avail * MIX_LISTS)
+    if avail - cap < MIX_FADMIN then cap = avail - MIX_FADMIN end
+    if cap < 0 then cap = 0 end
     local fx_h, sd_h = 0, 0
-    if lists_h > 0 then
+    if cap >= MIX_ROW then
         local want_s = (nsnd + 1) * MIX_ROW
         local want_f = (nfx + 1) * MIX_ROW
         sd_h = want_s
-        if sd_h > lists_h - MIX_ROW then sd_h = lists_h - MIX_ROW end
-        if want_f + sd_h > lists_h then sd_h = lists_h - want_f end
+        if sd_h > cap - MIX_ROW then sd_h = cap - MIX_ROW end
+        if want_f + sd_h > cap then sd_h = cap - want_f end
         if sd_h < 0 then sd_h = 0 end
         sd_h = sd_h - sd_h % MIX_ROW
-        fx_h = lists_h - sd_h
+        fx_h = cap - sd_h
         if fx_h > want_f then fx_h = want_f end
         fx_h = fx_h - fx_h % MIX_ROW
     end
+    local fad_h = avail - fx_h - sd_h - MIX_GAP
+    if fad_h < MIX_FADMIN then fad_h = MIX_FADMIN end
+    local fad_y = pan_y - MIX_GAP - fad_h
     -- where a carried FX can be dropped, remembered for pollMixDrag: the
     -- strip knows its own rows, and the carry must not recompute them
     g.fx_y = (fx_h >= MIX_ROW) and y or nil
@@ -2166,8 +2269,17 @@ local function frame(theme)
                 UI.RequestRedraw()
             else
                 mix_seam = nil
-                Core.SavePersistent("CP_Session", "mixh", mix_h)
+                Core.SavePersistent("CP_Session", "mixh2", mix_h)
             end
+        end
+        -- The seam RESIZES, so it says so: three dots is what a grip looks
+        -- like everywhere, and a line that can be dragged without looking
+        -- draggable is a feature nobody finds.
+        local gx = floor(win_w * 0.5) - 7
+        local gc = C.text_mute or C.text_disabled
+        for i = 0, 2 do
+            Core.DrawRect(gx + i * 6, my - 1, 3, 2, gc[1], gc[2], gc[3],
+                          (on_seam or mix_seam) and 0.95 or 0.5)
         end
 
         UI.SetFontCaption()
