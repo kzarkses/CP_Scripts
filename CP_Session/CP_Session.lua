@@ -492,7 +492,14 @@ end
 -- cell be copied, pasted or dragged to another column and still be right.
 -- ---------------------------------------------------------------------------
 local RS5K_ADD   = "ReaSamplOmatic5000 (Cockos)"
+-- The live half plays the root; the twin answers one semitone up, so the two
+-- clips in flight during a queued swap never share a sampler. Fixed on every
+-- column — columns are told apart by CHANNEL — which is what lets a cell be
+-- copied or dragged to another column and still be right.
 local AUDIO_NOTE = 60
+local function laneNote(lane)
+    return AUDIO_NOTE + ((lane >= TRACKS) and 1 or 0)
+end
 -- The note stops slightly before the loop does, for two reasons: the engine's
 -- gate only retriggers a note it has seen END (a note as long as the loop is
 -- held forever and the sample free-runs, drifting with nothing to re-anchor it),
@@ -578,9 +585,30 @@ local function isSampler(tr, i)
     return nm ~= nil and nm:lower():find("samplomatic", 1, true) ~= nil
 end
 
-local function samplerFx(tr)
+-- THE SAMPLER FOLLOWS THE LANE, NOT THE COLUMN — and this is what makes a
+-- sound obey the Q.
+--
+-- A column has two lane halves for exactly one reason: while a launch is queued,
+-- TWO clips exist — the one still sounding and the one waiting for the boundary.
+-- With a single sampler per column, arming the incoming cell loaded its file
+-- immediately, so the note still playing was already playing the NEW sample. The
+-- trigger waited for the Q; the sound did not. Sounds chained on the click while
+-- MIDI clips waited, which is precisely the report.
+--
+-- So each half gets its own sampler, told apart by the NOTE it answers to: the
+-- live half plays the root, the twin one semitone up. Both travel the column's
+-- one channel, and the boundary that swaps the lane swaps the sampler with it —
+-- because it is the note that changes, and nothing else.
+--
+-- Identified by that note rather than by chain position: which half is live
+-- flips with every swap, so creation order says nothing about which is which.
+local function samplerFor(tr, note)
+    local want = note / 127
     for i = 0, r.TrackFX_GetCount(tr) - 1 do
-        if isSampler(tr, i) then return i end
+        if isSampler(tr, i) then
+            local v = r.TrackFX_GetParamNormalized(tr, i, P_NOTE_LO)
+            if v and v - want < 0.002 and want - v < 0.002 then return i end
+        end
     end
     return -1
 end
@@ -589,13 +617,17 @@ end
 -- arm, so it must be IDEMPOTENT and silent: the file is only re-read when it
 -- actually changes, and the plugin's window is never opened. A launcher that
 -- pops a plugin editor on every click is not a launcher.
-local function samplerLoad(t, c)
+local function samplerLoad(t, c, lane)
     local tr = samplerTrack(t, true)
     if not tr then flash("No track for this column — click its name to route it") return nil end
-    local fx = samplerFx(tr)
+    local note = laneNote(lane)
+    local fx = samplerFor(tr, note)
     if fx < 0 then
         fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
         if fx < 0 then flash("ReaSamplOmatic5000 not found") return nil end
+        -- ONE note, so the other half's trigger cannot reach this instance
+        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, note / 127)
+        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, note / 127)
     end
     -- REAPER floats a freshly added plugin by preference, and re-reading FILE0
     -- can raise it again. Neither belongs on a launch: close both, every time.
@@ -609,8 +641,8 @@ local function samplerLoad(t, c)
         -- change, so a shorter file would play a slice of itself.
         r.TrackFX_SetParamNormalized(tr, fx, P_SOFFS, 0)
         r.TrackFX_SetParamNormalized(tr, fx, P_EOFFS, 1)
-        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, AUDIO_NOTE / 127)
-        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, AUDIO_NOTE / 127)
+        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, note / 127)
+        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, note / 127)
         r.TrackFX_SetParamNormalized(tr, fx, P_OBEY, 1)   -- the note's length gates it
         r.TrackFX_SetParamNormalized(tr, fx, P_LOOP, 0)   -- the ENGINE loops it, per pass
         r.TrackFX_SetParamNormalized(tr, fx, P_MAXV, 2 / 64)
@@ -630,10 +662,11 @@ end
 -- no allocation.
 local AUDIO_CLIP = { kind = "midi", bars = 4,
                      notes = { s = { 0 }, l = { 4 }, p = { AUDIO_NOTE }, v = { 127 } } }
-local function audioClip(c)
+local function audioClip(c, lane)
     local bars = cellBars(c)
     AUDIO_CLIP.bars = bars
     AUDIO_CLIP.notes.l[1] = bars * (Loop.TsNum() or 4) * AUDIO_GATE
+    AUDIO_CLIP.notes.p[1] = laneNote(lane)
     return AUDIO_CLIP
 end
 
@@ -644,17 +677,19 @@ end
 -- so the write timing is free) and leave it "stopped with content", which is
 -- the state the engine can launch from.
 --
--- A SOUND cell passes through here like any other: its file goes into the
--- column's sampler, its clip is the one note, and BOTH halves of the pair are
--- flagged so the engine speaks them on the column's sound channel. Both halves,
--- because a swap moves the clip to the twin and the sound must not change
--- channel — nor sampler — halfway through a bar.
+-- A SOUND cell passes through here like any other: its file goes into THIS
+-- HALF's sampler, its clip is the one note that sampler answers to, and both
+-- halves of the pair are flagged so the engine speaks them on the column's
+-- sound channel. Both halves for the channel, because a swap moves the clip to
+-- the twin and the sound must not change channel halfway through a bar — but a
+-- sampler EACH, because during that swap two clips exist and only one of them
+-- is the one still sounding.
 local function armLane(lane, c, t, s)
     local audio = isAudio(c)
-    if audio and not samplerLoad(t, c) then return false end
+    if audio and not samplerLoad(t, c, lane) then return false end
     Loop.SetLaneAudio(t, audio and true or false)
     Loop.SetLaneAudio(t + TRACKS, audio and true or false)
-    Loop.ApplyClip(lane, audio and audioClip(c) or c)
+    Loop.ApplyClip(lane, audio and audioClip(c, lane) or c)
     Loop.SetLengthBars(lane, cellBars(c))
     -- stamp WHICH cell this lane now holds: it is how CP_Editor finds the
     -- clip again after a swap moved it to the other half, and how it knows
@@ -1008,10 +1043,15 @@ end
 -- A running sound takes a new RATE immediately (it is a number). It does not
 -- change ENGINE under itself: turning stretch on or off waits for the next
 -- launch, which is one boundary away.
-local function retune(t, c)
+-- Aim the sampler of the lane that actually HOLDS this cell — not "the column's
+-- sampler", because there are two and the other one may be sounding something
+-- else entirely while a swap is queued.
+local function retune(t, s, c)
     local tr = samplerTrack(t, false)
     if not tr then return end
-    local fx = samplerFx(tr)
+    local lane = Loop.LaneOfTag(t, cellTag(t, s))
+    if not lane then return end
+    local fx = samplerFor(tr, laneNote(lane))
     if fx < 0 then return end
     local rt = rateFor(c)
     local st = (rt and rt > 0) and (12 * (math.log(rt) / math.log(2))) or 0
@@ -1025,7 +1065,7 @@ local function setCellTempoMode(t, s, mode)
     saveGrid()
     -- A sound already playing takes the new rate at once — it is one parameter
     -- on the sampler, not a reload and not a relaunch.
-    if isAudio(c) then retune(t, c) end
+    if isAudio(c) then retune(t, s, c) end
 end
 
 local function cellMenu(t, s)
@@ -2044,7 +2084,7 @@ local function frame(theme)
             local audio = sc and isAudio(cells[t][sc]) or false
             Loop.SetLaneAudio(t, audio)
             Loop.SetLaneAudio(t + TRACKS, audio)
-            if audio then samplerLoad(t, cells[t][sc]) end
+            if audio then samplerLoad(t, cells[t][sc], lane) end
         end
     end
 

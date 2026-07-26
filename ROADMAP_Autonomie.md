@@ -1689,3 +1689,16 @@ contournant la colonne, ce qui est le défaut d'aujourd'hui simplement déplacé
   puisse sonner : il vit dans gmem, qui appartient à la session REAPER et non au
   projet, tandis que le rappel restaure une lane qui jouait. Sans ça, un projet
   rouvert à froid tirait une note vélocité 127 dans l'instrument de la colonne.
+- [x] **Les sons s'enchaînaient sans attendre le Q : l'échantillonneur suivait la
+  COLONNE au lieu de la LANE.** Une colonne a deux moitiés pour une seule raison
+  — pendant qu'un lancement est en file, DEUX clips existent : celui qui sonne
+  encore et celui qui attend la frontière. Avec un seul échantillonneur par
+  colonne, armer la case entrante chargeait son fichier tout de suite : la note
+  qui jouait encore jouait déjà le NOUVEAU sample. Le déclenchement attendait le
+  Q, le son non.
+  Chaque moitié a donc son échantillonneur, distingués par la NOTE qu'ils
+  écoutent — la moitié vive joue la racine, la jumelle un demi-ton au-dessus. Les
+  deux voyagent sur l'unique canal de la colonne, et la frontière qui échange la
+  lane échange l'échantillonneur avec elle, puisque c'est la note qui change et
+  rien d'autre. Identifiés par cette note et non par leur position dans la
+  chaîne : quelle moitié est vive change à chaque échange.
