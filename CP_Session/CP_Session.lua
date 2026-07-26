@@ -445,9 +445,9 @@ local HAS_CF = r.CF_CreatePreview ~= nil
 -- is written against that pair so a sound answers a click exactly as a clip
 -- does: launches queued, stops queued, swaps landing on one boundary, and a
 -- second click taking back whichever of the two is still only queued.
--- BOTH halves own real resources now: a waiting sound is OPENED as soon as it
--- is armed, not when it fires (see audioPrepare). So freeing is one routine,
--- and a cancelled launch frees exactly as a stopped one does.
+-- BOTH halves own real resources now: a waiting sound has its FILE open as
+-- soon as it is armed, not when it fires (see audioOpen). So freeing is one
+-- routine, and a cancelled launch frees exactly as a stopped one does.
 local aplay  = {}  -- [t] = { s,c,at,prev,src,rt,slen,pdc,stop_at,t0,locked }
 local aqueue = {}  -- [t] = { s,c,at, + the same, prepared but not playing }
 
@@ -617,24 +617,26 @@ end
 
 -- OPEN THE FILE WHEN THE LAUNCH IS ARMED, NOT WHEN IT FIRES.
 --
--- Everything here is slow and none of it is the launch: opening the WAV,
--- building the preview, and asking REAPER for the tempo-match rate — which
--- ANALYSES the source and is the slowest of the three. It all used to sit
--- between "the boundary just passed" and "the sound starts", so a launch cost
--- however long that took, and the launch was late by it.
+-- Two things here are slow, and neither of them is the launch: opening the WAV,
+-- and asking REAPER for the tempo-match rate — which ANALYSES the source and is
+-- the slower of the two. Both used to sit between "the boundary just passed"
+-- and "the sound starts", so a launch cost however long they took.
 --
--- Worse: the overshoot is measured after this work, so its cost was read as
+-- Worse: the overshoot is measured after that work, so its cost was read as
 -- musical time already elapsed and taken off the front of the sample —
 -- multiplied by the playrate. That is why the offset GREW with the project
 -- tempo (three measurements, 147/220/460 ms, all within a few percent of the
 -- same number once divided by their rate) and why it was unstable: the price
 -- of a disk read is not a constant.
 --
--- So a sound is prepared as soon as it is armed. Firing it is then one call.
--- Idempotent: re-preparing a ready sound does nothing, and a sound whose file
--- cannot be opened is marked dead rather than retried every frame.
-local function audioPrepare(a, t)
-    if not a or a.prev or a.dead then return end
+-- What CANNOT be done in advance is the preview object itself: SWS reaps a
+-- preview that was created and never started before the defer cycle ends (the
+-- rule is written at the top of Engine/Preview). Made at arm time, it would be
+-- dead by the boundary — and in Follow, where the wait is real, the sound
+-- simply never came out. So: the SOURCE is opened early, the PREVIEW is built
+-- and played in one tick. The expensive half is the half moved.
+local function audioOpen(a)
+    if not a or a.src or a.dead then return end
     local c = a.c
     local src = r.PCM_Source_CreateFromFile(c.path)
     if not src then
@@ -642,8 +644,6 @@ local function audioPrepare(a, t)
         flash("Cannot open: " .. (c.path or "?"))
         return
     end
-    local prev = r.CF_CreatePreview(src)
-    if not prev then r.PCM_Source_Destroy(src) a.dead = true return end
     -- HOW FAST. The clip's own announced tempo wins when it carries one;
     -- otherwise the SAME routine the browser used to audition this file
     -- decides. Two windows disagreeing about how fast a file is was one of the
@@ -658,9 +658,19 @@ local function audioPrepare(a, t)
         rt = Preview.TempoSyncRate(c.path, 1.0)
     end
     if not (rt and rt > 0.05 and rt < 20) then rt = 1.0 end
+    a.src  = src
+    a.rt   = rt
+    a.slen = r.GetMediaSourceLength(src)
+end
+
+-- Build the preview and hand it its settings. Cheap — no disk, no analysis —
+-- and it MUST happen in the tick that plays it.
+local function audioBuild(a, t)
+    local prev = r.CF_CreatePreview(a.src)
+    if not prev then return nil end
     r.CF_Preview_SetValue(prev, "D_VOLUME", 1)
-    if rt ~= 1.0 then
-        r.CF_Preview_SetValue(prev, "D_PLAYRATE", rt)
+    if a.rt ~= 1.0 then
+        r.CF_Preview_SetValue(prev, "D_PLAYRATE", a.rt)
         r.CF_Preview_SetValue(prev, "B_PPITCH", 1)
     end
     r.CF_Preview_SetValue(prev, "B_LOOP", 1)
@@ -685,10 +695,8 @@ local function audioPrepare(a, t)
         liveTrack(tr)
         r.CF_Preview_SetOutputTrack(prev, 0, tr)
     end
-    a.rt   = rt
-    a.slen = r.GetMediaSourceLength(src)
-    a.pdc  = tr and chainLatency(tr) or 0
-    a.prev, a.src = prev, src
+    a.pdc = tr and chainLatency(tr) or 0
+    return prev
 end
 
 -- Actually make the sound, at the beat we have REACHED — which is a hair past
@@ -706,8 +714,10 @@ local OVERSHOOT_MAX = 0.060
 local function audioStart(t)
     local a = aplay[t]
     if not a then return end
-    audioPrepare(a, t)                    -- normally already done, so free
-    if not a.prev then aplay[t] = nil return end
+    audioOpen(a)                          -- normally already done, so free
+    if not a.src then aplay[t] = nil return end
+    local prev = audioBuild(a, t)
+    if not prev then aplay[t] = nil return end
     -- Where the boundary is, in the terms of whichever clock we are on: a
     -- project TIME when we follow the transport, a beat on the engine's own
     -- clock when we do not. `elapsed` reads one or the other from this.
@@ -720,7 +730,7 @@ local function audioStart(t)
     local over = (e or 0) + blockSlack() + a.pdc
     if over < 0 or over > OVERSHOOT_MAX then over = 0 end
     local skip = over * a.rt
-    if skip > 0 then r.CF_Preview_SetValue(a.prev, "D_POSITION", skip) end
+    if skip > 0 then r.CF_Preview_SetValue(prev, "D_POSITION", skip) end
 
     -- The session starts sounding HERE, not when the cell was clicked. Said
     -- any earlier, the engine's free clock would leave zero while we were
@@ -729,7 +739,8 @@ local function audioStart(t)
     -- without it. Zero of that clock and the first sample of this sound are
     -- now the same instant, which is exactly what a downbeat is.
     Loop.SetAudioRun(true)
-    r.CF_Preview_Play(a.prev)
+    r.CF_Preview_Play(prev)
+    a.prev = prev
 end
 
 -- ONE correction, on the frame after the launch, and never again.
@@ -806,11 +817,11 @@ local function audioArm(t, s, c)
     audioCancel(t)
     local q = { s = s, c = c }
     aqueue[t] = q
-    -- Opened, built and tempo-matched NOW, while there is time to spare. A
-    -- boundary has to cost one call — never a disk read, and never REAPER's
-    -- tempo analysis. The boundary itself is asked for AFTER that work, so it
-    -- is the clock as it is when the launch is really armed.
-    audioPrepare(q, t)
+    -- Opened and tempo-matched NOW, while there is time to spare: a boundary
+    -- must never cost a disk read nor REAPER's tempo analysis. The boundary
+    -- itself is asked for AFTER that work, so it is the clock as it is when the
+    -- launch is really armed.
+    audioOpen(q)
     -- Q: Off means NOW, and now is this frame — waiting for the next poll
     -- would put a frame of silence under every unquantized launch.
     if clockRolling() then
@@ -906,9 +917,9 @@ local function pollAudio()
             local w = aqueue[t]
             if w then
                 w.at = nil
-                -- and it is rebuilt while the transport is stopped, so the
-                -- moment it rolls the sound costs one call
-                audioPrepare(w, t)
+                -- and its file is reopened while the transport is stopped, so
+                -- the moment it rolls there is nothing left to read
+                audioOpen(w)
             end
         else
             if a and a.stop_at and beat >= a.stop_at then

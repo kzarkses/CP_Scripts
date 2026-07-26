@@ -1347,11 +1347,20 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   démarre ». Ce coût était donc lu comme du temps musical déjà écoulé, et retiré
   du début de l'échantillon — multiplié par le taux. D'où la croissance avec le
   tempo, et l'instabilité : le prix d'une lecture disque n'est pas une constante.
-  Correctif : **un son est préparé dès qu'il est armé**, plus au moment où il
-  part. Une frontière coûte un appel. Et le dépassement est borné à ce qu'il
-  *est* — une frame plus un bloc, 60 ms — parce qu'au-delà ce n'est plus du
-  dépassement, c'est notre propre lenteur, et la retirer du début du son ne
-  corrige rien : ça creuse un trou là où était le temps fort.
+  Correctif : **le fichier d'un son est ouvert dès qu'il est armé**, plus au
+  moment où il part. Et le dépassement est borné à ce qu'il *est* — une frame
+  plus un bloc, 60 ms — parce qu'au-delà ce n'est plus du dépassement, c'est
+  notre propre lenteur, et la retirer du début du son ne corrige rien : ça
+  creuse un trou là où était le temps fort.
+- [x] **Ce qui ne peut PAS être préparé d'avance : l'objet aperçu lui-même.**
+  SWS balaie un aperçu créé et jamais démarré à la fin du cycle defer — la règle
+  était déjà écrite en tête de `Engine/Preview`, et je l'ai enfreinte. Construit
+  à l'armement, il était mort à la frontière : en Free le lancement est immédiat
+  (même tick, donc ça marchait), en Follow l'attente est réelle et **le son ne
+  sortait tout simplement pas**. La séparation est donc : la **source** est
+  ouverte tôt (le disque et l'analyse de tempo, les deux choses chères), l'
+  **aperçu** est construit et joué dans le même tick. La moitié coûteuse est
+  celle qu'on déplace.
 - [x] **Le vrai calage se fait avant que le son parte** — `D_POSITION` sur un
   aperçu qui n'a pas commencé, seul moment où une position se choisit
   librement. Et le drapeau « la session sonne » est posé **juste avant** le
