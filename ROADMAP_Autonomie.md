@@ -1542,3 +1542,26 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   grille, pas « là où j'ai regardé » — donc `elapsed` mesure toujours le vrai
   retard contre elle. Décider la cible et mesurer l'erreur contre elle restent
   deux questions distinctes, ce qui est toute la raison pour laquelle ça marche.
+- [x] **`GetPlayPosition2` peut être celle du run PRÉCÉDENT sur la frame d'un
+  départ de transport.** Attrapé dans le journal : `pp2=8.6472` alors que
+  `pp=6.4286` et que la frontière était 6.4286 — deux secondes et quart de pure
+  fiction, lues comme un lancement en retard de deux secondes. Le clamp l'a
+  avalé, donc le son survivait par chance et non par raison. Les deux positions
+  ne peuvent différer que de la latence de sortie : au-delà d'un quart de
+  seconde, celle qui vient de sauter est la menteuse, et on prend l'autre.
+- [x] **`I_PERFFLAGS` : seulement le second bit.** Le processus anticipatif est
+  celui qui porte l'argument de calage (la piste est rendue en avance, donc un
+  aperçu mixé maintenant tombe dans un tampon calculé pour plus tard). Le
+  tampon média, lui, pré-lit les ITEMS de la piste — et un aperçu n'est pas un
+  item. Le désactiver n'achetait rien et retirait de la lecture d'avance dont
+  le fil audio a besoin quand son échéance est de 1,3 ms au lieu de 21.
+- [ ] **PROCHAIN CHANTIER, décidé par la mesure : le moteur verrouillé à
+  l'échantillon.** À 1024 le lanceur est exact (`START ERROR ±0,0 ms` à une
+  frame comme à deux secondes, `read speed 1.0000`). À 64 il est affamé, et 64
+  est le réglage de la performance live — donc c'est un manque, pas un cas
+  limite. La cause est structurelle : un aperçu CF est lu depuis le disque dans
+  le fil audio, et à 1,3 ms d'échéance il rate ses rendez-vous. RS5K ne peut pas
+  être affamé (le sample est en RAM) et le moteur déclenche à un **offset
+  d'échantillon dans le bloc** — c'est exactement pourquoi le kick MIDI mesure
+  1 ms. Et toute la machinerie de compensation (`e`, `off`, `lockPhase`, `LEAD`,
+  `qSlop`) DISPARAÎT : on ne compense que ce qu'on n'a pas pu placer.

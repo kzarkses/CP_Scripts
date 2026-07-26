@@ -611,7 +611,15 @@ end
 -- &1 no media buffering, &2 no anticipative FX. Set once, left set: a column
 -- that plays sounds is a live column, and the flags are visible in the track's
 -- own performance options if the user ever wants them back.
-local PERF_LIVE = 3
+--
+-- ONLY THE SECOND BIT. Anticipative processing is the one with the timing
+-- argument: it renders the track ahead, so a preview mixed in now lands in a
+-- buffer that was computed for later. Media buffering is a different thing —
+-- it pre-reads the track's ITEMS, and a preview is not an item, so turning it
+-- off bought nothing here and took away read-ahead the audio thread wants when
+-- its deadline is 1.3 ms rather than 21. A flag that costs and does not pay is
+-- worse than no flag.
+local PERF_LIVE = 2
 local function liveTrack(tr)
     if not tr then return end
     local f = floor((r.GetMediaTrackInfo_Value(tr, "I_PERFFLAGS") or 0) + 0.5)
@@ -676,6 +684,15 @@ end
 local function elapsed(a)
     if a.t0 then
         local p = r.GetPlayPosition2()
+        -- ON THE FRAME A TRANSPORT STARTS, GetPlayPosition2 CAN STILL BE THE
+        -- PREVIOUS RUN'S. Caught in the log: pp2 = 8.6472 while pp = 6.4286 and
+        -- the boundary was 6.4286 — two and a quarter seconds of pure fiction,
+        -- which read as a launch that was two seconds late. The clamp swallowed
+        -- it, so the sound survived on luck rather than on reason.
+        -- The two positions can only differ by the output latency. Further apart
+        -- than a quarter second, the one that just seeked is the liar.
+        local p1 = r.GetPlayPosition()
+        if p and p1 and (p - p1 > 0.25 or p1 - p > 0.25) then p = p1 end
         return p and (p - a.t0) or nil
     end
     if not a.at then return nil end
