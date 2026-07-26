@@ -875,6 +875,18 @@ local function diagLaunch(a, t, e, off, clamped, pos)
         e and string.format("%+.1fms", e * 1000) or "nil",
         blockSlack() * 1000, (a.pdc or 0) * 1000, off * 1000,
         clamped and 1 or 0, pos))
+    -- WHICH SECONDS D_POSITION COUNTS. The one thing the whole alignment rests
+    -- on and the one thing never verified: a position handed to a preview that
+    -- plays at 1.07x is either a place in the SOURCE or a duration of PLAYBACK,
+    -- and the two differ by exactly the rate. D_LENGTH answers it in one line —
+    -- it is the source's own length if the first, the source over the rate if
+    -- the second — and the answer decides whether the launch must multiply by
+    -- the rate or divide by it.
+    local okl, rvl, plen = pcall(r.CF_Preview_GetValue, a.prev, "D_LENGTH")
+    r.ShowConsoleMsg(string.format(
+        "   D_LENGTH=%s  source=%.4f  source/rate=%.4f\n",
+        (okl and rvl and plen) and string.format("%.4f", plen) or "?",
+        a.slen or 0, (a.slen or 0) / ((a.rt and a.rt > 0) and a.rt or 1)))
     a.dg = { pos = pos, n = 0 }
 end
 
@@ -906,6 +918,22 @@ local function diagFollow(a)
         "[CP_Session] +%-2dF ref=%+.4fs pos=%.4f want=%.4f  START ERROR=%+.1fms%s\n",
         dg.n, ref, pos, want, err / rt * 1000,
         down and string.format("  (loop zero at %.4f, boundary %.4f)", down, a.t0) or ""))
+    -- THE SLOPE, WHICH IS WORTH MORE THAN EITHER POINT. How much the read head
+    -- moved per second of real time between the two samples: it must equal the
+    -- playrate, and if it equals 1.00 instead then either the rate is not being
+    -- applied or the position is not counted in the source's own seconds.
+    -- Either way it is the whole error, growing, and no start correction
+    -- touches it.
+    if dg.n == 1 then
+        dg.ref1, dg.pos1 = ref, pos
+    elseif dg.ref1 then
+        local dref = ref - dg.ref1
+        if dref > 0.05 then
+            r.ShowConsoleMsg(string.format(
+                "[CP_Session]      read speed = %.4f x real time (wanted %.4f)\n",
+                (pos - dg.pos1) / dref, rt))
+        end
+    end
     if dg.n == 10 then a.dg = nil end
 end
 
