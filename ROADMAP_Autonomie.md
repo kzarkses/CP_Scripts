@@ -1611,3 +1611,61 @@ La note part sur le canal de la lane, donc **une colonne qui héberge déjà un
 instrument le verrait jouer cette note**. Une colonne est un instrument OU un
 lecteur de boucles ; l'usage mixte demandera une piste dédiée au sample, et c'est
 la question à trancher au moment de l'écrire.
+
+### Vérification du montage (4 agents sur le code réel) — corrections
+
+**1. Le canal 16 est DÉJÀ pris, et pour le sens contraire.** `Kit.UI_CHAN = 15`
+(Kit.lua:1585), le JSFX le dit noir sur blanc (`jsfx:161-167` « Lanes use channels
+1..MAX_LANES, so 16 stays clear ») et **avale** tout message qui arrive dessus
+(`jsfx:727-731`) : le canal 16 signifie « ceci est un aperçu CP, ne le fais pas
+sonner ». Lui donner le sens inverse était la seule partie à détruire. Les lanes
+tiennent 1..8, l'aperçu tient 16 → **9..15 sont libres**. Une colonne = un canal :
+9, 10, 11, 12.
+
+**2. La prémisse « offset d'échantillon » était fausse pour la LECTURE.** Les
+note-on de lecture partent à l'offset 0 du bloc (`jsfx:798-799`) ; seul le
+live-thru porte `mofs` (`jsfx:735`). Donc le MIDI n'est pas sample-exact, il est
+**bloc-exact** — et c'est précisément pourquoi le kick mesure 1 ms **à 64
+échantillons** (un bloc = 1,33 ms) et mesurerait ~21 ms à 1024. Le montage RS5K
+donne donc la précision du bloc, ce qui est exactement ce qui est cherché ici.
+Émettre au sous-bloc (le moteur connaît l'empan de beats) est un gain ultérieur
+et bon marché, pas un préalable.
+
+**3. Onze sites `midisend` codent le canal en dur**, dont tous les note-off
+(`jsfx:371, 418, 498, 548, 568, 583, 615, 652, 660, 707, 798`). Ne rediriger que
+le note-on (`:799`) laisserait le RS5K sonner indéfiniment. Les douze bougent
+ensemble ou rien ne bouge — c'est le gros de l'implémentation et l'endroit le
+plus propice à un défaut silencieux.
+
+**4. `Loop.ApplyClip` / `ClipToLane` refusent `kind ~= "midi"`** (Loop.lua:1037,
+1054). Le clip d'une note est donc **synthétisé à l'armement**, jamais stocké —
+et sa hauteur est la COLONNE, pas le clip : copier/coller et glisser déplacent
+une case entre colonnes, une hauteur figée dans le descripteur arriverait au
+mauvais RS5K.
+
+**5. Une note dont la longueur ÉGALE la boucle ne se redéclenche jamais**
+(`jsfx:786-789` : `dd < nln` est toujours vrai). Décision explicite à prendre :
+note légèrement plus courte que la boucle (redéclenchement et re-phasage à chaque
+passage) ou boucle interne RS5K en roue libre.
+
+**6. Le rappel de projet restaure une lane en mode 3 sans le drapeau audio**
+(Loop.lua:1187) : un projet rouvert à froid tirerait la note de déclenchement,
+vélocité 127, dans l'instrument de la colonne. Le drapeau doit être ré-estampillé
+depuis la grille avant que le rappel puisse sonner.
+
+**7. `LAYOUT_VER` reste à 6** (les boucles survivent) mais `BUILD_VER` 5→6 et
+`Loop.ENGINE_BUILD` 5→6 sont obligatoires : lire le drapeau est un changement de
+comportement. Le drapeau va en `LANE_CTRL + lane*8 + 3` — +3..+7 sont libres et
+`@init` ne les efface jamais (précédent : le tag de lane en +2).
+
+**8. RS5K garde les offsets du sample précédent** quand on change `FILE0`
+(Kit.lua:681) : remettre SOFFS=0 / EOFFS=1 à chaque chargement. Et le TUNE
+s'écrit en **unités d'affichage** via le `plainSet` de Kit (Kit.lua:903-918), qui
+calcule déjà `st = 12·log2(bpm/src)` et borne à ±80 st.
+
+**9. Topologie retenue : la piste RS5K est un ENFANT DE DOSSIER de la piste de
+colonne.** C'est la seule façon que son audio passe par le fader, les FX et le
+VU de la colonne. L'envoyer en audio dans la piste de colonne ne marche pas quand
+celle-ci porte un instrument (un synthé remplace son entrée par sa sortie — c'est
+la raison d'être de `previewDest`), et une piste sœur repart au master en
+contournant la colonne, ce qui est le défaut d'aujourd'hui simplement déplacé.
