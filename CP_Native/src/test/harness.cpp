@@ -11,6 +11,8 @@
 #include <cmath>
 #include <limits>
 #include <new>
+#include <atomic>
+#include <thread>
 
 #include "../core/cp_engine.h"
 
@@ -18,14 +20,18 @@ using namespace cp;
 
 // ---------------------------------------------------------------------------
 // Piege d'allocation
+//
+// thread_local : depuis qu'un test fait tourner un VRAI second fil, le drapeau
+// doit suivre le fil et non le programme. Un booleen global aurait rendu la
+// mesure fausse dans les deux sens a la fois.
 // ---------------------------------------------------------------------------
-static bool  g_in_audio = false;
-static int   g_alloc_in_audio = 0;
-static long  g_alloc_total = 0;
+static thread_local bool g_in_audio = false;
+static std::atomic<int>  g_alloc_in_audio(0);
+static std::atomic<long> g_alloc_total(0);
 
 void* operator new(size_t n) {
-  if (g_in_audio) ++g_alloc_in_audio;
-  ++g_alloc_total;
+  if (g_in_audio) g_alloc_in_audio.fetch_add(1, std::memory_order_relaxed);
+  g_alloc_total.fetch_add(1, std::memory_order_relaxed);
   void* p = std::malloc(n ? n : 1);
   if (!p) throw std::bad_alloc();
   return p;
@@ -419,7 +425,7 @@ static void test_load_and_alloc_trap() {
 
   const int bs = 64, nb = 200;
   sample_t buf[64 * 2];
-  const int before = g_alloc_in_audio;
+  const int before = g_alloc_in_audio.load();
   g_in_audio = true;
   for (int b = 0; b < nb; ++b) {
     for (int p = 0; p < 8; ++p) e.render_port(p, buf, bs, 2);
@@ -427,10 +433,227 @@ static void test_load_and_alloc_trap() {
   }
   g_in_audio = false;
 
-  check_eq(g_alloc_in_audio - before, 0,
+  check_eq(g_alloc_in_audio.load() - before, 0,
            "ZERO allocation dans le chemin audio sur 1600 rendus de port");
   check_eq(e.active_voices(), 32, "les 32 voix tournent");
   check_eq(e.dropped_commands(), 0, "aucune commande perdue");
+}
+
+// ---------------------------------------------------------------------------
+// 9bis. LA PROPRIETE D'UN EMPLACEMENT — la course de reutilisation, fermee
+//
+// C'etait le defaut connu du moteur, ecrit noir sur blanc dans son README : le
+// fil principal remettait a zero une voix que le fil audio pouvait encore
+// parcourir. Benin sur x86 par accident d'architecture, piege garanti sur ARM.
+//
+// Le correctif ne se verifie pas en relisant le code — il se verifie en
+// demandant au moteur de faire exactement ce qui cassait.
+// ---------------------------------------------------------------------------
+static void test_voice_ownership() {
+  group("propriete d'un emplacement");
+  EBox eb; Engine& e = *eb;
+  const int clip = make_ramp_clip(e, 48000, 2);
+
+  const voice_h a = e.voice_alloc(0);
+  check(a != kNullVoice, "allocation");
+  check_eq(e.owned_voices(), 1, "un emplacement possede");
+  check_eq(e.voice_port(a), 0, "le port se lit dans le mot de propriete");
+
+  Cmd c = mk(kCmdVoicePlay, a, 0);
+  c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayLoop;
+  e.post(0, c);
+
+  sample_t buf[64 * 2];
+  g_in_audio = true;
+  for (int b = 0; b < 4; ++b) { e.render_port(0, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  double pos = 0; int st = 0;
+  check(e.voice_query(a, &pos, &st), "le handle repond");
+  check_eq(st, kVoicePlaying, "etat publie en fin de bloc");
+  check(pos > 0.0, "position publiee en fin de bloc");
+
+  // Liberation : le handle meurt IMMEDIATEMENT cote fil principal...
+  e.voice_release(a);
+  check(!e.voice_valid(a), "handle invalide des le retour de release");
+  check_eq(e.owned_voices(), 1,
+           "l'emplacement reste POSSEDE : le fil audio ne l'a pas encore rendu");
+
+  // ... et c'est tout l'enjeu : une nouvelle allocation ne peut pas tomber
+  // dessus tant qu'il sonne. C'est exactement le scenario qui corrompait.
+  const voice_h b2 = e.voice_alloc(0);
+  check(b2 != kNullVoice, "une autre voix reste disponible");
+  check(handle_index(b2) != handle_index(a),
+        "un emplacement encore sonnant n'est JAMAIS reattribue");
+
+  // Le fondu de 5 ms consomme (240 frames a 48 kHz), l'emplacement revient.
+  g_in_audio = true;
+  for (int b = 0; b < 20; ++b) { e.render_port(0, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+  check_eq(e.owned_voices(), 1, "l'emplacement rendu par le fil audio, une fois eteint");
+  check_eq(e.port_list_size(0), 1, "et retire de la liste du port");
+
+  // Le plafond par port est ce qui garantit que cette liste ne deborde pas.
+  int n = 1;   // b2 est deja la
+  while (e.voice_alloc(0) != kNullVoice) ++n;
+  check_eq(n, kMaxPortVoices, "plafond par port : refus net, jamais de debordement");
+}
+
+// ---------------------------------------------------------------------------
+// 9ter. Cycle serre : mille prises et remises, aucune fuite
+// ---------------------------------------------------------------------------
+static void test_alloc_cycle() {
+  group("mille cycles prise/remise");
+  EBox eb; Engine& e = *eb;
+  const int clip = make_ramp_clip(e, 480, 2);
+  sample_t buf[64 * 2];
+
+  for (int i = 0; i < 1000; ++i) {
+    const voice_h v = e.voice_alloc(1);
+    if (v == kNullVoice) { check(false, "allocation impossible en cours de cycle"); break; }
+    Cmd c = mk(kCmdVoicePlay, v, kNow);
+    c.a = 1.0; c.b = 0.5; c.u0 = (uint32_t)clip; c.u1 = kPlayOnce;
+    e.post(1, c);
+    g_in_audio = true;
+    e.render_port(1, buf, 64, 2); e.tick(64);
+    g_in_audio = false;
+    e.voice_release(v);
+    g_in_audio = true;
+    for (int b = 0; b < 6; ++b) { e.render_port(1, buf, 64, 2); e.tick(64); }
+    g_in_audio = false;
+  }
+  check_eq(e.owned_voices(), 0, "aucun emplacement fuit sur mille cycles");
+  check_eq(e.port_list_size(1), 0, "aucune entree orpheline dans la liste du port");
+  check_eq(e.dropped_commands(), 0, "aucune commande perdue");
+}
+
+// ---------------------------------------------------------------------------
+// 9quater. DEUX FILS — l'instrument qui rend la course impossible a nier
+//
+// Un raisonnement sur les barrieres memoire ne prouve rien : c'est exactement le
+// genre d'affirmation que ce projet a deja vue infirmee cinq fois par la mesure.
+// Ici, un vrai fil audio rend pendant qu'un vrai fil principal prend et rend des
+// emplacements aussi vite qu'il peut, en envoyant au passage des commandes sur
+// des handles deja perimes.
+// ---------------------------------------------------------------------------
+static void test_two_threads() {
+  group("deux fils, un demi-million d'occasions de se marcher dessus");
+  EBox eb; Engine& e = *eb;
+  const int clip = make_ramp_clip(e, 4800, 2);
+
+  std::atomic<bool> stop(false);
+  std::atomic<long long> blocks(0);
+  const int kPorts = 4;
+
+  std::thread audio([&] {
+    g_in_audio = true;                 // le piege d'allocation suit CE fil
+    sample_t buf[128 * 2];
+    while (!stop.load(std::memory_order_relaxed)) {
+      for (int p = 0; p < kPorts; ++p) e.render_port(p, buf, 128, 2);
+      e.tick(128);
+      blocks.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_in_audio = false;
+  });
+
+  const long long kIter = 500000;
+  long long allocs = 0, refused = 0;
+  for (long long it = 0; it < kIter; ++it) {
+    const int port = (int)(it & (kPorts - 1));
+    const voice_h v = e.voice_alloc(port);
+    if (v == kNullVoice) { ++refused; std::this_thread::yield(); continue; }
+    ++allocs;
+
+    Cmd c = mk(kCmdVoicePlay, v, kNow);
+    c.a = 1.0; c.b = 0.02; c.u0 = (uint32_t)clip;
+    c.u1 = (it & 1) ? kPlayLoop : kPlayOnce;
+    e.post(port, c);
+
+    e.voice_release(v);
+
+    // Et le scenario reel de ce depot : un script mort continue d'ecrire. La
+    // commande porte un handle deja rendu ; elle ne doit atteindre personne.
+    e.post(port, mk(kCmdVoiceStop, v, kNow));
+    if ((it & 63) == 0) std::this_thread::yield();
+  }
+
+  stop.store(true, std::memory_order_relaxed);
+  audio.join();
+
+  check(blocks.load() > 0, "le fil audio a bien tourne");
+  check(allocs > 0, "des allocations ont abouti");
+
+  // Le fil audio est arrete : on peut maintenant regarder l'etat interne. On
+  // draine ce qui reste, puis on exige le compte rond.
+  g_in_audio = true;
+  sample_t buf[128 * 2];
+  for (int b = 0; b < 200; ++b) {
+    for (int p = 0; p < kPorts; ++p) e.render_port(p, buf, 128, 2);
+    e.tick(128);
+  }
+  g_in_audio = false;
+
+  check_eq(e.owned_voices(), 0, "aucun emplacement fuit apres la tempete");
+  int orphans = 0;
+  for (int p = 0; p < kPorts; ++p) orphans += e.port_list_size(p);
+  check_eq(orphans, 0, "aucune entree orpheline dans les listes de port");
+  check_eq(e.active_voices(), 0, "plus aucune voix vivante");
+  check_eq(g_alloc_in_audio.load(), 0,
+           "ZERO allocation dans le fil audio, sous concurrence reelle");
+
+  std::printf("        %lld blocs rendus, %lld allocations, %lld refus (port plein)\n",
+              (long long)blocks.load(), allocs, refused);
+}
+
+// ---------------------------------------------------------------------------
+// 9quinquies. Deplacement de tete et boucle a la volee
+// ---------------------------------------------------------------------------
+static void test_seek_and_live_loop() {
+  group("tete de lecture et boucle a la volee");
+  {
+    // « pos » postee juste apres un play en devient le point de depart :
+    // l'anneau est FIFO, donc les deux commandes tombent dans le meme bloc, dans
+    // l'ordre d'ecriture. C'est ce dont un navigateur a besoin pour lancer un
+    // fichier depuis un clic dans la forme d'onde.
+    EBox eb; Engine& e = *eb;
+    const int clip = make_ramp_clip(e, 4096, 2);
+    const voice_h v = e.voice_alloc(0);
+    Cmd c = mk(kCmdVoicePlay, v, 0);
+    c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayOnce;
+    e.post(0, c);
+    Cmd s = mk(kCmdVoiceSet, v, kNow);
+    s.u0 = kParamPos; s.a = 500.0;
+    e.post(0, s);
+
+    const int bs = 64, nb = 8;
+    sample_t* buf = (sample_t*)std::calloc((size_t)nb * bs * 2, sizeof(sample_t));
+    run_blocks(e, 0, buf, nb, bs);
+    check_near(buf[0], 501.0, 0.0, "le premier echantillon est la source 500");
+    check_near(buf[(size_t)10 * 2], 511.0, 0.0, "et la suite s'enchaine");
+    std::free(buf);
+  }
+  {
+    // Une boucle enclenchee PENDANT la lecture ne doit pas faire repartir du
+    // debut : elle change ce qui se passe a la fin de la matiere, rien d'autre.
+    EBox eb; Engine& e = *eb;
+    const frame_t len = 300;
+    const int clip = make_ramp_clip(e, len, 2);
+    const voice_h v = e.voice_alloc(0);
+    Cmd c = mk(kCmdVoicePlay, v, 0);
+    c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayOnce;
+    e.post(0, c);
+    Cmd s = mk(kCmdVoiceSet, v, kNow);
+    s.u0 = kParamLoop; s.a = 1.0;
+    e.post(0, s);
+
+    const int bs = 64, nb = 16;   // 1024 frames = trois tours et des poussieres
+    sample_t* buf = (sample_t*)std::calloc((size_t)nb * bs * 2, sizeof(sample_t));
+    run_blocks(e, 0, buf, nb, bs);
+    check_near(buf[0], 1.0, 0.0, "depart inchange");
+    check_near(buf[(size_t)(len + 5) * 2], 6.0, 0.0, "la matiere reboucle");
+    check_near(buf[(size_t)(2 * len + 5) * 2], 6.0, 0.0, "et continue de reboucler");
+    std::free(buf);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -468,12 +691,16 @@ int main() {
   test_srate_change();
   test_handles();
   test_load_and_alloc_trap();
+  test_voice_ownership();
+  test_alloc_cycle();
+  test_seek_and_live_loop();
+  test_two_threads();
   test_clock();
 
   std::printf("\n=====================================\n");
   std::printf("  reussis : %d\n  echecs  : %d\n", g_pass, g_fail);
-  std::printf("  allocations totales (init comprise) : %ld\n", g_alloc_total);
-  std::printf("  allocations dans le fil audio       : %d\n", g_alloc_in_audio);
+  std::printf("  allocations totales (init comprise) : %ld\n", g_alloc_total.load());
+  std::printf("  allocations dans le fil audio       : %d\n", g_alloc_in_audio.load());
   std::printf("=====================================\n");
   return g_fail ? 1 : 0;
 }

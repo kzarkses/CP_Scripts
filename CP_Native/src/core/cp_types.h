@@ -30,6 +30,12 @@ enum : int {
   kMaxVoices  = 256,  // 8 voix par port a pleine charge
   kMaxClips   = 512,  // echantillons resident en RAM
   kMaxChans   = 2,    // v1 : mono ou stereo
+  // Plafond par port. Il n'est pas cosmetique : c'est lui qui borne la liste que
+  // le fil audio parcourt a chaque bloc. Avant lui, render_port balayait les 256
+  // voix pour en trouver huit — 38 Ko de structures traversees par port et par
+  // bloc, soit plus que le L1 d'une machine ancienne. Maintenant il ne touche
+  // que ses propres voix.
+  kMaxPortVoices = 64,
   // 256 commandes par port. Draine a chaque bloc, ca represente 192 000
   // commandes par seconde a 64 echantillons — trois ordres de grandeur au-dessus
   // de ce qu'une interface humaine peut produire. Le seul cas de saturation
@@ -77,6 +83,36 @@ inline int handle_index(voice_h h) { return (int)(h & 0xFFFF); }
 inline uint16_t handle_gen(voice_h h) { return (uint16_t)(h >> 16); }
 
 // ---------------------------------------------------------------------------
+// Le mot de propriete d'une voix — un seul entier atomique par emplacement.
+//
+// C'est la piece qui ferme la course de reutilisation. Avant, le fil principal
+// ecrivait DANS la voix pour l'allouer, pendant que le fil audio pouvait encore
+// la parcourir. Benin sur x86 par accident (TSO), piege garanti sur ARM.
+//
+// Maintenant la propriete et l'etat sont deux choses distinctes :
+//   * le mot ci-dessous appartient au FIL PRINCIPAL, sauf le bit `owned` que le
+//     fil audio est seul a EFFACER, et seulement quand il en a fini ;
+//   * la structure Voice appartient au FIL AUDIO, integralement.
+// Le fil principal demande, le fil audio execute — comme toute autre commande.
+//
+//   bits 0..15  generation      (jamais 0 : 0 = emplacement vierge)
+//   bit  16     possede         (pose par le principal, efface par l'audio)
+//   bits 17..22 port            (0..31)
+// ---------------------------------------------------------------------------
+typedef uint32_t claim_t;
+static const claim_t kClaimOwned    = 1u << 16;
+static const claim_t kClaimGenMask  = 0xFFFFu;
+static const int     kClaimPortShift = 17;
+static const claim_t kClaimPortMask = 0x3Fu << kClaimPortShift;
+
+inline claim_t make_claim(uint16_t gen, int port) {
+  return (claim_t)gen | kClaimOwned | ((claim_t)(port & 0x3F) << kClaimPortShift);
+}
+inline uint16_t claim_gen(claim_t c)  { return (uint16_t)(c & kClaimGenMask); }
+inline bool     claim_owned(claim_t c){ return (c & kClaimOwned) != 0; }
+inline int      claim_port(claim_t c) { return (int)((c & kClaimPortMask) >> kClaimPortShift); }
+
+// ---------------------------------------------------------------------------
 // Commandes fil principal -> fil audio. POD strict, taille fixe, aucune
 // indirection : le fil audio ne doit jamais suivre un pointeur qu'il n'a pas
 // lui-meme publie.
@@ -89,6 +125,10 @@ enum CmdType : uint32_t {
   kCmdVoiceQueue,    // u0 = handle suivant, a = crossfade en secondes
   kCmdPortGain,      // a = gain
   kCmdPanic,         // tout couper, sans clic
+  // Prise et remise d'un emplacement. Le fil principal ne touche JAMAIS la
+  // structure Voice : il pose son mot de propriete, puis demande ici.
+  kCmdVoiceAlloc,    // voice = handle NEUF, u1 = port
+  kCmdVoiceFree,     // voice = handle A RENDRE, u0 = generation a installer
 };
 
 enum ParamId : uint32_t {
@@ -99,6 +139,8 @@ enum ParamId : uint32_t {
   kParamLoopEnd,
   kParamFadeIn,      // en secondes
   kParamFadeOut,
+  kParamPos,         // deplacement de la tete de lecture, en frames source
+  kParamLoop,        // 0 = une fois, non nul = boucle. Change A LA VOLEE.
 };
 
 struct Cmd {

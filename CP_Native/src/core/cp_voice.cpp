@@ -36,6 +36,8 @@ void Voice::reset() {
   xfade_len = 0;
   started_at = -1;
   ended_at = -1;
+  free_pending = false;
+  publish();
 }
 
 // Hermite 4 points. Choisi contre le lineaire (audible sur des transitoires) et
@@ -50,6 +52,17 @@ static inline float hermite(float xm1, float x0, float x1, float x2, float t) {
   return ((((a * t) - b) * t + c) * t + x0);
 }
 
+// ---------------------------------------------------------------------------
+// POURQUOI TOUT L'ETAT MUTABLE DESCEND EN VARIABLE LOCALE
+//
+// `out` est un `sample_t*` et `pos` un `double` membre : rien n'interdit
+// formellement au premier de pointer sur le second. Le compilateur DOIT donc
+// relire et reecrire chaque membre a chaque tour de boucle — position, fondus,
+// gain, etat : une dizaine d'acces memoire par echantillon, la ou il n'en faut
+// aucun. Descendre l'etat en local le lui prouve, et il garde tout en registre.
+// C'est la seule optimisation de ce fichier qui se voit sur la machine cible ;
+// les autres sont du bruit a cote.
+// ---------------------------------------------------------------------------
 void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
                    frame_t block_start, double engine_srate) {
   if (state == kVoiceIdle) return;
@@ -89,7 +102,7 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
   const frame_t src_start = (loop_start >= 0 && loop_start < src_end) ? loop_start : 0;
   const frame_t span      = src_end - src_start;
   const int     cnch      = c->nch;
-  const sample_t* data    = c->data;
+  const sample_t* const data = c->data;
 
   // Balance, pas panoramique a puissance constante. Un lanceur de clips joue du
   // materiau deja mixe : au centre, il doit passer a l'identique. Une loi a
@@ -99,11 +112,6 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
   const float gl    = (pnorm > 0.0f) ? (1.0f - pnorm) : 1.0f;
   const float gr    = (pnorm < 0.0f) ? (1.0f + pnorm) : 1.0f;
 
-  // Rampe de gain sur le bloc : un saut de gain sec s'entend, et une rampe par
-  // bloc coute une addition par echantillon.
-  float g = gain;
-  const float gstep = (n > off) ? (gain_target - gain) / (float)(n - off) : 0.0f;
-
   // Le clip est stocke au taux ou il a ete decode. Si l'appareil change de taux
   // en cours de route, cette matiere ne bouge pas — c'est la LECTURE qui doit
   // s'adapter, sinon la hauteur change. Defaut trouve en changeant de taux
@@ -112,43 +120,57 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
   // une constante d'initialisation.
   const double sr_ratio = (engine_srate > 1.0 && c->srate > 1.0)
                         ? (c->srate / engine_srate) : 1.0;
-  const double step = rate * sr_ratio;
+  const double step  = rate * sr_ratio;
+  const bool   unity = (step > 0.99999999 && step < 1.00000001);
+  const bool   looping = (mode == kPlayLoop && span > 0);
 
-  const bool unity = (step > 0.99999999 && step < 1.00000001);
+  // --- l'etat mutable descend en registre ------------------------------------
+  double    p   = pos;
+  int       st  = state;
+  int       fip = fade_in_pos;
+  int       fop = fade_out_pos;
+  float     g   = gain;
+  const int fil = fade_in_len;
+  const int fol = fade_out_len;
+
+  // Rampe de gain sur le bloc : un saut de gain sec s'entend, et une rampe par
+  // bloc coute une addition par echantillon.
+  const float gstep = (n > off) ? (gain_target - g) / (float)(n - off) : 0.0f;
+
+  frame_t ended_here = -1;   // -1 = la voix a survecu a ce bloc
 
   for (int i = off; i < n; ++i) {
     // --- fin de matiere ------------------------------------------------------
-    if (pos >= (double)src_end) {
-      if (mode == kPlayLoop && span > 0) {
+    if (p >= (double)src_end) {
+      if (looping) {
         // Repli exact : on retire un nombre entier de spans, la phase
         // fractionnaire est preservee. C'est ce qui evite la derive d'un
         // echantillon par tour, invisible au debut et fatale au bout de dix
         // minutes.
-        while (pos >= (double)src_end) pos -= (double)span;
+        while (p >= (double)src_end) p -= (double)span;
       } else {
-        state = kVoiceIdle;
-        clip = -1;
-        ended_at = block_start + i;
+        st = kVoiceIdle;
+        ended_here = block_start + i;
         break;
       }
     }
 
     // --- lecture interpolee --------------------------------------------------
-    const frame_t i0 = (frame_t)pos;
+    const frame_t i0 = (frame_t)p;
     float l, r;
 
     if (unity) {
-      const sample_t* p = data + (size_t)i0 * cnch;
-      l = p[0];
-      r = (cnch > 1) ? p[1] : p[0];
+      const sample_t* s = data + (size_t)i0 * cnch;
+      l = s[0];
+      r = (cnch > 1) ? s[1] : s[0];
     } else {
-      const float t = (float)(pos - (double)i0);
+      const float t = (float)(p - (double)i0);
       frame_t im1 = i0 - 1, i1 = i0 + 1, i2 = i0 + 2;
       // Bornage par repli dans la zone de boucle : jamais de lecture hors du
       // tampon, et pas de branchement imprevisible dans la boucle chaude.
-      if (im1 < src_start) im1 = (mode == kPlayLoop && span > 0) ? src_end - 1 : src_start;
-      if (i1 >= src_end)   i1  = (mode == kPlayLoop && span > 0) ? src_start : src_end - 1;
-      if (i2 >= src_end)   i2  = (mode == kPlayLoop && span > 0) ? src_start : src_end - 1;
+      if (im1 < src_start) im1 = looping ? src_end - 1 : src_start;
+      if (i1 >= src_end)   i1  = looping ? src_start : src_end - 1;
+      if (i2 >= src_end)   i2  = looping ? src_start : src_end - 1;
 
       const sample_t* pm1 = data + (size_t)im1 * cnch;
       const sample_t* p0  = data + (size_t)i0  * cnch;
@@ -161,18 +183,17 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
 
     // --- enveloppes ----------------------------------------------------------
     float env = 1.0f;
-    if (fade_in_len > 0 && fade_in_pos < fade_in_len) {
-      env *= (float)fade_in_pos / (float)fade_in_len;
-      ++fade_in_pos;
+    if (fil > 0 && fip < fil) {
+      env *= (float)fip / (float)fil;
+      ++fip;
     }
-    if (state == kVoiceStopping) {
-      if (fade_out_len > 0 && fade_out_pos < fade_out_len) {
-        env *= 1.0f - (float)fade_out_pos / (float)fade_out_len;
-        ++fade_out_pos;
+    if (st == kVoiceStopping) {
+      if (fol > 0 && fop < fol) {
+        env *= 1.0f - (float)fop / (float)fol;
+        ++fop;
       } else {
-        state = kVoiceIdle;
-        clip = -1;
-        ended_at = block_start + i;
+        st = kVoiceIdle;
+        ended_here = block_start + i;
         break;
       }
     }
@@ -185,10 +206,19 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
     o[0] += l * gg * gl;
     if (nch > 1) o[1] += r * gg * gr;
 
-    pos += step;
+    p += step;
   }
 
+  // --- l'etat remonte en memoire, une seule fois -----------------------------
+  pos = p;
+  fade_in_pos = fip;
+  fade_out_pos = fop;
+  state = st;
   gain = gain_target;
+  if (ended_here >= 0) {
+    clip = -1;
+    ended_at = ended_here;
+  }
 
   // Coupure nette datee : la voix s'eteint exactement au frame demande.
   if (stop_at < block_start + frames && state != kVoiceIdle && fade_out_len == 0) {

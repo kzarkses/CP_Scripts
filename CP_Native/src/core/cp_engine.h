@@ -6,6 +6,15 @@
 // principal, suffit a convertir un instant du projet en frame absolu — et il n'y
 // a aucune derive a rattraper, puisque la boucle et le projet sont entraines par
 // la meme horloge de carte son (mesure du 2026-07-30).
+//
+// PARTAGE DE LA PROPRIETE — la regle qui rend le moteur sur :
+//
+//   fil principal    les mots de propriete (claim_), le vivier, l'horloge-ancre
+//   fil audio        les structures Voice, les listes de port, l'horloge
+//
+// Aucune des deux moities n'ecrit dans l'autre. La seule exception est le bit
+// `owned` d'un mot de propriete, que le fil audio EFFACE (et n'ecrit jamais
+// autrement) pour dire « j'en ai fini, l'emplacement est reutilisable ».
 #pragma once
 
 #include <atomic>
@@ -18,13 +27,26 @@ namespace cp {
 
 struct PortState {
   SpscRing<Cmd, kCmdRingCap> cmds;
+
+  // Les voix vivantes de CE port, index dans voices_. Tenue par le FIL AUDIO
+  // seul, remplie par kCmdVoiceAlloc, videe par kCmdVoiceFree.
+  //
+  // Avant elle, chaque rendu de port balayait les 256 voix pour en trouver
+  // huit : 40 Ko de structures traversees par port et par bloc, deux fois. La
+  // liste ramene le balayage a ce que le port possede reellement.
+  int16_t vlist[kMaxPortVoices];
+  int     vcount;
+
   float   gain;
   float   gain_target;
   frame_t last_clock;   // valeur de l'horloge au dernier bloc observe
   int     consumed;     // frames deja rendus dans le bloc courant
   bool    used;
 
-  PortState() : gain(1.0f), gain_target(1.0f), last_clock(-1), consumed(0), used(false) {}
+  PortState() : vcount(0), gain(1.0f), gain_target(1.0f), last_clock(-1),
+                consumed(0), used(false) {
+    for (int i = 0; i < kMaxPortVoices; ++i) vlist[i] = -1;
+  }
 };
 
 class Engine {
@@ -40,6 +62,11 @@ class Engine {
   const Pool& pool() const { return pool_; }
 
   // Reserve une voix sur un port. kNullVoice si plus de place.
+  //
+  // N'ECRIT PAS dans la voix : pose le mot de propriete, puis demande au fil
+  // audio de preparer l'emplacement. C'est ce qui ferme la course de
+  // reutilisation — le fil principal n'a plus aucun acces a une structure que
+  // le fil audio peut parcourir.
   voice_h voice_alloc(int port);
   void    voice_release(voice_h h);
   bool    voice_valid(voice_h h) const;
@@ -58,8 +85,10 @@ class Engine {
   // realiste est un consommateur mort — voir heartbeat()).
   bool post(int port, const Cmd& c);
 
-  // Etat d'une voix, pour l'affichage. Lecture non verrouillee : la valeur peut
-  // avoir un bloc de retard, ce qui est sans importance pour un dessin.
+  // Etat d'une voix, pour l'affichage. Lit les valeurs PUBLIEES en fin de bloc :
+  // elles peuvent avoir un bloc de retard, ce qui est sans importance pour un
+  // dessin, et elles sont formellement definies, ce qu'une lecture directe de la
+  // structure ne serait pas.
   bool voice_query(voice_h h, double* pos_frames, int* state) const;
 
   // Horloge : frame absolu courant, tel que le fil audio le compte.
@@ -80,11 +109,12 @@ class Engine {
   // Rend au port toutes ses voix, immediatement et sans passer par l'anneau.
   //
   // A n'appeler QUE lorsque le port ne rend plus — c'est-a-dire apres que
-  // StopTrackPreview2 a rendu la main. Sans cela, une voix en cours
-  // d'extinction reste eternellement en kVoiceStopping : son port ayant cesse
-  // de rendre, plus personne ne fera jamais avancer son fondu, et son slot est
-  // perdu. Defaut trouve sur la sonde du 2026-07-31 (voices=2 pour une seule
-  // voix allouee).
+  // StopTrackPreview2 a rendu la main. C'est la SEULE exception a la regle de
+  // propriete, et elle est sure precisement parce qu'il n'y a plus de second
+  // fil : personne ne parcourt ces voix a cet instant. Sans elle, une voix en
+  // cours d'extinction reste eternellement en kVoiceStopping — son port ayant
+  // cesse de rendre, plus personne ne fera avancer son fondu, et son
+  // emplacement est perdu (defaut trouve a la sonde du 2026-07-31).
   void port_reset(int port);
 
   // --- fil audio ------------------------------------------------------------
@@ -107,16 +137,31 @@ class Engine {
 
   // --- diagnostic -----------------------------------------------------------
   int active_voices() const;
+  int owned_voices() const;
+  int port_voices(int port) const;
+
+  // Taille de la liste que le fil audio parcourt pour ce port. A LIRE SEULEMENT
+  // quand le fil audio est arrete : c'est une autopsie, pas un indicateur. Elle
+  // sert au harnais a verifier qu'aucune entree ne survit a la liberation de son
+  // emplacement — une entree orpheline ferait rendre une voix deux fois.
+  int port_list_size(int port) const {
+    return (port >= 0 && port < kMaxPorts) ? ports_[port].vcount : -1;
+  }
   uint32_t dropped_commands() const { return dropped_.load(std::memory_order_relaxed); }
 
  private:
   void drain(int port, frame_t block_start);
-  void apply(const Cmd& c, frame_t block_start);
+  void apply(int port, const Cmd& c, frame_t block_start);
+  void port_attach_voice(int port, int index);
 
   Pool       pool_;
   Voice      voices_[kMaxVoices];
-  bool       owned_[kMaxVoices];
   PortState  ports_[kMaxPorts];
+
+  // Propriete des emplacements. Ecrit par le fil principal ; le fil audio n'y
+  // efface que le bit `owned`.
+  std::atomic<claim_t> claim_[kMaxVoices];
+  int        alloc_cursor_;      // fil principal : reprend ou il s'est arrete
 
   double     srate_;
   std::atomic<frame_t>  clock_;
