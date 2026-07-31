@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 #include <new>
 
 #include "cp_source.h"
@@ -31,8 +32,8 @@ using namespace cp;
 // 1.1 : ajout de CP_VoiceStartedAt. Un ajout leve la mineure ; un changement de
 // signature leverait la majeure. Les scripts exigent un MINIMUM, pas une egalite
 // — sinon chaque ajout casserait tout le monde.
-// 1.3 : CP_LoadReset / CP_LoadDiag, et le compte d'exactitude MIDI.
-static const double kEngineABI = 1.3;
+// 1.4 : CP_WarpProbe — la mesure de l'etireur de REAPER.
+static const double kEngineABI = 1.4;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -429,6 +430,157 @@ const char* CP_LoadDiag() {
   return buf;
 }
 
+// ---------------------------------------------------------------------------
+// LE WARP — la sonde du §12.5.5, et le dernier argument irreductible du dossier.
+//
+// Deux questions, une seule fonction :
+//
+//   1. QUELLE EST LA LATENCE de l'etireur de REAPER ? L'interface n'expose
+//      aucun accesseur (§11.9) : c'est un modele push/pull, donc la latence
+//      s'OBSERVE — on pousse une impulsion et on compte les echantillons de
+//      sortie qui la precedent. Et surtout elle s'AMORCE : connaitre ce nombre
+//      permet de pre-remplir l'etireur pour que le premier echantillon utile
+//      tombe pile sur le beat.
+//
+//   2. COMBIEN COUTE-T-IL par voix ? 16 voix etirees sur un PC de 2005
+//      n'existent peut-etre pas, quel que soit le code. Mieux vaut le savoir
+//      avant d'ecrire le moteur autour.
+//
+// Tout se passe sur le fil principal : c'est une mesure, pas du temps reel.
+// ---------------------------------------------------------------------------
+const char* CP_WarpProbe(double tempoRatio, int nvoices) {
+  static char buf[512];
+
+  if (!ReaperGetPitchShiftAPI) {
+    snprintf(buf, sizeof(buf), "ReaperGetPitchShiftAPI indisponible");
+    return buf;
+  }
+  IReaperPitchShift* ps = ReaperGetPitchShiftAPI(REAPER_PITCHSHIFT_API_VER);
+  if (!ps) {
+    snprintf(buf, sizeof(buf), "l'etireur a refuse la version 0x%X",
+             REAPER_PITCHSHIFT_API_VER);
+    return buf;
+  }
+
+  const double srate = g_eng ? g_eng->srate() : 48000.0;
+  const int    nch = 2;
+  const double tempo = (tempoRatio > 0.01) ? tempoRatio : 1.0;
+
+  ps->set_srate(srate);
+  ps->set_nch(nch);
+  ps->set_shift(1.0);            // la hauteur ne bouge pas : c'est tout l'objet
+  ps->set_tempo(tempo);
+  ps->SetQualityParameter(-1);   // reglage par defaut du projet
+  ps->Reset();
+
+  // --- 1. la latence, par impulsion ----------------------------------------
+  //
+  // Une impulsion au tout premier echantillon d'entree, puis du silence. On
+  // compte ce qui sort avant elle. Deux nombres, parce qu'un etireur a fenetre
+  // ETALE une impulsion : le premier echantillon non nul dit quand la sortie
+  // commence a exister, le pic dit ou l'energie est reellement arrivee. C'est le
+  // pic qui sert a compenser.
+  const int kChunk = 256;
+  const int kWantOut = 16384;
+  static ReaSample out[16384 * 2];
+
+  long long total_in = 0, total_out = 0;
+  long long premier = -1, pic_idx = -1;
+  double pic_val = 0.0;
+  bool impulsion_poussee = false;
+
+  int garde = 4096;   // borne dure : on ne boucle jamais indefiniment
+  while (total_out < kWantOut && garde-- > 0) {
+    ReaSample* in = ps->GetBuffer(kChunk);
+    if (!in) break;
+    for (int i = 0; i < kChunk * nch; ++i) in[i] = 0.0;
+    if (!impulsion_poussee) {
+      in[0] = 1.0;
+      in[1] = 1.0;
+      impulsion_poussee = true;
+    }
+    ps->BufferDone(kChunk);
+    total_in += kChunk;
+
+    const int got = ps->GetSamples(kChunk, out);
+    for (int i = 0; i < got; ++i) {
+      const double v = (out[(size_t)i * nch] < 0.0) ? -out[(size_t)i * nch]
+                                                    : out[(size_t)i * nch];
+      const long long idx = total_out + i;
+      if (premier < 0 && v > 1e-6) premier = idx;
+      if (v > pic_val) { pic_val = v; pic_idx = idx; }
+    }
+    total_out += got;
+    if (got <= 0 && total_in > (long long)kWantOut * 4) break;
+  }
+
+  // --- 2. le cout, par voix -------------------------------------------------
+  //
+  // On traite une seconde d'audio a travers N etireurs et on rapporte le temps
+  // mur au temps audio. C'est la meme unite que le cpu= de la montee en charge,
+  // donc les deux chiffres se comparent directement.
+  int n = (nvoices < 1) ? 1 : ((nvoices > 16) ? 16 : nvoices);
+  IReaperPitchShift* pool[16];
+  int made = 0;
+  for (int i = 0; i < n; ++i) {
+    IReaperPitchShift* p = ReaperGetPitchShiftAPI(REAPER_PITCHSHIFT_API_VER);
+    if (!p) break;
+    p->set_srate(srate);
+    p->set_nch(nch);
+    p->set_shift(1.0);
+    p->set_tempo(tempo);
+    p->SetQualityParameter(-1);
+    p->Reset();
+    pool[made++] = p;
+  }
+
+  const int kSecFrames = (int)srate;
+  double phase = 0.0;
+  const long long freq = PortSource_TickFreq();
+  LARGE_INTEGER li0, li1;
+  QueryPerformanceCounter(&li0);
+
+  for (int v = 0; v < made; ++v) {
+    IReaperPitchShift* p = pool[v];
+    int done = 0;
+    phase = 0.0;
+    while (done < kSecFrames) {
+      const int c = ((kSecFrames - done) > kChunk) ? kChunk : (kSecFrames - done);
+      ReaSample* in = p->GetBuffer(c);
+      if (!in) break;
+      // Une sinusoide plutot que du silence : un etireur qui ne recoit que des
+      // zeros peut court-circuiter son traitement, et on mesurerait le vide.
+      for (int i = 0; i < c; ++i) {
+        const double s = 0.5 * sin(phase);
+        phase += 2.0 * 3.14159265358979 * 220.0 / srate;
+        in[(size_t)i * nch] = s;
+        in[(size_t)i * nch + 1] = s;
+      }
+      p->BufferDone(c);
+      p->GetSamples(c, out);
+      done += c;
+    }
+  }
+
+  QueryPerformanceCounter(&li1);
+  const double mur = (freq > 0)
+      ? (double)(li1.QuadPart - li0.QuadPart) / (double)freq : 0.0;
+
+  for (int i = 0; i < made; ++i) delete pool[i];
+  delete ps;
+
+  const double par_voix = (made > 0) ? (mur / made * 100.0) : 0.0;
+
+  snprintf(buf, sizeof(buf),
+           "tempo=%.4f srate=%.0f | latence: premier=%lld pic=%lld echantillons "
+           "(%.2f ms) in=%lld out=%lld | cout: %d voix en %.1f ms de temps mur "
+           "pour 1 s d'audio = %.2f%% du temps reel par voix",
+           tempo, srate, premier, pic_idx,
+           (pic_idx > 0) ? (double)pic_idx / srate * 1000.0 : 0.0,
+           total_in, total_out, made, mur * 1000.0, par_voix);
+  return buf;
+}
+
 double CP_ClockNow() { return g_eng ? (double)g_eng->clock_now() : 0.0; }
 
 // Prend l'ancre. Les deux lectures sont collees volontairement : tout ce qui se
@@ -544,6 +696,7 @@ VA(CP_TestMidiAt) {
 VA(CP_TestMidiDiag) { (void)arg; (void)narg; return (void*)CP_TestMidiDiag(); }
 VA(CP_LoadReset) { (void)arg; (void)narg; CP_LoadReset(); return nullptr; }
 VA(CP_LoadDiag)  { (void)arg; (void)narg; return (void*)CP_LoadDiag(); }
+VA(CP_WarpProbe) { return (void*)CP_WarpProbe(argd(arg, narg, 0), argi(arg, narg, 1)); }
 VA(CP_Diag) { (void)arg; (void)narg; return (void*)CP_Diag(); }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +738,7 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_TestMidiDiag, "const char*\0\0\0EXPERIMENTAL: REAPER fournit-il un midi_events, combien d'evenements remis, exacts, en retard.");
   REG(CP_LoadReset, "void\0\0\0Remet a zero les compteurs de charge (temps fil audio, ratios par port).");
   REG(CP_LoadDiag, "const char*\0\0\0Montee en charge: ports, voix, ratio minimum, part du fil audio consommee.");
+  REG(CP_WarpProbe, "const char*\0double,int\0tempoRatio,nvoices\0Mesure la latence de l'etireur de REAPER (par impulsion) et son cout par voix. Fil principal.");
 }
 
 static void unregister_all(reaper_plugin_info_t* rec) {
@@ -596,7 +750,7 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
   UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
   UNREG(CP_TestMidiAt);  UNREG(CP_TestMidiDiag);
-  UNREG(CP_LoadReset);   UNREG(CP_LoadDiag);
+  UNREG(CP_LoadReset);   UNREG(CP_LoadDiag);        UNREG(CP_WarpProbe);
 }
 
 extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
