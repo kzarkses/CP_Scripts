@@ -37,8 +37,8 @@ if errorlevel 1 exit /b 1
 echo.
 echo === construit : build\reaper_cpclip.dll ===
 
-REM La sonde Lua, elle, se remplace a chaud : REAPER ne la verrouille pas.
-copy /Y lua\CP_NativeProbe.lua "%APPDATA%\REAPER\Scripts\CP_Scripts\WIP\" >nul 2>&1
+REM Les sondes Lua, elles, se remplacent a chaud : REAPER ne les verrouille pas.
+copy /Y lua\*.lua "%APPDATA%\REAPER\Scripts\CP_Scripts\WIP\" >nul 2>&1
 
 REM La DLL, non. REAPER la tient ouverte tant qu'il tourne, et aucune extension
 REM ne se recharge a chaud : c'est la nature du format, pas un defaut de montage.
