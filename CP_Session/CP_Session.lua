@@ -2065,13 +2065,21 @@ local function frame(theme)
     -- one-shot recall: if this window comes up first in the REAPER session
     -- and the engine is empty, pull the project's saved set (the Looper
     -- does the same; the recall never overwrites a live set)
-    if attached and not state.recalled then
+    --
+    -- Recalled AGAIN, and forced, when the router track changes: gmem belongs
+    -- to the REAPER session, so switching projects leaves the previous one's
+    -- loops loaded. Reading them was merely confusing; now that this window
+    -- also WRITES lane state back, keeping them would put one project's set
+    -- into another project's file.
+    local switched = Loop.RouterChanged()
+    if attached and (not state.recalled or switched) then
         state.recalled = true
         local empty = true
         for l = 0, Loop.MAX_LANES - 1 do
             if Loop.HasContent(l) then empty = false break end
         end
-        if empty and Loop.HasSavedState() then Loop.LoadState(false) end
+        if switched then Loop.LoadState(true)
+        elseif empty and Loop.HasSavedState() then Loop.LoadState(false) end
         -- RE-STAMP THE SOUND FLAG BEFORE ANYTHING CAN SOUND. It lives in gmem,
         -- which belongs to the REAPER session and not to the project, while the
         -- recall restores a lane that was PLAYING straight back to playing. A
@@ -2086,6 +2094,11 @@ local function frame(theme)
             Loop.SetLaneAudio(t + TRACKS, audio)
             if audio then samplerLoad(t, cells[t][sc], lane) end
         end
+        -- Adopt what was just recalled, and ARM THE AUTOSAVE. Until this
+        -- session, only CP_Looper ever wrote lane state back to the project:
+        -- a set built entirely in this window was lost when REAPER closed, and
+        -- you found out the next morning.
+        Loop.AdoptState()
     end
 
     -- COMMAND ZONE. Same shape, same height, same right-hand rank as every
@@ -2175,6 +2188,9 @@ local function frame(theme)
     -- one call: gmem re-selected, live halves re-derived. Everything below
     -- reads a coherent picture.
     Loop.Poll()
+    -- Mirror lane state back into the project on a trailing debounce. The
+    -- mechanism lives in Loop, so both windows get it from one call.
+    Loop.AutoSave()
     -- Follow the engine rather than argue with it: a launch fired from
     -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
     -- know. Sound cells included: they are lanes like any other now.
@@ -2386,9 +2402,16 @@ UI.Init("CP Session", 580, 400, {
 })
 
 UI.OnClose(function()
+    -- The debounce would drop anything edited in the last half-second, and a
+    -- window closing is exactly when that matters.
+    pcall(Loop.SaveState)
     -- our sounds are lanes now, and lanes outlive this window on purpose
     if state.registered then pcall(DragBus.Unregister, "session") end
 end)
+
+-- Hard termination (Actions-window kill, a runtime error breaking the defer
+-- chain): OnClose never runs on those paths, and the set would go with it.
+r.atexit(function() pcall(Loop.SaveState) end)
 
 UI.Run(function(theme)
     UI.CheckThemeUpdates()

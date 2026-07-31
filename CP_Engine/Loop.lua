@@ -1274,6 +1274,100 @@ function Loop.SaveState()
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- AUTOSAVE
+--
+-- Persistence is a property of the STATE, not of one window. It used to live
+-- privately inside CP_Looper — so a set built entirely in CP_Session was lost
+-- when REAPER closed, because nobody called SaveState. That kind of defect is
+-- invisible while you work and obvious the next morning, which is the worst
+-- possible way to find out.
+--
+-- It lives here now: any window that touches lanes calls AutoSave() once per
+-- frame and the question stops being asked.
+--
+-- The state itself still goes where it always went — a track extension string,
+-- so it travels inside the .RPP with the router track. Nothing is written to
+-- the project file by us: REAPER owns that format, and a project must open on a
+-- machine that has none of this.
+-- ---------------------------------------------------------------------------
+local save_vers = {}
+local save_due  = 0
+local save_hold = false
+local adopted   = false
+local adopted_router = nil
+local last_router    = nil
+
+-- Returns true ONCE when the router track changes under us — never on the first
+-- observation, which is just this window learning where it is.
+--
+-- gmem belongs to the REAPER session, not to the project, so switching projects
+-- inside one session leaves the PREVIOUS project's loops loaded. That was
+-- already why recall had to be forced; now that lane state is also WRITTEN
+-- back, it is why a window must never assume what it finds is its own.
+function Loop.RouterChanged()
+    local guid = valid(Loop.track) and r.GetTrackGUID(Loop.track) or nil
+    if guid == last_router then return false end
+    local first = (last_router == nil)
+    last_router = guid
+    return not first
+end
+
+function Loop.IsAdopted() return adopted end
+
+-- A window mid-edit asks for a reprieve: saving in the middle of a note drag
+-- would write a state nobody asked for.
+function Loop.HoldAutoSave(on) save_hold = on and true or false end
+
+-- A change no event version reports (session setting, lane tag, clock mode).
+function Loop.MarkDirty() if adopted then save_due = -1 end end
+
+-- ADOPT the current state without saving it. Call this right after a recall:
+-- otherwise the restore declares itself a modification, and the first save
+-- writes over exactly what was just read back.
+function Loop.AdoptState()
+    for lane = 0, Loop.MAX_LANES - 1 do
+        save_vers[lane] = Loop.EvtVersion(lane) * 8 + math.floor(Loop.Mode(lane) + 0.5)
+    end
+    save_due = 0
+    adopted = true
+    adopted_router = valid(Loop.track) and r.GetTrackGUID(Loop.track) or nil
+end
+
+function Loop.AutoSave()
+    -- Until someone has adopted, we cannot know whether what sits in gmem is
+    -- worth more than what sits in the project. So we do not guess: we wait.
+    if not adopted or not attached or not valid(Loop.track) then return end
+
+    -- The router moved since we adopted: what is in gmem belongs to a project
+    -- that is no longer open. Writing here would put one project's set into
+    -- another project's file. We DISARM rather than guess — the window will
+    -- adopt again after its recall. Making the mistake impossible beats
+    -- detecting it.
+    if r.GetTrackGUID(Loop.track) ~= adopted_router then
+        adopted = false
+        return
+    end
+
+    local now = r.time_precise()
+    if save_due < 0 then save_due = now + 0.4 end
+    for lane = 0, Loop.MAX_LANES - 1 do
+        -- Mode counts as much as notes do: launching or stopping a clip changes
+        -- the state to restore while bumping no event version at all.
+        local v = Loop.EvtVersion(lane) * 8 + math.floor(Loop.Mode(lane) + 0.5)
+        if v ~= save_vers[lane] then
+            save_vers[lane] = v
+            -- Short: you may hit Ctrl+S right after an edit, and anything still
+            -- pending would simply not be in the project file.
+            save_due = now + 0.4
+        end
+    end
+    if save_due > 0 and now >= save_due and not save_hold then
+        save_due = 0
+        Loop.SaveState()
+    end
+end
+
 function Loop.SavedState()
     if not valid(Loop.track) then return "" end
     local _, v = r.GetSetMediaTrackInfo_String(Loop.track, DATA_KEY, "", false)

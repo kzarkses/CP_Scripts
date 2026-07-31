@@ -157,10 +157,10 @@ end
 
 local roll_ver = -1     -- last loop version Roll was synced to
 
--- Set by anything worth persisting that is NOT lane content — the clock toggle,
--- the armed lane. pollPersist watches note versions and lane modes, which those
--- do not touch, so without this they were only ever written at close.
-local persist_dirty = false
+-- Anything worth persisting that is NOT lane content — the clock toggle, the
+-- armed lane — goes through Loop.MarkDirty(): the autosave watches note
+-- versions and lane modes, which those do not touch, so without it they were
+-- only ever written at close.
 
 -- Per-lane visual cache. Tables allocated once and reused every frame (zero
 -- allocation in the frame loop); note bars (bo start / bd length / bn pitch /
@@ -669,7 +669,7 @@ local function drawToolbar(attached, theme)
                     free and "Free run: clips launch with the transport stopped"
                           or "Following the host transport (locks to external clock)") then
         Loop.SetFreeRun(not free)
-        persist_dirty = true
+        Loop.MarkDirty()
         flash(free and "Follow host transport" or "Free run (launch without transport)")
     end
 
@@ -679,7 +679,7 @@ local function drawToolbar(attached, theme)
     if qch then
         local nq = qValue(qi, tsn)
         Loop.SetLaunchQ(nq)
-        persist_dirty = true
+        Loop.MarkDirty()
         flash(nq <= 0 and "Launch quantize off" or
               string.format("Launch quantize: %g beat%s", nq, nq > 1 and "s" or ""))
     end
@@ -1543,10 +1543,7 @@ local last_init = -1     -- engine reset counter, watched to invalidate caches
 -- Session recall. Loops live in gmem (REAPER-session scoped); this mirrors them
 -- into the router track's P_EXT so they are saved inside the project. Written on
 -- a trailing debounce so a note drag doesn't rewrite the blob every frame.
-local save_vers = {}     -- [lane] = last EvtVersion mirrored
-local save_due  = 0      -- time_precise deadline, 0 = clean
 local recalled  = false  -- one auto-recall per attach
-local last_router = nil  -- router GUID, to notice a project switch
 local force_recall = false
 
 local function pollPersist(attached)
@@ -1558,11 +1555,9 @@ local function pollPersist(attached)
     -- Forced, because those lanes are full of the other project's take — whose
     -- own copy is safe in its own .rpp. Never forced on the first attach: there
     -- the engine may legitimately hold a live set the user just recorded.
-    local guid = Loop.track and r.GetTrackGUID(Loop.track) or nil
-    if guid ~= last_router then
-        if last_router ~= nil then recalled = false; force_recall = true end
-        last_router = guid
-    end
+    -- The detection lives in Loop now: CP_Session writes lane state too, and it
+    -- needs exactly the same guard.
+    if Loop.RouterChanged() then recalled = false; force_recall = true end
 
     -- Recall once. Non-forced it only fills an engine that holds nothing, which
     -- is every fresh REAPER session (the JSFX cold-inits gmem).
@@ -1581,32 +1576,17 @@ local function pollPersist(attached)
             roll_ver = -1
             flash("Loops recalled from the project")
         end
-        for l = 0, LANES - 1 do
-            save_vers[l] = Loop.EvtVersion(l) * 8 + math.floor(Loop.Mode(l) + 0.5)
-        end
+        -- Adopt what was just recalled, so the restore does not report itself
+        -- as an edit and get written straight back over the project.
+        Loop.AdoptState()
         return
     end
 
-    local now = r.time_precise()
-    if persist_dirty then
-        persist_dirty = false
-        save_due = now + 0.4
-    end
-    for l = 0, LANES - 1 do
-        -- mode too, not just note edits: launching or stopping a clip changes
-        -- the state to restore but bumps no event version
-        local v = Loop.EvtVersion(l) * 8 + math.floor(Loop.Mode(l) + 0.5)
-        if v ~= save_vers[l] then
-            save_vers[l] = v
-            -- short: you may hit Ctrl+S right after an edit, and anything still
-            -- pending would simply not be in the project file
-            save_due = now + 0.4          -- trailing: bumped, not reset
-        end
-    end
-    if save_due > 0 and now >= save_due and not state.edrag then
-        save_due = 0
-        Loop.SaveState()
-    end
+    -- The mechanism itself lives in Loop now. It used to live here, privately,
+    -- which is why a set built entirely in CP_Session was lost when REAPER
+    -- closed: nobody there ever called SaveState.
+    Loop.HoldAutoSave(state.edrag and true or false)
+    Loop.AutoSave()
 end
 
 local function frame(theme)
