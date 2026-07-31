@@ -73,8 +73,6 @@ Voice.STOPPING  = 3
 -- ---------------------------------------------------------------------------
 local MAXV = 256
 local vst   = {}   -- handle -> etat local (nombre)
-local vpath = {}   -- handle -> chemin, pour le repli
-local vport = {}   -- handle -> port
 local vfree = {}   -- pile d'index libres (repli)
 local nfree = 0
 
@@ -95,8 +93,6 @@ function Voice.init(reaper_api, preview_module)
 
     for i = 1, MAXV do
         vst[i] = Voice.IDLE
-        vpath[i] = nil
-        vport[i] = -1
         vfree[i] = MAXV + 1 - i
     end
     nfree = MAXV
@@ -161,8 +157,19 @@ function Voice.Srate()
 end
 
 -- Instant du projet (secondes) -> frame absolu. Passe par la derniere ancre.
+--
+-- ARRONDI ICI, et pas ailleurs. La conversion rend un fractionnaire ; le moteur
+-- tronque ce qu'on lui donne. Laisser le fractionnaire circuler produit un
+-- desaccord d'un echantillon entre ce que l'appelant croit avoir demande et ce
+-- qui a ete place — un faux ecart, qui coute une soiree a diagnostiquer. Un
+-- echantillon fractionnaire n'a de toute facon aucun sens : c'est la frontiere
+-- de l'ABI qui doit trancher, une fois.
+local function toFrame(x)
+    return math.floor((x or 0) + 0.5)
+end
+
 function Voice.TimeToSample(t)
-    if NATIVE then return r.CP_TimeToSample(t) end
+    if NATIVE then return toFrame(r.CP_TimeToSample(t)) end
     return 0
 end
 
@@ -172,7 +179,7 @@ end
 function Voice.BeatToSample(beat)
     if not NATIVE then return 0 end
     local t = r.TimeMap2_QNToTime(0, beat)
-    return r.CP_TimeToSample(t)
+    return toFrame(r.CP_TimeToSample(t))
 end
 
 -- ---------------------------------------------------------------------------
@@ -252,7 +259,6 @@ function Voice.Alloc(port)
     local h = vfree[nfree]
     nfree = nfree - 1
     vst[h] = Voice.IDLE
-    vport[h] = port
     return h
 end
 
@@ -264,7 +270,6 @@ function Voice.Release(h)
     end
     if vst[h] ~= Voice.IDLE then Voice.Stop(h) end
     vst[h] = Voice.IDLE
-    vpath[h] = nil
     nfree = nfree + 1
     vfree[nfree] = h
 end
@@ -299,10 +304,7 @@ function Voice.Play(h, clip, opts)
     Preview.SetLoop(mode == Voice.LOOP)
     Preview.SetVolume(gain)
     local ok = Preview.Play(clip, (rate ~= 1.0) and { rate_override = rate } or nil)
-    if ok then
-        vst[h] = Voice.PLAYING
-        vpath[h] = clip
-    end
+    if ok then vst[h] = Voice.PLAYING end
     return ok
 end
 
