@@ -264,56 +264,29 @@ local function stopSlot(slot, fade)
     slot.running = false
 end
 
--- Arme UNE passe : depart au frame demande, coupure a la porte.
+-- FAIRE SONNER UNE PASSE — et il n'y en a qu'une facon.
 --
--- La porte existe pour la meme raison qu'avec le RS5K : le son doit finir avant
--- la passe suivante, sinon la voix suivante commence pendant que celle-ci sonne
--- encore et on entend deux fois le meme fichier decale d'un rien.
-local function schedulePass(slot, at_beat, len_beats, gate)
-    local at = beatToFrame(at_beat)
-    if at < 0 then return end
-    local h = slot.v[slot.vi]
-    slot.vi = (slot.vi == 1) and 2 or 1        -- l'autre voix pour la passe suivante
-    if not h then return end
-
-    local opts = slot.opts
-    if not opts then opts = {} slot.opts = opts end
-    opts.rate = slot.rate
-    opts.gain = 1.0
-    opts.loop = false
-    opts.offset = nil
-
-    if Voice.PlayAtSample(h, slot.clip.id, at, opts) then
-        slot.last_start = at
-        -- La coupure est datee elle aussi : elle tombe au frame exact, pas au
-        -- tour de boucle Lua le plus proche.
-        local end_beat = at_beat + len_beats * (gate or 0.97)
-        Voice.StopAtSample(h, beatToFrame(end_beat), 0.005)
-    end
-end
-
--- ON A MANQUE LE DEPART, ET C'EST NORMAL : ON RATTRAPE.
---
--- Un lancement n'est pas toujours annonce. En horloge libre, le PREMIER clip
--- d'une session silencieuse part immediatement — launch_target() rend le beat
--- courant lui-meme, donc `pending` ne vaut jamais 1 et il n'y a aucune frontiere
--- a dater. Meme chose pour une lane deja en train de tourner quand la fenetre
--- s'ouvre, ou pour un lancement declenche depuis CP_Looper.
---
--- Attendre la frontiere suivante dans ces cas-la, c'est quatre mesures de
--- silence. On entre donc en cours de passe, decale de la phase — et c'est le
--- bon comportement : ce depart-la n'a personne avec qui etre d'accord, il EST le
--- temps fort. Tout lancement quantifie, lui, passe par `pending` et reste exact
--- a l'echantillon.
-local function startNow(slot, phase, len_beats, gate)
+-- `at` est un frame absolu, `phase` la position DANS LA BOUCLE en beats. Les
+-- deux sont necessaires et c'est le cœur de ce module : la phase d'une lane est
+-- ancree sur le beat ZERO de la timeline, jamais sur l'instant du lancement.
+-- Lancer a la mesure 2 une boucle de quatre mesures ne rejoue pas le fichier
+-- depuis le debut — il entre a sa deuxieme mesure. C'est ce qui verrouille
+-- toutes les boucles sur la meme grille, et c'est exactement ce que faisait le
+-- clip d'une note. Le son doit faire pareil, sinon il flotte.
+local function playAt(slot, at, phase, len_beats, gate)
+    if not slot.clip or not at or at < 0 then return end
     local tempo = Loop.Tempo()
     if not tempo or tempo <= 0 then tempo = 120 end
     local spb = 60.0 / tempo
+
+    -- Ce qu'il reste a jouer avant la porte. La porte existe pour la meme raison
+    -- qu'avec le RS5K : le son doit finir avant la passe suivante, sinon la voix
+    -- suivante commence pendant que celle-ci sonne encore.
     local left = (len_beats * (gate or 0.97)) - phase
-    if left <= 0.01 then return end          -- la passe est deja finie : on attend
+    if left <= 0.01 then return end
 
     local h = slot.v[slot.vi]
-    slot.vi = (slot.vi == 1) and 2 or 1
+    slot.vi = (slot.vi == 1) and 2 or 1     -- l'autre voix pour la passe suivante
     if not h then return end
 
     local opts = slot.opts
@@ -321,12 +294,15 @@ local function startNow(slot, phase, len_beats, gate)
     opts.rate = slot.rate
     opts.gain = 1.0
     opts.loop = false
-    -- La position dans la matiere, pas dans le temps : la voix avance de
-    -- `rate * srate_clip` echantillons source par seconde de sortie.
-    opts.offset = math.floor(phase * spb * slot.clip.srate * slot.rate + 0.5)
-    if opts.offset >= slot.clip.frames then return end
+    if phase > 0 then
+        -- La position dans la MATIERE, pas dans le temps : la voix avance de
+        -- rate * srate_clip echantillons source par seconde de sortie.
+        opts.offset = math.floor(phase * spb * slot.clip.srate * slot.rate + 0.5)
+        if opts.offset >= slot.clip.frames then return end
+    else
+        opts.offset = nil                   -- la table est reutilisee : effacer
+    end
 
-    local at = Voice.Now()
     if Voice.PlayAtSample(h, slot.clip.id, at, opts) then
         slot.last_start = at
         Voice.StopAtSample(h, at + math.floor(left * spb * Voice.Srate() + 0.5), 0.005)
@@ -349,14 +325,12 @@ local function drive(t, half, gate)
     -- sentinel (« j'attends une horloge ») n'est pas une date : on repasse.
     if pend == 1 then
         if tgt > WAIT_TEST and not slot.armed then
-            -- La phase d'une lane est ancree sur le beat ZERO de la timeline,
-            -- pas sur l'instant du lancement : les frontieres de passe tombent
-            -- sur les multiples absolus de la longueur. Le clip d'une note ne
-            -- parle donc qu'a une frontiere, meme si le lancement quantifie tombe
-            -- ailleurs — et le son doit tomber exactement la ou cette note
-            -- tombait. On monte donc a la premiere frontiere a partir de la cible.
-            local first = math.ceil(tgt / lenb - 1e-6) * lenb
-            schedulePass(slot, first, lenb, gate)
+            -- On part a la frontiere que le moteur a choisie, PAS a la fin de
+            -- boucle suivante — et decale de la phase qu'aura la lane a cet
+            -- instant. C'etait la faute : un lancement quantifie entrait au
+            -- prochain multiple de la longueur, et depuis le debut du fichier.
+            playAt(slot, beatToFrame(tgt), tgt - math.floor(tgt / lenb) * lenb,
+                   lenb, gate)
             slot.armed = true
             slot.dated = true    -- ce depart est date : rien a rattraper
         end
@@ -378,7 +352,7 @@ local function drive(t, half, gate)
             -- Personne ne nous avait annonce ce depart : on entre en cours de
             -- passe plutot que d'attendre la suivante.
             if slot.dated then slot.dated = false
-            else startNow(slot, phase, lenb, gate) end
+            else playAt(slot, Voice.Now(), phase, lenb, gate) end
         end
         -- LES PASSES SUIVANTES SE RACCROCHENT A LA PHASE DU MOTEUR, relue a
         -- chaque frame. Pas d'accumulateur, donc pas de derive : un desaccord
@@ -393,7 +367,8 @@ local function drive(t, half, gate)
             if not slot.armed then
                 local at = Loop.EngineBeat() + to_next
                 if not (stop_beat and at >= stop_beat - 1e-6) then
-                    schedulePass(slot, at, lenb, gate)
+                    -- Une frontiere de passe : la phase y vaut zero.
+                    playAt(slot, beatToFrame(at), 0, lenb, gate)
                 end
                 slot.armed = true
             end

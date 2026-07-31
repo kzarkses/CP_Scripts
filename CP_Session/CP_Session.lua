@@ -38,8 +38,8 @@ local Bus    = dofile(cp_root .. "CP_Engine/Bus.lua")
 local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
 -- The engine that makes a SOUND cell sound. With the CP extension installed it
 -- is a CP voice, dated on the engine's own launch boundary and entering the
--- column pre-FX — no child track, no RS5K, nothing in anyone's FX chain. Without
--- it, the RS5K path below is used exactly as before.
+-- column pre-FX — no child track unless the column also holds an instrument,
+-- no sampler plugin, nothing in anyone's FX chain.
 local Voice  = dofile(cp_root .. "CP_Engine/Voice.lua")
 local Cells  = dofile(cp_root .. "CP_Engine/Cells.lua")
 Tracks.init(r)
@@ -60,11 +60,15 @@ local sin, floor = math.sin, math.floor
 local TRACKS = Loop.TRACKS
 local SCENES = 8
 
--- true = a sound cell is a CP voice; false = the RS5K path. Decided once, here,
--- and asked everywhere else. The RS5K path is NOT deleted: it is the fallback
--- on a machine without the extension, and the way back if the voice path ever
--- disappoints.
-local NATIVE_CELLS = Cells.init(r, Voice, Loop, TRACKS)
+-- A sound cell IS a CP voice. There is no second path any more: the RS5K wiring
+-- — a child track per column, two plugin instances in it, a filtered send and a
+-- reserved MIDI channel — is gone, and with it the reason a launcher project
+-- filled up with tracks nobody asked for.
+--
+-- The consequence, stated rather than discovered: without the engine extension,
+-- sound cells do not sound. MIDI cells are untouched, and every arm says so in
+-- one line instead of failing quietly.
+local ENGINE_OK = Cells.init(r, Voice, Loop, TRACKS)
 
 local cells = {}     -- [t][s] = clip descriptor or nil
 local cur   = {}     -- [t] = scene whose clip is loaded, or nil
@@ -504,33 +508,18 @@ end
 -- not by pitch, so nothing in the clip is column-specific — which is what lets a
 -- cell be copied, pasted or dragged to another column and still be right.
 -- ---------------------------------------------------------------------------
-local RS5K_ADD   = "ReaSamplOmatic5000 (Cockos)"
 -- The live half plays the root; the twin answers one semitone up, so the two
--- clips in flight during a queued swap never share a sampler. Fixed on every
+-- clips in flight during a queued swap never share a voice. Fixed on every
 -- column — columns are told apart by CHANNEL — which is what lets a cell be
 -- copied or dragged to another column and still be right.
 local AUDIO_NOTE = 60
 local function laneNote(lane)
     return AUDIO_NOTE + ((lane >= TRACKS) and 1 or 0)
 end
--- The note stops slightly before the loop does, for two reasons: the engine's
--- gate only retriggers a note it has seen END (a note as long as the loop is
--- held forever and the sample free-runs, drifting with nothing to re-anchor it),
--- and obeying the note-off is what lets the sample release before the next pass
--- instead of being cut by voice stealing.
+-- The note stops slightly before the loop does, and the SOUND stops with it:
+-- obeying the note-off is what lets a sample release before the next pass
+-- instead of being cut by the pass that follows.
 local AUDIO_GATE = 0.97
-
--- RS5K parameter indices — Kit's table, which is verified against
--- mpl_RS5K_manager. Duplicated rather than imported because CP_Session must not
--- depend on the kit being present.
-local P_NOTE_LO, P_NOTE_HI, P_MAXV = 3, 4, 8
-local P_OBEY, P_LOOP, P_SOFFS, P_EOFFS, P_TUNE = 11, 12, 13, 14, 15
--- normalized pitch: 0.5 is no shift, +/-80 semitones across the full range
-local function pitchNorm(st)
-    local n = 0.5 + (st or 0) / 160
-    if n < 0 then return 0 elseif n > 1 then return 1 end
-    return n
-end
 
 local function samplerGuid(t)
     local _, g = r.GetProjExtState(0, "CP_Session", "smp" .. t)
@@ -546,12 +535,15 @@ local function trackByGuid(g)
     return nil
 end
 
--- The column's sampler track: a FOLDER CHILD of the column's own track, so its
--- audio passes through that column's fader, FX and meter. A sibling would reach
--- the master while skipping all three — which is the defect the preview had, not
--- a fix for it. Sending its audio INTO the column instead does not work either:
--- a track whose chain holds an instrument swallows audio put into it.
-local function samplerTrack(t, make)
+-- A FOLDER CHILD of the column's own track, so its audio passes through that
+-- column's fader, FX and meter. A sibling would reach the master while skipping
+-- all three — which is the defect the preview had, not a fix for it.
+--
+-- It exists for ONE reason, and only when that reason applies: a track whose
+-- chain holds an instrument SWALLOWS audio put into it, because the instrument
+-- writes its own output over the buffer. A column that only plays sounds needs
+-- nothing at all — see audioDest. It holds no plugin now: it is a receiver.
+local function soundChild(t, make)
     local tr = trackByGuid(samplerGuid(t))
     if tr and r.ValidatePtr2(0, tr, "MediaTrack*") then return tr end
     if not make then return nil end
@@ -588,103 +580,9 @@ local function audioDest(t)
     local dest = Loop.GetLaneDest(t)
     if not (dest and r.ValidatePtr2(0, dest, "MediaTrack*")) then return nil end
     if r.TrackFX_GetInstrument(dest) < 0 then return dest end
-    return samplerTrack(t, true)
+    return soundChild(t, true)
 end
 Cells.SetDestResolver(audioDest)
-
--- Load the cell's file into the column's sampler and aim it at the project
--- tempo. Everything here is a main-thread cost paid when a cell is ARMED, which
--- is a click and not a boundary.
--- FIND the sampler before adding one, and find it by IDENTITY.
---
--- Two traps, one behind the other. TrackFX_AddByName's "create if absent" did
--- not recognise the instance it had itself added, so every launch added another
--- one and every one of them opened a window. And matching on the displayed name
--- would only have moved the bug: RS5K RENAMES ITS INSTANCE to the loaded
--- sample's filename, so the second file would have missed again — the rule is
--- written at the top of Engine/Kit, which solved this once already.
--- fx_ident / fx_name are the immutable identity; the alias stays as the last
--- resort for an instance with nothing loaded yet.
-local function isSampler(tr, i)
-    local ok, s = r.TrackFX_GetNamedConfigParm(tr, i, "fx_ident")
-    if ok and s and s:lower():find("samplomatic", 1, true) then return true end
-    ok, s = r.TrackFX_GetNamedConfigParm(tr, i, "fx_name")
-    if ok and s and s:lower():find("samplomatic", 1, true) then return true end
-    local _, nm = r.TrackFX_GetFXName(tr, i, "")
-    return nm ~= nil and nm:lower():find("samplomatic", 1, true) ~= nil
-end
-
--- THE SAMPLER FOLLOWS THE LANE, NOT THE COLUMN — and this is what makes a
--- sound obey the Q.
---
--- A column has two lane halves for exactly one reason: while a launch is queued,
--- TWO clips exist — the one still sounding and the one waiting for the boundary.
--- With a single sampler per column, arming the incoming cell loaded its file
--- immediately, so the note still playing was already playing the NEW sample. The
--- trigger waited for the Q; the sound did not. Sounds chained on the click while
--- MIDI clips waited, which is precisely the report.
---
--- So each half gets its own sampler, told apart by the NOTE it answers to: the
--- live half plays the root, the twin one semitone up. Both travel the column's
--- one channel, and the boundary that swaps the lane swaps the sampler with it —
--- because it is the note that changes, and nothing else.
---
--- Identified by that note rather than by chain position: which half is live
--- flips with every swap, so creation order says nothing about which is which.
-local function samplerFor(tr, note)
-    local want = note / 127
-    for i = 0, r.TrackFX_GetCount(tr) - 1 do
-        if isSampler(tr, i) then
-            local v = r.TrackFX_GetParamNormalized(tr, i, P_NOTE_LO)
-            if v and v - want < 0.002 and want - v < 0.002 then return i end
-        end
-    end
-    return -1
-end
-
--- Aim the sampler at this cell's file and at the project tempo. Called on every
--- arm, so it must be IDEMPOTENT and silent: the file is only re-read when it
--- actually changes, and the plugin's window is never opened. A launcher that
--- pops a plugin editor on every click is not a launcher.
-local function samplerLoad(t, c, lane)
-    local tr = samplerTrack(t, true)
-    if not tr then flash("No track for this column — click its name to route it") return nil end
-    local note = laneNote(lane)
-    local fx = samplerFor(tr, note)
-    if fx < 0 then
-        fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
-        if fx < 0 then flash("ReaSamplOmatic5000 not found") return nil end
-        -- ONE note, so the other half's trigger cannot reach this instance
-        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, note / 127)
-        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, note / 127)
-    end
-    -- REAPER floats a freshly added plugin by preference, and re-reading FILE0
-    -- can raise it again. Neither belongs on a launch: close both, every time.
-    r.TrackFX_Show(tr, fx, 2)      -- no floating window
-    r.TrackFX_Show(tr, fx, 0)      -- and not in the chain window either
-    local _, loaded = r.TrackFX_GetNamedConfigParm(tr, fx, "FILE0")
-    if loaded ~= c.path then
-        r.TrackFX_SetNamedConfigParm(tr, fx, "FILE0", c.path)
-        r.TrackFX_SetNamedConfigParm(tr, fx, "DONE", "")
-        -- RS5K keeps the PREVIOUS sample's start/end offsets across a file
-        -- change, so a shorter file would play a slice of itself.
-        r.TrackFX_SetParamNormalized(tr, fx, P_SOFFS, 0)
-        r.TrackFX_SetParamNormalized(tr, fx, P_EOFFS, 1)
-        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_LO, note / 127)
-        r.TrackFX_SetParamNormalized(tr, fx, P_NOTE_HI, note / 127)
-        r.TrackFX_SetParamNormalized(tr, fx, P_OBEY, 1)   -- the note's length gates it
-        r.TrackFX_SetParamNormalized(tr, fx, P_LOOP, 0)   -- the ENGINE loops it, per pass
-        r.TrackFX_SetParamNormalized(tr, fx, P_MAXV, 2 / 64)
-        r.TrackFX_Show(tr, fx, 2)
-    end
-    -- The tune is re-aimed every time, because the project tempo can have moved
-    -- since the last launch and it costs one parameter write.
-    local rt = rateFor(c)
-    local st = (rt and rt > 0) and (12 * (math.log(rt) / math.log(2))) or 0
-    r.TrackFX_SetParamNormalized(tr, fx, P_TUNE, pitchNorm(st))
-    Loop.WireAudio(t, tr)
-    return tr
-end
 
 -- The one-note clip, synthesized and never stored: a cell keeps its PATH, and
 -- the note is an implementation of playing it. Reused in place, so arming costs
@@ -706,44 +604,39 @@ end
 -- so the write timing is free) and leave it "stopped with content", which is
 -- the state the engine can launch from.
 --
--- A SOUND cell passes through here like any other: its file goes into THIS
--- HALF's sampler, its clip is the one note that sampler answers to, and both
--- halves of the pair are flagged so the engine speaks them on the column's
--- sound channel. Both halves for the channel, because a swap moves the clip to
--- the twin and the sound must not change channel halfway through a bar — but a
--- sampler EACH, because during that swap two clips exist and only one of them
--- is the one still sounding.
+-- A SOUND cell passes through here like any other: its file is loaded into THIS
+-- HALF's voices, its clip is the one note the lane speaks, and both halves of
+-- the pair are flagged so the engine speaks them on the column's sound channel.
+-- Both halves for the channel, because a swap moves the clip to the twin and the
+-- sound must not change channel halfway through a bar — but voices EACH, because
+-- during that swap two clips exist and only one of them is still sounding.
 local function armLane(lane, c, t, s)
     local audio = isAudio(c)
     if audio then
-        -- A CP voice when the extension is there, the RS5K otherwise. Both end
-        -- up in the same place — the column's track, pre-FX — but one of them
-        -- needs a child track and two plugin instances to get there.
-        if NATIVE_CELLS then
-            local ok, why = Cells.Arm(t, lane, c.path, (rateFor(c)))
-            if not ok then
-                -- Dire LAQUELLE des trois choses a manque. « pas de son » sans
-                -- raison coute une soiree ; la raison coute une chaine.
-                flash(why == "too_long" and "Sound is longer than the 64 s ceiling"
-                      or why == "failed" and "Could not decode this file"
-                      or "No track for this column — click its name to route it")
-                return false
-            end
-            -- Cut the router's sound send for this column. In a project
-            -- converted from the RS5K path the samplers are still sitting in the
-            -- child track, and the lane still speaks its trigger note: without
-            -- this they would answer it and you would hear the file twice.
-            Loop.WireAudio(t, nil)
-        elseif not samplerLoad(t, c, lane) then return false end
-    elseif NATIVE_CELLS then
+        local ok, why = Cells.Arm(t, lane, c.path, (rateFor(c)))
+        if not ok then
+            -- Say WHICH of the four things was missing. "no sound" with no
+            -- reason costs an evening; the reason costs a string.
+            flash(why == "no_engine" and "Sound cells need the CP engine extension"
+                  or why == "too_long" and "Sound is longer than the 64 s ceiling"
+                  or why == "failed" and "Could not decode this file"
+                  or "No track for this column — click its name to route it")
+            return false
+        end
+        -- Cut the router's sound send for this column. A project converted from
+        -- the RS5K wiring still has those samplers sitting in its child track,
+        -- and the lane still speaks its trigger note: without this they would
+        -- answer it and you would hear the file twice.
+        Loop.WireAudio(t, nil)
+    else
         -- This half stopped carrying a sound. Say so, or its voice keeps
         -- answering the lane's passes with a file nobody asked for.
         Cells.Disarm(t, lane)
     end
-    -- The lane still speaks its one-note clip on the column's SOUND channel, in
-    -- both paths. Nothing listens to it in the voice path — no send, no sampler
-    -- — and that is the point: what must never happen is the note reaching the
-    -- column's instrument.
+    -- The lane still speaks its one-note clip on the column's SOUND channel, and
+    -- nothing listens to it — no send, no sampler. That is the point: the clip
+    -- is the state machine, and what must never happen is its trigger note
+    -- reaching the column's instrument.
     Loop.SetLaneAudio(t, audio and true or false)
     Loop.SetLaneAudio(t + TRACKS, audio and true or false)
     Loop.ApplyClip(lane, audio and audioClip(c, lane) or c)
@@ -1103,20 +996,13 @@ end
 -- Aim the sampler of the lane that actually HOLDS this cell — not "the column's
 -- sampler", because there are two and the other one may be sounding something
 -- else entirely while a swap is queued.
+-- Re-aim the sound of the lane that actually HOLDS this cell — not "the
+-- column's sound", because during a queued swap the other half may be sounding
+-- something else entirely. Costs one number, not a reload.
 local function retune(t, s, c)
     local lane = Loop.LaneOfTag(t, cellTag(t, s))
     if not lane then return end
-    if NATIVE_CELLS then
-        Cells.Retune(t, lane, (rateFor(c)))
-        return
-    end
-    local tr = samplerTrack(t, false)
-    if not tr then return end
-    local fx = samplerFor(tr, laneNote(lane))
-    if fx < 0 then return end
-    local rt = rateFor(c)
-    local st = (rt and rt > 0) and (12 * (math.log(rt) / math.log(2))) or 0
-    r.TrackFX_SetParamNormalized(tr, fx, P_TUNE, pitchNorm(st))
+    Cells.Retune(t, lane, (rateFor(c)))
 end
 
 local function setCellTempoMode(t, s, mode)
@@ -2155,8 +2041,7 @@ local function frame(theme)
             Loop.SetLaneAudio(t + TRACKS, audio)
             if audio then
                 local cc = cells[t][sc]
-                if NATIVE_CELLS then Cells.Arm(t, lane, cc.path, (rateFor(cc)))
-                else samplerLoad(t, cc, lane) end
+                Cells.Arm(t, lane, cc.path, (rateFor(cc)))
             end
         end
         -- Adopt what was just recalled, and ARM THE AUTOSAVE. Until this
@@ -2453,7 +2338,7 @@ local function frame(theme)
     -- explication est le pire diagnostic possible : ici on lit combien de
     -- moities portent un fichier, combien sonnent, et si le moteur natif est
     -- meme de la partie.
-    if NATIVE_CELLS and Cells.Armed() then
+    if ENGINE_OK and Cells.Armed() then
         msg = (msg ~= "" and msg or "") .. "   ·   " .. Cells.Diag()
     end
     UI.AppStatus(msg)
