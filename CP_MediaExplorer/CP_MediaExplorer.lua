@@ -8,8 +8,9 @@
 --   edit cursor / drag to arrange, favorites, token search over a
 --   background-built index, and hot-swap into the selected arrange item.
 --
---   Requires SWS (CF_Preview) for audition. js_ReaScriptAPI recommended
---   (folder picker, drag-to-arrange hit-testing).
+--   Audition goes through CP_Engine/Audition: a CP voice when the engine
+--   extension is installed, SWS CF_Preview otherwise. Either one alone is
+--   enough. js_ReaScriptAPI recommended (folder picker, drag hit-testing).
 --
 --   Keys: Up/Down move+play · Right expand/replay · Left collapse/parent
 --   Enter insert · Space transport (option) · Ctrl+Up/Down folder skim
@@ -26,7 +27,11 @@ local cp_root = r.GetResourcePath() .. "/Scripts/CP_Scripts/"
 local UI = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 
 local Model   = dofile(script_path .. "Modules/Model.lua")
-local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
+-- Audition : LA facon d'entendre un fichier dans toute la suite. Elle choisit
+-- elle-meme, a chaque lancement, entre une voix CP (exacte, ne s'affame pas a
+-- un tampon de 64) et CF_Preview (qui sait transposer et lire depuis le
+-- disque). Ce fichier n'a jamais a savoir lequel des deux a repondu.
+local Audition = dofile(cp_root .. "CP_Engine/Audition.lua")
 local Insert  = dofile(cp_root .. "CP_Engine/Insert.lua")
 local Peaks   = dofile(cp_root .. "CP_Engine/Peaks.lua")
 local MediaDB = dofile(script_path .. "Modules/MediaDB.lua")
@@ -36,7 +41,7 @@ local Clip    = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Bus     = dofile(cp_root .. "CP_Engine/Bus.lua")
 
 Model.init(r)
-Preview.init(r)
+Audition.init(r)
 Insert.init(r)
 Peaks.init(r)
 MediaDB.init(r)
@@ -109,16 +114,16 @@ local opts = {
     dbl_editor       = cfg.dbl_editor ~= false,        -- default true
 }
 
-Preview.volume      = cfg.volume or 1.0
-Preview.pitch       = cfg.pitch or 0
-Preview.rate        = cfg.rate or 1.0
-Preview.loop        = cfg.loop == true
-Preview.route_track = opts.route_track
+Audition.volume      = cfg.volume or 1.0
+Audition.pitch       = cfg.pitch or 0
+Audition.rate        = cfg.rate or 1.0
+Audition.loop        = cfg.loop == true
+Audition.route_track = opts.route_track
 
 -- Pin the preview to a dedicated track (or clear it). The GUID travels in
 -- the config so the pin survives restarts of the same project.
 local function setPreviewTrack(tr)
-    Preview.SetOutputTrack(tr)
+    Audition.SetOutputTrack(tr)
     opts.preview_track_guid = tr and r.GetTrackGUID(tr) or ""
 end
 
@@ -128,7 +133,7 @@ if opts.preview_track_guid ~= "" then
     for i = 0, r.CountTracks(0) - 1 do
         local tr = r.GetTrack(0, i)
         if r.GetTrackGUID(tr) == opts.preview_track_guid then
-            Preview.SetOutputTrack(tr)
+            Audition.SetOutputTrack(tr)
             break
         end
     end
@@ -210,10 +215,10 @@ local function persistConfig()
         dbl_editor       = opts.dbl_editor,
         preview_track_guid = opts.preview_track_guid,
         list_scroll      = list_scroll,
-        volume = Preview.volume,
-        pitch  = Preview.pitch,
-        rate   = Preview.rate,
-        loop   = Preview.loop,
+        volume = Audition.volume,
+        pitch  = Audition.pitch,
+        rate   = Audition.rate,
+        loop   = Audition.loop,
     })
     state.cfg_dirty = false
 end
@@ -308,7 +313,7 @@ end
 -- ---------------------------------------------------------------------------
 local function loadMeta(node)
     if node.is_dir or node._info then return end
-    local len, ch, sr = Preview.Meta(node.path)
+    local len, ch, sr = Audition.Meta(node.path)
     if not len then
         node._info = "unreadable"
         return
@@ -332,9 +337,9 @@ end
 -- on, the matched rate is ALWAYS applied to the inserted take (native ME
 -- "apply tempo matching" behavior), independent of the carry option.
 local function previewState(node)
-    local ps = { rate = Preview.rate, pitch = Preview.pitch, volume = Preview.volume }
+    local ps = { rate = Audition.rate, pitch = Audition.pitch, volume = Audition.volume }
     if opts.tempo_sync and node and not node.is_dir then
-        ps.force_rate = Preview.TempoSyncRate(node.path, opts.sync_mult)
+        ps.force_rate = Audition.TempoSyncRate(node.path, opts.sync_mult)
     end
     -- Active strip section for this file → insert only that portion.
     if state.wsel and node and state.wsel.path == node.path then
@@ -394,15 +399,15 @@ local function doPreview(node, frac)
 
     local rate_override = nil
     if opts.tempo_sync then
-        rate_override = Preview.TempoSyncRate(node.path, opts.sync_mult)
+        rate_override = Audition.TempoSyncRate(node.path, opts.sync_mult)
     end
     local position = nil
     if frac and node.len and node.len > 0 then
-        local rate = rate_override or Preview.rate
+        local rate = rate_override or Audition.rate
         if rate <= 0 then rate = 1 end
         position = frac * node.len / rate
     end
-    Preview.Play(node.path, { position = position, rate_override = rate_override })
+    Audition.Play(node.path, { position = position, rate_override = rate_override })
 end
 
 -- Select row i in the current view. flags: { preview=bool, scroll=bool }
@@ -430,8 +435,8 @@ local function selectRow(i, flags)
         end
         -- Prefetch neighbors so arrow-keying never waits on file-open.
         local up, down = rows[i - 1], rows[i + 1]
-        if up and not up.is_dir and up.kind ~= "fx" then Preview.Prefetch(up.path) end
-        if down and not down.is_dir and down.kind ~= "fx" then Preview.Prefetch(down.path) end
+        if up and not up.is_dir and up.kind ~= "fx" then Audition.Prefetch(up.path) end
+        if down and not down.is_dir and down.kind ~= "fx" then Audition.Prefetch(down.path) end
     end
 
     if not flags or flags.scroll ~= false then
@@ -692,7 +697,7 @@ local function handleKeys()
         if opts.space_transport then
             r.Main_OnCommand(40044, 0)  -- Transport: Play/stop
         else
-            if Preview.IsPlaying() then Preview.Stop()
+            if Audition.IsPlaying() then Audition.Stop()
             elseif node and not node.is_dir then doPreview(node) end
         end
         UI.ConsumeChar()
@@ -873,7 +878,7 @@ local function openSettings()
               markDirty()
           end },
         { label = "Preview output", children = (function()
-              local pinned = Preview.out_track
+              local pinned = Audition.out_track
               if pinned and not r.ValidatePtr2(0, pinned, "MediaTrack*") then
                   pinned = nil
               end
@@ -889,7 +894,7 @@ local function openSettings()
                     action = function()
                         setPreviewTrack(nil)
                         opts.route_track = false
-                        Preview.route_track = false
+                        Audition.route_track = false
                         markDirty()
                     end },
                   { label = "Follow selected track",
@@ -897,7 +902,7 @@ local function openSettings()
                     action = function()
                         setPreviewTrack(nil)
                         opts.route_track = true
-                        Preview.route_track = true
+                        Audition.route_track = true
                         markDirty()
                     end },
                   { label = pin_label, checked = pinned ~= nil,
@@ -1518,7 +1523,7 @@ local function drawList(theme, list_h)
             if node.kind == "fx" then
                 UI.Icons.FX(ix, icon_y, icon_sz, tm[1], tm[2], tm[3], tm[4] or 1)
             else
-                local playing = (Preview.playing_path == node.path)
+                local playing = (Audition.playing_path == node.path)
                 local fic = playing and theme.colors.accent or tm
                 UI.Icons.Waveform(ix, icon_y, icon_sz, fic[1], fic[2], fic[3], fic[4] or 1)
             end
@@ -1714,7 +1719,7 @@ local function drawList(theme, list_h)
     -- keeps the 2005 frame budget intact while the list populates in ~1 s).
     if wrow_missing then
         local node = wrow_missing
-        local wave = Peaks.Get(node.path, Preview.GetSource(node.path), wrow.bw)
+        local wave = Peaks.Get(node.path, Audition.GetSource(node.path), wrow.bw)
         if wave and wave.n > 0 then
             local slot = wrowAlloc(node.path)
             if slot then
@@ -1768,8 +1773,8 @@ end
 local function waveTarget()
     local node = state.sel_node
     if node and not node.is_dir and node.kind ~= "fx" then return node end
-    if Preview.playing_path then
-        return Model.by_path[Preview.playing_path]
+    if Audition.playing_path then
+        return Model.by_path[Audition.playing_path]
     end
     return nil
 end
@@ -1790,7 +1795,7 @@ local function drawWave(theme)
     if node and node.srate ~= 0 then
         local dw = w - 2
         local bucket = math.max(64, math.floor(dw / 32) * 32)
-        local wave = Peaks.Get(node.path, Preview.GetSource(node.path), bucket)
+        local wave = Peaks.Get(node.path, Audition.GetSource(node.path), bucket)
         if wave and wave.n > 0 then
             local wc = theme.colors.accent
             -- Render the static waveform ONCE into an offscreen buffer (the
@@ -1818,8 +1823,8 @@ local function drawWave(theme)
             end
 
             -- Playback cursor (redraw paced to actual pixel movement)
-            if Preview.playing_path == node.path then
-                local prog, _, plen = Preview.Progress()
+            if Audition.playing_path == node.path then
+                local prog, _, plen = Audition.Progress()
                 if prog then
                     local cx = x + 1 + prog * dw
                     local ac = theme.colors.text
@@ -1861,7 +1866,7 @@ local function drawWave(theme)
                             state.wpress = nil
                             state.drag = { node = node,
                                            label = sectionDragLabel(node) }
-                            Preview.Stop()
+                            Audition.Stop()
                             -- Section drops on CP targets load the whole
                             -- file (the bus carries paths, not sections).
                             DragBus.Begin("file", node.path, state.drag.label)
@@ -1893,8 +1898,8 @@ local function drawWave(theme)
                         else
                             state.wsel = nil
                         end
-                    elseif Preview.playing_path == node.path then
-                        Preview.SeekFrac(press.frac)
+                    elseif Audition.playing_path == node.path then
+                        Audition.SeekFrac(press.frac)
                         state.wsel_prog = nil  -- a seek is not a crossing
                     else
                         doPreview(node, press.frac)
@@ -1936,14 +1941,14 @@ local function drawTransport(theme)
     UI.BeginBar("transport")
 
     -- Play / stop: one control, an icon pair, so the state is in the glyph.
-    local playing = Preview.IsPlaying()
+    local playing = Audition.IsPlaying()
     if UI.BarToggle("mx_play", "Stop", "Play", playing,
                     playing and "Stop" or "Play selected") then
-        if playing then Preview.Stop()
+        if playing then Audition.Stop()
         elseif node then doPreview(node) end
     end
-    if UI.BarToggle("mx_loop", "Loop", nil, Preview.loop, "Loop preview") then
-        Preview.SetLoop(not Preview.loop)
+    if UI.BarToggle("mx_loop", "Loop", nil, Audition.loop, "Loop preview") then
+        Audition.SetLoop(not Audition.loop)
         markDirty()
     end
     if UI.BarToggle("mx_autoplay", "Volume", nil, opts.autoplay,
@@ -1970,19 +1975,19 @@ local function drawTransport(theme)
     end
     UI.BarSep()
 
-    local vc, vv = UI.BarValue("mx_vol", "Vol", Preview.volume, 0, 2, false, V_VOL)
+    local vc, vv = UI.BarValue("mx_vol", "Vol", Audition.volume, 0, 2, false, V_VOL)
     if vc then
-        Preview.SetVolume(vv)
+        Audition.SetVolume(vv)
         markDirty()
     end
-    local pc, pv = UI.BarValue("mx_pitch", nil, Preview.pitch, -24, 24, false, V_PITCH)
+    local pc, pv = UI.BarValue("mx_pitch", nil, Audition.pitch, -24, 24, false, V_PITCH)
     if pc then
-        Preview.SetPitch(pv)
+        Audition.SetPitch(pv)
         markDirty()
     end
-    local rc, rv = UI.BarValue("mx_rate", nil, Preview.rate, 0.25, 4, false, V_RATE)
+    local rc, rv = UI.BarValue("mx_rate", nil, Audition.rate, 0.25, 4, false, V_RATE)
     if rc then
-        Preview.SetRate(rv)
+        Audition.SetRate(rv)
         markDirty()
     end
 
@@ -1995,8 +2000,8 @@ local function drawTransport(theme)
         text = state.flash_msg
     elseif node then
         text = node._info or node.name
-    elseif not Preview.available then
-        text = "SWS extension missing — preview disabled"
+    elseif not Audition.available then
+        text = "No audition engine — install the CP engine extension or SWS"
     else
         text = ""
     end
@@ -2021,7 +2026,7 @@ local function handleDrag()
                 state.drag = { node = dn, label = "+ " .. dn.name }
                 state.drag_pending = nil
                 state.click_audition = nil  -- a drag stays silent
-                Preview.Stop()  -- in case something was already playing
+                Audition.Stop()  -- in case something was already playing
                 -- Publish on the CP drag bus: other CP windows (Sampler
                 -- pads, editor) can highlight and accept the drop.
                 if dn.kind == "fx" then
@@ -2143,16 +2148,21 @@ local function frame(theme)
     -- Section audition bounds: stop (or loop) when playback CROSSES the
     -- selection end. Crossing detection (prev < b, now >= b) — a static
     -- ">= b" check used to kill any seek/playback landing past the section.
-    if state.wsel and Preview.playing_path == state.wsel.path then
-        local prog = Preview.Progress()
+    -- Le battement du moteur : il prend l'ancre entre le temps du projet et
+    -- celui de la carte son, et rend la memoire des clips retires. Une fois par
+    -- frame, avant toute lecture de position.
+    Audition.Tick()
+
+    if state.wsel and Audition.playing_path == state.wsel.path then
+        local prog = Audition.Progress()
         if prog then
             local prev = state.wsel_prog
             if prev and prev < state.wsel.b and prog >= state.wsel.b then
-                if Preview.loop then
-                    Preview.SeekFrac(state.wsel.a)
+                if Audition.loop then
+                    Audition.SeekFrac(state.wsel.a)
                     prog = state.wsel.a
                 else
-                    Preview.Stop()
+                    Audition.Stop()
                 end
             end
             state.wsel_prog = prog
@@ -2221,7 +2231,7 @@ UI.OnClose(function()
     Insert.GhostCancel()                   -- remove a mid-drag live item
     DragBus.End()                          -- release a mid-drag bus claim
     persistConfig()
-    Preview.Destroy()
+    Audition.Destroy()
     Peaks.Destroy()
     Model.StopIndex()
     MediaDB.Stop()

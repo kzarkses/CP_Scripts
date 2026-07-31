@@ -50,13 +50,20 @@ local Preview  -- CP_Engine/Preview, injecte (chemin de repli)
 -- Backends
 -- ---------------------------------------------------------------------------
 local NATIVE = false          -- reaper_cpclip charge et a la bonne ABI
-local ABI_MIN = 1.4
+local ABI_MIN = 1.5
 
 local NULL = 4294967295       -- kNullVoice cote moteur
 
 Voice.NONE   = NULL
 Voice.ONCE   = 0
 Voice.LOOP   = 1
+
+-- Le port reserve a l'AUDITION, partage par toute la suite. Une audition est
+-- une capacite commune : le navigateur, l'editeur et le sampler ecoutent le
+-- meme fichier de la meme facon, et il n'y a aucune raison qu'ils s'ouvrent
+-- chacun une sortie. Les colonnes d'une session prennent les ports 0 et
+-- au-dela ; celui-ci est le dernier, pour qu'ils ne se rencontrent jamais.
+Voice.AUDITION_PORT = 31
 
 -- Etats, alignes sur le moteur (cp_types.h)
 Voice.IDLE      = 0
@@ -129,6 +136,21 @@ function Voice.CanRouteToTrack()
     return NATIVE or (Preview ~= nil and Preview.SetOutputTrack ~= nil)
 end
 
+-- Sait-on transposer SANS changer la duree ? Non en natif, et c'est une
+-- decision, pas un manque : l'etireur de REAPER coute 2,3 % du fil audio par
+-- voix (mesure §12.12) et surtout il exige 85 a 139 ms d'amorcage. Une audition
+-- doit sonner dans le meme tour de boucle que la touche qui la declenche ; un
+-- dixieme de seconde de retard est exactement ce que ce navigateur refuse.
+function Voice.CanPitchShift()
+    return (not NATIVE) and Preview ~= nil and Preview.SetPitch ~= nil
+end
+
+-- Sait-on changer la duree SANS changer la hauteur ? Meme reponse, meme raison.
+-- Le taux natif est un varispeed : il change les deux, comme un echantillonneur.
+function Voice.CanTimeStretch()
+    return (not NATIVE) and Preview ~= nil and Preview.SetRate ~= nil
+end
+
 function Voice.Diag()
     if NATIVE and r.CP_Diag then return r.CP_Diag() end
     return "backend=preview voix=1"
@@ -189,14 +211,19 @@ end
 -- fois en RAM au taux du moteur ; en repli c'est le chemin lui-meme, garde tel
 -- quel. Un appelant ne doit pas savoir lequel.
 -- ---------------------------------------------------------------------------
+-- Rend l'identifiant, ou nil suivi d'une RAISON. « trop long » et « illisible »
+-- ne sont pas la meme phrase : un appelant qui ne peut pas les distinguer finit
+-- par dire « fichier illisible » a propos d'un fichier parfaitement lisible.
 function Voice.Load(path)
-    if not path or path == "" then return nil end
+    if not path or path == "" then return nil, "no_path" end
     if NATIVE then
         local id = r.CP_ClipLoad(path)
-        if not id or id < 0 then return nil end
+        if not id then return nil, "failed" end
+        if id == -2 then return nil, "too_long" end   -- plafond de 64 s
+        if id < 0 then return nil, "failed" end
         return id
     end
-    if Preview and not Preview.GetSource(path) then return nil end
+    if Preview and not Preview.GetSource(path) then return nil, "failed" end
     return path
 end
 
@@ -237,6 +264,26 @@ function Voice.BindTrack(port, track)
     return false
 end
 
+-- Sortie MATERIELLE, sans piste : le comportement par defaut d'un navigateur,
+-- qui ecoute avant de choisir une piste. Sans elle, une fenetre d'audition ne
+-- pourrait pas se passer de CF_Preview.
+function Voice.BindOutput(port, outchan)
+    if NATIVE then
+        return r.CP_PortAttachOut(port, outchan or 0) and true or false
+    end
+    if Preview and Preview.SetOutputTrack then
+        Preview.SetOutputTrack(nil)
+        return true
+    end
+    return false
+end
+
+-- Ce port a-t-il une sortie ? Une voix ne peut etre allouee que la.
+function Voice.OutputActive(port)
+    if NATIVE then return r.CP_PortActive(port) and true or false end
+    return Preview ~= nil and Preview.available == true
+end
+
 function Voice.UnbindTrack(port)
     if NATIVE then
         r.CP_PortDetach(port)
@@ -274,7 +321,8 @@ function Voice.Release(h)
     vfree[nfree] = h
 end
 
--- opts, toutes optionnelles : { rate, gain, loop, fade_in, fade_out, pan }
+-- opts, toutes optionnelles :
+--   { rate, gain, loop, fade_in, fade_out, pan, offset }
 -- Aucune table n'est allouee ici ; opts est fournie par l'appelant, qui a tout
 -- interet a la reutiliser en place s'il appelle par frame.
 local function applyOpts(h, opts)
@@ -282,6 +330,30 @@ local function applyOpts(h, opts)
     if opts.pan then r.CP_VoiceSet(h, "pan", opts.pan) end
     if opts.fade_in then r.CP_VoiceSet(h, "fade_in", opts.fade_in) end
     if opts.fade_out then r.CP_VoiceSet(h, "fade_out", opts.fade_out) end
+end
+
+-- `offset` se pose APRES le lancement, et c'est volontaire : l'anneau de
+-- commandes est FIFO, donc les deux tombent dans le meme bloc audio, dans
+-- l'ordre d'ecriture. Le lancement remet la tete au debut, le deplacement la
+-- pose ou on veut — et le premier echantillon audible est deja le bon.
+local function applyOffset(h, opts)
+    if not NATIVE or not opts or not opts.offset then return end
+    r.CP_VoiceSet(h, "pos", opts.offset)
+end
+
+-- Deplace la tete de lecture, en frames source. Un clic dans une forme d'onde.
+function Voice.Seek(h, pos_frames)
+    if not NATIVE or h == nil then return false end
+    return r.CP_VoiceSet(h, "pos", pos_frames or 0) and true or false
+end
+
+-- Boucle A LA VOLEE : la voix ne repart pas du debut, seule sa fin de matiere
+-- change de comportement.
+function Voice.SetLoop(h, on)
+    if h == nil then return false end
+    if NATIVE then return r.CP_VoiceSet(h, "loop", on and 1 or 0) and true or false end
+    if Preview then Preview.SetLoop(on and true or false) return true end
+    return false
 end
 
 -- Lancement IMMEDIAT. C'est l'audition : on veut du son au plus vite, pas a un
@@ -296,7 +368,10 @@ function Voice.Play(h, clip, opts)
         applyOpts(h, opts)
         local at = r.CP_ClockNow()
         local ok = r.CP_VoicePlayAtSample(h, clip, at, mode, rate, gain)
-        if ok then vst[h] = Voice.PLAYING end
+        if ok then
+            applyOffset(h, opts)
+            vst[h] = Voice.PLAYING
+        end
         return ok and true or false
     end
 
@@ -322,7 +397,10 @@ function Voice.PlayAtSample(h, clip, at_sample, opts)
     local gain = (opts and opts.gain) or 1.0
     local mode = (opts and opts.loop) and Voice.LOOP or Voice.ONCE
     local ok = r.CP_VoicePlayAtSample(h, clip, at_sample, mode, rate, gain)
-    if ok then vst[h] = Voice.SCHEDULED end
+    if ok then
+        applyOffset(h, opts)
+        vst[h] = Voice.SCHEDULED
+    end
     return ok and true or false
 end
 
