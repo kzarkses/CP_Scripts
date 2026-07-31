@@ -5,11 +5,14 @@ Ce document consigne ce qui a été établi, ce qui a été mesuré, ce qui a é
 corrigé, et ce qui reste à vérifier. Il est écrit pour être relu dans six mois
 sans le fil de discussion qui l'a produit.
 
-> **Lis d'abord le §12.** La confrontation a trouvé une **troisième route** que
-> ce dossier ignorait (un lecteur JSFX dans la chaîne, qui ouvre lui-même son
-> fichier), et elle a invalidé plusieurs affirmations des §1, §3, §4, §5 et §8.
-> Les sections corrigées portent la mention **[révisé 07-31]**. Le §11 liste les
-> erreurs, le §12 la décision qui tranche tout et les trois mesures à faire.
+> **Lis d'abord le §12, puis le §13.** La confrontation a trouvé une
+> **troisième route** que ce dossier ignorait (un lecteur JSFX dans la chaîne,
+> qui ouvre lui-même son fichier), et elle a invalidé plusieurs affirmations des
+> §1, §3, §4, §5 et §8. Les sections corrigées portent la mention
+> **[révisé 07-31]**. Le §11 liste les erreurs, le §12 la décision qui tranche
+> tout et les trois mesures à faire. Le **§13** ferme la course sur la
+> réutilisation d'une voix, corrige deux défauts que le §12 ne pouvait pas voir,
+> et consigne pourquoi la phase « la plus facile » du plan ne l'était pas.
 
 ---
 
@@ -1098,3 +1101,156 @@ Faire noter l'attaque par la voix elle-même plutôt que la déduire de
 (horloge − position). Arrondir à la frontière plutôt qu'afficher un arrondi.
 Distinguer « zéro » de « je ne sais pas ». Mesurer la grandeur qu'on croit
 mesurer, pas celle qui lui ressemble.
+
+---
+
+# 13. Session 19 (2026-08-01) — le moteur devient correct sous deux fils
+
+Le §12 laissait deux points ouverts et un défaut écrit noir sur blanc. Cette
+section les ferme, et consigne les deux découvertes que la fermeture a produites.
+
+## 13.1 La course sur la réutilisation d'une voix, fermée
+
+**Ce qui n'allait pas.** `voice_alloc` appelait `voices_[i].reset()` depuis le
+fil principal sur un emplacement que le fil audio pouvait encore parcourir. Sur
+x86 c'était bénin *par accident d'architecture* : le modèle mémoire TSO
+n'autorise pas la réorganisation entre deux écritures, donc l'ordre
+`ended_at = -1` puis `port = P` était respecté. Sur ARM il ne l'est pas, et le
+fil audio pouvait voir le nouveau port avec l'ancien `ended_at` — c'est-à-dire
+enchaîner sur une voix qui ne le lui avait pas demandé.
+
+C'était aussi une **incohérence** : toute autre commande passait par l'anneau,
+celle-là non.
+
+**Ce qui a été fait.** La propriété et l'état deviennent deux choses distinctes.
+
+| | possède |
+|---|---|
+| **fil principal** | les mots de propriété, le vivier, l'ancre d'horloge |
+| **fil audio** | les structures `Voice`, les listes de port, l'horloge |
+
+Un mot de propriété est un `uint32` atomique : 16 bits de génération, un bit de
+possession, 5 bits de port. Le fil principal **prend** l'emplacement (un `store`
+release) puis **demande** (`kCmdVoiceAlloc`). Le fil audio prépare, joue, éteint,
+puis **efface le bit de possession** (`fetch_and`) — la seule écriture qu'il fait
+jamais dans cette moitié.
+
+La conséquence porte tout le reste : **un emplacement qui sonne encore ne peut
+pas être réattribué.** Ce n'est plus une convention, c'est une impossibilité.
+
+Trois valeurs (`pos`, `state`, `started_at`) sont **publiées** en fin de bloc
+dans des atomiques relâchées. Un bloc de retard, sans importance pour un dessin,
+et formellement définies — ce qu'une lecture directe de la structure n'était pas.
+
+**Ce qui le prouve.** Pas un raisonnement sur les barrières mémoire : ce dossier
+a déjà vu cinq affirmations de ce genre infirmées par la mesure. Un **vrai**
+second fil rend pendant qu'un **vrai** fil principal prend et rend des
+emplacements aussi vite qu'il peut, en postant au passage des commandes sur des
+handles déjà périmés. ~300 000 allocations, plusieurs milliers de blocs, et à
+l'arrivée : zéro emplacement fuité, zéro entrée orpheline, zéro allocation dans
+le fil audio.
+
+## 13.2 Deux gains de performance que la même pièce a permis
+
+**Une liste de voix par port.** Le rendu balayait les 256 emplacements pour en
+trouver huit, deux fois par bloc et par port. Une `Voice` pèse ~180 octets : 256
+en font 46 Ko, soit davantage que le L1 d'une machine ancienne, traversé
+intégralement à chaque bloc et par chaque port. Chaque `PortState` tient
+maintenant la liste de ses index, remplie par `kCmdVoiceAlloc` et vidée à la
+libération. Huit itérations au lieu de 256.
+
+**L'état mutable de la boucle chaude descend en registre.** `out` est un `float*`
+et `pos` un `double` membre : **rien n'interdit formellement l'alias**, donc le
+compilateur devait relire et réécrire position, fondus, gain et état à chaque
+échantillon — une dizaine d'accès mémoire par échantillon là où il n'en faut
+aucun. Descendre l'état en variable locale le lui prouve.
+
+Ces deux-là sont, de loin, ce qui compte le plus pour la contrainte « PC de
+2005 » : elles retirent du trafic mémoire, et c'est la mémoire qui est lente sur
+cette cible, pas le calcul.
+
+## 13.3 Une voix privée de sa matière restait vivante à jamais
+
+**Trouvé en concevant la sonde de session longue, pas en relisant le code.** Elle
+devait recharger le clip pendant que des voix le jouent, et il a fallu se
+demander ce que ces voix deviennent.
+
+Un clip retiré cesse d'être visible du fil audio dès le bloc suivant. La voix qui
+le lisait repartait alors sans rien changer — donc son fondu n'avançait plus,
+donc elle n'atteignait jamais l'état éteint, donc **son emplacement n'était
+jamais rendu**. Une fenêtre qui recharge ses clips en cours de jeu aurait épuisé
+ses voix en silence, et le symptôme serait arrivé une heure plus tard sous la
+forme « il n'y a plus de voix » — cherché n'importe où sauf là.
+
+Elle meurt maintenant sur place, **sans poser `ended_at`** : l'enchaînement est
+un comportement musical, et une disparition de matière est un chemin d'erreur.
+
+> Une sonde rapporte avant d'être lancée. Écrire ce qu'on va mesurer force à
+> nommer les états qu'on n'avait pas nommés.
+
+## 13.4 Le plafond refuse au lieu de tronquer
+
+`decode_to_pool` écrêtait silencieusement à 64 s, alors que le contrat annonçait
+« rend nil au-delà ». Un fichier de trois minutes serait entré dans le vivier
+comme une boucle de soixante-quatre secondes, et le défaut se serait manifesté
+comme une fin prématurée inexplicable, **jamais comme un refus**.
+
+Il rend `-2`, distinct de `-1`. « Trop long » et « illisible » ne sont pas la
+même phrase : un appelant qui ne peut pas les distinguer finit par dire « fichier
+illisible » à propos d'un fichier parfaitement lisible.
+
+C'est la même faute que les cinq instruments du §12.14, commise du côté du code
+mesuré cette fois : **ne pas laisser un écart s'expliquer, le rendre impossible.**
+
+## 13.5 La sortie matérielle, et pourquoi elle était bloquante
+
+Un port ne savait sortir que sur une piste. Or le comportement par défaut d'un
+navigateur de fichiers est d'écouter **avant** de choisir une piste. Sans
+`CP_PortAttachOut`, le moteur natif ne pouvait tout simplement pas remplacer
+`CF_Preview` dans `CP_MediaExplorer` — la première fenêtre du plan de migration.
+
+Un aperçu de piste et un aperçu matériel ne se retirent pas par la même fonction.
+Se tromper détruit le `PCM_source` sous les pieds d'un aperçu vivant : ce n'est
+pas un bug, c'est un plantage de l'hôte. D'où un drapeau explicite par port.
+
+## 13.6 Ce que l'audition a appris, et qui n'était pas dans le plan
+
+Le §12 supposait que faire passer `CP_MediaExplorer` par `Voice.lua` serait la
+phase la plus facile — « elle n'a besoin que d'auditionner ». C'est faux, et pour
+une raison qu'aucune mesure du §12 ne pouvait révéler : **le navigateur a un
+bouton de hauteur et un bouton de taux, et chacun préserve ce que l'autre
+change.**
+
+Le taux natif est un **varispeed** : il change la durée *et* la hauteur, comme un
+échantillonneur. `CF_Preview` fait l'inverse des deux (`D_PITCH` préserve la
+durée, `D_PLAYRATE` + `B_PPITCH` préservent la hauteur). Migrer sans le dire
+aurait changé la signification des deux boutons — exactement le critère d'arrêt
+écrit dans la roadmap : *« on arrête si l'audition est moins bonne qu'avant »*.
+
+**La décision.** Pas d'étireur dans le chemin d'audition : il coûte 2,3 %/voix
+et exige 85 à 139 ms d'amorçage, quand la règle de ce navigateur est que le son
+part dans le même tour de boucle que la touche. `CP_Engine/Audition.lua` choisit
+donc à chaque lancement, **par capacité** (`CanPitchShift`, `CanTimeStretch`) et
+jamais par backend.
+
+Et un coût que le §12 n'avait pas chiffré parce qu'il ne se pose que pour un
+navigateur : une voix CP joue depuis la RAM, donc **il faut décoder avant
+d'entendre** — ~3,4 ms par seconde de stéréo. Sept millisecondes pour un one-shot
+de deux secondes, cent pour un fichier de trente. D'où un seuil de durée au-delà
+duquel `CF_Preview` reprend la main, et le préchauffage des voisins de la
+sélection.
+
+**Ce que ça donne :** le cas courant — écouter un one-shot, une boucle — passe
+par le moteur, exact et sans famine. Le cas transformé passe par `CF_Preview`,
+qui le fait bien. Aucune régression, et la question ne se repose pas dans
+l'éditeur ni dans le sampler.
+
+## 13.7 Ce que la session laisse ouvert
+
+- **La campagne de session longue.** L'instrument existe ; la mesure reste à
+  faire, et c'est la seule chose qui distinguera « aucune fuite connue » de
+  « aucune fuite ».
+- **Le seuil de 15 s** d'`Audition` est un calcul, pas une écoute. Il se déplace
+  en une ligne ; `Audition.last_load_ms` dit ce que le décodage coûte réellement
+  sur la machine.
+- **`CP_Editor` et `CP_Sampler`** n'ont pas encore basculé sur `Audition`.

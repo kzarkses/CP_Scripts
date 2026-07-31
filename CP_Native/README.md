@@ -30,7 +30,8 @@ tampon **64 échantillons**.
 | entrée dans la piste | **pré-FX** — la chaîne, le fader et les envois s'appliquent |
 | décodage | 8,000 s attendues, 8,000 s obtenues, 2,93 Mo en 27 ms |
 | étireur de REAPER | **2,3 %/voix**, amorçage 85–139 ms selon le taux |
-| cœur, hors REAPER | **88 assertions**, **zéro allocation** dans le chemin audio |
+| cœur, hors REAPER | **119 assertions**, **zéro allocation** dans le chemin audio |
+| cœur, **sous deux fils réels** | ~300 000 allocations, zéro fuite, zéro allocation audio |
 
 Pour mémoire, ce que remplace tout cela : `CF_Preview` lisait à **0,54×** de sa
 vitesse au même tampon, et se taisait à ce sujet.
@@ -43,22 +44,32 @@ vitesse au même tampon, et se taisait à ce sujet.
 
 ### Défaut connu, non corrigé
 
-**Course sur la réutilisation d'une voix.** `voice_alloc` appelle
-`voices_[i].reset()` depuis le fil principal sur un emplacement que le fil audio
-peut encore parcourir. Bénin sur x86 — une lecture d'entier ne se déchire pas —
-mais c'est un bug intermittent et non reproductible garanti le jour du portage
-ARM (macOS). C'est aussi une **incohérence** : toute autre commande passe par
-l'anneau, celle-là non. Correctif connu : le fil principal demande, le fil audio
-exécute.
+Aucun. Les deux qui figuraient ici sont fermés :
+
+- **La course sur la réutilisation d'une voix** (session 19). Le fil principal
+  n'écrit plus jamais dans une `Voice` : il pose un mot de propriété atomique et
+  poste une commande, le fil audio prépare l'emplacement et ne le rend qu'une
+  fois la voix éteinte. Un emplacement qui sonne encore ne peut pas être
+  réattribué — vérifié, pas argumenté.
+- **Une voix privée de sa matière** (session 19). Un clip déchargé pendant qu'il
+  joue la laissait vivante à jamais, donc son emplacement perdu. Elle meurt
+  maintenant sur place. Trouvé en *concevant* la sonde de session longue.
 
 ### Volontairement absent
 
 - **Aucune persistance.** Rien dans le `.RPP`, par décision : l'état reste dans
-  `ProjExtState`, natif à REAPER, pour qu'un projet CP s'ouvre toujours sur une
-  machine sans le binaire.
+  les extensions natives à REAPER (`ProjExtState`, chaînes d'extension de piste)
+  pour qu'un projet CP s'ouvre toujours sur une machine sans le binaire.
 - **Pas de lecture disque.** Des boucles ≤ 64 s, tout en RAM (décision produit).
-- **Décodage synchrone** sur le fil appelant. Quelques millisecondes pour une
-  boucle ; le fil de travail viendra si la durée maximale change.
+  Le plafond **refuse** désormais (`CP_ClipLoad` rend −2), il ne tronque plus.
+  Au-dessus, `CP_Engine/Audition` renvoie l'écoute à `CF_Preview`, qui lit
+  depuis le disque : la limite est couverte, pas seulement déclarée.
+- **Décodage synchrone** sur le fil appelant, ~3,4 ms par seconde de stéréo. Le
+  fil de travail viendra si la durée maximale change.
+- **Ni transposition ni étirement.** Le taux natif est un varispeed. L'étireur
+  coûte 2,3 %/voix et exige 85–139 ms d'amorçage : hors de question dans un
+  chemin d'audition. `Voice.CanPitchShift()` et `Voice.CanTimeStretch()` le
+  disent, et l'appelant choisit son chemin en connaissance de cause.
 - **Pas de vrai fondu croisé.** `xfade` avance le départ de la suivante ; la
   sortante ne sonne pas pendant le recouvrement.
 - **Pas de filtre anti-repliement** sur le repitch vers l'aigu.
@@ -66,8 +77,9 @@ exécute.
 
 ### Jamais éprouvé
 
-- **Aucune session de plus de 20 secondes.** Toutes les mesures portent sur des
-  fenêtres courtes.
+- **Aucune session longue mesurée.** L'instrument existe désormais
+  (`lua/CP_SoakProbe.lua`, sept invariants surveillés, première violation
+  horodatée) ; la campagne, elle, reste à faire.
 - Deux onglets de projet simultanés avec des ports des deux côtés.
 - Une piste supprimée puis restaurée par annulation (`MediaTrack*` pendant).
 
@@ -139,6 +151,31 @@ src/test/     harness.cpp — 88 assertions déterministes
 lua/          les sondes de mesure
 ```
 
+### Qui possède quoi
+
+C'est la règle qui rend le moteur sûr sous deux fils, et elle tient en deux
+lignes :
+
+| | possède |
+|---|---|
+| **fil principal** | les mots de propriété (`claim_`), le vivier, l'ancre d'horloge |
+| **fil audio** | les structures `Voice`, les listes de port, l'horloge |
+
+Aucune moitié n'écrit dans l'autre. La **seule** exception est le bit `owned`
+d'un mot de propriété, que le fil audio *efface* — et n'écrit jamais autrement —
+pour dire « j'en ai fini, l'emplacement est réutilisable ».
+
+Un mot de propriété est un `uint32` atomique : 16 bits de génération, un bit de
+possession, 5 bits de port. Le fil principal prend l'emplacement puis demande ;
+le fil audio prépare, joue, éteint, puis rend. Trois valeurs (`pos`, `state`,
+`started_at`) sont **publiées** en fin de bloc dans des atomiques relaxées : un
+bloc de retard, sans importance pour un dessin, et formellement définies — ce
+qu'une lecture directe de la structure n'était pas.
+
+`port_reset` est l'unique dérogation, et elle est sûre pour une raison précise :
+elle n'est appelée qu'après que `StopTrackPreview2` a rendu la main, donc à un
+instant où il n'y a plus de second fil.
+
 ### La règle qui porte tout
 
 > **`src/core` n'appelle aucune API REAPER.**
@@ -179,6 +216,14 @@ exact.
 - **chaque voix est rendue exactement une fois par bloc.** Deux fois la fait
   avancer à double vitesse — ça s'entend comme un décalage et ça se cherche comme
   un problème d'horloge ;
+- **on ne parcourt que les voix du port qu'on rend.** Chaque `PortState` tient
+  la liste de ses index. Le balayage des 256 emplacements qu'il y avait là
+  traversait, par bloc et par port, plus de mémoire que le rendu lui-même — et
+  40 Ko de structures dépassent le L1 d'une machine ancienne ;
+- **l'état mutable de la boucle chaude vit en variable locale.** `out` est un
+  `float*` et `pos` un `double` membre : rien n'interdit formellement l'alias,
+  donc le compilateur relisait et réécrivait position, fondus, gain et état à
+  chaque échantillon. Descendre l'état en local le lui prouve ;
 - les gains sous `1e-15` sont forcés à zéro. Les dénormaux coûtent 100 à 400
   cycles sur un Athlon 64 ; on les tue à la source plutôt que de poser FTZ/DAZ
   globalement, ce qui dégraderait tous les autres plugins de l'hôte.
@@ -187,16 +232,29 @@ exact.
 
 ## 5. Le harnais
 
-`build_test.cmd` compile `src/core` **sans REAPER** et lance 88 assertions
+`build_test.cmd` compile `src/core` **sans REAPER** et lance 119 assertions
 déterministes : départ exact pour des blocs de 1, 17, 63, 64, 128 et 512 ;
 lecture bit-exacte à taux 1,0 ; boucle sans dérive sur 133 tours ; arrêt daté ;
 enchaînement au frame exact ; changement de taux d'échantillonnage ; handles
-périmés rejetés ; et un **piège sur `operator new`** qui *prouve* le
-zéro-allocation au lieu de l'affirmer.
+périmés rejetés ; déplacement de tête et boucle à la volée ; clip retiré sous une
+voix vivante ; mille cycles prise/remise ; et un **piège sur `operator new`** qui
+*prouve* le zéro-allocation au lieu de l'affirmer.
 
-Il a trouvé deux bugs que l'oreille n'aurait pas isolés : l'horloge d'un bloc en
-avance, et une commande sur un handle libéré qui passait le contrôle de
-génération.
+Il a trouvé quatre bugs que l'oreille n'aurait pas isolés : l'horloge d'un bloc
+en avance, une commande sur un handle libéré qui passait le contrôle de
+génération, une voix rendue deux fois par bloc, et un changement de taux
+d'échantillonnage qui transposait.
+
+### Le test qui vaut pour tous les autres
+
+`test_two_threads` fait tourner un **vrai** fil audio pendant qu'un **vrai** fil
+principal prend et rend des emplacements aussi vite qu'il peut, en postant au
+passage des commandes sur des handles déjà périmés. Environ 300 000 allocations,
+plusieurs milliers de blocs, et à l'arrivée : zéro emplacement fuité, zéro entrée
+orpheline dans les listes de port, zéro allocation dans le fil audio.
+
+Un raisonnement sur les barrières mémoire n'aurait rien prouvé. Ce projet a déjà
+vu cinq affirmations de ce genre infirmées par la mesure.
 
 ---
 
@@ -210,6 +268,7 @@ Dans `lua/`, copiées vers `WIP/` par le script de construction.
 | `CP_MidiProbe` | REAPER route-t-il le MIDI d'un aperçu, et notre placement est-il exact |
 | `CP_LoadProbe` | 8 ports × 8 voix : ratio du port le plus mal servi, part du fil audio |
 | `CP_WarpProbe` | amorçage et coût de l'étireur de REAPER |
+| `CP_SoakProbe` | **la session longue** : sept invariants surveillés, première violation horodatée |
 | `../WIP/CP_VoiceProbe` | valide l'ABI **par l'usage** — ce qu'écrirait une fenêtre |
 
 Elles écrivent dans `<ressources REAPER>/CP_NativeProbe.log`, en ajout.

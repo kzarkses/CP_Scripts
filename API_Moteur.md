@@ -10,6 +10,9 @@ existe — c'est `ARCHI_MoteurNatif.md` — ni comment il est construit — c'es
 ## 0. La règle qui prime sur tout le reste
 
 > **Une fenêtre appelle `CP_Engine/Voice.lua`. Jamais `reaper.CP_*` directement.**
+>
+> **Et pour faire entendre un fichier à quelqu'un, elle appelle
+> `CP_Engine/Audition.lua`** — qui est bâti sur `Voice`, et qui choisit.
 
 `CP_*` est l'ABI brute de l'extension. Elle est plate, ennuyeuse et stable par
 conception — un ABI qu'on renégocie est un cauchemar. `Voice.lua` est la couche
@@ -70,8 +73,16 @@ Une fenêtre interroge une **capacité**, jamais un backend.
 | `Voice.CanScheduleExact()` | bool | **sait-on dater un lancement à l'échantillon** |
 | `Voice.MaxVoices()` | nombre | 256 en natif, **1** en repli |
 | `Voice.CanRouteToTrack()` | bool | le son peut-il traverser une chaîne de piste |
+| `Voice.CanPitchShift()` | bool | **transposer sans changer la durée** — false en natif |
+| `Voice.CanTimeStretch()` | bool | **étirer sans changer la hauteur** — false en natif |
 | `Voice.Backend()` | `"native"` / `"preview"` | diagnostic seulement |
 | `Voice.Diag()` | chaîne | état du moteur en une ligne |
+
+`CanPitchShift` et `CanTimeStretch` rendent **false en natif, et c'est une
+décision, pas un manque** : l'étireur de REAPER coûte 2,3 % du fil audio par voix
+et exige 85 à 139 ms d'amorçage. Le taux natif est un varispeed — il change les
+deux, comme un échantillonneur. Un appelant qui a besoin de l'un des deux le
+demande et emprunte l'autre chemin ; c'est exactement ce que fait `Audition`.
 
 Le motif attendu dans une fenêtre :
 
@@ -105,9 +116,14 @@ defer (16 à 74 ms). **Sans `Sync()` régulier, les conversions dérivent.**
 
 | appel | rend | note |
 |---|---|---|
-| `Voice.Load(path)` | identifiant opaque, ou nil | décode en RAM au taux du moteur |
+| `Voice.Load(path)` | identifiant, ou **nil + raison** | décode en RAM au taux du moteur |
 | `Voice.Unload(clip)` | — | mémoire rendue après deux blocs audio |
 | `Voice.ClipInfo(clip)` | durée_s, canaux, taux | ou nil |
+
+Raisons possibles de `Load` : `"too_long"`, `"failed"`, `"no_path"`. **« Trop
+long » et « illisible » ne sont pas la même phrase** — un appelant qui ne peut
+pas les distinguer finit par dire « fichier illisible » à propos d'un fichier
+parfaitement lisible.
 
 L'identifiant est **opaque** : un slot en natif, le chemin en repli. Ne
 l'interprétez jamais.
@@ -124,11 +140,24 @@ des stems). `Load` rend nil au-delà.
 | appel | rend | note |
 |---|---|---|
 | `Voice.BindTrack(port, track)` | bool | **idempotent** |
+| `Voice.BindOutput(port, outchan)` | bool | **sortie matérielle, sans piste** |
+| `Voice.OutputActive(port)` | bool | ce port a-t-il une sortie |
 | `Voice.UnbindTrack(port)` | — | reprend aussi les voix du port |
 
 Le son entre **pré-FX** : il traverse la chaîne d'effets de la piste, son fader,
 son VU et ses envois (mesuré — une réverbe sur la piste s'applique bien). Rien
 n'est inséré dans la chaîne de l'utilisateur.
+
+`BindOutput` n'est pas du confort : c'est le comportement par défaut d'un
+navigateur de fichiers, qui écoute avant de choisir une piste.
+
+**`Voice.Alloc` refuse sur un port sans sortie.** Son anneau n'étant jamais
+drainé, la voix ne sonnerait jamais *et* ne pourrait jamais être rendue. La
+réponse honnête est « il n'y a pas de sortie », pas « plus de voix ».
+
+**`Voice.AUDITION_PORT` (31) est réservé** à l'audition, partagé par toute la
+suite. Il n'y a aucune raison que trois fenêtres ouvrent chacune leur sortie
+pour faire la même chose.
 
 ### 2.5 Voix
 
@@ -144,16 +173,23 @@ n'est inséré dans la chaîne de l'utilisateur.
 | `Voice.StopAtSample(h, at, fade)` | bool | **daté** ; fade 0 = coupure nette |
 | `Voice.QueueNext(h, next_h, xfade)` | bool | enchaînement exact |
 | `Voice.Set(h, param, value)` | bool | à la volée |
+| `Voice.Seek(h, pos_frames)` | bool | déplace la tête, en frames source |
+| `Voice.SetLoop(h, on)` | bool | **à la volée** — ne repart pas du début |
 | `Voice.State(h)` | état, position | **deux valeurs**, pas une table |
 | `Voice.IsPlaying(h)` | bool | |
 | `Voice.StartedAt(h)` | frame, ou −1 | attaque réelle, sans course |
 | `Voice.Panic()` | — | tout couper en 5 ms |
 
 `opts` (toutes optionnelles) : `rate`, `gain`, `loop`, `pan`, `fade_in`,
-`fade_out`. **Réutilisez la même table** si vous appelez par frame.
+`fade_out`, `offset`. **Réutilisez la même table** si vous appelez par frame.
 
 `param` de `Set` : `rate`, `gain`, `pan`, `loop_start`, `loop_end`, `fade_in`,
-`fade_out`. En repli, seuls `gain` et `rate` existent.
+`fade_out`, `pos`, `loop`. En repli, seuls `gain` et `rate` existent.
+
+**`offset` est posé APRÈS le lancement, et c'est volontaire.** L'anneau de
+commandes est FIFO : les deux tombent dans le même bloc audio, dans l'ordre
+d'écriture. Le lancement remet la tête au début, le déplacement la pose où on
+veut, et le premier échantillon audible est déjà le bon.
 
 États : `Voice.IDLE` 0, `Voice.SCHEDULED` 1, `Voice.PLAYING` 2,
 `Voice.STOPPING` 3.
@@ -177,6 +213,53 @@ concaténation hors messages d'erreur.
 
 ---
 
+## 2bis. `CP_Engine/Audition.lua` — faire entendre un fichier à quelqu'un
+
+Le navigateur, l'éditeur et le sampler font exactement le même geste — on clique,
+ça sonne — et chacun l'écrivait à sa façon. C'est le premier défaut recensé dans
+`ANALYSE_Ecosysteme`, et ce module est la capacité qui manquait.
+
+**Il choisit, à chaque lancement**, entre une voix CP et `CF_Preview`. Le choix
+ne demande jamais « es-tu natif » : il demande `CanPitchShift()` et
+`CanTimeStretch()`. Le jour où le moteur saura le faire, ce module n'a pas une
+ligne à changer.
+
+| | ce qu'il apporte |
+|---|---|
+| **voix CP** | exacte à l'échantillon, ne s'affame jamais (15 009 appels pour 15 009 blocs à 64), joue depuis la RAM |
+| **`CF_Preview`** | transpose, étire, **lit depuis le disque** — donc pas de plafond de durée |
+
+```lua
+local Audition = dofile(cp_root .. "CP_Engine/Audition.lua")
+Audition.init(r)
+```
+
+Surface : `Play(path, opts)`, `Stop`, `IsPlaying`, `Progress`, `SeekFrac`,
+`SetVolume/SetPitch/SetRate/SetLoop`, `SetOutputTrack`, `Prefetch`, `Tick`,
+`Destroy` — plus `Meta`, `SourceType`, `GetSource`, `TempoSyncRate`, délégués,
+pour qu'une fenêtre n'ait **qu'un seul module** à charger.
+
+Champs persistants : `volume`, `pitch`, `rate`, `loop`, `fade_in`, `fade_out`,
+`route_track`, `out_track`, `playing_path`.
+
+**`Tick()` une fois par frame.** Il prend l'ancre horloge↔projet et rend la
+mémoire des clips retirés.
+
+### Ce que ça coûte, écrit plutôt que découvert
+
+Une voix CP joue depuis la RAM : il faut **décoder avant d'entendre**, environ
+**3,4 ms par seconde de stéréo**. Un one-shot de deux secondes coûte 7 ms — moins
+qu'une frame de dessin. Trente secondes en coûteraient 100, ce qui s'entend comme
+une hésitation.
+
+D'où deux réglages, isolés en tête de fichier pour se déplacer en une ligne après
+une écoute : `NATIVE_MAX_S` (15 s, au-delà on laisse `CF_Preview` lire depuis le
+disque) et `warm_prefetch` (on préchauffe les voisins de la sélection, la ruse
+qui existait déjà pour les `PCM_source`). `Audition.last_load_ms` dit ce que le
+décodage a réellement coûté sur **cette** machine.
+
+---
+
 ## 3. `reaper.CP_*` — l'ABI brute
 
 À n'appeler que depuis `Voice.lua`, ou depuis une sonde.
@@ -185,7 +268,7 @@ concaténation hors messages d'erreur.
 
 ```lua
 if not reaper.APIExists("CP_EngineABI") then return end
-if reaper.CP_EngineABI() < 1.4 then return end   -- un MINIMUM, pas une égalité
+if reaper.CP_EngineABI() < 1.5 then return end   -- un MINIMUM, pas une égalité
 ```
 
 **ReaPack n'a aucun mécanisme de dépendance** — mesuré : 89 index, 5993 paquets,
@@ -202,10 +285,12 @@ sinon chaque ajout casse tout le monde.
 |---|---|
 | `CP_EngineABI()` | version de l'ABI |
 | `CP_Srate()` | taux du moteur |
-| `CP_ClipLoad(path)` | identifiant, ou −1 |
+| `CP_ClipLoad(path)` | identifiant, **−1 illisible, −2 au-delà de 64 s** |
 | `CP_ClipUnload(clip)` | — |
 | `CP_ClipInfo(clip)` | ok, frames, srate, nch |
-| `CP_PortAttach(track, port)` | bool, idempotent |
+| `CP_PortAttach(track, port)` | bool, idempotent — sortie **piste**, pré-FX |
+| `CP_PortAttachOut(port, outchan)` | bool, idempotent — sortie **matérielle** |
+| `CP_PortActive(port)` | bool |
 | `CP_PortDetach(port)` | — |
 | `CP_PortGain(port, gain)` | — |
 | `CP_VoiceAlloc(port)` | handle, ou 4294967295 |
@@ -232,6 +317,7 @@ fenêtre. Marqués EXPERIMENTAL dans le code — ce ne sont pas des interfaces.
 | fonction | mesure |
 |---|---|
 | `CP_LoadReset()` / `CP_LoadDiag()` | ports, voix, ratio du port le plus mal servi, part du fil audio |
+| `WIP/CP_SoakProbe.lua` | **la session longue** : sept invariants, première violation horodatée |
 | `CP_WarpProbe(tempoRatio, nvoices)` | amorçage et coût de l'étireur de REAPER |
 | `CP_TestMidiAt(port, at, note, vel, dur)` | dépose une note datée |
 | `CP_TestMidiDiag()` | événements remis, exacts, en retard |
@@ -268,9 +354,9 @@ pas, mais il n'est pas détruit.
 
 | absent | raison |
 |---|---|
-| lecture depuis le disque | décision produit : des boucles ≤ 64 s, tout en RAM |
+| lecture depuis le disque | décision produit : des boucles ≤ 64 s, tout en RAM. Le plafond **refuse** (−2), il ne tronque plus — et `Audition` renvoie les fichiers plus longs à `CF_Preview`, qui lit depuis le disque. La limite est **couverte**, pas seulement déclarée |
 | warp / time-stretch | mesuré à **2,3 % par voix** contre 0,053 % sans étirement, soit ~42×. Deux étireurs vivants au maximum ; le reste se cuit hors ligne |
-| lancement immédiat d'un clip warpé | l'étireur exige **85 à 139 ms** d'amorçage. Toujours disponible sur un lancement quantifié, jamais sur un immédiat |
+| lancement immédiat d'un clip warpé | l'étireur exige **85 à 139 ms** d'amorçage. Toujours disponible sur un lancement quantifié, jamais sur un immédiat — et c'est pourquoi il n'entre pas dans un chemin d'audition |
 | vrai fondu croisé | `xfade` avance le départ de la suivante ; la sortante ne sonne pas pendant le recouvrement |
 | filtre anti-repliement | le repitch vers l'aigu replie au-delà de quelques demi-tons. `Resample_Create` le règlera — et lui expose sa latence, contrairement à l'étireur |
 | MIDI comme voix | le véhicule est prouvé (huit notes déposées, huit entendues) mais le moteur MIDI — porte par bloc, capture live, quantize — vit encore dans `CP_MidiLooper.jsfx` |

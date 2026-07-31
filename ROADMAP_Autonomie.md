@@ -1784,31 +1784,51 @@ cinq sondes de mesure, et les trois documents.
 
 ---
 
-## Phase 0 — finir le moteur *(1 à 2 jours)*
+## Phase 0 — finir le moteur — **FAIT (session 19)**
 
-- [ ] **Fermer la course sur la réutilisation d'une voix.** Le fil principal
-      écrit dans un emplacement que le fil audio peut parcourir. Bénin sur x86,
-      piège garanti sur ARM. C'est aussi une incohérence : toute autre commande
-      passe par l'anneau, celle-là non.
-- [ ] **Une session longue.** Une heure sous charge, compteurs surveillés. Tout
-      ce qui a été mesuré l'a été sur des fenêtres de vingt secondes.
+- [x] **Fermer la course sur la réutilisation d'une voix.** Fait autrement que
+      prévu, et mieux : la propriété et l'état deviennent deux choses distinctes.
+      Un mot atomique par emplacement pour le fil principal, la structure `Voice`
+      pour le fil audio, et le bit de possession effacé par le fil audio seul.
+      **Un emplacement qui sonne encore ne peut plus être réattribué** — ce n'est
+      plus une convention, c'est une impossibilité.
+- [x] **L'instrument de session longue.** `CP_SoakProbe` : six chemins malmenés
+      sans répit, sept invariants surveillés, première violation horodatée.
+- [ ] **La campagne elle-même.** Une heure sous charge. C'est ce qui distinguera
+      « aucune fuite connue » de « aucune fuite ».
 
-*On arrête si :* rien. Ces deux points ne peuvent rien invalider, ils
-consolident.
+Deux défauts trouvés en chemin, et consignés au §13 du dossier : une voix privée
+de sa matière restait vivante à jamais (trouvé en *concevant* la sonde), et le
+plafond de 64 s tronquait au lieu de refuser.
 
-## Phase 1 — CP_MediaExplorer passe par `Voice.lua` *(2 jours)*
+Deux gains de performance que la même pièce a permis : une liste de voix par
+port (le rendu balayait 46 Ko de structures pour en trouver huit) et l'état de la
+boucle chaude descendu en registre (le compilateur ne pouvait pas prouver
+l'absence d'alias entre `out` et `pos`).
 
-La première fenêtre, et la plus facile : elle n'a besoin que d'auditionner, ce
-que le repli `CF_Preview` sait faire. Elle bascule sans rien perdre.
+## Phase 1 — CP_MediaExplorer passe par le moteur — **FAIT (session 19)**
 
-- [ ] remplacer les appels `Preview.*` par `Voice.*`
-- [ ] garder `Preview` pour ce qui n'est pas du son : `Meta`, `SourceType`,
-      `TempoSyncRate`, le cache de `PCM_source`
+Annoncée comme « la plus facile ». Elle ne l'était pas, et le §13.6 dit pourquoi :
+**le navigateur a un bouton de hauteur et un bouton de taux, et chacun préserve
+ce que l'autre change.** Le taux natif est un varispeed. Migrer sans le dire
+aurait changé la signification des deux boutons, c'est-à-dire déclenché le
+critère d'arrêt de cette phase.
+
+- [x] `CP_Engine/Audition.lua` : il choisit à chaque lancement entre une voix CP
+      et `CF_Preview`, **par capacité** (`CanPitchShift`, `CanTimeStretch`) et
+      jamais par backend
+- [x] `Preview` garde ce qui n'est pas du son — `Meta`, `SourceType`,
+      `TempoSyncRate`, le cache de `PCM_source` — mais `Audition` le délègue,
+      pour qu'une fenêtre n'ait **qu'un seul module** à charger
+- [x] sortie matérielle sans piste (`CP_PortAttachOut`) : c'était bloquant, un
+      navigateur écoute avant de choisir une piste
 - [ ] vérifier l'audition à 64 comme à 1024
 
 *Ce que ça débloque :* la première capacité réellement partagée de la suite, et
 un vrai utilisateur de l'ABI qui n'est pas une sonde.
-*On arrête si :* l'audition est moins bonne qu'avant à un tampon quelconque.
+*Reste à savoir :* le seuil de 15 s au-delà duquel `CF_Preview` reprend la main
+est un calcul (~3,4 ms de décodage par seconde de stéréo), pas une écoute.
+`Audition.last_load_ms` dit ce qu'il coûte réellement sur la machine.
 
 ## Phase 2 — l'identité *(1 jour, survit à 100 %)*
 
