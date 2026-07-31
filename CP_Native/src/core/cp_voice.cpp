@@ -68,7 +68,25 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
   if (state == kVoiceIdle) return;
 
   const Clip* c = pool.get(clip);
-  if (!c || !c->data || c->frames <= 0) return;
+  if (!c || !c->data || c->frames <= 0) {
+    // LA MATIERE A DISPARU SOUS LA VOIX. Un clip decharge pendant qu'on le joue
+    // cesse d'etre visible du fil audio des le bloc suivant : la voix n'a plus
+    // rien a lire.
+    //
+    // Elle DOIT mourir ici. Repartir sans rien changer la laissait vivante pour
+    // toujours — plus rien ne faisait avancer son fondu, donc elle n'atteignait
+    // jamais l'etat eteint, donc son emplacement n'etait jamais rendu. Une
+    // fenetre qui recharge ses clips en cours de jeu aurait epuise ses voix en
+    // silence, et le symptome se serait manifeste une heure plus tard sous la
+    // forme « il n'y a plus de voix ».
+    //
+    // On ne pose PAS ended_at : l'enchainement est un comportement musical, et
+    // ceci est un chemin d'erreur. Le suivant ne doit pas partir sur une
+    // disparition.
+    state = kVoiceIdle;
+    clip = -1;
+    return;
+  }
 
   // Ou commence-t-on dans ce bloc ? C'est ici, et nulle part ailleurs, que se
   // joue l'exactitude a l'echantillon : le rendez-vous n'est pas arrondi au

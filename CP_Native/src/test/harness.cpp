@@ -528,6 +528,58 @@ static void test_alloc_cycle() {
 }
 
 // ---------------------------------------------------------------------------
+// 9ter-bis. La matiere disparait sous la voix
+//
+// Trouve en concevant la sonde de session longue, pas en relisant le code : une
+// fenetre qui recharge ses clips pendant qu'ils sonnent retire la matiere sous
+// une voix vivante. Celle-ci ne pouvait plus rien produire, donc son fondu
+// n'avancait plus, donc elle n'atteignait jamais l'etat eteint, donc son
+// emplacement n'etait jamais rendu. Le symptome serait arrive une heure plus
+// tard, sous la forme « il n'y a plus de voix », et on l'aurait cherche
+// n'importe ou sauf ici.
+// ---------------------------------------------------------------------------
+static void test_clip_pulled_under_voice() {
+  group("le clip disparait pendant que la voix le joue");
+  EBox eb; Engine& e = *eb;
+  const int clip = make_ramp_clip(e, 48000, 2);
+  const voice_h v = e.voice_alloc(2);
+
+  Cmd c = mk(kCmdVoicePlay, v, 0);
+  c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayLoop;
+  e.post(2, c);
+
+  sample_t buf[64 * 2];
+  g_in_audio = true;
+  for (int b = 0; b < 4; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  int st = 0;
+  e.voice_query(v, nullptr, &st);
+  check_eq(st, kVoicePlaying, "la voix joue");
+
+  // Le clip est retire : des le bloc suivant, il n'est plus visible du fil audio.
+  e.pool().retire(clip, e.block_index());
+
+  g_in_audio = true;
+  for (int b = 0; b < 2; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  e.voice_query(v, nullptr, &st);
+  check_eq(st, kVoiceIdle, "la voix s'eteint au lieu de rester vivante a jamais");
+
+  // Et surtout : son emplacement revient.
+  e.voice_release(v);
+  g_in_audio = true;
+  for (int b = 0; b < 4; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+  check_eq(e.owned_voices(), 0, "l'emplacement est rendu, pas perdu");
+
+  // Et la memoire aussi, une fois la barriere de deux blocs franchie.
+  e.pool().collect(e.block_index());
+  check_eq(e.pool().loaded_count(), 0, "le clip est libere");
+}
+
+// ---------------------------------------------------------------------------
 // 9quater. DEUX FILS — l'instrument qui rend la course impossible a nier
 //
 // Un raisonnement sur les barrieres memoire ne prouve rien : c'est exactement le
@@ -693,6 +745,7 @@ int main() {
   test_load_and_alloc_trap();
   test_voice_ownership();
   test_alloc_cycle();
+  test_clip_pulled_under_voice();
   test_seek_and_live_loop();
   test_two_threads();
   test_clock();
