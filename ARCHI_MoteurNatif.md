@@ -818,3 +818,50 @@ Deux changements par rapport au §12.3 : le prototype JSFX sort du chemin produi
 (il ne reste que comme instrument de mesure si la sonde échoue), et **la sonde
 native passe avant `Voice.lua`** — parce que sous le critère 12.6 elle ne prouve
 plus seulement une chaîne de compilation : elle décide de la forme de la cible.
+
+### 12.8 Mesures du 2026-07-31, nuit — la route est prouvée
+
+Sonde `CP_NativeProbe`, extension `reaper_cpclip` ABI 1.1, **tampon ASIO 64**,
+48 kHz, fichier de 8,000 s stéréo.
+
+| mesure | résultat | ce que ça tranche |
+|---|---|---|
+| **attaque** | `demande 1116096, réel 1116096, **écart 0 échantillon**` | §12.7 étape 1 : le critère « 0 ms à n'importe quel tampon » est franchi |
+| **tirage** | 15 009 appels pour 15 009 blocs = **1,0000** | §9.1 : le service d'aperçu ne manque **aucun** bloc à 64 avec une source en RAM. La famine de `CF_Preview` (0,54×) venait de la lecture disque, pas du service |
+| **contiguïté** | `maxgap = 0,000000` sur 20 s | §12.5.1 : l'hôte demande de façon contiguë et monotone. Compter les échantillons est légitime, aucun recalage sur `time_s` n'est nécessaire |
+| **décodage** | 8,000 s attendues, 8,000 s décodées, 2,93 Mo en 26,7 ms | les `PCM_source` de REAPER donnent tous les formats, au taux du moteur, prêts à lire |
+| **ancre** | écart 0 échantillon | la conversion instant-projet → frame absolu est exacte |
+| **audible** | oui, sur la piste | confirmé à l'oreille par l'auteur |
+
+**Ce que cela démontre ensemble :** du son sur une piste REAPER, exact à
+l'échantillon, au tampon de la performance live, **sans RS5K, sans JSFX, sans
+piste routeur, sans canal MIDI réservé, et sans aucun objet dans la chaîne
+d'effets de l'utilisateur.** C'est exactement le critère du §12.6.
+
+**Note de méthode.** La première campagne donnait `min −64 / max 0 / moyen −3,1`.
+Ce n'était pas le moteur : dans un bloc, `pos` avance au pull de l'aperçu et
+l'horloge au passage *post* du hook, donc une lecture externe qui tombe entre les
+deux voit exactement un bloc d'écart — jamais deux, jamais positif. La réponse
+n'a pas été d'expliquer, mais de **faire noter l'instant par la voix elle-même**
+(`started_at`, exposé par `CP_VoiceStartedAt`). La mesure indirecte est conservée
+dans la sonde : son écart avec la mesure directe **mesure** la course au lieu de
+la supposer. C'est la même discipline que le harnais hors-ligne — préférer un
+instrument à un raisonnement.
+
+### 12.9 Ce qui reste ouvert après ces mesures
+
+Par ordre de valeur :
+
+1. **Un aperçu de piste transmet-il les `midi_events` du bloc ?** Décide si la
+   cible est *un* binaire ou *un binaire + le JSFX MIDI* (§12.6, conséquence 4).
+   Se répond en écrivant des notes dans `block->midi_events` et en écoutant un
+   instrument sur la piste.
+2. **Pré-FX ou post-FX ?** Poser ReaSynth sur la piste de destination et rejouer.
+   Silence → pré-FX, et la colonne mixte se paie en pistes. Son → la colonne
+   mixte ne coûte rien.
+3. **Le passage à l'échelle** : 8 ports × plusieurs voix à 64, et le coût CPU
+   réel. Un seul port ne dit rien de huit.
+4. **Le cycle de vie** : changement de taux d'échantillonnage en cours, fermeture
+   de projet sous une voix, plusieurs onglets.
+5. **Le warp**, non commencé : `IReaperPitchShift`, sa latence par amorçage, son
+   coût par voix sur la machine cible.
