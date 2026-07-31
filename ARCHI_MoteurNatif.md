@@ -920,3 +920,50 @@ sera nécessaire.
 À vérifier ensuite, dans cet ordre : l'exactitude à l'échantillon du MIDI (elle
 est vraie par construction — `frame_offset` — mais elle se mesure comme l'audio
 s'est mesuré) ; puis la montée en charge, 8 ports et plusieurs voix à 64.
+
+### 12.11 Le MIDI est exact, et 64 voix coûtent 3,4 % — mesuré le 2026-07-31
+
+**MIDI, placement.** 16 événements remis, **16 exacts, 0 en retard, erreur
+maximale 0 échantillon**. Chaque note est déposée au frame exactement demandé.
+La réserve reste écrite dans la sonde : ceci mesure *notre* placement ; ce que
+REAPER en fait ensuite ne se vérifierait qu'à l'enregistrement. Le kick JSFX
+mesuré à 1 ms montre déjà qu'il honore les offsets.
+
+**Montée en charge.** 8 ports × 8 voix = **64 voix en boucle**, tampon **64
+échantillons**, chaque voix à un taux différent de 1,0 pour qu'aucune ne
+bénéficie du court-circuit — donc les 64 passent toutes par l'interpolation
+Hermite. C'est le cas pessimiste.
+
+```
+ports=8 voix=64 bloc=64 blocs=15016 ratio_min=1.0000 cpu=3.39% dropped=0
+```
+
+| | |
+|---|---|
+| ratio du port **le plus mal servi** | **1,0000** de bout en bout |
+| part du fil audio consommée | **3,39 %**, soit ~0,053 % par voix |
+| commandes perdues | 0 |
+| ordre de grandeur sur un CPU de 2005 (×8) | ~27 % — large |
+
+**Ce que ça règle :** un port ne disait rien de huit ; huit ports servis sans
+manquer un bloc à 64, c'est la réponse. Le §12.9.3 est levé.
+
+**Faux verdict, et la leçon.** La première campagne a affiché « *un port manque
+des blocs* » alors que chaque relevé montrait 1,0000. La cause : le tout premier
+échantillon pris juste après la remise à zéro avait un dénominateur nul, que
+`CP_LoadDiag` renvoyait en `0.0` — indistinguable de « ce port ne reçoit rien ».
+L'instrument mentait, pas le moteur. Corrigé en rendant **−1** (« pas encore
+mesurable ») et en ignorant les fenêtres de moins de 200 blocs.
+
+> **C'est la troisième fois de la soirée qu'un instrument se trompe avant le code
+> mesuré** (l'horloge d'un bloc en avance, la course d'observation à −64, ce
+> zéro). Aucune de ces erreurs n'aurait été visible sans instrument, et chacune
+> aurait été attribuée au moteur. La règle qui en sort : **un instrument doit
+> distinguer « zéro » de « je ne sais pas ».**
+
+**Note d'écoute.** Les 64 voix produisaient un effet de chorus. C'est la sonde,
+pas le moteur : les taux étaient délibérément tous différents, et les départs
+étaient pris dans la boucle donc décalés de quelques échantillons. Corrigé — un
+seul instant pour les 64, comme un lancement de scène. Le chorus restant est le
+seul fait des taux, et l'entendre est rassurant : 64 voix qui sonneraient comme
+une seule ne seraient pas indépendantes.
