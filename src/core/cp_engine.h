@@ -100,7 +100,10 @@ class Engine {
   void tick(int frames);
 
   // Remplit out (entrelace, nch canaux) pour un port. Ecrase le tampon.
-  void render_port(int port, sample_t* out, int frames, int nch);
+  // Rend le frame absolu du PREMIER echantillon du tampon, ou -1 si refuse.
+  // L'appelant en a besoin pour dater autre chose que de l'audio — un evenement
+  // MIDI, par exemple, dont l'offset se compte depuis ce frame.
+  frame_t render_port(int port, sample_t* out, int frames, int nch);
 
   // --- diagnostic -----------------------------------------------------------
   int active_voices() const;

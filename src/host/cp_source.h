@@ -12,8 +12,20 @@
 
 #include "reaper_plugin.h"
 #include "../core/cp_engine.h"
+#include "../core/cp_ring.h"
 
 namespace cp {
+
+// Un evenement MIDI en attente. POD strict : il traverse la frontiere de fil.
+//
+// EXPERIMENTAL — c'est la sonde de la question §12.9.1 : le bloc que REAPER nous
+// tend porte un `midi_events` a cote des echantillons, mais rien dans le SDK ne
+// dit si un apercu de PISTE transmet ce MIDI a la piste. Si oui, l'affranchissement
+// du JSFX est total. Si non, on le saura en une soiree au lieu d'en discuter.
+struct MidiEv {
+  frame_t       at;      // frame absolu
+  unsigned char msg[3];
+};
 
 class PortSource : public PCM_source {
  public:
@@ -45,6 +57,16 @@ class PortSource : public PCM_source {
   int  PeaksBuild_Run() override { return 0; }
   void PeaksBuild_Finish() override {}
 
+  // --- MIDI experimental (fil principal) ------------------------------------
+  // Depose un evenement date. Rend false si la file est pleine.
+  bool queue_midi(frame_t at, unsigned char s, unsigned char d1, unsigned char d2);
+
+  // Combien d'evenements ont ete REMIS a REAPER. Si ce compteur monte et qu'on
+  // n'entend rien, la reponse est « REAPER ne route pas le MIDI d'un apercu de
+  // piste » — et c'est une reponse, pas un echec.
+  int64_t midi_out() const { return midi_out_; }
+  bool     midi_seen_list() const { return midi_list_seen_; }
+
   // --- diagnostic (lu depuis le fil principal) ------------------------------
   int      port() const { return port_; }
   int64_t  calls() const { return calls_; }
@@ -69,6 +91,15 @@ class PortSource : public PCM_source {
   volatile double  last_time_s_;
   volatile double  max_gap_s_;
   volatile int     last_len_;
+
+  // MIDI en attente. L'anneau traverse la frontiere de fil ; le tableau
+  // `pending_` n'est touche que par le fil audio, ce qui evite d'avoir besoin
+  // d'une file qui sache regarder son premier element sans le retirer.
+  SpscRing<MidiEv, 128> midi_in_;
+  MidiEv           pending_[64];
+  int              npending_;
+  volatile int64_t midi_out_;
+  volatile bool    midi_list_seen_;
 };
 
 } // namespace cp

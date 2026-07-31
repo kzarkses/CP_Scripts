@@ -259,8 +259,8 @@ void Engine::drain(int port, frame_t block_start) {
   while (guard-- > 0 && ports_[port].cmds.pop(c)) apply(c, block_start);
 }
 
-void Engine::render_port(int port, sample_t* out, int frames, int nch) {
-  if (port < 0 || port >= kMaxPorts || !out || frames <= 0 || nch < 1) return;
+frame_t Engine::render_port(int port, sample_t* out, int frames, int nch) {
+  if (port < 0 || port >= kMaxPorts || !out || frames <= 0 || nch < 1) return -1;
   PortState& ps = ports_[port];
   ps.used = true;
 
@@ -346,6 +346,8 @@ void Engine::render_port(int port, sample_t* out, int frames, int nch) {
     }
     ps.gain = ps.gain_target;
   }
+
+  return block_start;
 }
 
 } // namespace cp

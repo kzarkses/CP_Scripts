@@ -31,7 +31,8 @@ using namespace cp;
 // 1.1 : ajout de CP_VoiceStartedAt. Un ajout leve la mineure ; un changement de
 // signature leverait la majeure. Les scripts exigent un MINIMUM, pas une egalite
 // — sinon chaque ajout casserait tout le monde.
-static const double kEngineABI = 1.1;
+// 1.2 : ajout de CP_TestMidiAt (experimental, sonde §12.9.1).
+static const double kEngineABI = 1.2;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -332,6 +333,43 @@ double CP_VoiceStartedAt(double h) {
   return (double)g_eng->voice_started_at((voice_h)h);
 }
 
+// EXPERIMENTAL — la sonde du §12.9.1, et rien d'autre.
+//
+// Depose une note-on datee et sa note-off dans le flux MIDI du bloc que REAPER
+// nous tend. La question n'est pas « est-ce que ca marche » mais « est-ce que
+// REAPER route le MIDI d'un apercu de PISTE vers la chaine de cette piste ».
+// Si oui, l'affranchissement du JSFX est total. Si non, on aura la reponse en
+// une soiree plutot qu'en discutant.
+//
+// Ce n'est PAS l'interface MIDI definitive : celle-ci passerait par des voix,
+// comme l'audio. On ne dessine pas l'ABI d'une chose dont on ignore encore si
+// elle existe.
+bool CP_TestMidiAt(int port, double atSample, int note, int vel, double durSamples) {
+  if (port < 0 || port >= kMaxPorts) return false;
+  Port& p = g_ports[port];
+  if (!p.active || !p.src) return false;
+  const frame_t on = (frame_t)atSample;
+  const frame_t off = on + (frame_t)((durSamples > 0.0) ? durSamples : 4800.0);
+  const unsigned char n = (unsigned char)(note & 0x7F);
+  const unsigned char v = (unsigned char)(vel & 0x7F);
+  if (!p.src->queue_midi(on, 0x90, n, v)) return false;
+  return p.src->queue_midi(off, 0x80, n, 0);
+}
+
+const char* CP_TestMidiDiag() {
+  static char buf[192];
+  int nlist = 0;
+  long long out = 0;
+  for (int i = 0; i < kMaxPorts; ++i) {
+    if (!g_ports[i].active || !g_ports[i].src) continue;
+    if (g_ports[i].src->midi_seen_list()) ++nlist;
+    out += g_ports[i].src->midi_out();
+  }
+  snprintf(buf, sizeof(buf),
+           "midi_events_fourni_par_reaper=%d evenements_remis=%lld", nlist, out);
+  return buf;
+}
+
 double CP_ClockNow() { return g_eng ? (double)g_eng->clock_now() : 0.0; }
 
 // Prend l'ancre. Les deux lectures sont collees volontairement : tout ce qui se
@@ -439,6 +477,12 @@ VA(CP_VoiceState) {
 }
 VA(CP_TimeToSample) { return retd(CP_TimeToSample(argd(arg, narg, 0))); }
 VA(CP_VoiceStartedAt) { return retd(CP_VoiceStartedAt(argd(arg, narg, 0))); }
+VA(CP_TestMidiAt) {
+  return retb(CP_TestMidiAt(argi(arg, narg, 0), argd(arg, narg, 1),
+                            argi(arg, narg, 2), argi(arg, narg, 3),
+                            argd(arg, narg, 4)));
+}
+VA(CP_TestMidiDiag) { (void)arg; (void)narg; return (void*)CP_TestMidiDiag(); }
 VA(CP_Diag) { (void)arg; (void)narg; return (void*)CP_Diag(); }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +520,8 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_TimeToSample, "double\0double\0projectTime\0Convertit un instant du projet en frame absolu, via la derniere ancre.");
   REG(CP_Panic, "void\0\0\0Eteint toutes les voix en 5 ms.");
   REG(CP_Diag, "const char*\0\0\0Etat du moteur en une ligne. Fil principal uniquement.");
+  REG(CP_TestMidiAt, "bool\0int,double,int,int,double\0port,atSample,note,vel,durSamples\0EXPERIMENTAL: depose une note datee dans le flux MIDI du bloc. Sonde uniquement.");
+  REG(CP_TestMidiDiag, "const char*\0\0\0EXPERIMENTAL: REAPER fournit-il un midi_events, et combien d'evenements ont ete remis.");
 }
 
 static void unregister_all(reaper_plugin_info_t* rec) {
@@ -486,6 +532,7 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_VoiceSet);    UNREG(CP_VoiceQueueNext);   UNREG(CP_VoiceState);
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
   UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
+  UNREG(CP_TestMidiAt);  UNREG(CP_TestMidiDiag);
 }
 
 extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
