@@ -489,6 +489,15 @@ const char* CP_WarpProbe(double tempoRatio, int nvoices) {
   double pic_val = 0.0;
   bool impulsion_poussee = false;
 
+  // LA vraie latence. Elle ne se manifeste PAS par des zeros en tete de sortie :
+  // l'impulsion ressort a l'index 0, ce qui veut dire que la sortie commence
+  // bien a l'echantillon source 0. Elle se manifeste par une sortie qui
+  // N'EXISTE PAS ENCORE — il faut avoir pousse un certain nombre d'echantillons
+  // avant que le premier ne sorte. C'est ce nombre qu'il faut connaitre, et il
+  // se paie en AMORCAGE, pas en compensation : on pre-remplit l'etireur avant
+  // l'instant de lancement, et le premier echantillon utile tombe pile.
+  long long amorce = -1;   // entree poussee avant la premiere sortie
+
   int garde = 4096;   // borne dure : on ne boucle jamais indefiniment
   while (total_out < kWantOut && garde-- > 0) {
     ReaSample* in = ps->GetBuffer(kChunk);
@@ -503,6 +512,7 @@ const char* CP_WarpProbe(double tempoRatio, int nvoices) {
     total_in += kChunk;
 
     const int got = ps->GetSamples(kChunk, out);
+    if (got > 0 && amorce < 0) amorce = total_in;
     for (int i = 0; i < got; ++i) {
       const double v = (out[(size_t)i * nch] < 0.0) ? -out[(size_t)i * nch]
                                                     : out[(size_t)i * nch];
@@ -571,13 +581,20 @@ const char* CP_WarpProbe(double tempoRatio, int nvoices) {
 
   const double par_voix = (made > 0) ? (mur / made * 100.0) : 0.0;
 
+  // Solde en vol : ce que l'etireur retient encore quand on arrete de le nourrir,
+  // ramene en echantillons d'ENTREE. A tempo t, une sortie vaut t entrees.
+  const double solde = (double)total_in - (double)total_out * tempo;
+
   snprintf(buf, sizeof(buf),
-           "tempo=%.4f srate=%.0f | latence: premier=%lld pic=%lld echantillons "
-           "(%.2f ms) in=%lld out=%lld | cout: %d voix en %.1f ms de temps mur "
-           "pour 1 s d'audio = %.2f%% du temps reel par voix",
-           tempo, srate, premier, pic_idx,
-           (pic_idx > 0) ? (double)pic_idx / srate * 1000.0 : 0.0,
-           total_in, total_out, made, mur * 1000.0, par_voix);
+           "tempo=%.4f | AMORCE=%lld spl (%.2f ms) | solde_en_vol=%.0f spl (%.2f ms) "
+           "| impulsion: premier=%lld pic=%lld (donc la sortie commence bien a la "
+           "source 0) | in=%lld out=%lld | cout: %d voix, %.1f ms mur pour 1 s "
+           "audio = %.2f%%/voix",
+           tempo,
+           amorce, (amorce > 0) ? (double)amorce / srate * 1000.0 : 0.0,
+           solde, solde / srate * 1000.0,
+           premier, pic_idx, total_in, total_out,
+           made, mur * 1000.0, par_voix);
   return buf;
 }
 
