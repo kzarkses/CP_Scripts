@@ -1041,3 +1041,60 @@ ratio, ceci). **Aucune de ces quatre erreurs n'aurait été visible sans
 instrument, et chacune aurait été attribuée au moteur.** La règle du §12.11 —
 « un instrument doit distinguer zéro de je ne sais pas » — se double d'une
 seconde : **mesurer la grandeur qu'on croit mesurer, pas celle qui lui ressemble.**
+
+### 12.13 L'ABI validée par l'usage — 2026-08-01
+
+`CP_Engine/Voice.lua` écrit, et éprouvé par une sonde qui écrit **ce qu'écrirait
+une fenêtre** : charger, lier une piste, lancer sur la prochaine mesure calculée
+avec la carte de tempo, armer une follow action, arrêter sur une frontière datée.
+
+```
+attaque : demande 1275492, reel 1275492, ecart 0 echantillon(s)
+etat final a : 0 (eteinte a l'instant demande)
+etat final b : 2 (a pris la suite — l'enchainement a marche)
+```
+
+Confirmé à l'oreille : la boucle s'arrête net à l'instant demandé et la version
+plus lente prend le relais **sans trou**. C'est précisément le comportement que
+Lua ne peut structurellement pas tenir — la fenêtre vaut un bloc (1,33 ms à 64),
+une frame de defer en vaut 16 à 74.
+
+**Le principe du module, et c'est lui qui compte plus que le code :**
+
+> Une fenêtre interroge une **capacité**, jamais un backend.
+> `Voice.CanScheduleExact()`, `Voice.MaxVoices()` — pas `if reaper.CP_VoiceAlloc`.
+
+Conséquence pratique immédiate : `CP_MediaExplorer` peut basculer tout de suite
+(il n'a besoin que d'auditionner, ce que le repli `CF_Preview` sait faire),
+pendant que `CP_Session` garde son chemin RS5K tant qu'il a besoin de dater ses
+lancements. **Aucun grand soir**, et le `if natif` vit dans un seul fichier.
+
+Deux décisions de frontière consignées : la conversion **beat → frame vit en
+Lua** (la carte de tempo n'est pas linéaire dès qu'il y a un marqueur, et
+`TimeMap2_*` la résout exactement sur le fil principal), et **l'arrondi de
+l'échantillon se fait à la frontière de l'ABI** (un échantillon fractionnaire
+n'a aucun sens ; le laisser circuler produit un faux écart d'un échantillon).
+
+### 12.14 Les cinq instruments fautifs — la leçon de la campagne
+
+Cinq fois sur cinq, une mesure a accusé le moteur avant de s'interroger
+elle-même :
+
+| # | ce qu'on croyait | ce que c'était |
+|---|---|---|
+| 1 | 1,33 ms de latence résiduelle | `tick()` appelé **avant** le rendu au lieu d'après |
+| 2 | attaque à −64 échantillons | course entre le pull de l'aperçu et le passage *post* du hook |
+| 3 | « un port manque des blocs » | ratio calculé sur un dénominateur nul, rendu `0.0` |
+| 4 | « l'étireur n'a aucune latence » | latence cherchée en tête de sortie au lieu de l'amorçage |
+| 5 | attaque à −1 échantillon | fractionnaire tronqué d'un côté, arrondi à l'affichage de l'autre |
+
+**Aucune de ces cinq erreurs n'aurait été visible sans instrument.** Et à chaque
+fois le réflexe correct a été le même, qui est la seule chose de cette campagne
+qui vaille bien au-delà du moteur :
+
+> **Ne pas expliquer l'écart — rendre l'instrument incapable de le produire.**
+
+Faire noter l'attaque par la voix elle-même plutôt que la déduire de
+(horloge − position). Arrondir à la frontière plutôt qu'afficher un arrondi.
+Distinguer « zéro » de « je ne sais pas ». Mesurer la grandeur qu'on croit
+mesurer, pas celle qui lui ressemble.
