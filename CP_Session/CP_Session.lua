@@ -36,12 +36,19 @@ local Bus    = dofile(cp_root .. "CP_Engine/Bus.lua")
 -- and this grid must reach the same answer for the same file. Its playback
 -- half is never used here (sound cells own their previews).
 local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
+-- The engine that makes a SOUND cell sound. With the CP extension installed it
+-- is a CP voice, dated on the engine's own launch boundary and entering the
+-- column pre-FX — no child track, no RS5K, nothing in anyone's FX chain. Without
+-- it, the RS5K path below is used exactly as before.
+local Voice  = dofile(cp_root .. "CP_Engine/Voice.lua")
+local Cells  = dofile(cp_root .. "CP_Engine/Cells.lua")
 Tracks.init(r)
 Loop.init(r, Tracks)
 Mix.init(r)
 DragBus.init(r)
 Bus.init(r, DragBus, Clip)
 Preview.init(r)
+Voice.init(r, Preview)
 
 local Core = UI.Core
 local sin, floor = math.sin, math.floor
@@ -52,6 +59,12 @@ local sin, floor = math.sin, math.floor
 -- rule living here to drift out of date.
 local TRACKS = Loop.TRACKS
 local SCENES = 8
+
+-- true = a sound cell is a CP voice; false = the RS5K path. Decided once, here,
+-- and asked everywhere else. The RS5K path is NOT deleted: it is the fallback
+-- on a machine without the extension, and the way back if the voice path ever
+-- disappoints.
+local NATIVE_CELLS = Cells.init(r, Voice, Loop, TRACKS)
 
 local cells = {}     -- [t][s] = clip descriptor or nil
 local cur   = {}     -- [t] = scene whose clip is loaded, or nil
@@ -563,6 +576,22 @@ local function samplerTrack(t, make)
     return child
 end
 
+-- WHERE A SOUND CELL'S AUDIO GOES, in the voice path.
+--
+-- A track whose chain holds an instrument SWALLOWS audio put into it — the
+-- instrument writes its own output over the buffer. That is why the RS5K wiring
+-- used a child track, and it was not a whim. So: a column with no instrument
+-- receives the sound directly and costs no extra track at all; a column that
+-- also plays notes keeps a child, but an EMPTY one — no RS5K, no plugin window,
+-- no parameter write per arm.
+local function audioDest(t)
+    local dest = Loop.GetLaneDest(t)
+    if not (dest and r.ValidatePtr2(0, dest, "MediaTrack*")) then return nil end
+    if r.TrackFX_GetInstrument(dest) < 0 then return dest end
+    return samplerTrack(t, true)
+end
+Cells.SetDestResolver(audioDest)
+
 -- Load the cell's file into the column's sampler and aim it at the project
 -- tempo. Everything here is a main-thread cost paid when a cell is ARMED, which
 -- is a click and not a boundary.
@@ -686,7 +715,30 @@ end
 -- is the one still sounding.
 local function armLane(lane, c, t, s)
     local audio = isAudio(c)
-    if audio and not samplerLoad(t, c, lane) then return false end
+    if audio then
+        -- A CP voice when the extension is there, the RS5K otherwise. Both end
+        -- up in the same place — the column's track, pre-FX — but one of them
+        -- needs a child track and two plugin instances to get there.
+        if NATIVE_CELLS then
+            if not Cells.Arm(t, lane, c.path, (rateFor(c))) then
+                flash("No track for this column — click its name to route it")
+                return false
+            end
+            -- Cut the router's sound send for this column. In a project
+            -- converted from the RS5K path the samplers are still sitting in the
+            -- child track, and the lane still speaks its trigger note: without
+            -- this they would answer it and you would hear the file twice.
+            Loop.WireAudio(t, nil)
+        elseif not samplerLoad(t, c, lane) then return false end
+    elseif NATIVE_CELLS then
+        -- This half stopped carrying a sound. Say so, or its voice keeps
+        -- answering the lane's passes with a file nobody asked for.
+        Cells.Disarm(t, lane)
+    end
+    -- The lane still speaks its one-note clip on the column's SOUND channel, in
+    -- both paths. Nothing listens to it in the voice path — no send, no sampler
+    -- — and that is the point: what must never happen is the note reaching the
+    -- column's instrument.
     Loop.SetLaneAudio(t, audio and true or false)
     Loop.SetLaneAudio(t + TRACKS, audio and true or false)
     Loop.ApplyClip(lane, audio and audioClip(c, lane) or c)
@@ -1047,10 +1099,14 @@ end
 -- sampler", because there are two and the other one may be sounding something
 -- else entirely while a swap is queued.
 local function retune(t, s, c)
-    local tr = samplerTrack(t, false)
-    if not tr then return end
     local lane = Loop.LaneOfTag(t, cellTag(t, s))
     if not lane then return end
+    if NATIVE_CELLS then
+        Cells.Retune(t, lane, (rateFor(c)))
+        return
+    end
+    local tr = samplerTrack(t, false)
+    if not tr then return end
     local fx = samplerFor(tr, laneNote(lane))
     if fx < 0 then return end
     local rt = rateFor(c)
@@ -2092,7 +2148,11 @@ local function frame(theme)
             local audio = sc and isAudio(cells[t][sc]) or false
             Loop.SetLaneAudio(t, audio)
             Loop.SetLaneAudio(t + TRACKS, audio)
-            if audio then samplerLoad(t, cells[t][sc], lane) end
+            if audio then
+                local cc = cells[t][sc]
+                if NATIVE_CELLS then Cells.Arm(t, lane, cc.path, (rateFor(cc)))
+                else samplerLoad(t, cc, lane) end
+            end
         end
         -- Adopt what was just recalled, and ARM THE AUTOSAVE. Until this
         -- session, only CP_Looper ever wrote lane state back to the project:
@@ -2191,6 +2251,10 @@ local function frame(theme)
     -- Mirror lane state back into the project on a trailing debounce. The
     -- mechanism lives in Loop, so both windows get it from one call.
     Loop.AutoSave()
+    -- The sound cells, one frame's worth. It reads the engine's own launch
+    -- boundary and its lane phase, and dates every pass to the sample. Inert
+    -- when the extension is absent.
+    Cells.Tick(AUDIO_GATE)
     -- Follow the engine rather than argue with it: a launch fired from
     -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
     -- know. Sound cells included: they are lanes like any other now.
@@ -2405,6 +2469,9 @@ UI.OnClose(function()
     -- The debounce would drop anything edited in the last half-second, and a
     -- window closing is exactly when that matters.
     pcall(Loop.SaveState)
+    -- The voices and their clips go back. Lanes outlive this window on purpose;
+    -- a decoded file held in RAM does not.
+    pcall(Cells.Destroy)
     -- our sounds are lanes now, and lanes outlive this window on purpose
     if state.registered then pcall(DragBus.Unregister, "session") end
 end)
