@@ -6,6 +6,40 @@
 
 namespace cp {
 
+// ---------------------------------------------------------------------------
+// Chronometre du fil audio.
+//
+// QueryPerformanceCounter est une lecture de compteur, pas un appel systeme :
+// une vingtaine de nanosecondes. C'est acceptable dans le fil audio, et c'est
+// le prix a payer pour savoir ce que le moteur coute vraiment au lieu de
+// l'estimer.
+// ---------------------------------------------------------------------------
+static std::atomic<long long> g_busy(0);
+
+#ifdef _WIN32
+static inline long long tick_now() {
+  LARGE_INTEGER li;
+  QueryPerformanceCounter(&li);
+  return (long long)li.QuadPart;
+}
+long long PortSource_TickFreq() {
+  LARGE_INTEGER li;
+  QueryPerformanceFrequency(&li);
+  return (long long)li.QuadPart;
+}
+#else
+#include <time.h>
+static inline long long tick_now() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+long long PortSource_TickFreq() { return 1000000000LL; }
+#endif
+
+long long PortSource_BusyTicks() { return g_busy.load(std::memory_order_relaxed); }
+void PortSource_ResetBusy() { g_busy.store(0, std::memory_order_relaxed); }
+
 // Taille maximale d'un bloc demande par l'hote. REAPER ne depasse jamais cela
 // en pratique ; si un jour il le fait, GetSamples decoupe au lieu d'allouer.
 static const int kScratchFrames = 8192;
@@ -13,7 +47,8 @@ static const int kScratchFrames = 8192;
 PortSource::PortSource(Engine* eng, int port)
     : eng_(eng), port_(port), scratch_(nullptr), scratch_frames_(0),
       calls_(0), last_time_s_(-1.0), max_gap_s_(0.0), last_len_(0),
-      npending_(0), midi_out_(0), midi_list_seen_(false) {
+      npending_(0), midi_out_(0), midi_list_seen_(false),
+      midi_exact_(0), midi_late_(0), midi_max_err_(0) {
   std::memset(pending_, 0, sizeof(pending_));
   const size_t n = (size_t)kScratchFrames * kMaxChans;
 #if defined(_MSC_VER)
@@ -39,6 +74,7 @@ PortSource::~PortSource() {
 void PortSource::GetSamples(PCM_source_transfer_t* block) {
   if (!block || !block->samples || block->length <= 0) return;
 
+  const long long t_in = tick_now();
   const int nch = (block->nch > 0) ? block->nch : 2;
   const int want = block->length;
 
@@ -57,6 +93,7 @@ void PortSource::GetSamples(PCM_source_transfer_t* block) {
   if (!eng_ || !scratch_) {
     std::memset(block->samples, 0, (size_t)want * nch * sizeof(ReaSample));
     block->samples_out = want;
+    g_busy.fetch_add(tick_now() - t_in, std::memory_order_relaxed);
     return;
   }
 
@@ -102,6 +139,16 @@ void PortSource::GetSamples(PCM_source_transfer_t* block) {
           // Un evenement en retard part a l'offset 0 plutot que d'etre perdu :
           // mieux vaut une note d'un bloc en retard qu'une note muette.
           ev.frame_offset = (int)(p.at > block_start ? (p.at - block_start) : 0);
+          // La verification, et non la promesse : l'instant reellement remis
+          // vaut-il l'instant demande ?
+          const frame_t reel = block_start + ev.frame_offset;
+          if (reel == p.at) {
+            ++midi_exact_;
+          } else {
+            ++midi_late_;
+            const frame_t err = (reel > p.at) ? (reel - p.at) : (p.at - reel);
+            if (err > midi_max_err_) midi_max_err_ = err;
+          }
           ev.size = 3;
           ev.midi_message[0] = p.msg[0];
           ev.midi_message[1] = p.msg[1];
@@ -123,6 +170,8 @@ void PortSource::GetSamples(PCM_source_transfer_t* block) {
   // demande et la sortie. Le jour ou un etireur entre dans la chaine, c'est ICI
   // qu'il faudra la declarer, et elle sera connue par amorcage (§11.9).
   block->approximate_playback_latency = 0.0;
+
+  g_busy.fetch_add(tick_now() - t_in, std::memory_order_relaxed);
 }
 
 bool PortSource::queue_midi(frame_t at, unsigned char s,

@@ -67,6 +67,15 @@ class PortSource : public PCM_source {
   int64_t midi_out() const { return midi_out_; }
   bool     midi_seen_list() const { return midi_list_seen_; }
 
+  // Exactitude de NOTRE placement : un evenement est exact si
+  // block_start + frame_offset == l'instant demande. Un evenement arrive en
+  // retard est remis a l'offset 0 — audible, mais plus exact — et il est
+  // compte a part. « Exact par construction » ne suffit pas : l'horloge aussi
+  // etait exacte par construction, et elle avait un bloc d'avance.
+  int64_t midi_exact() const { return midi_exact_; }
+  int64_t midi_late() const  { return midi_late_; }
+  int64_t midi_max_err() const { return midi_max_err_; }
+
   // --- diagnostic (lu depuis le fil principal) ------------------------------
   int      port() const { return port_; }
   int64_t  calls() const { return calls_; }
@@ -100,6 +109,16 @@ class PortSource : public PCM_source {
   int              npending_;
   volatile int64_t midi_out_;
   volatile bool    midi_list_seen_;
+  volatile int64_t midi_exact_;
+  volatile int64_t midi_late_;
+  volatile int64_t midi_max_err_;
 };
+
+// Temps passe DANS GetSamples, tous ports confondus, en ticks de compteur haute
+// resolution. Rapporte au temps mur, c'est la part du fil audio que le moteur
+// consomme — le seul chiffre qui dise si la contrainte « PC de 2005 » tient.
+long long PortSource_BusyTicks();
+long long PortSource_TickFreq();
+void      PortSource_ResetBusy();
 
 } // namespace cp

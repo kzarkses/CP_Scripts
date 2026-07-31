@@ -31,8 +31,8 @@ using namespace cp;
 // 1.1 : ajout de CP_VoiceStartedAt. Un ajout leve la mineure ; un changement de
 // signature leverait la majeure. Les scripts exigent un MINIMUM, pas une egalite
 // — sinon chaque ajout casserait tout le monde.
-// 1.2 : ajout de CP_TestMidiAt (experimental, sonde §12.9.1).
-static const double kEngineABI = 1.2;
+// 1.3 : CP_LoadReset / CP_LoadDiag, et le compte d'exactitude MIDI.
+static const double kEngineABI = 1.3;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -357,16 +357,72 @@ bool CP_TestMidiAt(int port, double atSample, int note, int vel, double durSampl
 }
 
 const char* CP_TestMidiDiag() {
-  static char buf[192];
+  static char buf[256];
   int nlist = 0;
-  long long out = 0;
+  long long out = 0, exact = 0, late = 0, maxerr = 0;
   for (int i = 0; i < kMaxPorts; ++i) {
     if (!g_ports[i].active || !g_ports[i].src) continue;
     if (g_ports[i].src->midi_seen_list()) ++nlist;
     out += g_ports[i].src->midi_out();
+    exact += g_ports[i].src->midi_exact();
+    late += g_ports[i].src->midi_late();
+    if (g_ports[i].src->midi_max_err() > maxerr) maxerr = g_ports[i].src->midi_max_err();
   }
   snprintf(buf, sizeof(buf),
-           "midi_events_fourni_par_reaper=%d evenements_remis=%lld", nlist, out);
+           "midi_events_fourni_par_reaper=%d evenements_remis=%lld exacts=%lld "
+           "en_retard=%lld erreur_max=%lld spl",
+           nlist, out, exact, late, maxerr);
+  return buf;
+}
+
+// ---------------------------------------------------------------------------
+// Montee en charge : ce que le moteur coute vraiment au fil audio.
+//
+// Un port ne dit rien de huit. Et « ca a l'air fluide » ne dit rien du tout sur
+// une machine qui n'est pas la machine cible : seul un pourcentage mesure le dit.
+// ---------------------------------------------------------------------------
+static frame_t   g_load_blocks0 = 0;
+static long long g_load_calls0[kMaxPorts];
+
+void CP_LoadReset() {
+  if (!g_eng) return;
+  PortSource_ResetBusy();
+  g_load_blocks0 = g_eng->block_index();
+  for (int i = 0; i < kMaxPorts; ++i)
+    g_load_calls0[i] = (g_ports[i].active && g_ports[i].src) ? g_ports[i].src->calls() : 0;
+}
+
+const char* CP_LoadDiag() {
+  static char buf[384];
+  if (!g_eng) { snprintf(buf, sizeof(buf), "engine=none"); return buf; }
+
+  const frame_t db = g_eng->block_index() - g_load_blocks0;
+  int nports = 0;
+  double ratio_min = 1e9;
+  for (int i = 0; i < kMaxPorts; ++i) {
+    if (!g_ports[i].active || !g_ports[i].src) continue;
+    ++nports;
+    if (db > 0) {
+      const double rr = (double)(g_ports[i].src->calls() - g_load_calls0[i]) / (double)db;
+      if (rr < ratio_min) ratio_min = rr;
+    }
+  }
+  if (ratio_min > 1e8) ratio_min = 0.0;
+
+  // Part du fil audio consommee par le moteur : temps passe dans GetSamples
+  // rapporte au temps que ces blocs representent reellement.
+  const long long freq = PortSource_TickFreq();
+  const double busy_s = (freq > 0) ? (double)PortSource_BusyTicks() / (double)freq : 0.0;
+  const double audio_s = (g_eng->srate() > 0.0)
+                       ? (double)db * g_eng->last_block_frames() / g_eng->srate() : 0.0;
+  const double cpu = (audio_s > 0.0) ? (busy_s / audio_s * 100.0) : 0.0;
+
+  snprintf(buf, sizeof(buf),
+           "ports=%d voix=%d bloc=%d blocs=%lld ratio_min=%.4f cpu=%.2f%% "
+           "dropped=%u ram=%.2fMo",
+           nports, g_eng->active_voices(), g_eng->last_block_frames(),
+           (long long)db, ratio_min, cpu, g_eng->dropped_commands(),
+           (double)g_eng->pool().bytes_resident() / (1024.0 * 1024.0));
   return buf;
 }
 
@@ -483,6 +539,8 @@ VA(CP_TestMidiAt) {
                             argd(arg, narg, 4)));
 }
 VA(CP_TestMidiDiag) { (void)arg; (void)narg; return (void*)CP_TestMidiDiag(); }
+VA(CP_LoadReset) { (void)arg; (void)narg; CP_LoadReset(); return nullptr; }
+VA(CP_LoadDiag)  { (void)arg; (void)narg; return (void*)CP_LoadDiag(); }
 VA(CP_Diag) { (void)arg; (void)narg; return (void*)CP_Diag(); }
 
 // ---------------------------------------------------------------------------
@@ -521,7 +579,9 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_Panic, "void\0\0\0Eteint toutes les voix en 5 ms.");
   REG(CP_Diag, "const char*\0\0\0Etat du moteur en une ligne. Fil principal uniquement.");
   REG(CP_TestMidiAt, "bool\0int,double,int,int,double\0port,atSample,note,vel,durSamples\0EXPERIMENTAL: depose une note datee dans le flux MIDI du bloc. Sonde uniquement.");
-  REG(CP_TestMidiDiag, "const char*\0\0\0EXPERIMENTAL: REAPER fournit-il un midi_events, et combien d'evenements ont ete remis.");
+  REG(CP_TestMidiDiag, "const char*\0\0\0EXPERIMENTAL: REAPER fournit-il un midi_events, combien d'evenements remis, exacts, en retard.");
+  REG(CP_LoadReset, "void\0\0\0Remet a zero les compteurs de charge (temps fil audio, ratios par port).");
+  REG(CP_LoadDiag, "const char*\0\0\0Montee en charge: ports, voix, ratio minimum, part du fil audio consommee.");
 }
 
 static void unregister_all(reaper_plugin_info_t* rec) {
@@ -533,6 +593,7 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
   UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
   UNREG(CP_TestMidiAt);  UNREG(CP_TestMidiDiag);
+  UNREG(CP_LoadReset);   UNREG(CP_LoadDiag);
 }
 
 extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(

@@ -110,9 +110,19 @@ local function boucle()
         both("REAPER tend une liste, mais rien n'a ete remis : bug de notre cote.")
     else
         both(string.format("%d evenements remis dans la liste fournie par REAPER.", remis))
-        both("Si tu as entendu la gamme -> AFFRANCHISSEMENT TOTAL DU JSFX possible.")
-        both("Si tu n'as rien entendu   -> REAPER accepte la liste mais ne la route pas.")
-        both("Dans les deux cas, la question est repondue.")
+
+        -- L'exactitude de NOTRE placement, comptee et non promise.
+        local exacts  = tonumber(d:match("exacts=(%d+)")) or 0
+        local retard  = tonumber(d:match("en_retard=(%d+)")) or 0
+        local errmax  = tonumber(d:match("erreur_max=(%d+)")) or 0
+        both(string.format("placement : %d exacts, %d en retard, erreur max %d echantillon(s)",
+                           exacts, retard, errmax))
+        both((retard == 0)
+             and "  -> chaque note est remise au frame EXACT demande."
+             or  string.format("  -> %d note(s) rattrapee(s) a l'offset 0 : audibles, mais plus exactes.", retard))
+        both("     (ceci mesure NOTRE placement. Ce que REAPER en fait ensuite se")
+        both("      verifie a l'enregistrement — mais ton kick JSFX a 1 ms montre")
+        both("      deja qu'il honore les offsets.)")
     end
     both("===============================")
 
