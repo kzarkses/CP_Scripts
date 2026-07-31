@@ -1702,3 +1702,236 @@ contournant la colonne, ce qui est le défaut d'aujourd'hui simplement déplacé
   lane échange l'échantillonneur avec elle, puisque c'est la note qui change et
   rien d'autre. Identifiés par cette note et non par leur position dans la
   chaîne : quelle moitié est vive change à chaque échange.
+
+---
+
+## Session 18 (2026-07-31 → 2026-08-01) — le moteur natif existe
+
+Le journal détaillé est ailleurs, et volontairement : trois documents, trois
+rôles.
+
+| document | répond à |
+|---|---|
+| `ARCHI_MoteurNatif.md` | **pourquoi** — 1101 lignes, les mesures, les corrections, les cinq instruments fautifs |
+| `API_Moteur.md` | **comment l'appeler** — le contrat de référence |
+| `CP_Native/README.md` | **ce qui existe** — le code, ses limites, sa construction |
+
+### Ce qui a été établi, en une page
+
+Une analyse adversariale (six analystes, six réfutateurs, une synthèse) a
+confronté le dossier de conception. Elle a trouvé une **troisième route** que le
+dossier ignorait, corrigé cinq affirmations porteuses, et produit un
+ordonnancement avec des critères d'arrêt. Puis le moteur a été écrit et mesuré.
+
+**Mesuré, tampon ASIO 64 :** attaque à **0 échantillon d'écart** ; **15 009
+appels pour 15 009 blocs** (l'aperçu n'en manque aucun, contre 0,54× pour
+`CF_Preview`) ; **64 voix pour 3,39 %** du fil audio ; MIDI **16/16 exacts** ;
+enregistrement **99,9 % identique** à la source ; entrée **pré-FX** ; étireur à
+**2,3 %/voix** avec 85–139 ms d'amorçage. Cœur vérifié hors REAPER : **88
+assertions, zéro allocation** dans le chemin audio.
+
+### Les trois décisions qui ont changé le plan
+
+1. **Aucun objet CP dans la chaîne d'effets de l'utilisateur** (Cédric). Ce
+   critère a écarté le JSFX lecteur — **et le plugin `CP Port` avec lui**, qui
+   avait exactement le même défaut. Le système est passé de trois morceaux à
+   deux : **extension + Lua, un seul binaire.**
+2. **Le MIDI passe par l'aperçu.** Huit notes déposées, huit entendues. J'avais
+   écrit qu'une extension ne pouvait pas injecter de MIDI horodaté dans une
+   chaîne de piste : mesuré faux. C'était la dernière justification du plugin.
+3. **Le warp se cuit hors ligne pour le taux constant.** Une voix étirée coûte
+   ~42 voix non étirées ; deux étireurs vivants au maximum sur la machine cible.
+
+### La leçon qui vaut au-delà du moteur
+
+Cinq fois sur cinq, **l'instrument s'est trompé avant le code mesuré**, et à
+chaque fois il accusait le moteur. La règle qui en sort :
+
+> **Ne pas expliquer l'écart — rendre l'instrument incapable de le produire.**
+
+### Livré
+
+`CP_Native/` (rapatrié dans ce dépôt avec ses onze commits), `CP_Engine/Voice.lua`,
+cinq sondes de mesure, et les trois documents.
+
+---
+
+# ROADMAP LONG TERME — la migration vers l'autonomie
+
+## Ce que « autonomie » veut dire, concrètement
+
+| dépendance actuelle | qui s'en sert | ce qui la remplace |
+|---|---|---|
+| **SWS `CF_Preview`** | MediaExplorer, Editor, Sampler | voix CP_Native |
+| **RS5K** | CP_Session (cases audio) | voix CP_Native |
+| **`CP_MidiLooper.jsfx`** | Session, Looper, Editor | moteur MIDI natif |
+| **piste routeur + envois filtrés** | tout le MIDI | disparaît avec le JSFX |
+| **gmem comme protocole** | Loop.lua ↔ JSFX | disparaît avec le JSFX |
+| **plafond de 4 colonnes** | — | disparaît avec le JSFX (16 canaux MIDI) |
+
+À l'arrivée : **un binaire, du Lua, et REAPER.** Rien d'autre.
+
+## Trois règles transverses, valables à chaque phase
+
+1. **Le chemin Lua ne gèle jamais.** Le jour où une fonctionnalité est mise en
+   attente du moteur, le plan a commencé à échouer. Le mode d'échec le plus
+   probable n'est pas « le binaire est trop dur », c'est **ni le binaire fini,
+   ni le Lua avancé**.
+2. **On interroge une capacité, jamais un backend.** `Voice.CanScheduleExact()`,
+   pas `if reaper.CP_VoiceAlloc`. Une fenêtre qui teste le backend refait la
+   faute qu'on répare.
+3. **Chaque phase se termine sur quelque chose d'utilisable.** Pas de grand soir.
+
+---
+
+## Phase 0 — finir le moteur *(1 à 2 jours)*
+
+- [ ] **Fermer la course sur la réutilisation d'une voix.** Le fil principal
+      écrit dans un emplacement que le fil audio peut parcourir. Bénin sur x86,
+      piège garanti sur ARM. C'est aussi une incohérence : toute autre commande
+      passe par l'anneau, celle-là non.
+- [ ] **Une session longue.** Une heure sous charge, compteurs surveillés. Tout
+      ce qui a été mesuré l'a été sur des fenêtres de vingt secondes.
+
+*On arrête si :* rien. Ces deux points ne peuvent rien invalider, ils
+consolident.
+
+## Phase 1 — CP_MediaExplorer passe par `Voice.lua` *(2 jours)*
+
+La première fenêtre, et la plus facile : elle n'a besoin que d'auditionner, ce
+que le repli `CF_Preview` sait faire. Elle bascule sans rien perdre.
+
+- [ ] remplacer les appels `Preview.*` par `Voice.*`
+- [ ] garder `Preview` pour ce qui n'est pas du son : `Meta`, `SourceType`,
+      `TempoSyncRate`, le cache de `PCM_source`
+- [ ] vérifier l'audition à 64 comme à 1024
+
+*Ce que ça débloque :* la première capacité réellement partagée de la suite, et
+un vrai utilisateur de l'ABI qui n'est pas une sonde.
+*On arrête si :* l'audition est moins bonne qu'avant à un tampon quelconque.
+
+## Phase 2 — l'identité *(1 jour, survit à 100 %)*
+
+Le diagnostic de l'analyse d'écosystème : **rien ne possède « ce clip, dans cette
+case, dans cet état »**. Tout est adressé par *position* — `t*1000+s`, indice de
+lane, indice de colonne. `Clip.CellTag` est une clé étrangère inventée parce
+qu'il manque une table.
+
+- [ ] un allocateur d'ID stable + une table registre
+- [ ] `Clip.CellTag` devient une vue de compatibilité
+- [ ] sites : `Clip.lua:88-104`, `CP_Session.lua:225` + ~8 appels,
+      `CP_Editor.lua:661`, `CP_Looper.lua:1658`
+
+Le tag gmem est **déjà** un entier opaque (`Loop.lua:876-897`) : le protocole ne
+bouge pas d'un octet.
+
+**Ne PAS faire l'unification des douze fragments d'état maintenant** : ~630 des
+lignes qu'elle refactorerait sont programmées pour la suppression. Refactorer du
+code condamné, seul, est le pire ratio du plan.
+
+## Phase 3 — CP_Editor et CP_Sampler passent par `Voice.lua` *(2 jours)*
+
+- [ ] l'audition de l'éditeur et celle du sampler empruntent le même chemin
+- [ ] **une seule réponse sur le tempo d'un fichier.** `rateFor` existe
+      aujourd'hui en trois exemplaires qui ne répondent pas pareil.
+
+## Phase 4 — la cuisson du warp *(1 à 2 jours, survit à toutes les issues)*
+
+- [ ] `D_PLAYRATE` + `B_PPITCH` + `I_PITCHMODE` dans `Bake.FileRegionToWav`
+      (`CP_Engine/Bake.lua:160-186` fait déjà les neuf dixièmes)
+- [ ] cache indexé par (chemin, région, BPM cible), état « cuisson » sur la cellule
+
+*Ce que ça répare aujourd'hui :* « Stretch (keeps the key) » fait un **repitch
+silencieux** — `rateFor` rend `(taux, stretch)` et `CP_Session.lua:653` jette le
+second retour.
+*Ce que ça débloque :* le warp devient gratuit pour le cas courant, et le coût
+mesuré de l'étireur ne concerne plus que le taux variable.
+
+## Phase 5 — la moitié audio de CP_Session *(3 à 5 jours)*
+
+Étape essentiellement **soustractive**. Disparaissent : la piste enfant « … smp »
+et ses deux RS5K, le canal MIDI réservé, `Loop.WireAudio`, `SetLaneAudio`, le
+clip d'une note, la note jumelle, la porte à 97 %, `previewDest`.
+
+Chiffré honnêtement : **~140 lignes sur 1685**, soit 8 % du fichier — pas la
+moitié. Ne pas budgéter cette phase sur la promesse d'un `CP_Session` plus simple.
+
+- [ ] une cellule audio devient une voix, plus un clip d'une note
+- [ ] le lancement quantifié passe par `Voice.PlayAtBeat`
+- [ ] l'enchaînement passe par `Voice.QueueNext` (exact à l'échantillon)
+
+*On arrête si :* trois sessions de jeu réelles montrent une régression.
+*Coût d'abandon :* `git revert`, douloureux mais récupérable.
+
+## Phase 6 — le moteur MIDI entre dans l'extension *(le gros morceau)*
+
+Le véhicule est prouvé ; le moteur, non. `CP_MidiLooper.jsfx` ne fait pas
+qu'émettre des notes : il tient les boucles, **réconcilie à chaque bloc** les
+notes qui sonnent contre celles qui couvrent la phase (porte par bloc —
+comportement de Live, et bien fait), capture l'entrée live, et possède le
+quantize, les états en attente et l'horloge libre.
+
+- [ ] porter la porte par bloc, avec parité mesurée contre le JSFX
+- [ ] porter la capture live
+- [ ] porter le quantize, les états en attente, l'horloge libre
+- [ ] **cohabitation :** en horloge libre, l'extension possède l'horloge et le
+      JSFX la lit. C'est le seul couplage à écrire pendant la transition.
+
+*Ce que ça tue :* la piste routeur, `wireLane`/`makeLaneSend`/`SyncSends`, gmem
+comme protocole, et **le plafond de 4 colonnes** — qui ne vient pas de
+`MAX_LANES` mais du budget de 16 canaux MIDI par piste routeur.
+*C'est ici que l'autonomie est réellement atteinte.*
+
+## Phase 7 — la livraison *(2 à 3 jours, AVANT de publier quoi que ce soit)*
+
+La chaîne ReaPack est morte, et c'est mesuré : `git log -- index.xml` = **un seul
+commit** ; 28 paquets indexés pour **103** fichiers portant `@version` ;
+`CP_Session.lua` **n'est pas dans l'index** ; **zéro `@provides`** dans tout le
+dépôt. Même si l'indexeur tournait, `CP_Session` serait publié comme fichier seul,
+sans ses modules, et échouerait à l'ouverture chez chaque utilisateur.
+
+- [ ] les `@provides` du Lua, et une installation vérifiée sur une machine vierge
+- [ ] le binaire dans un paquet `type="extension"` avec des `<source platform>`
+      vers des assets de release (le précédent installé sur la machine :
+      Helgobox/Playtime, `ReaPack/cache/Helgoboss Projects.xml:169`)
+- [ ] **le garde d'ABI partout** : ReaPack n'a aucun mécanisme de dépendance —
+      89 index, 5993 paquets, zéro élément de dépendance. Un script peut
+      s'installer sans le binaire.
+
+## Phase 8 — le reste du monde
+
+- [ ] macOS : build universel (un drapeau), **signature et notarisation** (99 $/an,
+      Developer ID, `codesign --options runtime`, `notarytool`, `stapler`, une
+      machine) — c'est ça qui coûte, pas le build
+- [ ] Linux : conteneur ancien, sinon glibc trop récente
+- [ ] CMake devient la voie principale
+
+---
+
+## Ce qui n'est PAS au programme, et pourquoi
+
+| écarté | raison |
+|---|---|
+| **persistance dans le `.RPP`** | point de non-retour. L'état reste dans `ProjExtState`, natif à REAPER, pour qu'un projet CP s'ouvre toujours sans le binaire. Si un jour le `.RPP` est écrit, ce sera un **miroir**, jamais un remplacement |
+| **streaming disque** | décision produit du 2026-07-31 : des boucles ≤ 64 s. À rouvrir seulement si la réponse change |
+| **les scènes dans le moteur** | il faudrait recompiler pour changer d'avis sur ce qu'est une scène. Le modèle « lecteur » suffit tant que Lua met la suite en file à l'avance |
+| **un plugin (CLAP/VST3)** | plus aucune justification depuis que le MIDI passe par l'aperçu, et il violerait le critère « aucun objet dans la chaîne » |
+| **l'unification des 12 fragments d'état** | ~630 des lignes concernées sont programmées pour la suppression |
+
+## Les trois dettes qui ne dépendent d'aucune phase
+
+Elles existent aujourd'hui, elles se réparent en Lua, et aucune n'attend le
+moteur :
+
+- [ ] **Seul `CP_Looper` appelle `Loop.SaveState`** (`CP_Looper.lua:1608,1732,1738`).
+      `CP_Session` ne fait que **lire** (`:2074`). Une session construite
+      entièrement dans `CP_Session`, sans jamais ouvrir `CP_Looper`, perd tout
+      l'état de lane à la fermeture de REAPER.
+- [ ] **La garde anti-note-fantôme ne tient pas à froid.** gmem est à zéro, donc
+      `GetLaneTag = 0` ; `Loop.LaneOfTag(t, 0)` rend `LiveLane(t)` et non nil,
+      mais `Clip.CellOfTag(0)` rend nil, donc `audio = false` — alors que
+      `LoadState` a remis la lane en mode 3 avec une note 60 vélocité 127. La
+      note part **dans l'instrument de la colonne**, en boucle.
+- [ ] **Aucun `Undo_` dans `CP_Session`.** Ouvrir la fenêtre peut insérer une
+      piste et transformer une piste utilisateur en dossier, sans bloc
+      d'annulation. Le modèle existe déjà à `Bake.lua:170-186`.

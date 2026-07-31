@@ -5,7 +5,19 @@ call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build
 cd /d "%~dp0"
 if not exist build mkdir build
 
-set SDK=C:\Users\Cedric\dev\reaper-sdk\sdk
+REM Le SDK reste HORS du depot : c'est une dependance fournisseur, pas notre
+REM code, et sa licence n'est pas la notre. Surchargeable pour qui le range
+REM ailleurs.
+REM   git clone --depth 1 https://github.com/justinfrankel/reaper-sdk.git
+if not defined REAPER_SDK set REAPER_SDK=C:\Users\Cedric\dev\reaper-sdk\sdk
+set SDK=%REAPER_SDK%
+if not exist "%SDK%\reaper_plugin.h" (
+  echo.
+  echo   SDK introuvable : %SDK%
+  echo   Clone https://github.com/justinfrankel/reaper-sdk puis pose
+  echo   REAPER_SDK sur son sous-dossier sdk.
+  exit /b 3
+)
 
 REM /LD      DLL
 REM /MT      CRT statique : la DLL atterrit sur des machines sans redistribuable
