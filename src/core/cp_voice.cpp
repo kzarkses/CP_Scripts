@@ -34,6 +34,7 @@ void Voice::reset() {
   fade_out_pos = 0;
   next_voice = -1;
   xfade_len = 0;
+  started_at = -1;
   ended_at = -1;
 }
 
@@ -65,6 +66,7 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
     if (start_at >= block_start + frames) return;       // pas encore
     off = (int)(start_at > block_start ? (start_at - block_start) : 0);
     state = kVoicePlaying;
+    started_at = block_start + off;   // la verite terrain de l'attaque
     if (fade_in_len > 0) fade_in_pos = 0;
   }
 

@@ -28,7 +28,10 @@ using namespace cp;
 // aucun mecanisme de dependance (mesure : 89 index, 5993 paquets, zero element
 // de dependance), donc un script peut tres bien s'installer sans le binaire, ou
 // avec une version qui ne parle pas la meme langue.
-static const double kEngineABI = 1.0;
+// 1.1 : ajout de CP_VoiceStartedAt. Un ajout leve la mineure ; un changement de
+// signature leverait la majeure. Les scripts exigent un MINIMUM, pas une egalite
+// — sinon chaque ajout casserait tout le monde.
+static const double kEngineABI = 1.1;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -320,6 +323,15 @@ bool CP_VoiceState(double h, double* posOut, double* stateOut) {
   return true;
 }
 
+// La verite terrain de l'attaque, notee par la voix au moment ou elle sonne.
+// A preferer TOUJOURS a un calcul externe (horloge - position) : celui-ci voit
+// un bloc d'ecart quand la lecture tombe entre le pull de l'apercu et le
+// passage post du hook.
+double CP_VoiceStartedAt(double h) {
+  if (!g_eng) return -1.0;
+  return (double)g_eng->voice_started_at((voice_h)h);
+}
+
 double CP_ClockNow() { return g_eng ? (double)g_eng->clock_now() : 0.0; }
 
 // Prend l'ancre. Les deux lectures sont collees volontairement : tout ce qui se
@@ -426,6 +438,7 @@ VA(CP_VoiceState) {
                             (double*)argp(arg, narg, 2)));
 }
 VA(CP_TimeToSample) { return retd(CP_TimeToSample(argd(arg, narg, 0))); }
+VA(CP_VoiceStartedAt) { return retd(CP_VoiceStartedAt(argd(arg, narg, 0))); }
 VA(CP_Diag) { (void)arg; (void)narg; return (void*)CP_Diag(); }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +470,7 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_VoiceSet, "bool\0double,const char*,double\0voice,param,value\0param: rate gain pan loop_start loop_end fade_in fade_out");
   REG(CP_VoiceQueueNext, "bool\0double,double,double\0voice,nextVoice,xfade\0Enchainement exact : la suivante demarre au frame ou celle-ci s'eteint.");
   REG(CP_VoiceState, "bool\0double,double*,double*\0voice,posOut,stateOut\0Position en frames source et etat (0 libre,1 arme,2 joue,3 s'eteint).");
+  REG(CP_VoiceStartedAt, "double\0double\0voice\0Frame absolu du premier echantillon reellement audible, -1 si pas encore demarre. Verite terrain, sans course.");
   REG(CP_ClockNow, "double\0\0\0Frame absolu compte par le fil audio.");
   REG(CP_ClockSync, "double\0\0\0Prend l'ancre horloge<->projet. A appeler une fois par frame.");
   REG(CP_TimeToSample, "double\0double\0projectTime\0Convertit un instant du projet en frame absolu, via la derniere ancre.");
@@ -471,7 +485,7 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_VoiceRelease);UNREG(CP_VoicePlayAtSample);UNREG(CP_VoiceStopAtSample);
   UNREG(CP_VoiceSet);    UNREG(CP_VoiceQueueNext);   UNREG(CP_VoiceState);
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
-  UNREG(CP_Panic);       UNREG(CP_Diag);
+  UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
 }
 
 extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(

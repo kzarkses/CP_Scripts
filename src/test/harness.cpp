@@ -196,6 +196,12 @@ static void test_onset_exact() {
     std::snprintf(what, sizeof(what), "bloc de %d : valeur bit-exacte a +100", bs);
     check_near(buf[(size_t)(target + 100) * 2], 101.0, 0.0, what);
 
+    // Et la meme verite, vue de l'interieur : la voix note son propre instant
+    // d'attaque. C'est ce que la sonde lit, au lieu de le deduire de
+    // (horloge, position) — deduction exposee a une course d'un bloc.
+    std::snprintf(what, sizeof(what), "bloc de %d : started_at note par la voix", bs);
+    check_eq(e.voice_started_at(v), target, what);
+
     std::free(buf);
   }
 }

@@ -48,6 +48,14 @@ struct Voice {
   // modele de session.
   int      next_voice;   // index, -1 si aucun
   int      xfade_len;    // frames de fondu croise a l'enchainement
+  // Frame ABSOLU du premier echantillon reellement audible, -1 tant que la voix
+  // n'a pas demarre. C'est la verite terrain de l'attaque : la mesurer de
+  // l'exterieur en lisant (horloge, position) expose a une course — dans un
+  // bloc, `pos` avance au pull de l'apercu et l'horloge au passage post du hook,
+  // donc une lecture qui tombe entre les deux voit un bloc d'ecart. Ici, aucune
+  // course : c'est la voix elle-meme qui note l'instant.
+  frame_t  started_at;
+
   frame_t  ended_at;     // frame ABSOLU ou la voix s'est eteinte, -1 sinon.
                          // C'est ce qui rend l'enchainement exact a
                          // l'echantillon plutot qu'exact au bloc.

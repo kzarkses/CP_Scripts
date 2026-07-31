@@ -49,6 +49,11 @@ class Engine {
   // meme bloc que le rendu qu'elle concerne.
   int     voice_port(voice_h h) const;
 
+  // Frame absolu du premier echantillon reellement audible, -1 si la voix n'a
+  // pas encore demarre. Note par la voix elle-meme : c'est une mesure sans
+  // course, contrairement a une lecture externe de (horloge, position).
+  frame_t voice_started_at(voice_h h) const;
+
   // Depose une commande. Rend false si l'anneau du port est plein (le seul cas
   // realiste est un consommateur mort — voir heartbeat()).
   bool post(int port, const Cmd& c);

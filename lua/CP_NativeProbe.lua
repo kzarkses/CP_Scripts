@@ -20,8 +20,14 @@
 
 local r = reaper
 
+-- Ajout, jamais ecrasement : une mesure perdue est une mesure a refaire.
 local LOG = r.GetResourcePath() .. "/CP_NativeProbe.log"
-local fh  = io.open(LOG, "w")
+local fh  = io.open(LOG, "a")
+if fh then
+    fh:write("\n\n########################################################\n")
+    fh:write("# session " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n")
+    fh:write("########################################################\n")
+end
 
 local function log(s)          -- fichier seul
     if fh then fh:write(tostring(s), "\n") end
@@ -44,10 +50,12 @@ if not r.APIExists("CP_EngineABI") then
     fin(); return
 end
 
-local ABI_ATTENDU = 1.0
-if r.CP_EngineABI() ~= ABI_ATTENDU then
-    r.MB(string.format("ABI incompatible : moteur %.1f, script %.1f",
-                       r.CP_EngineABI(), ABI_ATTENDU), "CP_Native", 0)
+-- Un MINIMUM, pas une egalite : un ajout au moteur ne doit pas casser les
+-- scripts qui ne s'en servent pas.
+local ABI_MIN = 1.1
+if r.CP_EngineABI() < ABI_MIN then
+    r.MB(string.format("Moteur trop ancien : %.1f, il en faut %.1f.\nReconstruis et reinstalle la DLL.",
+                       r.CP_EngineABI(), ABI_MIN), "CP_Native", 0)
     fin(); return
 end
 
@@ -144,8 +152,9 @@ both("mesure en cours, 20 s... (tout part dans le journal)")
 local t_start   = r.time_precise()
 local blocks0, calls0 = nil, nil
 local wraps, pos_prec = 0, -1
-local ecarts    = {}          -- frame de depart mesure - frame demande
+local ecarts    = {}          -- methode indirecte : depart deduit - demande
 local n_ech     = 0
+local depart_reel = -1        -- methode directe : note par la voix elle-meme
 local dernier_console = 0
 
 local function nombres(d)     -- extrait blocks= et calls= de la ligne de diag
@@ -161,10 +170,22 @@ local function boucle()
     local b, c = nombres(d)
     if b and c and not blocks0 then blocks0, calls0 = b, c end
 
-    -- Lecture COHERENTE de (clock, pos) : on encadre la lecture de la position
-    -- par deux lectures d'horloge. Si l'horloge n'a pas bouge entre les deux,
-    -- les deux valeurs viennent du meme bloc et clock - pos est exact. Sinon on
-    -- jette l'echantillon : mieux vaut moins de mesures que des fausses.
+    -- LA mesure : la voix a note elle-meme le frame de son premier echantillon
+    -- audible. Aucune course, aucune deduction.
+    if depart_reel < 0 then
+        local s = r.CP_VoiceStartedAt(v)
+        if s >= 0 then
+            depart_reel = s
+            log(string.format("  ATTAQUE notee par la voix : frame %.0f, demande %.0f, ecart %.0f spl",
+                              s, cible, s - cible))
+        end
+    end
+
+    -- Et la mesure INDIRECTE, gardee volontairement : elle deduit le depart de
+    -- (horloge - position). Elle est exposee a une course d'un bloc — dans un
+    -- bloc, `pos` avance au pull de l'apercu et l'horloge au passage post du
+    -- hook — et l'ecart entre les deux methodes MESURE cette course au lieu de
+    -- la supposer.
     local ck1 = r.CP_ClockNow()
     local okv, pos, st = r.CP_VoiceState(v)
     local ck2 = r.CP_ClockNow()
@@ -175,8 +196,6 @@ local function boucle()
         local depart = ck1 - pos - wraps * frames
         n_ech = n_ech + 1
         ecarts[n_ech] = depart - cible
-        log(string.format("  mesure %d : clock=%.0f pos=%.1f wraps=%d -> depart=%.0f ecart=%.0f spl",
-                          n_ech, ck1, pos, wraps, depart, depart - cible))
     end
 
     local t = r.time_precise() - t_start
@@ -209,6 +228,21 @@ local function boucle()
                        (mg == 0) and "demandes contigues, compter est legitime"
                        or "*** l'hote saute, il faut se recaler sur time_s ***"))
 
+    -- La mesure qui fait foi : la voix a note son propre instant d'attaque.
+    if depart_reel >= 0 then
+        local ecart = depart_reel - cible
+        both(string.format("ATTAQUE  : demande %.0f, reel %.0f, ecart %.0f echantillon(s) = %.4f ms",
+                           cible, depart_reel, ecart, ecart / sr * 1000))
+        both((ecart == 0)
+             and "           -> EXACT A L'ECHANTILLON. Zero, pas 'proche de zero'."
+             or  "           -> *** ecart non nul : a expliquer avant tout le reste ***")
+    else
+        both("ATTAQUE  : la voix n'a jamais demarre.")
+    end
+
+    -- La mesure indirecte, pour memoire : elle deduit le depart de
+    -- (horloge - position) et se fait rattraper par une course d'un bloc. Son
+    -- ecart avec la mesure directe MESURE cette course.
     if n_ech > 0 then
         local mn, mx, somme = ecarts[1], ecarts[1], 0
         for i = 1, n_ech do
@@ -216,14 +250,11 @@ local function boucle()
             if ecarts[i] > mx then mx = ecarts[i] end
             somme = somme + ecarts[i]
         end
-        both(string.format("attaque  : %d mesures, ecart min %.0f / max %.0f / moyen %.1f spl",
+        both(string.format("indirect : %d lectures, min %.0f / max %.0f / moyen %.1f spl",
                            n_ech, mn, mx, somme / n_ech))
-        both(string.format("           soit %.3f ms en moyenne", somme / n_ech / sr * 1000))
-        both((math.abs(mn) <= 1 and math.abs(mx) <= 1)
-             and "           -> EXACT A L'ECHANTILLON."
-             or  "           -> ecart non nul : a expliquer avant d'aller plus loin.")
-    else
-        both("attaque  : aucune mesure coherente — la voix n'a jamais joue.")
+        both(string.format("           (la dispersion vaut un bloc = %d spl : c'est la course",
+                           tonumber(r.CP_Diag():match("bloc=(%d+)")) or 0))
+        both("            entre le pull de l'apercu et le passage post du hook, pas le moteur)")
     end
 
     both("etat     : " .. r.CP_Diag())

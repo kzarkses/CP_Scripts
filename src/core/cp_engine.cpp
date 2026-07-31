@@ -66,6 +66,14 @@ bool Engine::voice_valid(voice_h h) const {
   return owned_[i] && voices_[i].gen == handle_gen(h);
 }
 
+frame_t Engine::voice_started_at(voice_h h) const {
+  if (h == kNullVoice) return -1;
+  const int i = handle_index(h);
+  if (i < 0 || i >= kMaxVoices) return -1;
+  if (voices_[i].gen != handle_gen(h)) return -1;
+  return voices_[i].started_at;
+}
+
 int Engine::voice_port(voice_h h) const {
   if (!voice_valid(h)) return -1;
   return voices_[handle_index(h)].port;
