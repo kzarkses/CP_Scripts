@@ -1756,6 +1756,70 @@ cinq sondes de mesure, et les trois documents.
 
 ---
 
+## Session 19 (2026-08-01) — le moteur devient sûr, et le RS5K quitte le montage
+
+Le détail est au §13 de `ARCHI_MoteurNatif.md`. Ce qui compte pour la suite du
+plan tient ici.
+
+### Le cœur
+
+**La course sur la réutilisation d'une voix est fermée** — c'était le dernier
+défaut connu, écrit noir sur blanc dans le README du moteur. La propriété et
+l'état deviennent deux choses distinctes : un mot atomique par emplacement pour
+le fil principal, la structure `Voice` pour le fil audio, et le bit de possession
+effacé par le fil audio seul. **Un emplacement qui sonne encore ne peut plus être
+réattribué** : ce n'est plus une convention, c'est une impossibilité.
+
+Ce qui le prouve n'est pas un raisonnement sur les barrières mémoire — ce dépôt a
+déjà vu cinq affirmations de ce genre infirmées par la mesure. Un **vrai** second
+fil rend pendant qu'un **vrai** fil principal prend et rend des emplacements
+aussi vite qu'il peut : ~300 000 allocations, zéro fuite, zéro allocation audio.
+Le harnais passe de 88 à **119 assertions**.
+
+**Deux gains de performance que la même pièce a permis** : une liste de voix par
+port (le rendu balayait 46 Ko de structures pour en trouver huit, deux fois par
+bloc et par port) et l'état de la boucle chaude descendu en registre (rien
+n'interdisait formellement l'alias entre `out` et `pos`, donc le compilateur
+relisait tout à chaque échantillon).
+
+**Deux défauts trouvés en chemin.** Une voix privée de sa matière restait vivante
+à jamais — trouvé en *concevant* la sonde de session longue, pas en relisant le
+code. Et le plafond de 64 s tronquait au lieu de refuser, alors que le contrat
+annonçait l'inverse.
+
+### Les fenêtres
+
+**CP_MediaExplorer** écoute par `CP_Engine/Audition`, qui choisit à chaque
+lancement entre une voix CP et `CF_Preview` — **par capacité, jamais par
+backend**. La phase annoncée comme « la plus facile » ne l'était pas : le
+navigateur a un bouton de hauteur et un bouton de taux, et chacun préserve ce que
+l'autre change, alors que le taux natif est un varispeed.
+
+**CP_Session** : une case audio est une voix CP. Les deux RS5K, l'envoi filtré et
+— quand la colonne n'a pas d'instrument — la piste enfant disparaissent. Le
+lancement lit la **frontière que le moteur publie déjà**, il ne la prédit pas.
+
+**La persistance** quitte `CP_Looper` et entre dans `Loop` : une session
+construite entièrement dans `CP_Session` ne se perd plus à la fermeture.
+
+### Les trois leçons, et elles se ressemblent
+
+1. **Une sonde rapporte avant d'être lancée.** Écrire ce qu'on va mesurer force à
+   nommer les états qu'on n'avait pas nommés.
+2. **Demander à l'instrument plutôt que déduire.** Le lancement quantifié d'une
+   case audio n'est pas prédit : le moteur publie sa décision, Lua la convertit.
+3. **Un ordre de plan est un ordre de risque, pas de dépendance.** La phase 5 ne
+   dépendait ni de la 2 ni de la 4, et l'a montré en étant faite avant elles.
+
+### Ce que la session laisse ouvert
+
+- la campagne de session longue (l'instrument existe, la mesure non) ;
+- trois sessions de jeu réelles sur les cases audio natives ;
+- le seuil de 15 s d'`Audition` est un calcul, pas une écoute ;
+- `CP_Editor` et `CP_Sampler` n'ont pas encore basculé (phase 3).
+
+---
+
 # ROADMAP LONG TERME — la migration vers l'autonomie
 
 ## Ce que « autonomie » veut dire, concrètement
@@ -1876,12 +1940,37 @@ clip d'une note, la note jumelle, la porte à 97 %, `previewDest`.
 Chiffré honnêtement : **~140 lignes sur 1685**, soit 8 % du fichier — pas la
 moitié. Ne pas budgéter cette phase sur la promesse d'un `CP_Session` plus simple.
 
-- [ ] une cellule audio devient une voix, plus un clip d'une note
-- [ ] le lancement quantifié passe par `Voice.PlayAtBeat`
-- [ ] l'enchaînement passe par `Voice.QueueNext` (exact à l'échantillon)
+**Faite en session 19, en avance sur l'ordre du plan** — et elle ne dépendait
+en réalité ni de la phase 2 ni de la phase 4 : l'état d'une voix se range par
+**colonne**, qui est déjà la maille du moteur, et le taux natif est un varispeed,
+exactement ce que faisait le tune du RS5K. L'ordre était un ordre de risque, pas
+de dépendance.
 
+- [x] `CP_Engine/Cells.lua` : une cellule audio est une voix CP
+- [x] le lancement lit la **frontière que le moteur publie déjà**
+      (`pend_target`) au lieu de la prédire — une décision, un seul endroit,
+      et une conversion
+- [x] les passes suivantes se raccrochent à la **phase** de la lane, relue à
+      chaque frame : aucun accumulateur, donc aucune dérive
+- [ ] entendre trois sessions de jeu réelles
+
+**Ce qui a changé par rapport au plan.** Il annonçait « une cellule audio devient
+une voix, **plus** un clip d'une note ». C'est faux et c'était le piège : la lane
+est la machine à états, et son clip d'une note en fait partie. Seul le
+**producteur de son** au bout de la chaîne est remplacé. Ce qui disparaît est
+plus modeste et plus sûr : les deux RS5K, l'envoi filtré, et la piste enfant
+**quand la colonne n'a pas d'instrument**.
+
+Car une piste dont la chaîne contient un instrument **avale l'audio qu'on y
+verse** — c'est pour cela que le montage RS5K passait par un enfant, et ce
+n'était pas un caprice. Une colonne qui joue aussi des notes garde donc un
+enfant, mais **vide**.
+
+*Rien n'est supprimé :* le chemin RS5K reste entier, comme repli sans
+l'extension et comme retour en arrière. La décision se prend à une ligne
+(`NATIVE_CELLS`) et se demande partout ailleurs.
 *On arrête si :* trois sessions de jeu réelles montrent une régression.
-*Coût d'abandon :* `git revert`, douloureux mais récupérable.
+*Coût d'abandon :* une ligne, pas un `git revert`.
 
 ## Phase 6 — le moteur MIDI entre dans l'extension *(le gros morceau)*
 
@@ -1943,10 +2032,15 @@ sans ses modules, et échouerait à l'ouverture chez chaque utilisateur.
 Elles existent aujourd'hui, elles se réparent en Lua, et aucune n'attend le
 moteur :
 
-- [ ] **Seul `CP_Looper` appelle `Loop.SaveState`** (`CP_Looper.lua:1608,1732,1738`).
-      `CP_Session` ne fait que **lire** (`:2074`). Une session construite
-      entièrement dans `CP_Session`, sans jamais ouvrir `CP_Looper`, perd tout
-      l'état de lane à la fermeture de REAPER.
+- [x] **Seul `CP_Looper` appelait `Loop.SaveState`.** Réparé en session 19, et
+      pas là où le plan le disait : le mécanisme entier (versions de note, mode
+      de lane, sursis pendant une édition, debounce glissant) quitte `CP_Looper`
+      et entre dans `Loop`. Les deux fenêtres l'obtiennent d'un appel par frame.
+      Étendre l'écriture à une seconde fenêtre a ouvert un risque que la lecture
+      seule n'avait pas — gmem appartient à la session REAPER, pas au projet,
+      donc changer de projet aurait mis un set dans le fichier d'un autre : la
+      détection de changement de routeur descend elle aussi dans `Loop`, et
+      l'autosave se désarme tout seul si le routeur a bougé depuis l'adoption.
 - [ ] **La garde anti-note-fantôme ne tient pas à froid.** gmem est à zéro, donc
       `GetLaneTag = 0` ; `Loop.LaneOfTag(t, 0)` rend `LiveLane(t)` et non nil,
       mais `Clip.CellOfTag(0)` rend nil, donc `audio = false` — alors que
