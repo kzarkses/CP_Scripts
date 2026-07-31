@@ -33,7 +33,10 @@ using namespace cp;
 // signature leverait la majeure. Les scripts exigent un MINIMUM, pas une egalite
 // — sinon chaque ajout casserait tout le monde.
 // 1.4 : CP_WarpProbe — la mesure de l'etireur de REAPER.
-static const double kEngineABI = 1.4;
+// 1.5 : CP_PortAttachOut (sortie materielle, sans piste), parametres de voix
+//       « pos » et « loop », CP_ClipLoad refuse au-dela du plafond au lieu de
+//       tronquer en silence, CP_VoiceAlloc refuse sur un port sans sortie.
+static const double kEngineABI = 1.5;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -45,6 +48,10 @@ struct Port {
   PortSource*         src;
   preview_register_t  reg;
   bool                active;
+  // Un apercu de PISTE et un apercu MATERIEL ne se retirent pas par la meme
+  // fonction. Se tromper laisse l'apercu vivant et le PCM_source detruit sous
+  // ses pieds : ce n'est pas un bug, c'est un plantage de l'hote.
+  bool                hardware;
 };
 static Port g_ports[kMaxPorts];
 
@@ -90,6 +97,11 @@ static void OnAudioBuffer(bool isPost, int len, double srate,
 static int decode_to_pool(const char* path) {
   if (!path || !*path || !g_eng) return -1;
 
+  // La memoire d'un clip retire n'est rendue qu'apres deux blocs audio. Ce
+  // passage est le bon endroit pour la reclamer : c'est la seule fonction dont
+  // on sait qu'elle sera rappelee, et elle est sur le fil principal.
+  g_eng->pool().collect(g_eng->block_index());
+
   PCM_source* src = PCM_Source_CreateFromFile(path);
   if (!src) return -1;
 
@@ -103,7 +115,18 @@ static int decode_to_pool(const char* path) {
 
   frame_t frames = (frame_t)(len_s * esr + 0.5);
   if (frames <= 0) { PCM_Source_Destroy(src); return -1; }
-  if (frames > kMaxClipFrames) frames = kMaxClipFrames; // plafond produit
+
+  // LE PLAFOND REFUSE, IL NE TRONQUE PAS.
+  //
+  // Il tronquait, et c'etait la faute que ce depot se reproche partout ailleurs :
+  // le contrat annonce « rend nil au-dela de 64 s », le code rendait un clip
+  // ampute sans un mot. Un fichier de trois minutes serait entre dans le vivier
+  // comme une boucle de soixante-quatre secondes, et le defaut se serait
+  // manifeste comme une fin prematuree inexplicable, jamais comme un refus.
+  //
+  // -2 et non -1 : l'appelant doit pouvoir dire « ce fichier est trop long »
+  // plutot que « ce fichier est illisible ». Ce n'est pas la meme phrase.
+  if (frames > kMaxClipFrames) { PCM_Source_Destroy(src); return -2; }
 
   const int slot = g_eng->pool().acquire();
   if (slot < 0) { PCM_Source_Destroy(src); return -1; }
@@ -170,8 +193,11 @@ double CP_ClipLoad(const char* path) { return (double)decode_to_pool(path); }
 
 void CP_ClipUnload(double clip) {
   if (!g_eng) return;
-  g_eng->pool().retire((int)clip, g_eng->block_index());
+  // collect() AVANT retire() : ce passage rend ce que le PRECEDENT retrait a
+  // laisse derriere lui. Appele apres, il ne rendrait jamais rien — la barriere
+  // de deux blocs n'est par construction jamais franchie dans le meme appel.
   g_eng->pool().collect(g_eng->block_index());
+  g_eng->pool().retire((int)clip, g_eng->block_index());
 }
 
 bool CP_ClipInfo(double clip, double* framesOut, double* srateOut, double* nchOut) {
@@ -184,8 +210,16 @@ bool CP_ClipInfo(double clip, double* framesOut, double* srateOut, double* nchOu
   return true;
 }
 
-bool CP_PortAttach(MediaTrack* track, int port) {
-  if (!g_eng || !track || port < 0 || port >= kMaxPorts) return false;
+// Installe l'apercu permanent d'un port. `track` non nul => la sortie traverse
+// la chaine d'effets de cette piste ; `track` nul => sortie materielle a partir
+// du canal outchan (0 = la premiere paire).
+//
+// La sortie materielle n'est pas un ajout de confort : c'est le comportement
+// par defaut d'un navigateur de fichiers, qui ecoute avant de choisir une piste.
+// Sans elle, le moteur natif ne peut tout simplement pas remplacer CF_Preview
+// dans CP_MediaExplorer.
+static bool port_open(int port, MediaTrack* track, int outchan) {
+  if (!g_eng || port < 0 || port >= kMaxPorts) return false;
   if (g_ports[port].active) return true;   // idempotent, comme tout le reste
 
   PortSource* s = new (std::nothrow) PortSource(g_eng, port);
@@ -199,15 +233,28 @@ bool CP_PortAttach(MediaTrack* track, int port) {
   pthread_mutex_init(&p.reg.mutex, NULL);
 #endif
   p.reg.src = s;
-  p.reg.m_out_chan = -1;          // -1 => preview_track est pris en compte
   p.reg.curpos = 0.0;
   p.reg.loop = true;              // ne s'arrete jamais de lui-meme
   p.reg.volume = 1.0;
-  p.reg.preview_track = track;
+  p.hardware = (track == nullptr);
 
   // measure_align = 0 : c'est NOUS qui datons, a l'echantillon. L'alignement de
   // mesure de REAPER est plus grossier que ce que le moteur sait faire.
-  if (!PlayTrackPreview2Ex(0, &p.reg, 0, 0.0)) {
+  // Un pointeur de fonction non resolu s'appelle une fois et emporte l'hote.
+  // REAPERAPI_LoadAPI ne rend une erreur que pour les fonctions qu'il juge
+  // indispensables ; celles-ci sont chargees au mieux.
+  int ok = 0;
+  if (p.hardware) {
+    p.reg.m_out_chan = (outchan < 0) ? 0 : outchan;
+    p.reg.preview_track = nullptr;
+    if (PlayPreviewEx) ok = PlayPreviewEx(&p.reg, 0, 0.0);
+  } else {
+    p.reg.m_out_chan = -1;        // -1 => preview_track est pris en compte
+    p.reg.preview_track = track;
+    if (PlayTrackPreview2Ex) ok = PlayTrackPreview2Ex(0, &p.reg, 0, 0.0);
+  }
+
+  if (!ok) {
 #ifdef _WIN32
     DeleteCriticalSection(&p.reg.cs);
 #endif
@@ -219,15 +266,25 @@ bool CP_PortAttach(MediaTrack* track, int port) {
   return true;
 }
 
+bool CP_PortAttach(MediaTrack* track, int port) {
+  if (!track) return false;
+  return port_open(port, track, -1);
+}
+
+bool CP_PortAttachOut(int port, int outchan) {
+  return port_open(port, nullptr, outchan);
+}
+
 void CP_PortDetach(int port) {
   if (port < 0 || port >= kMaxPorts) return;
   Port& p = g_ports[port];
   if (!p.active) return;
-  // StopTrackPreview2 rend la main quand l'apercu est retire : a partir de la,
-  // ce port ne rend plus. C'est SEULEMENT a ce moment qu'on peut reprendre ses
-  // voix de force — sinon une voix en fondu de sortie n'a plus personne pour
-  // faire avancer son fondu, et son slot est perdu jusqu'au redemarrage.
-  StopTrackPreview2(0, &p.reg);
+  // L'arret rend la main quand l'apercu est retire : a partir de la, ce port ne
+  // rend plus. C'est SEULEMENT a ce moment qu'on peut reprendre ses voix de
+  // force — sinon une voix en fondu de sortie n'a plus personne pour faire
+  // avancer son fondu, et son emplacement est perdu jusqu'au redemarrage.
+  if (p.hardware) { if (StopPreview) StopPreview(&p.reg); }
+  else            { if (StopTrackPreview2) StopTrackPreview2(0, &p.reg); }
   if (g_eng) g_eng->port_reset(port);
 #ifdef _WIN32
   DeleteCriticalSection(&p.reg.cs);
@@ -235,6 +292,12 @@ void CP_PortDetach(int port) {
   delete p.src;
   p.src = nullptr;
   p.active = false;
+  p.hardware = false;
+}
+
+bool CP_PortActive(int port) {
+  if (port < 0 || port >= kMaxPorts) return false;
+  return g_ports[port].active;
 }
 
 void CP_PortGain(int port, double gain) {
@@ -246,6 +309,12 @@ void CP_PortGain(int port, double gain) {
 
 double CP_VoiceAlloc(int port) {
   if (!g_eng) return (double)kNullVoice;
+  // Un port sans sortie ne rend pas, donc son anneau n'est jamais draine : une
+  // voix allouee la ne sonnerait jamais ET ne pourrait jamais etre rendue. On
+  // refuse au lieu de fuir en silence. C'est aussi la reponse honnete a
+  // l'appelant : « il n'y a pas de sortie », et non « plus de voix ».
+  if (port < 0 || port >= kMaxPorts || !g_ports[port].active)
+    return (double)kNullVoice;
   return (double)g_eng->voice_alloc(port);
 }
 
@@ -296,6 +365,8 @@ bool CP_VoiceSet(double h, const char* param, double value) {
   else if (!strcmp(param, "loop_end"))   id = kParamLoopEnd;
   else if (!strcmp(param, "fade_in"))    id = kParamFadeIn;
   else if (!strcmp(param, "fade_out"))   id = kParamFadeOut;
+  else if (!strcmp(param, "pos"))        id = kParamPos;
+  else if (!strcmp(param, "loop"))       id = kParamLoop;
   else return false;
   Cmd c; memset(&c, 0, sizeof(c));
   c.type = kCmdVoiceSet; c.voice = v; c.at = kNow; c.u0 = id; c.a = value;
@@ -608,6 +679,11 @@ double CP_ClockSync() {
   const double  p = GetPlayPosition();
   g_anchor_smp = s;
   g_anchor_pos = p;
+  // Le battement du fil principal, et donc le bon endroit pour rendre la memoire
+  // des clips retires : le contrat dit qu'une fenetre appelle ceci une fois par
+  // frame. Sans point de passage regulier, un clip decharge pendant qu'aucun
+  // autre n'est charge garderait sa RAM jusqu'a la fermeture.
+  g_eng->pool().collect(g_eng->block_index());
   return (double)s;
 }
 
@@ -636,11 +712,12 @@ const char* CP_Diag() {
     calls += g_ports[i].src->calls();
   }
   snprintf(buf, buf_sz,
-           "abi=%.1f srate=%.0f bloc=%d clock=%lld blocks=%lld voices=%d clips=%d "
-           "ram=%.2fMo ports=%d hook=%d calls=%lld maxgap=%.6f dropped=%u",
+           "abi=%.1f srate=%.0f bloc=%d clock=%lld blocks=%lld voices=%d/%d "
+           "clips=%d ram=%.2fMo ports=%d hook=%d calls=%lld maxgap=%.6f dropped=%u",
            kEngineABI, g_eng->srate(), g_eng->last_block_frames(),
            (long long)g_eng->clock_now(),
-           (long long)g_eng->block_index(), g_eng->active_voices(),
+           (long long)g_eng->block_index(),
+           g_eng->active_voices(), g_eng->owned_voices(),
            g_eng->pool().loaded_count(),
            (double)g_eng->pool().bytes_resident() / (1024.0 * 1024.0),
            nports, g_hook_on ? 1 : 0, (long long)calls, maxgap,
@@ -681,6 +758,8 @@ VA(CP_ClipInfo)   {
                           (double*)argp(arg, narg, 2), (double*)argp(arg, narg, 3)));
 }
 VA(CP_PortAttach) { return retb(CP_PortAttach((MediaTrack*)argp(arg, narg, 0), argi(arg, narg, 1))); }
+VA(CP_PortAttachOut) { return retb(CP_PortAttachOut(argi(arg, narg, 0), argi(arg, narg, 1))); }
+VA(CP_PortActive) { return retb(CP_PortActive(argi(arg, narg, 0))); }
 VA(CP_PortDetach) { CP_PortDetach(argi(arg, narg, 0)); return nullptr; }
 VA(CP_PortGain)   { CP_PortGain(argi(arg, narg, 0), argd(arg, narg, 1)); return nullptr; }
 VA(CP_VoiceAlloc) { return retd(CP_VoiceAlloc(argi(arg, narg, 0))); }
@@ -732,17 +811,19 @@ VA(CP_Diag) { (void)arg; (void)narg; return (void*)CP_Diag(); }
 static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_EngineABI, "double\0\0\0Version de l'ABI du moteur. A verifier AVANT tout autre appel.");
   REG(CP_Srate, "double\0\0\0Taux d'echantillonnage courant du moteur.");
-  REG(CP_ClipLoad, "double\0const char*\0path\0Decode un fichier en RAM au taux du moteur. Rend l'identifiant du clip, ou -1.");
+  REG(CP_ClipLoad, "double\0const char*\0path\0Decode un fichier en RAM au taux du moteur. Rend l'identifiant du clip, -1 si illisible, -2 si plus long que le plafond de 64 s.");
   REG(CP_ClipUnload, "void\0double\0clip\0Libere un clip. La memoire n'est rendue qu'apres deux blocs audio.");
   REG(CP_ClipInfo, "bool\0double,double*,double*,double*\0clip,framesOut,srateOut,nchOut\0Renseigne un clip charge.");
-  REG(CP_PortAttach, "bool\0MediaTrack*,int\0track,port\0Installe un apercu permanent sur la piste. Idempotent.");
-  REG(CP_PortDetach, "void\0int\0port\0Retire l'apercu d'une colonne.");
+  REG(CP_PortAttach, "bool\0MediaTrack*,int\0track,port\0Installe un apercu permanent sur la piste (pre-FX). Idempotent.");
+  REG(CP_PortAttachOut, "bool\0int,int\0port,outchan\0Installe un apercu permanent sur la SORTIE MATERIELLE, sans piste. outchan 0 = premiere paire. Idempotent.");
+  REG(CP_PortActive, "bool\0int\0port\0Ce port a-t-il une sortie. Une voix ne peut etre allouee que sur un port actif.");
+  REG(CP_PortDetach, "void\0int\0port\0Retire l'apercu d'une colonne et reprend ses voix.");
   REG(CP_PortGain, "void\0int,double\0port,gain\0Gain lineaire d'une colonne.");
   REG(CP_VoiceAlloc, "double\0int\0port\0Reserve une voix sur un port. Rend un handle, ou 4294967295.");
   REG(CP_VoiceRelease, "void\0double\0voice\0Rend une voix. Toute commande ulterieure sur ce handle est ignoree.");
   REG(CP_VoicePlayAtSample, "bool\0double,double,double,int,double,double\0voice,clip,atSample,mode,rate,gain\0Rendez-vous EXACT a l'echantillon. mode 0=une fois, 1=boucle.");
   REG(CP_VoiceStopAtSample, "bool\0double,double,double\0voice,atSample,fade\0Coupure datee a l'echantillon. fade en secondes, 0 = nette.");
-  REG(CP_VoiceSet, "bool\0double,const char*,double\0voice,param,value\0param: rate gain pan loop_start loop_end fade_in fade_out");
+  REG(CP_VoiceSet, "bool\0double,const char*,double\0voice,param,value\0param: rate gain pan loop_start loop_end fade_in fade_out pos loop. 'pos' postee juste apres un play en devient le point de depart.");
   REG(CP_VoiceQueueNext, "bool\0double,double,double\0voice,nextVoice,xfade\0Enchainement exact : la suivante demarre au frame ou celle-ci s'eteint.");
   REG(CP_VoiceState, "bool\0double,double*,double*\0voice,posOut,stateOut\0Position en frames source et etat (0 libre,1 arme,2 joue,3 s'eteint).");
   REG(CP_VoiceStartedAt, "double\0double\0voice\0Frame absolu du premier echantillon reellement audible, -1 si pas encore demarre. Verite terrain, sans course.");
@@ -761,6 +842,7 @@ static void register_all(reaper_plugin_info_t* rec) {
 static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_EngineABI);   UNREG(CP_Srate);            UNREG(CP_ClipLoad);
   UNREG(CP_ClipUnload);  UNREG(CP_ClipInfo);         UNREG(CP_PortAttach);
+  UNREG(CP_PortAttachOut); UNREG(CP_PortActive);
   UNREG(CP_PortDetach);  UNREG(CP_PortGain);         UNREG(CP_VoiceAlloc);
   UNREG(CP_VoiceRelease);UNREG(CP_VoicePlayAtSample);UNREG(CP_VoiceStopAtSample);
   UNREG(CP_VoiceSet);    UNREG(CP_VoiceQueueNext);   UNREG(CP_VoiceState);
