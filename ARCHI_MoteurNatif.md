@@ -731,3 +731,90 @@ plugin, et §3.2 / §3.3 / §8-étape-6 perdent leur seule justification déclar
    premier et ne peut pas cibler le second (il faudrait `v141_xp`, en fin de vie).
    À écrire **avant** l'étape 0 : sans ça le toolset sera choisi par défaut, et
    irréversiblement.
+
+### 12.6 Décision d'architecture — aucun objet CP dans la chaîne FX de l'utilisateur
+
+*Arrêtée par Cédric le 2026-07-31, après lecture du §3.0.*
+
+> **Critère :** le système ne doit rien poser dans la chaîne d'effets d'une piste
+> utilisateur. Un objet inséré est un objet que l'utilisateur peut déplacer,
+> désactiver ou supprimer en réorganisant sa chaîne — fonctionnel, mais toujours
+> bancal. L'objectif est un système **indépendant**, qui marche sans rien d'autre.
+
+C'est un critère de **propriété**, pas de capacité. Il ne contredit aucune mesure ;
+il départage des routes que la technique laissait à égalité. Il devient une ligne
+du tableau §3.3, et c'est la plus lourde :
+
+| | JSFX lecteur (§3.0) | plugin CP Port (§3.2) | aperçu + extension (§3.1) |
+|---|---|---|---|
+| **aucun objet dans la chaîne de l'utilisateur** | **non** | **non** | **oui** |
+
+**Conséquence 1 — la route §3.0 est écartée comme produit.** Elle reste le moyen
+le moins cher de *mesurer* si le calage est atteignable (mesure 1c), et elle reste
+le filet si la route aperçu tombe. Elle n'est plus la cible.
+
+**Conséquence 2, non anticipée — le `CP Port` tombe sous le même critère.** Un
+CLAP ou un VST3 est **aussi** un objet dans la chaîne. Si un JSFX inséré est du
+bricolage, un plugin inséré l'est autant : ils ont exactement le même défaut. Donc
+**le §2.2 passe de trois morceaux à deux** :
+
+| | rôle |
+|---|---|
+| **Extension** `reaper_cpclip` | le moteur entier, plus la surface `CP_*` appelable depuis Lua |
+| **Lua** | toutes les fenêtres, le toolkit, le modèle de session |
+
+Un seul binaire. Le §8-étape-6, le choix VST3/CLAP du §5 et tout le §4.3
+deviennent sans objet **tant que ce critère tient**. C'est une simplification
+majeure du plan, obtenue en ajoutant une contrainte.
+
+**Conséquence 3 — B2 devient le trou n°1**, et il se comble par conception, pas
+par mesure. La route aperçu est désormais la seule, et son `GetSamples` ne reçoit
+aucune référence de transport. La forme retenue reste celle du §9.4 : le fil
+principal pousse un instantané du transport (position, tempo, état, horodatage),
+le fil audio interpole en comptant ses échantillons, et **`time_s` du bloc sert de
+détecteur de discontinuité** (§12.5.1) — pas de source de vérité.
+
+**Conséquence 4 — le MIDI est le seul point qui résiste.** Une extension ne peut
+pas injecter de MIDI horodaté dans la chaîne d'une piste. Deux issues, et une
+seule mesure les départage :
+
+- **(a)** `PCM_source_transfer_t` porte `midi_events` (`reaper_plugin.h:448`). Si
+  un aperçu de piste transmet ce MIDI à la piste, alors **l'affranchissement du
+  JSFX est total** : audio et MIDI par le même objet, un seul binaire, aucun objet
+  dans la chaîne. C'est l'architecture cible complète.
+- **(b)** S'il ne le transmet pas, le `CP_MidiLooper.jsfx` **reste** — il marche,
+  il mesure 1 ms, et il est le seul véhicule possible. La promesse « indépendant »
+  serait alors tenue pour l'audio et non pour le MIDI.
+
+> **C'est donc la question la plus rentable du projet, et elle se répond en une
+> journée de sonde.** Elle doit passer avant toute écriture de moteur : elle décide
+> si la cible est « un binaire » ou « un binaire + le JSFX MIDI ».
+
+**Conséquence 5 — la colonne mixte se paie en pistes, pas en plugin.** Si l'aperçu
+entre pré-FX (hypothèse §3.3, à mesurer), une colonne ne peut pas porter un
+instrument *et* de l'audio. Sous ce critère, la réponse n'est plus « ajouter un
+plugin » mais « la colonne audio est une piste, la colonne instrument en est une
+autre ». À arbitrer comme un choix de produit.
+
+### 12.7 Ordonnancement révisé sous le critère 12.6
+
+Remplace le tableau du §12.3. Les étapes −2, −1, 3, 4, 5 et 10 sont inchangées :
+elles ne dépendaient d'aucune route.
+
+| # | étape | coût | on arrête si | coût d'abandon |
+|---|---|---|---|---|
+| −2 | écrire la durée max d'un clip (§12.1) | 1 ligne | — | nul |
+| −1 | journée d'ergonomie + les 3 bugs Lua (§12.2 / B10) | 1 j | — | **négatif** |
+| 0 | **mesure 3** (anticipation) et **mesure 2** (cuisson) — Lua seul | 1 j | — | nul |
+| 1 | **la sonde native**, boîte de temps 3 j, avec l'instrumentation B4. Répond dans l'ordre : `midi_events` dans un aperçu de piste ; pré-FX ou post-FX ; famine à 64 avec source en RAM ; contiguïté de `time_s` | 3 j | la sonde ne charge pas, ou l'aperçu s'affame avec une source RAM | 3 j, zéro Lua touché |
+| 2 | **`CP_Engine/Voice.lua`** — l'ABI du §6 + l'annulation, sur le chemin actuel (RS5K) | 2 j | — | **négatif** |
+| 3 | **l'identité** — ClipSlot minimal, ~250 l., 12 sites | 1 j | — | survit à 100 % |
+| 4 | **une voix juste**, boîte 10 j | 10 j | pas 0 ms à n'importe quel tampon | gratuit côté produit |
+| 5 | bascule derrière `Voice.lua` | | régression sur 3 sessions réelles | `git revert` |
+| 6 | livraison ReaPack (`@provides` du Lua, puis le binaire) | 2 j | — | nul |
+| 7 | **la persistance `.RPP`, EN DERNIER**, si B1 est répondu | | B1 négatif | **point de non-retour** |
+
+Deux changements par rapport au §12.3 : le prototype JSFX sort du chemin produit
+(il ne reste que comme instrument de mesure si la sonde échoue), et **la sonde
+native passe avant `Voice.lua`** — parce que sous le critère 12.6 elle ne prouve
+plus seulement une chaîne de compilation : elle décide de la forme de la cible.
