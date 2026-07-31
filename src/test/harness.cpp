@@ -338,6 +338,37 @@ static void test_rate() {
 }
 
 // ---------------------------------------------------------------------------
+// 7bis. Changement de taux d'echantillonnage en cours de route
+// ---------------------------------------------------------------------------
+static void test_srate_change() {
+  group("changement de taux d'echantillonnage");
+
+  // Un clip decode a 48 kHz, joue par un moteur passe a 24 kHz : la matiere ne
+  // bouge pas, c'est la lecture qui doit avancer deux fois plus vite pour que la
+  // hauteur soit preservee. Sans ca, le son « reprend correctement mais avec le
+  // pitch change » — exactement ce qu'a montre le changement de peripherique.
+  EBox eb; Engine& e = *eb;
+  const int clip = make_ramp_clip(e, 4096, 2);   // stocke a 48000
+  const voice_h v = e.voice_alloc(0);
+
+  e.set_srate(24000.0);
+
+  Cmd c = mk(kCmdVoicePlay, v, 0);
+  c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayOnce;
+  e.post(0, c);
+
+  const int bs = 64, nb = 10;
+  sample_t* buf = (sample_t*)std::calloc((size_t)nb * bs * 2, sizeof(sample_t));
+  run_blocks(e, 0, buf, nb, bs);
+
+  // A moitie taux de sortie, le frame N doit lire la source 2N -> valeur 2N+1.
+  check_near(buf[0], 1.0, 1e-3, "frame 0 -> source 0");
+  check_near(buf[(size_t)100 * 2], 201.0, 1e-2, "frame 100 -> source 200");
+  check_near(buf[(size_t)300 * 2], 601.0, 1e-2, "frame 300 -> source 600");
+  std::free(buf);
+}
+
+// ---------------------------------------------------------------------------
 // 8. Handles perimes et robustesse
 // ---------------------------------------------------------------------------
 static void test_handles() {
@@ -434,6 +465,7 @@ int main() {
   test_dated_stop();
   test_chain();
   test_rate();
+  test_srate_change();
   test_handles();
   test_load_and_alloc_trap();
   test_clock();

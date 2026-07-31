@@ -52,7 +52,6 @@ static inline float hermite(float xm1, float x0, float x1, float x2, float t) {
 
 void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
                    frame_t block_start, double engine_srate) {
-  (void)engine_srate;
   if (state == kVoiceIdle) return;
 
   const Clip* c = pool.get(clip);
@@ -105,7 +104,17 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
   float g = gain;
   const float gstep = (n > off) ? (gain_target - gain) / (float)(n - off) : 0.0f;
 
-  const bool unity = (rate > 0.99999999 && rate < 1.00000001);
+  // Le clip est stocke au taux ou il a ete decode. Si l'appareil change de taux
+  // en cours de route, cette matiere ne bouge pas — c'est la LECTURE qui doit
+  // s'adapter, sinon la hauteur change. Defaut trouve en changeant de taux
+  // d'echantillonnage pendant que le moteur jouait : « le son reprend, mais
+  // avec le pitch change ». Le taux de sortie est une entree PAR BLOC, jamais
+  // une constante d'initialisation.
+  const double sr_ratio = (engine_srate > 1.0 && c->srate > 1.0)
+                        ? (c->srate / engine_srate) : 1.0;
+  const double step = rate * sr_ratio;
+
+  const bool unity = (step > 0.99999999 && step < 1.00000001);
 
   for (int i = off; i < n; ++i) {
     // --- fin de matiere ------------------------------------------------------
@@ -176,7 +185,7 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
     o[0] += l * gg * gl;
     if (nch > 1) o[1] += r * gg * gr;
 
-    pos += rate;
+    pos += step;
   }
 
   gain = gain_target;
