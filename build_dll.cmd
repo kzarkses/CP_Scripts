@@ -24,5 +24,20 @@ cl /nologo /std:c++17 /O2 /Oi /Gy /EHsc /GR- /MT /W4 /wd4324 /Zc:__cplusplus ^
 if errorlevel 1 exit /b 1
 echo.
 echo === construit : build\reaper_cpclip.dll ===
-dir /b build\reaper_cpclip.dll
+
+REM La sonde Lua, elle, se remplace a chaud : REAPER ne la verrouille pas.
+copy /Y lua\CP_NativeProbe.lua "%APPDATA%\REAPER\Scripts\CP_Scripts\WIP\" >nul 2>&1
+
+REM La DLL, non. REAPER la tient ouverte tant qu'il tourne, et aucune extension
+REM ne se recharge a chaud : c'est la nature du format, pas un defaut de montage.
+tasklist /FI "IMAGENAME eq reaper.exe" 2>nul | find /I "reaper.exe" >nul
+if not errorlevel 1 (
+  echo.
+  echo   REAPER TOURNE : la DLL n'a PAS ete installee.
+  echo   Ferme REAPER et relance ce script.
+  exit /b 2
+)
+copy /Y build\reaper_cpclip.dll "%APPDATA%\REAPER\UserPlugins\" >nul
+if errorlevel 1 exit /b 1
+echo   installee dans UserPlugins — redemarre REAPER.
 exit /b 0
