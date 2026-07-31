@@ -535,6 +535,16 @@ Consigné pour que la trace soit honnête et qu'on n'y revienne pas.
     mieux (`CP_MidiLooper.jsfx:624-723`). Le moteur doit donc posséder **un
     emplacement « suivant » par voix** — `CP_VoiceQueueNext(h, next_h, at, xfade)`.
     Un champ, pas un modèle de session.
+14. **« Une extension ne peut pas injecter du MIDI horodaté dans la chaîne d'une
+    piste, il faut être dans le graphe »** (§4.3) — **MESURÉ FAUX le
+    2026-07-31** (§12.10). Elle le peut, par le `midi_events` du bloc d'une
+    `PCM_source` d'aperçu : huit notes déposées, huit notes entendues. C'était
+    l'unique justification restante du `CP Port`, qui disparaît donc du plan.
+    C'est la deuxième fois que j'affirme « une extension ne peut pas » et que la
+    mesure me contredit (voir §11.1) — le motif est assez net pour servir de
+    règle : **sur ce SDK, ne jamais conclure à l'impossibilité sans l'avoir
+    essayé.**
+
 13. **« Le natif retire la moitié audio de CP_Session »** (§7) — **chiffré :
     ~140 lignes sur 1685, soit 8 %.** Le bloc RS5K `CP_Session.lua:472-671`,
     `rateFor` 445-457, `retune` 1046-1059, la ré-estampille 2075-2088. 25 % du
@@ -865,3 +875,48 @@ Par ordre de valeur :
    de projet sous une voix, plusieurs onglets.
 5. **Le warp**, non commencé : `IReaperPitchShift`, sa latence par amorçage, son
    coût par voix sur la machine cible.
+
+### 12.10 Le MIDI passe — mesuré le 2026-07-31
+
+Sonde `CP_MidiProbe`, extension ABI 1.2. Huit notes de do majeur déposées dans le
+`midi_events` du bloc rendu par notre `PCM_source`, une piste portant un
+instrument.
+
+```
+midi_events_fourni_par_reaper=1   evenements_remis=16
+```
+
+**Les huit notes ont sonné**, do à do, confirmé à l'oreille. 16 événements = 8
+note-on + 8 note-off, aucune perdue.
+
+> **REAPER route le MIDI horodaté d'un aperçu de piste vers la chaîne de cette
+> piste.**
+
+**Conséquence, et elle est définitive : le `CP Port` disparaît du plan.** Il
+n'avait plus que le MIDI comme justification (§12.6, conséquence 4) après que le
+critère « aucun objet dans la chaîne FX » eut écarté le JSFX lecteur *et* le
+plugin. Il n'en a plus aucune :
+
+| justification du CP Port | statut |
+|---|---|
+| verser l'audio dans la piste | **fait par l'aperçu** (§12.8) |
+| émettre le MIDI | **fait par l'aperçu** (ici) |
+| colonne mixte | l'aperçu entre pré-FX, mesuré ; dépend de l'instrument, pas du plugin |
+| rendu accéléré / gel | contrainte mineure pour un instrument de scène |
+| lever le plafond de 4 colonnes | ce plafond vient des 16 canaux MIDI (§11.11), et il disparaît avec le JSFX |
+
+Le système est **extension + Lua. Un seul binaire.** Les §2.2, §3.2, §4.3 et
+§8-étape-6 sont caducs.
+
+**Ce que cela ne dit PAS.** Le véhicule existe ; le moteur MIDI, non. Le
+`CP_MidiLooper.jsfx` ne fait pas qu'émettre des notes : il tient les boucles en
+gmem, réconcilie à chaque bloc les notes qui sonnent contre celles qui couvrent
+la phase (porte par bloc), capture l'entrée live, et possède le quantize, les
+états en attente et l'horloge libre. Tout cela reste à porter dans l'extension,
+et c'est un vrai chantier — pas un basculement d'interrupteur. Ce qui est acquis,
+c'est qu'il n'y a **plus d'obstacle de principe**, et qu'aucun second binaire ne
+sera nécessaire.
+
+À vérifier ensuite, dans cet ordre : l'exactitude à l'échantillon du MIDI (elle
+est vraie par construction — `frame_offset` — mais elle se mesure comme l'audio
+s'est mesuré) ; puis la montée en charge, 8 ports et plusieurs voix à 64.
