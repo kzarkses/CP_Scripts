@@ -76,6 +76,12 @@ r.Undo_EndBlock2(0, "CP_LoadProbe : pistes de mesure", -1)
 
 local voix = {}
 local n_att, n_voix = 0, 0
+
+-- UN seul instant pour les 64 voix : c'est ce que fait un lancement de scene.
+-- Prendre l'horloge dans la boucle donnait a chaque voix un depart decale de
+-- quelques echantillons, ce qui simulait mal l'usage reel.
+local depart = r.CP_ClockNow() + srate * 0.5
+
 for i = 1, NPORTS do
     if r.CP_PortAttach(pistes[i], i - 1) then
         n_att = n_att + 1
@@ -86,8 +92,7 @@ for i = 1, NPORTS do
                 -- d'interpolation distinct, et aucune ne beneficie du
                 -- court-circuit « taux exactement 1,0 ».
                 local taux = 0.93 + 0.01 * ((i * NVOIX + j) % 15)
-                local at = r.CP_ClockNow() + srate * 0.25
-                r.CP_VoicePlayAtSample(v, clip, at, 1, taux, 0.12)
+                r.CP_VoicePlayAtSample(v, clip, depart, 1, taux, 0.12)
                 r.CP_VoiceSet(v, "pan", ((j % 3) - 1) * 0.5)
                 n_voix = n_voix + 1
                 voix[#voix + 1] = v
@@ -117,10 +122,15 @@ local function boucle()
     if arme then
         local d = r.CP_LoadDiag()
         log(d)
-        local rr = tonumber(d:match("ratio_min=([%d%.]+)"))
+        local nb = tonumber(d:match("blocs=(%d+)")) or 0
+        local rr = tonumber(d:match("ratio_min=([%-%d%.]+)"))
         local cc = tonumber(d:match("cpu=([%d%.]+)"))
-        if rr and rr < pire_ratio then pire_ratio = rr end
-        if cc and cc > pire_cpu then pire_cpu = cc end
+        -- Un ratio calcule sur moins de 200 blocs ne veut rien dire : juste
+        -- apres la remise a zero, le denominateur vaut zero. C'est ce qui a
+        -- produit un faux « un port manque des blocs » a la premiere campagne —
+        -- l'instrument mentait, pas le moteur.
+        if rr and rr >= 0 and nb >= 200 and rr < pire_ratio then pire_ratio = rr end
+        if cc and nb >= 200 and cc > pire_cpu then pire_cpu = cc end
         if math.floor(t) % 3 == 0 and math.floor(t) ~= math.floor(t - 0.05) then
             r.ShowConsoleMsg(string.format("  %2.0f s  %s\n", t, d))
         end
@@ -131,10 +141,14 @@ local function boucle()
     both("")
     both("=========== VERDICT ===========")
     both(r.CP_LoadDiag())
-    both(string.format("pire ratio observe : %.4f", pire_ratio))
-    both(pire_ratio > 0.999
-         and "  -> AUCUN port ne manque de bloc, meme le plus mal servi."
-         or  "  -> *** un port manque des blocs : c'est la limite de la route ***")
+    if pire_ratio > 9.0 then
+        both("pire ratio observe : mesure trop courte pour conclure")
+    else
+        both(string.format("pire ratio observe : %.4f", pire_ratio))
+        both(pire_ratio > 0.999
+             and "  -> AUCUN port ne manque de bloc, meme le plus mal servi."
+             or  "  -> *** un port manque des blocs : c'est la limite de la route ***")
+    end
     both(string.format("pire cpu observe   : %.2f %% du fil audio", pire_cpu))
     both(string.format("  -> extrapolation grossiere sur un CPU de 2005 (x8) : %.0f %%",
                        pire_cpu * 8))

@@ -407,7 +407,10 @@ const char* CP_LoadDiag() {
       if (rr < ratio_min) ratio_min = rr;
     }
   }
-  if (ratio_min > 1e8) ratio_min = 0.0;
+  // -1 et non 0 quand rien n'est encore mesurable : un zero se lit comme « le
+  // port ne recoit rien », ce qui est le contraire de « on ne sait pas encore ».
+  // La premiere campagne a rendu un faux verdict pour cette seule raison.
+  if (ratio_min > 1e8 || db <= 0) ratio_min = -1.0;
 
   // Part du fil audio consommee par le moteur : temps passe dans GetSamples
   // rapporte au temps que ces blocs representent reellement.
