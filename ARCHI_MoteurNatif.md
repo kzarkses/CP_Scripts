@@ -967,3 +967,77 @@ pas le moteur : les taux étaient délibérément tous différents, et les dépa
 seul instant pour les 64, comme un lancement de scène. Le chorus restant est le
 seul fait des taux, et l'entendre est rassurant : 64 voix qui sonneraient comme
 une seule ne seraient pas indépendantes.
+
+### 12.12 Le warp, mesuré — le dernier argument irréductible devient un chiffre
+
+Sonde `CP_WarpProbe`, `IReaperPitchShift` version 0x14, 48 kHz, stéréo, qualité
+« défaut du projet ».
+
+#### L'amorçage
+
+| taux | amorçage avant la première sortie | solde en vol |
+|---|---|---|
+| 0,75 | 4096 spl — **85 ms** | 165 ms |
+| 0,9375 | 4096 — 85 ms | 109 ms |
+| 1,0 | 4608 — **96 ms** | 91 ms |
+| 1,0667 | 4608 — 96 ms | 93 ms |
+| 1,3333 | 5120 — 107 ms | 103 ms |
+| 2,0 | 6656 — **139 ms** | 128 ms |
+
+Approximativement `2560 + 2048 × taux`, mesuré au pas de 256 échantillons.
+
+**Trois conclusions, et la deuxième n'était pas prévue :**
+
+1. **L'impulsion ressort à l'index 0 de la sortie.** La sortie commence donc à
+   l'échantillon source 0 : il n'y a **rien à jeter ni à décaler**. Le warp se
+   compense entièrement par un pré-roll, jamais par une correction — ce qui est
+   le cas favorable.
+2. **On n'a pas besoin de connaître l'amorçage.** L'étireur signale lui-même
+   qu'il est prêt en rendant ses premiers échantillons. Le moteur pousse de la
+   source et prend la sortie dès qu'elle existe. Le chiffre ne sert qu'à
+   **budgéter** la fenêtre de préavis.
+3. **Un clip warpé ne peut pas être lancé avec moins de ~150 ms de préavis.**
+   Pour un lancement quantifié c'est toujours vrai (une mesure à 120 BPM fait
+   2 s). Pour un lancement **immédiat**, non : ce serait 150 ms de latence.
+   §11.9 posait ce corollaire comme un principe ; c'est désormais une borne.
+
+#### Le coût
+
+| | |
+|---|---|
+| une voix étirée | **2,17 – 2,35 %** du temps réel |
+| 16 voix étirées | 374 ms pour 1 s d'audio = **2,34 % par voix** |
+| selon le taux (0,75 → 2,0) | 1,76 % à 2,35 % — **quasi insensible au taux** |
+| une voix **non** étirée (§12.11) | 3,39 % ÷ 64 = **0,053 %** |
+
+> **Une voix étirée coûte environ 42 voix non étirées.**
+
+Le coût est **linéaire jusqu'à 16 voix** (aucune falaise de cache) et **insensible
+au taux**. Un moteur peut donc budgéter d'avance, ce qui est rare.
+
+Extrapolé ×8 sur la machine cible : 1 voix ≈ 18 %, 2 ≈ 36 %, 4 ≈ 72 %, 16 ≈ 285 %.
+
+> **Décision : deux étireurs vivants, mutualisés. Tout le reste cuit hors ligne.**
+> Ce n'était qu'une recommandation de l'analyse adversariale ; c'est maintenant un
+> chiffre. Et cela correspond à l'usage réel : on warpe la boucle qu'on triture,
+> pas les douze qui tournent.
+
+Le §12.1 en sort confirmé dans sa forme définitive : **le taux constant se cuit
+hors ligne, ne coûte rien, et couvre le cas courant.** Le warp en direct est un
+luxe pour une ou deux colonnes.
+
+#### Encore un instrument fautif — le quatrième
+
+La première campagne a rendu `latence: premier=0 pic=0` pour tous les taux, ce qui
+se lit comme « l'étireur n'a aucune latence » — impossible pour un étireur à
+fenêtre. La cause : **je cherchais la latence au mauvais endroit.** Elle ne se
+manifeste pas par des zéros en tête de sortie, mais par une sortie qui n'existe
+pas encore. Les nombres étaient d'ailleurs déjà affichés — `in=20992 out=16638` —
+et je ne les avais pas lus.
+
+C'est la quatrième fois de la campagne qu'un instrument se trompe avant le code
+mesuré (l'horloge d'un bloc en avance, la course d'observation à −64, le zéro du
+ratio, ceci). **Aucune de ces quatre erreurs n'aurait été visible sans
+instrument, et chacune aurait été attribuée au moteur.** La règle du §12.11 —
+« un instrument doit distinguer zéro de je ne sais pas » — se double d'une
+seconde : **mesurer la grandeur qu'on croit mesurer, pas celle qui lui ressemble.**
