@@ -159,16 +159,16 @@ local function ensurePort()
 
     if port and bound_to == want and Voice.OutputActive(port) then return true end
 
-    if port then
-        -- Rebrancher, c'est retirer l'apercu : le port reprend ses voix au
-        -- passage, donc le handle qu'on tenait n'existe plus. Le dire ici plutot
-        -- que de le decouvrir sur une commande ignoree en silence.
-        Voice.UnbindTrack(port)
-        vh, cur, backend = nil, nil, "none"
-        Audition.playing_path = nil
-    end
-
+    -- On detache TOUJOURS avant de brancher, meme au premier passage. Le moteur
+    -- survit au script : le port d'audition peut etre deja attache par une
+    -- execution precedente, sur une autre sortie, et l'attache est idempotente —
+    -- elle repondrait « deja fait » sans rien rebrancher. Rebrancher reprend
+    -- aussi les voix du port, donc le handle qu'on tenait n'existe plus.
     port = Voice.AUDITION_PORT
+    Voice.UnbindTrack(port)
+    vh, cur, backend = nil, nil, "none"
+    Audition.playing_path = nil
+
     local ok
     if want then ok = Voice.BindTrack(port, want)
     else         ok = Voice.BindOutput(port, 0) end

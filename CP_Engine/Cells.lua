@@ -73,6 +73,7 @@ local function newSlot()
         rate = 1.0,
         v = { nil, nil }, vi = 1,
         armed = false,      -- une passe est deja armee pour la frontiere qui vient
+        dated = false,      -- ce depart-la a ete date : ne pas le rattraper
         running = false,
         last_start = -1,    -- diagnostic : frame demande de la derniere passe
         last_real = -1,     -- diagnostic : frame reellement atteint (verite terrain)
@@ -156,10 +157,19 @@ local function ensurePort(t)
     local dest = dest_fn and dest_fn(t) or Loop.GetLaneDest(t)
     if not (dest and r.ValidatePtr2(0, dest, "MediaTrack*")) then return false end
     if c.dest == dest and Voice.OutputActive(t) then return true end
-    if c.dest and c.dest ~= dest then
-        -- Rebrancher reprend les voix du port : les handles qu'on tenait
-        -- n'existent plus. Le dire ici plutot que de le decouvrir sur une
-        -- commande ignoree en silence.
+
+    -- LE MOTEUR SURVIT AU SCRIPT, et c'est le piege de cette fonction.
+    --
+    -- L'extension est chargee une fois par REAPER ; ce script meurt et repart
+    -- vingt fois par soiree, et pas toujours par sa fermeture propre. Un port
+    -- peut donc etre DEJA attache — a la piste d'une execution precedente, voire
+    -- a une piste supprimee depuis. Et l'attache est idempotente : elle repond
+    -- « oui, deja fait » sans rien rebrancher. On croirait tenir la bonne piste
+    -- et on verserait le son dans l'ancienne, ou dans rien.
+    --
+    -- On detache donc TOUJOURS avant de brancher. Detacher un port inactif ne
+    -- coute rien ; se tromper de piste coute une soiree a comprendre.
+    do
         Voice.UnbindTrack(t)
         for h = 0, 1 do
             local s = c.half[h]
@@ -189,10 +199,12 @@ end
 -- Appelee a chaque armement, donc IDEMPOTENTE et silencieuse : le fichier n'est
 -- relu que lorsqu'il change reellement.
 function Cells.Arm(t, lane, path, rate)
-    if not NATIVE or t < 0 or t >= TRACKS then return false end
-    if not ensurePort(t) then return false end
+    -- Chaque echec rend SA raison. « pas de son » sans raison coute une soiree ;
+    -- la raison coute une chaine de caracteres.
+    if not NATIVE or t < 0 or t >= TRACKS then return false, "no_engine" end
+    if not ensurePort(t) then return false, "no_track" end
     local slot = col[t].half[(lane >= TRACKS) and 1 or 0]
-    if not ensureVoices(t, slot) then return false end
+    if not ensureVoices(t, slot) then return false, "no_voice" end
 
     if slot.path ~= path then
         if slot.path then clipUnref(slot.path) end
@@ -248,6 +260,7 @@ end
 local function stopSlot(slot, fade)
     for i = 1, 2 do if slot.v[i] then Voice.Stop(slot.v[i], fade or 0.005) end end
     slot.armed = false
+    slot.dated = false
     slot.running = false
 end
 
@@ -279,6 +292,47 @@ local function schedulePass(slot, at_beat, len_beats, gate)
     end
 end
 
+-- ON A MANQUE LE DEPART, ET C'EST NORMAL : ON RATTRAPE.
+--
+-- Un lancement n'est pas toujours annonce. En horloge libre, le PREMIER clip
+-- d'une session silencieuse part immediatement — launch_target() rend le beat
+-- courant lui-meme, donc `pending` ne vaut jamais 1 et il n'y a aucune frontiere
+-- a dater. Meme chose pour une lane deja en train de tourner quand la fenetre
+-- s'ouvre, ou pour un lancement declenche depuis CP_Looper.
+--
+-- Attendre la frontiere suivante dans ces cas-la, c'est quatre mesures de
+-- silence. On entre donc en cours de passe, decale de la phase — et c'est le
+-- bon comportement : ce depart-la n'a personne avec qui etre d'accord, il EST le
+-- temps fort. Tout lancement quantifie, lui, passe par `pending` et reste exact
+-- a l'echantillon.
+local function startNow(slot, phase, len_beats, gate)
+    local tempo = Loop.Tempo()
+    if not tempo or tempo <= 0 then tempo = 120 end
+    local spb = 60.0 / tempo
+    local left = (len_beats * (gate or 0.97)) - phase
+    if left <= 0.01 then return end          -- la passe est deja finie : on attend
+
+    local h = slot.v[slot.vi]
+    slot.vi = (slot.vi == 1) and 2 or 1
+    if not h then return end
+
+    local opts = slot.opts
+    if not opts then opts = {} slot.opts = opts end
+    opts.rate = slot.rate
+    opts.gain = 1.0
+    opts.loop = false
+    -- La position dans la matiere, pas dans le temps : la voix avance de
+    -- `rate * srate_clip` echantillons source par seconde de sortie.
+    opts.offset = math.floor(phase * spb * slot.clip.srate * slot.rate + 0.5)
+    if opts.offset >= slot.clip.frames then return end
+
+    local at = Voice.Now()
+    if Voice.PlayAtSample(h, slot.clip.id, at, opts) then
+        slot.last_start = at
+        Voice.StopAtSample(h, at + math.floor(left * spb * Voice.Srate() + 0.5), 0.005)
+    end
+end
+
 -- Une moitie de lane, une frame.
 local function drive(t, half, gate)
     local slot = col[t].half[half]
@@ -304,6 +358,7 @@ local function drive(t, half, gate)
             local first = math.ceil(tgt / lenb - 1e-6) * lenb
             schedulePass(slot, first, lenb, gate)
             slot.armed = true
+            slot.dated = true    -- ce depart est date : rien a rattraper
         end
         return
     end
@@ -317,11 +372,17 @@ local function drive(t, half, gate)
     local stop_beat = (pend == 2 and tgt > WAIT_TEST) and tgt or nil
 
     if mode == 3 or mode == 5 then
-        slot.running = true
+        local phase = Loop.Phase(lane) or 0
+        if not slot.running then
+            slot.running = true
+            -- Personne ne nous avait annonce ce depart : on entre en cours de
+            -- passe plutot que d'attendre la suivante.
+            if slot.dated then slot.dated = false
+            else startNow(slot, phase, lenb, gate) end
+        end
         -- LES PASSES SUIVANTES SE RACCROCHENT A LA PHASE DU MOTEUR, relue a
         -- chaque frame. Pas d'accumulateur, donc pas de derive : un desaccord
         -- est corrige au tour suivant au lieu de s'additionner.
-        local phase = Loop.Phase(lane) or 0
         local to_next = lenb - phase
         -- L'avance ne peut pas depasser une demi-passe : sur une boucle plus
         -- courte que l'avance, la condition serait vraie en permanence et une
@@ -384,7 +445,17 @@ function Cells.Diag()
     end
     local nc = 0
     for _ in pairs(clips) do nc = nc + 1 end
-    return string.format("cells=natif armees=%d sonnantes=%d clips=%d", n, c, nc)
+    return string.format("voices armed=%d sounding=%d clips=%d", n, c, nc)
+end
+
+-- Y a-t-il quelque chose a dire ? Sert a n'occuper la zone de statut que quand
+-- le diagnostic apporte reellement une information.
+function Cells.Armed()
+    if not NATIVE then return false end
+    for t = 0, TRACKS - 1 do
+        if col[t].half[0].clip or col[t].half[1].clip then return true end
+    end
+    return false
 end
 
 -- ---------------------------------------------------------------------------

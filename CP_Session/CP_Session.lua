@@ -720,8 +720,13 @@ local function armLane(lane, c, t, s)
         -- up in the same place — the column's track, pre-FX — but one of them
         -- needs a child track and two plugin instances to get there.
         if NATIVE_CELLS then
-            if not Cells.Arm(t, lane, c.path, (rateFor(c))) then
-                flash("No track for this column — click its name to route it")
+            local ok, why = Cells.Arm(t, lane, c.path, (rateFor(c)))
+            if not ok then
+                -- Dire LAQUELLE des trois choses a manque. « pas de son » sans
+                -- raison coute une soiree ; la raison coute une chaine.
+                flash(why == "too_long" and "Sound is longer than the 64 s ceiling"
+                      or why == "failed" and "Could not decode this file"
+                      or "No track for this column — click its name to route it")
                 return false
             end
             -- Cut the router's sound send for this column. In a project
@@ -2444,6 +2449,13 @@ local function frame(theme)
         end
     end
     if not msg then msg = statusLine() end
+    -- Ce que le moteur de son fait vraiment, en clair. Une case muette sans
+    -- explication est le pire diagnostic possible : ici on lit combien de
+    -- moities portent un fichier, combien sonnent, et si le moteur natif est
+    -- meme de la partie.
+    if NATIVE_CELLS and Cells.Armed() then
+        msg = (msg ~= "" and msg or "") .. "   ·   " .. Cells.Diag()
+    end
     UI.AppStatus(msg)
 
     -- A meter that only moves when the mouse does is worse than no meter, so
