@@ -102,20 +102,43 @@ msg("port 0 attache a : " .. select(2, r.GetTrackName(tr)))
 local v = r.CP_VoiceAlloc(0)
 if v == 4294967295 then msg("ECHEC : plus de voix"); return end
 
-r.CP_ClockSync()
-local maintenant = r.GetPlayPosition()
-local cible_s    = maintenant + 1.0           -- dans une seconde pile
-local cible_smp  = r.CP_TimeToSample(cible_s)
+-- Premier tir : date sur l'horloge du MOTEUR seule. Elle tourne des que la
+-- carte son tourne, transport a l'arret compris — donc ce tir ne depend
+-- d'aucune hypothese sur le projet. Si rien ne sort ici, le probleme est la
+-- route apercu, et pas le calage.
+local smp0 = r.CP_ClockNow()
+local sr   = r.CP_Srate()
+if smp0 == 0 then
+    msg("")
+    msg("ATTENTION : l'horloge est a zero. Soit le hook materiel ne tourne pas,")
+    msg("soit le moteur du son est ferme. Regarde 'hook=' ci-dessous.")
+end
 
+local cible_smp = smp0 + sr          -- dans une seconde pile, en temps moteur
 r.CP_VoicePlayAtSample(v, clip, cible_smp, 1, 1.0, 1.0)  -- 1 = boucle
 
+-- Et, pour comparaison seulement, ce que l'ancre projet<->moteur en dit. Les
+-- deux doivent concorder quand le transport roule ; c'est la verification de
+-- l'ancre, pas du moteur.
+r.CP_ClockSync()
+local via_ancre = r.CP_TimeToSample(r.GetPlayPosition() + 1.0)
+
 msg("")
-msg(string.format("rendez-vous  : t=%.6f s  ->  frame %.0f", cible_s, cible_smp))
-msg("La boucle doit demarrer EXACTEMENT une seconde apres cet instant.")
-msg("Pour mesurer : arme la piste en enregistrement, enregistre, et compare")
-msg("l'attaque au clic du metronome dans l'editeur.")
+msg(string.format("horloge      : %.0f  (srate %.0f)", smp0, sr))
+msg(string.format("rendez-vous  : frame %.0f, soit dans 1,000 s pile", cible_smp))
+msg(string.format("via l'ancre  : frame %.0f  (ecart %.0f echantillons = %.2f ms)",
+                  via_ancre, via_ancre - cible_smp, (via_ancre - cible_smp) / sr * 1000))
 msg("")
-msg("Relance ce script pour arreter et tout liberer.")
+msg("Ce qu'il faut regarder dans les lignes qui suivent :")
+msg("  calls=   monte -> l'apercu TIRE bien notre source. Reste a 0 -> la route")
+msg("           apercu ne marche pas, et c'est la seule chose qui compte.")
+msg("  maxgap=  reste a 0.000000 -> l'hote demande de facon CONTIGUE, donc")
+msg("           compter les echantillons est legitime. Saute -> il faut se")
+msg("           recaler sur time_s a chaque bloc.")
+msg("  hook=1   le hook materiel bat. hook=0 -> un port fait office d'horloge.")
+msg("")
+msg("Pour mesurer le calage : arme la piste, enregistre, et compare l'attaque")
+msg("a un kick MIDI lance sur la meme frontiere.")
 
 -- ---------------------------------------------------------------------------
 -- 7. Suivi : une frame de defer, pour observer sans jamais bloquer
@@ -133,11 +156,19 @@ local function boucle()
     if r.time_precise() - t_start < 20.0 then
         r.defer(boucle)
     else
+        -- Demontage en deux temps. Liberer la voix puis detacher le port dans
+        -- la MEME frame ne marche pas : la commande d'extinction n'a pas encore
+        -- ete drainee, et le port cesse de rendre avant de l'avoir vue. Le
+        -- moteur reprend desormais ses voix lui-meme dans CP_PortDetach, mais on
+        -- laisse quand meme au fondu le temps de sortir proprement.
         r.CP_VoiceRelease(v)
-        r.CP_ClipUnload(clip)
-        r.CP_PortDetach(0)
-        msg("")
-        msg("=== sonde terminee, tout libere ===")
+        r.defer(function()
+            r.CP_ClipUnload(clip)
+            r.CP_PortDetach(0)
+            msg("")
+            msg("etat final : " .. r.CP_Diag())
+            msg("=== sonde terminee, tout libere ===")
+        end)
     end
 end
 

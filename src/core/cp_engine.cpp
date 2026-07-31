@@ -6,8 +6,8 @@
 namespace cp {
 
 Engine::Engine()
-    : srate_(48000.0), clock_(0), blocks_(0), dropped_(0), clock_external_(false),
-      clock_master_(-1), last_master_frames_(0) {
+    : srate_(48000.0), clock_(0), blocks_(0), dropped_(0), last_tick_(0),
+      clock_external_(false), clock_master_(-1), last_master_frames_(0) {
   for (int i = 0; i < kMaxVoices; ++i) {
     voices_[i].reset();
     voices_[i].gen = 1;
@@ -140,8 +140,25 @@ int Engine::active_voices() const {
 void Engine::tick(int frames) {
   if (frames <= 0) return;
   clock_external_ = true;
+  last_tick_.store(frames, std::memory_order_relaxed);
   clock_.fetch_add((frame_t)frames, std::memory_order_acq_rel);
   blocks_.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void Engine::port_reset(int port) {
+  if (port < 0 || port >= kMaxPorts) return;
+  ports_[port].cmds.clear();
+  ports_[port].last_clock = -1;
+  ports_[port].consumed = 0;
+  ports_[port].gain = ports_[port].gain_target = 1.0f;
+  ports_[port].used = false;
+  for (int i = 0; i < kMaxVoices; ++i) {
+    if (voices_[i].port != port) continue;
+    voices_[i].reset();
+    voices_[i].gen = (uint16_t)(voices_[i].gen + 1);
+    if (voices_[i].gen == 0) voices_[i].gen = 1;
+    owned_[i] = false;
+  }
 }
 
 void Engine::apply(const Cmd& c, frame_t block_start) {

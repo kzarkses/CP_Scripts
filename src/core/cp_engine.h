@@ -61,12 +61,26 @@ class Engine {
   frame_t clock_now() const { return clock_.load(std::memory_order_acquire); }
   frame_t block_index() const { return blocks_.load(std::memory_order_acquire); }
 
+  // Taille du dernier bloc peripherique observee. C'est le chiffre qui dit a
+  // quel tampon la machine tourne reellement — 64 ou 1024 ne se devinent pas.
+  int last_block_frames() const { return last_tick_.load(std::memory_order_relaxed); }
+
   // Battement : le fil principal l'appelle a chaque frame. Si le fil audio ne
   // consomme plus (peripherique ferme, projet en chargement), la difference
   // cesse de bouger et l'appelant peut cesser de remplir l'anneau.
   frame_t heartbeat() const { return clock_now(); }
 
   void panic();
+
+  // Rend au port toutes ses voix, immediatement et sans passer par l'anneau.
+  //
+  // A n'appeler QUE lorsque le port ne rend plus — c'est-a-dire apres que
+  // StopTrackPreview2 a rendu la main. Sans cela, une voix en cours
+  // d'extinction reste eternellement en kVoiceStopping : son port ayant cesse
+  // de rendre, plus personne ne fera jamais avancer son fondu, et son slot est
+  // perdu. Defaut trouve sur la sonde du 2026-07-31 (voices=2 pour une seule
+  // voix allouee).
+  void port_reset(int port);
 
   // --- fil audio ------------------------------------------------------------
 
@@ -100,6 +114,7 @@ class Engine {
   std::atomic<frame_t>  clock_;
   std::atomic<frame_t>  blocks_;
   std::atomic<uint32_t> dropped_;
+  std::atomic<int>      last_tick_;
   bool       clock_external_;    // vrai des que tick() a ete appele une fois
   int        clock_master_;      // port qui fait office d'horloge sans hook
   int        last_master_frames_;

@@ -218,7 +218,12 @@ void CP_PortDetach(int port) {
   if (port < 0 || port >= kMaxPorts) return;
   Port& p = g_ports[port];
   if (!p.active) return;
+  // StopTrackPreview2 rend la main quand l'apercu est retire : a partir de la,
+  // ce port ne rend plus. C'est SEULEMENT a ce moment qu'on peut reprendre ses
+  // voix de force — sinon une voix en fondu de sortie n'a plus personne pour
+  // faire avancer son fondu, et son slot est perdu jusqu'au redemarrage.
   StopTrackPreview2(0, &p.reg);
+  if (g_eng) g_eng->port_reset(port);
 #ifdef _WIN32
   DeleteCriticalSection(&p.reg.cs);
 #endif
@@ -353,9 +358,10 @@ const char* CP_Diag() {
     calls += g_ports[i].src->calls();
   }
   snprintf(buf, buf_sz,
-           "abi=%.1f srate=%.0f clock=%lld blocks=%lld voices=%d clips=%d "
-           "ram=%.1fMo ports=%d hook=%d calls=%lld maxgap=%.6f dropped=%u",
-           kEngineABI, g_eng->srate(), (long long)g_eng->clock_now(),
+           "abi=%.1f srate=%.0f bloc=%d clock=%lld blocks=%lld voices=%d clips=%d "
+           "ram=%.2fMo ports=%d hook=%d calls=%lld maxgap=%.6f dropped=%u",
+           kEngineABI, g_eng->srate(), g_eng->last_block_frames(),
+           (long long)g_eng->clock_now(),
            (long long)g_eng->block_index(), g_eng->active_voices(),
            g_eng->pool().loaded_count(),
            (double)g_eng->pool().bytes_resident() / (1024.0 * 1024.0),
