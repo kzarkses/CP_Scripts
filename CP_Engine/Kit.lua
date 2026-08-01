@@ -624,9 +624,17 @@ end
 -- Creation
 -- ---------------------------------------------------------------------------
 function Kit.Ensure()
-    if valid(Kit.parent) then return Kit.parent end
-    Kit.Scan()
-    if valid(Kit.parent) then return Kit.parent end
+    -- « Ce kit est-il un instrument » se demande AVANT de batir quoi que ce
+    -- soit : Ensure est le point d'entree de TOUT le montage RS5K (dossier,
+    -- bus, piste par pad), et l'appeler sur un kit JSFX referait exactement
+    -- ce qu'on vient de supprimer.
+    if not valid(Kit.parent) then Kit.Scan() end
+    if valid(Kit.parent) then
+        if Kit.IsFX() then
+            fxEnsure(Kit.parent)
+        end
+        return Kit.parent
+    end
 
     ubegin()
     local tr
@@ -682,6 +690,9 @@ end
 -- reason live MIDI was impossible to reason about. Playing it is arming it,
 -- yourself, once, like anything else in REAPER.
 function Kit.EnsureBus()
+    -- Un instrument n'a personne a qui envoyer du MIDI : il EST le
+    -- destinataire. Le bus n'existait que pour distribuer aux pistes des pads.
+    if Kit.IsFX() then return nil end
     if valid(Kit.bus) then return Kit.bus end
     local parent = Kit.Ensure()
     local count = r.CountTracks(0)
@@ -1513,6 +1524,14 @@ Kit.ENGINE_FX   = "jsfx"
 -- fx_dirty : le miroir a change et n'est pas encore ecrit
 
 function Kit.IsFX()
+    -- L'AIGUILLAGE NE DOIT PAS DEPENDRE D'UN CHAMP EN MEMOIRE. Kit.engine
+    -- n'est rempli que par Kit.Scan ; si une creation est interrompue, ou si
+    -- un geste arrive avant le premier scan, le kit repondrait « rs5k » et
+    -- l'ancien montage repartirait — on l'apprend soixante-cinq pistes plus
+    -- tard. LA PISTE PORTE LA REPONSE : on la lui demande.
+    if Kit.engine == nil and valid(Kit.parent) then
+        Kit.engine = getExt(Kit.parent, "CP_KIT_ENGINE") or Kit.ENGINE_RS5K
+    end
     return Kit.engine == Kit.ENGINE_FX
 end
 
@@ -1679,7 +1698,19 @@ function Kit.NewKitFX(name)
     r.GetSetMediaTrackInfo_String(tr, "P_NAME", name or "CP Kit", true)
     setExt(tr, "CP_KIT", "1")
     setExt(tr, "CP_KIT_ENGINE", Kit.ENGINE_FX)
-    if Tracks and Tracks.Mark then Tracks.Mark(tr) end
+
+    -- L'IDENTITE AVANT TOUT LE RESTE. Cette fonction fait ensuite une
+    -- douzaine d'appels a REAPER, et si l'un d'eux leve, ce qui suit ne
+    -- s'execute pas : un kit a moitie cree qui ne sait pas encore qu'il est
+    -- un instrument fait repartir l'ancien montage au geste suivant. C'est
+    -- exactement ce qui est arrive avec Tracks.Mark appele a un argument.
+    Kit.parent = tr
+    Kit.engine = Kit.ENGINE_FX
+    Kit.bus    = nil
+    Kit.pads   = {}
+    fx_index   = nil
+
+    if Tracks and Tracks.Mark then Tracks.Mark(tr, "sampler", "kit") end
 
     -- Le slot libre le plus bas : seize kits par projet, ce qui est deja
     -- au-dela de ce qu'on peut mixer.
@@ -1693,12 +1724,7 @@ function Kit.NewKitFX(name)
     while used[slot] and slot < KitFX.SLOTS - 1 do slot = slot + 1 end
     setExt(tr, "CP_KIT_SLOT", tostring(slot))
 
-    Kit.parent = tr
-    Kit.engine = Kit.ENGINE_FX
-    Kit.bus = nil
-    Kit.pads = {}
     fx_slot = slot
-    fx_index = nil
     fxEnsure(tr)
     Kit.SetActive(tr)
     Kit.version = Kit.version + 1
