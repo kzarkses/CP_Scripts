@@ -174,7 +174,7 @@ local playTarget
 local fx_slot, fx_index, fx_dirty = 0, nil, false
 local findKitFX, fxEnsure, fxDeserialize, fxSave
 local fxPad, fxLoadSample, fxClearPad, fxParam, fxSetParam
-local fxQueueLoad, fxPumpLoads, fxReconcile
+local fxQueueLoad, fxPumpLoads, fxReconcile, fxRefreshInstr
 
 local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
 
@@ -454,7 +454,6 @@ function Kit.Scan()
             fx_index = findKitFX(Kit.parent)
             Kit.bus, Kit.instr = nil, nil
             choke_fx, choke_tr = nil, nil
-            Kit.mode = "drum"
             fxDeserialize(getExt(Kit.parent, "CP_KIT_PADS"))
             -- L'effet manque : il a ete supprime a la main, ou la piste vient
             -- d'une migration. On le repose et on lui rend le miroir — c'est
@@ -464,6 +463,11 @@ function Kit.Scan()
                 if pad.path then pad.fx = fx_index end
                 pad.track = Kit.parent
             end
+            -- LA VUE SUIT LE KIT. « Drum » et « Piano » sont deux facons de
+            -- regarder le meme kit ; le mode se lit sur la piste comme le
+            -- reste, et Kit.instr est republie a chaque balayage.
+            Kit.mode = getExt(Kit.parent, "CP_KIT_MODE") or "drum"
+            fxRefreshInstr()
             Kit.version = Kit.version + 1
             last_change = r.GetProjectStateChangeCount(0)
             return
@@ -1250,6 +1254,10 @@ end
 -- looking at one MUTED the other, so a kit could not play while an instrument
 -- was on screen, and neither could be mixed apart from the other.
 function Kit.EnsureInstrument()
+    -- Sur l'instrument, « s'assurer qu'il existe » veut dire « designer le
+    -- pad qui le porte », pas creer une piste. Et on ne cree rien tant qu'il
+    -- n'y a pas de matiere : un pad vide n'est pas un instrument.
+    if Kit.IsFX() then return fxRefreshInstr() end
     if Kit.instr and valid(Kit.instr.track) then return Kit.instr end
     local count = r.CountTracks(0)
     for i = 0, count - 1 do
@@ -1304,6 +1312,17 @@ function Kit.EnsureInstrument()
 end
 
 function Kit.LoadInstrument(path, root)
+    if Kit.IsFX() then
+        if not path or path == "" then return false end
+        local note = fxInstrSlot()
+        if not note then return false end
+        ubegin()
+        local ok = Kit.LoadSample(note, path, { no_sync = true })
+        if ok then Kit.SetPadChromatic(note, true, root or note) end
+        fxRefreshInstr()
+        uend("Sampler: load instrument")
+        return ok
+    end
     if not path or path == "" then return false end
     ubegin()
     local instr = Kit.EnsureInstrument()
@@ -1331,6 +1350,13 @@ function Kit.LoadInstrument(path, root)
 end
 
 function Kit.SetRoot(note)
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        if not n then return end
+        Kit.SetPadChromatic(n, true, note)
+        fxRefreshInstr()
+        return
+    end
     if not Kit.instr or not Kit.instr.fx then return end
     note = math.max(0, math.min(127, math.floor(note + 0.5)))
     Kit.instr.root = note
@@ -1345,11 +1371,20 @@ end
 -- follows the view — because you can only play one of them at a time.
 function Kit.SetMode(mode)
     if mode ~= "drum" and mode ~= "instrument" then return end
-    -- SUR L'INSTRUMENT, LE MODE N'A PLUS D'OBJET. « Chromatique » est devenu
-    -- une propriete d'un PAD (Kit.SetPadChromatic), pas une seconde piste avec
-    -- son propre RS5K. Laisser passer ici referait naitre exactement la piste
-    -- que le chantier 2 supprime.
-    if Kit.IsFX() then return end
+    -- SUR L'INSTRUMENT, LE MODE EST UNE VUE ET RIEN D'AUTRE. Ce qui doit ne
+    -- pas renaitre, c'est la PISTE d'instrument — pas le bouton. Les avoir
+    -- confondus a supprime le geste (« je ne peux plus passer en vue
+    -- instrument ») en meme temps que le defaut.
+    if Kit.IsFX() then
+        ubegin()
+        setExt(Kit.parent, "CP_KIT_MODE", mode)
+        Kit.mode = mode
+        fxRefreshInstr()
+        Kit.version = Kit.version + 1
+        uend("Sampler: view " .. mode)
+        Notes.SetTrack(playTarget())
+        return
+    end
     local parent = Kit.Ensure()
     ubegin()
     setExt(parent, "CP_KIT_MODE", mode)
@@ -1480,11 +1515,21 @@ function Kit.SplitInstrument()
 end
 
 function Kit.InstrParam(pid)
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        if not n then return nil end
+        return Kit.Param(n, pid)
+    end
     if not Kit.instr or not Kit.instr.fx then return nil end
     return r.TrackFX_GetParamNormalized(Kit.instr.track, Kit.instr.fx, pid)
 end
 
 function Kit.SetInstrParam(pid, v)
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        if not n then return nil end
+        return Kit.SetParam(n, pid, v)
+    end
     if not Kit.instr or not Kit.instr.fx then return end
     r.TrackFX_SetParamNormalized(Kit.instr.track, Kit.instr.fx, pid, v)
     Kit.instr.fmt[pid] = nil
@@ -1492,6 +1537,11 @@ function Kit.SetInstrParam(pid, v)
 end
 
 function Kit.InstrParamFmt(pid)
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        if not n then return nil end
+        return Kit.ParamFmt(n, pid)
+    end
     local instr = Kit.instr
     if not instr or not instr.fx then return "" end
     local s = instr.fmt[pid]
@@ -1505,12 +1555,22 @@ end
 -- Real-unit access for the instrument, mirroring the pad side (same
 -- reason: RS5K's raw values are normalized whatever the display says).
 function Kit.InstrParamPlain(pid)
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        if not n then return nil end
+        return Kit.ParamPlain(n, pid)
+    end
     local instr = Kit.instr
     if not instr or not instr.fx then return nil end
     return parsePlain(Kit.InstrParamFmt(pid))
 end
 
 function Kit.InstrNormForPlain(pid, v)
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        if not n then return nil end
+        return Kit.NormForPlain(n, pid, v)
+    end
     local instr = Kit.instr
     if not instr or not instr.fx then return nil end
     return plainNorm(instr.track, instr.fx, pid, v)
@@ -1523,6 +1583,11 @@ end
 Kit.MAX_VOICES = 16
 
 function Kit.InstrVoices()
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        if not n then return 1 end
+        return math.floor((Kit.ParamPlain(n, Kit.P.MAXV) or 4) + 0.5)
+    end
     local v = Kit.InstrParam(Kit.P.MAXV)
     if not v then return Kit.MAX_VOICES end
     local n = math.floor(v * 64 + 0.5)
@@ -1531,11 +1596,20 @@ function Kit.InstrVoices()
 end
 
 function Kit.SetInstrVoices(n)
+    if Kit.IsFX() then
+        local i = fxInstrNote()
+        if i then Kit.SetParamPlain(i, Kit.P.MAXV, n) end
+        return
+    end
     if n < 1 then n = 1 elseif n > Kit.MAX_VOICES then n = Kit.MAX_VOICES end
     Kit.SetInstrParam(Kit.P.MAXV, n / 64)
 end
 
 function Kit.InstrPeak()
+    if Kit.IsFX() then
+        local n = fxInstrNote()
+        return n and KitFX.Peak(fx_slot, n - Kit.BASE) or 0
+    end
     local instr = Kit.instr
     if not instr or not instr.path or not valid(instr.track) then return 0 end
     local a = r.Track_GetPeakInfo(instr.track, 0)
@@ -1545,6 +1619,7 @@ function Kit.InstrPeak()
 end
 
 function Kit.FloatInstrRS5K()
+    if Kit.IsFX() then return Kit.FloatRS5K(Kit.BASE) end
     if Kit.instr and Kit.instr.fx then
         r.TrackFX_Show(Kit.instr.track, Kit.instr.fx, 3)
     end
@@ -1819,6 +1894,58 @@ function Kit.SyncAll()
         end
     end
     return true
+end
+
+-- ---------------------------------------------------------------------------
+-- LA VUE INSTRUMENT — un pad chromatique, regarde de pres
+-- ---------------------------------------------------------------------------
+-- « Drum » et « Piano » restent DEUX VUES du meme kit, et c'est ce qui rend le
+-- geste naturel : on depose un son sur un pad, on obtient une batterie ; on
+-- depose un son dans l'espace instrument, on obtient un instrument. Ce qui
+-- disparait, c'est la seconde PISTE — pas le mode de la fenetre. J'avais
+-- neutralise Kit.SetMode pour empecher la piste de renaitre, et neutralise le
+-- bouton avec : la fonction et son effet de bord etaient confondus.
+--
+-- Le pad de l'instrument est celui qui porte CHROMATIC. Il n'y en a qu'un par
+-- kit dans cette vue ; s'il en existe plusieurs, le premier gagne, et les
+-- autres restent joignables depuis la grille.
+local INSTR_DEFAULT_NOTE = 60          -- do central, quand la place est libre
+
+local function fxInstrNote()
+    for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
+        local pad = Kit.pads[note]
+        if pad and pad.path and Kit.PadChromatic(note) then return note end
+    end
+    return nil
+end
+
+-- Publie Kit.instr sous la forme que la fenetre attend depuis toujours. Ce
+-- n'est PAS une piste : c'est une vue sur un pad, et les champs sont les
+-- memes pour que CP_Sampler n'ait pas a savoir lequel des deux il regarde.
+fxRefreshInstr = function()
+    local note = fxInstrNote()
+    if not note then Kit.instr = nil return nil end
+    local pad = Kit.pads[note]
+    local root = Kit.ParamPlain(note, Kit.P.PADROOT) or note
+    Kit.instr = {
+        note = note, track = Kit.parent, fx = fx_index,
+        path = pad.path, name = pad.name or "Instrument",
+        root = math.floor(root + 0.5), fmt = pad.fmt or {},
+    }
+    return note
+end
+
+Kit.RefreshInstr = fxRefreshInstr
+
+-- Quel pad accueillera l'instrument quand il n'y en a pas encore : do central
+-- s'il est libre, sinon le premier creneau vide. On ne prend JAMAIS un pad
+-- occupe — remplacer un son que l'utilisateur n'a pas designe est exactement
+-- le genre de geste qu'on a passe la semaine a supprimer.
+local function fxInstrSlot()
+    local n = fxInstrNote()
+    if n then return n end
+    if not Kit.pads[INSTR_DEFAULT_NOTE] then return INSTR_DEFAULT_NOTE end
+    return Kit.FirstEmpty and Kit.FirstEmpty() or nil
 end
 
 -- --- eclater un pad vers une piste -----------------------------------------
