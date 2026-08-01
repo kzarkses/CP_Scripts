@@ -99,7 +99,14 @@ local opts = {
     -- when you are working against a running loop, or when the audition
     -- reaches an instrument you did not mean (see the input-monitor note).
     audition   = cfg.audition ~= false,
-    thru_track = cfg.thru_track ~= false, -- preview through the item's track (its FX)
+    -- OU SORT L'ECOUTE : "hw" la carte son, "master" le master du projet,
+    -- "item" la piste de l'item. Sans piste, une voix CP sort DIRECTEMENT sur
+    -- la carte : c'est le bon defaut d'un navigateur — on entend le fichier tel
+    -- qu'il est — et c'est deroutant quand on prepare un son pour le morceau,
+    -- parce que le son ne passe alors ni par le master ni par rien.
+    -- `thru_track` etait la meme question posee en oui/non, et seulement pour
+    -- un item ; il se relit pour ne pas perdre le reglage de l'utilisateur.
+    out_mode   = cfg.out_mode or ((cfg.thru_track ~= false) and "item" or "hw"),
     -- Loop the preview over the played region (the selection, or the whole
     -- region when there is none). Off by default: an audition that will not
     -- stop is a surprise, a loop you asked for is a tool.
@@ -171,7 +178,7 @@ local function persistConfig()
     cfg.grid_div  = opts.grid_div
     cfg.note_names = opts.note_names
     cfg.audition   = opts.audition
-    cfg.thru_track = opts.thru_track
+    cfg.out_mode   = opts.out_mode
     cfg.loop       = opts.loop
     cfg.wave_snap  = opts.wave_snap
     cfg.snap_trans = opts.snap_trans
@@ -1078,6 +1085,19 @@ local function pollSection()
     Audition.SetSection(opts.loop, state.sel_b, state.sel_a)
 end
 
+-- La piste par laquelle l'ecoute doit sortir, ou nil pour la carte son.
+-- Les DEUX moteurs l'honorent maintenant (`resolveOut` d'Audition lit
+-- `opts.out_track`), donc ce choix ne depend plus de celui qui repond.
+local function previewOut()
+    local m = opts.out_mode
+    if m == "master" then return r.GetMasterTrack(0) end
+    if m == "item" and state.mode == "item" and state.item
+       and r.ValidatePtr2(0, state.item, "MediaItem*") then
+        return r.GetMediaItemTrack(state.item)
+    end
+    return nil
+end
+
 -- from: "cursor" (default) | "sel" | "start"
 local function togglePlay(from)
     if state.mode == "clip" then
@@ -1109,13 +1129,8 @@ local function togglePlay(from)
     -- the raw file otherwise ignores every edit.
     PLAY_OPTS.vol, PLAY_OPTS.pitch, PLAY_OPTS.rate = nil, nil, nil
     PLAY_OPTS.fade_in, PLAY_OPTS.fade_out, PLAY_OPTS.ppitch = nil, nil, nil
-    PLAY_OPTS.out_track = nil
+    PLAY_OPTS.out_track = previewOut()
     if state.mode == "item" and state.take then
-        -- route through the item's own track: its FX chain + fader apply,
-        -- so the preview sits in the mix like the arrange does
-        if opts.thru_track then
-            PLAY_OPTS.out_track = r.GetMediaItemTrack(state.item)
-        end
         local v = r.GetMediaItemTakeInfo_Value(state.take, "D_VOL")
         -- compose take gain WITH the user's preview-volume setting (an OR in
         -- Audition.Play would otherwise let take gain replace the monitor level)
@@ -1263,8 +1278,17 @@ local function openSettings()
         { label = "Preview volume", children = {
             volItem(25), volItem(50), volItem(75), volItem(100),
         } },
-        { label = "Preview through item's track (its FX)", checked = opts.thru_track,
-          action = function() opts.thru_track = not opts.thru_track markDirty() end },
+        { label = "Preview output", children = {
+            { label = "Sound card (direct, no project FX)",
+              checked = opts.out_mode == "hw",
+              action = function() opts.out_mode = "hw" markDirty() end },
+            { label = "Master track",
+              checked = opts.out_mode == "master",
+              action = function() opts.out_mode = "master" markDirty() end },
+            { label = "The item's own track (its FX + fader)",
+              checked = opts.out_mode == "item",
+              action = function() opts.out_mode = "item" markDirty() end },
+        } },
         { separator = true },
         -- The rule that says what a time selection MEANS to playback when the
         -- loop is off. With the loop on it loops; with this on it stops there;

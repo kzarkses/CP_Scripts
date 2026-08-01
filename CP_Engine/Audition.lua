@@ -193,8 +193,20 @@ function Audition.WillUseVoices() return voicesUsable() end
 -- ---------------------------------------------------------------------------
 -- Sortie
 -- ---------------------------------------------------------------------------
-local function resolveOut()
-    local out = Audition.out_track
+-- SANS PISTE, ON SORT DIRECTEMENT SUR LA CARTE. C'est le bon defaut pour un
+-- navigateur — on ecoute un fichier tel qu'il est, sans qu'une chaine du
+-- projet le colore, et sans risquer de le faire entrer dans un enregistrement.
+-- Ce n'est PAS le bon defaut quand on prepare un son pour le morceau : la
+-- sortie ne passe alors ni par le master, ni par rien. Le choix appartient donc
+-- a la fenetre, qui le pose avec SetOutputTrack — `r.GetMasterTrack(0)` est une
+-- MediaTrack* comme une autre et convient telle quelle.
+--
+-- ET `opts.out_track` COMPTE ICI AUSSI. CF_Preview le lisait depuis toujours,
+-- la voix native ne le voyait pas : demander « passe par la piste de cet item »
+-- marchait ou non selon le moteur qui repondait, sans que rien ne le dise. Un
+-- reglage que seule la moitie des chemins honore est pire qu'un reglage absent.
+local function resolveOut(opts)
+    local out = (opts and opts.out_track) or Audition.out_track
     if out and not r.ValidatePtr2(0, out, "MediaTrack*") then
         out, Audition.out_track = nil, nil       -- la piste est morte
     end
@@ -205,9 +217,9 @@ local function resolveOut()
 end
 
 -- Rend true si le port d'audition est pret et branche ou il faut.
-local function ensurePort()
+local function ensurePort(opts)
     if not voicesUsable() then return false end
-    local want = resolveOut()
+    local want = resolveOut(opts)
 
     if port and bound_to == want and Voice.OutputActive(port) then return true end
 
@@ -362,7 +374,7 @@ function Audition.Play(path, opts)
 
     local section = opts and opts.end_s
 
-    if not needsPreview(opts) and ensurePort() then
+    if not needsPreview(opts) and ensurePort(opts) then
         local e = loadClip(path)
         if e and ensureVoice() then
             local start_s = opts and (opts.start_s or opts.position)
