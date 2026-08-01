@@ -144,10 +144,18 @@ function SrcTempo.Bpm(path, declared)
     if d and d > 0 then return d, "declared" end
     if not path or path == "" then return nil, nil end
 
-    local a = SrcTempo.FromAnalysis(path)
-    if a and a > 0 then return a, "analysed" end
-
+    -- The length is read BEFORE the analysis, because the analysis needs the
+    -- same guard the name does. GetTempoMatchPlayRate will happily hand back a
+    -- rate for a 0.4 s kick — it is fitting a bar count to a duration, and a
+    -- short duration fits something. Believing it repitches the kick, which is
+    -- the exact mistake this module's header says it exists to prevent, and it
+    -- also makes the length machinery upstream call that one-shot a loop.
     local len = SrcTempo.Length(path)
+
+    local a = SrcTempo.FromAnalysis(path)
+    if a and a > 0 then
+        if not len or len >= (60 / a) * 2 * 0.9 then return a, "analysed" end
+    end
 
     local n = SrcTempo.FromName(path)
     if n then

@@ -107,6 +107,30 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
     n = (int)(rel < 0 ? 0 : rel);
     if (n < off) n = off;
   }
+
+  // UN ARRET DATE DEMANDAIT UN FONDU ET N'EN OBTENAIT AUCUN.
+  //
+  // kCmdVoiceStop pose `stop_at` et `fade_out_len` sans passer la voix en
+  // kVoiceStopping — c'est le rendu qui tronque a `stop_at`, et la branche de
+  // fondu ci-dessous ne s'execute donc jamais : l'arret est une coupure nette,
+  // au milieu de la forme d'onde. Tant que la matiere d'une case mourait
+  // d'elle-meme avant la porte, ca ne s'entendait pas. Des qu'elle boucle, ca
+  // clique a chaque frontiere de passe.
+  //
+  // On fait donc COMMENCER le fondu assez tot pour qu'il atteigne zero
+  // exactement au rendez-vous, plutot que de le declencher au rendez-vous —
+  // ce qui obligerait a rendre au-dela de lui. Le fondu peut avoir commence
+  // dans un bloc precedent : `fop` est alors deja avance, et l'expression le
+  // dit sans avoir a s'en souvenir. Cout : une comparaison par bloc, aucune
+  // par echantillon — cette boucle ne doit rien apprendre de plus.
+  if (state == kVoicePlaying && fade_out_len > 0) {
+    const frame_t to_stop = stop_at - block_start;
+    if (to_stop <= (frame_t)fade_out_len) {
+      state = kVoiceStopping;
+      const frame_t done = (frame_t)fade_out_len - (to_stop > 0 ? to_stop : 0);
+      fade_out_pos = (int)(done > 0 ? done : 0);
+    }
+  }
   if (n <= off) {
     if (stop_at <= block_start) {
       state = kVoiceIdle;

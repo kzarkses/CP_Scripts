@@ -59,6 +59,22 @@ local TRACKS = 4
 -- tot, tomber juste.
 local LOOKAHEAD_BEATS = 1.0
 
+-- EN DESSOUS DE CE RETARD, UN DEPART QU'ON N'A PAS VU VENIR A BEL ET BIEN
+-- COMMENCE A LA PHASE ZERO — on ne l'a su qu'apres.
+--
+-- Le moteur lance parfois une lane IMMEDIATEMENT : quantize a zero, ou premier
+-- lancement d'une session silencieuse, ou l'on tombe juste apres une
+-- frontiere. Aucune cible en attente n'est alors publiee, donc Lua ne
+-- l'apprend qu'a la frame suivante et passe par le rattrapage — qui entre dans
+-- la MATIERE a la phase courante. Sur une boucle longue c'est exactement ce
+-- qu'il faut ; sur un son percussif, ces 16 a 40 ms sont l'attaque, et on
+-- l'entend disparaitre. Le symptome ressemble a un fondu d'entree ; ce n'en
+-- est pas un, et c'est pourquoi on ne le trouvait pas du cote des fondus.
+--
+-- Le seuil vaut deux frames de defer, exprime en secondes parce que ce retard
+-- est du temps mur et non de la musique.
+local CATCHUP_SNAP_S = 0.080
+
 -- Le sentinel du JSFX : « pas encore de date, j'attends une horloge ».
 local WAIT_TEST = -1e8
 
@@ -202,6 +218,11 @@ local function ensureVoices(t, slot)
         if not slot.v[i] then
             local h = Voice.Alloc(t)
             if not h then return false end
+            -- Un fondu est une PROPRIETE de voix, et le moteur la garde d'un
+            -- lancement a l'autre : kCmdVoicePlay ne remet a zero que les
+            -- positions. Une case percussive n'en veut aucun, et le dire une
+            -- fois a l'allocation vaut mieux que de l'esperer.
+            Voice.Set(h, "fade_in", 0)
             slot.v[i] = h
         end
     end
@@ -291,16 +312,37 @@ end
 -- depuis le debut — il entre a sa deuxieme mesure. C'est ce qui verrouille
 -- toutes les boucles sur la meme grille, et c'est exactement ce que faisait le
 -- clip d'une note. Le son doit faire pareil, sinon il flotte.
-local function playAt(slot, at, phase, len_beats, gate)
+local function playAt(slot, at, phase, len_beats, gate, snap)
     if not slot.clip or not at or at < 0 then return end
     local tempo = Loop.Tempo()
     if not tempo or tempo <= 0 then tempo = 120 end
     local spb = 60.0 / tempo
 
+    -- Un depart qu'on apprend avec deux frames de retard a commence a zero.
+    -- Voir CATCHUP_SNAP_S : rabattre la phase AVANT de calculer ce qu'il reste,
+    -- pour que la passe garde sa longueur entiere.
+    if snap and phase > 0 and phase * spb < CATCHUP_SNAP_S then phase = 0 end
+
+    -- LA MATIERE REMPLIT-ELLE SA PASSE ?
+    --
+    -- Une boucle musicale la remplit par construction. Un one-shot ne la
+    -- remplit pas, et jouer la passe une seule fois donne un kick suivi d'un
+    -- long silence — c'est le defaut le plus visible de tout ce module. Dans ce
+    -- cas c'est la MATIERE qui boucle, dans la voix : le moteur replie sa
+    -- position a la fin du fichier, a l'echantillon, sans reveil par frame et
+    -- sans derive (cp_voice.cpp, repli fractionnaire exact).
+    local mat_s  = slot.clip.frames / (slot.clip.srate * slot.rate)
+    local pass_s = len_beats * spb
+    local loop_m = mat_s < pass_s * 0.98
+
     -- Ce qu'il reste a jouer avant la porte. La porte existe pour la meme raison
     -- qu'avec le RS5K : le son doit finir avant la passe suivante, sinon la voix
     -- suivante commence pendant que celle-ci sonne encore.
-    local left = (len_beats * (gate or 0.97)) - phase
+    --
+    -- Sauf quand la matiere boucle : elle n'a rien a laisser finir, et lui
+    -- retirer 3 % ouvre un trou a chaque frontiere — 60 ms sur une mesure a
+    -- 120 BPM, parfaitement audible.
+    local left = (len_beats * (loop_m and 1.0 or (gate or 0.97))) - phase
     if left <= 0.01 then return end
 
     local h = slot.v[slot.vi]
@@ -314,8 +356,12 @@ local function playAt(slot, at, phase, len_beats, gate)
     -- vite ».
     opts.rate = slot.rate * prate
     opts.gain = 1.0
-    opts.loop = false
-    if phase > 0 then
+    opts.loop = loop_m
+    if loop_m then
+        -- Une matiere qui tourne sur elle-meme n'a pas de phase musicale :
+        -- entrer au milieu du fichier ne voudrait rien dire.
+        opts.offset = nil
+    elseif phase > 0 then
         -- La position dans la MATIERE, pas dans le temps. Et le taux du PROJET
         -- n'entre pas ici : `phase * spb` est deja une duree de projet, et une
         -- seconde de projet consomme toujours `srate_clip * slot.rate`
@@ -379,9 +425,11 @@ local function drive(t, half, gate)
         if not slot.running then
             slot.running = true
             -- Personne ne nous avait annonce ce depart : on entre en cours de
-            -- passe plutot que d'attendre la suivante.
+            -- passe plutot que d'attendre la suivante. C'est le SEUL appel qui
+            -- demande le rabat de phase — les deux autres partent d'une date que
+            -- le moteur a choisie, donc d'une phase exacte.
             if slot.dated then slot.dated = false
-            else playAt(slot, Voice.Now(), phase, lenb, gate) end
+            else playAt(slot, Voice.Now(), phase, lenb, gate, true) end
         end
         -- LES PASSES SUIVANTES SE RACCROCHENT A LA PHASE DU MOTEUR, relue a
         -- chaque frame. Pas d'accumulateur, donc pas de derive : un desaccord
@@ -482,7 +530,10 @@ function Cells.LastOnsetError(t, lane)
 end
 
 function Cells.Diag()
-    if not NATIVE then return "cells=rs5k" end
+    -- « cells=rs5k » etait la reponse d'avant : ce module n'a plus de chemin
+    -- RS5K du tout, et repondre un backend qui n'existe pas est pire que ne
+    -- rien repondre.
+    if not NATIVE then return "cells: silent (no engine)" end
     local n, c = 0, 0
     for t = 0, TRACKS - 1 do
         for h = 0, 1 do
