@@ -770,6 +770,20 @@ local function kitMenu()
                               action = function()
             if Kit.SyncAll() then flash("Kit resent") else flash("No gmem") end
         end }
+        -- L AUTO-TEST ECRIT UN JOURNAL. Il ne remplace pas l oreille : il
+        -- repond aux questions que l oreille ne peut pas trancher, et il les
+        -- ecrit dans un fichier qu on peut relire a froid.
+        items[#items + 1] = { label = "Diagnostic: write a log",
+                              action = function()
+            local p = Kit.SelfTest()
+            -- Le panneau du pad selectionne, qui est le seul endroit ou l on
+            -- sait si le bouton est actif ou grise.
+            local n = state.sel
+            local pad = n and Kit.pads[n]
+            Kit.LogUI(n, pad ~= nil, pad and pad.path ~= nil,
+                      pad and pad.fx ~= nil)
+            flash("Log: " .. (p or "?"))
+        end }
     end
     UI.NativeMenu(items)
 end

@@ -86,6 +86,8 @@ local Notes = dofile(reaper.GetResourcePath()
 -- une position de bouton a des millisecondes. Kit ne connait rien de tout ca.
 local KitFX = dofile(reaper.GetResourcePath()
                      .. "/Scripts/CP_Scripts/CP_Engine/KitFX.lua")
+local KitLog = dofile(reaper.GetResourcePath()
+                      .. "/Scripts/CP_Scripts/CP_Engine/KitLog.lua")
 
 Kit.BASE = 36    -- pad 0 ↔ MIDI note 36 (GM kick, FL/Ableton convention)
 Kit.MAX  = 64    -- 64 pads = 4 pages of 16
@@ -183,6 +185,7 @@ function Kit.init(reaper_api, tracks_module)
     Voice.init(r)
     Notes.init(r, Voice, Voice.PLAY_PORT_SAMPLER)
     KitFX.init(r)
+    KitLog.init(r)
 end
 
 -- Comment une note jouee ici atteint le kit : « targeted » (un port, une piste)
@@ -2002,12 +2005,24 @@ end
 
 function fxSetParam(note, pid, v)
     local pad = Kit.pads[note]
-    if not (pad and pad.path) then return end
+    if not (pad and pad.path) then
+        KitLog.Line("SetParam note=%d pid=%s REFUSE : pad=%s path=%s",
+                    note, tostring(pid), tostring(pad ~= nil),
+                    tostring(pad and pad.path))
+        return
+    end
     local f = KitFX.Field(pid)
-    if not f then return end
+    if not f then
+        KitLog.Line("SetParam note=%d pid=%s REFUSE : aucun champ",
+                    note, tostring(pid))
+        return
+    end
     pad.p[pid] = v
     pad.fmt[pid] = nil
-    KitFX.Set(fx_slot, note - Kit.BASE, f, KitFX.ToFX(pid, v))
+    local fx = KitFX.ToFX(pid, v)
+    local sent = KitFX.Set(fx_slot, note - Kit.BASE, f, fx)
+    KitLog.Line("SetParam note=%d pid=%s -> champ %d = %.4f (norm %.4f) envoye=%s",
+                note, tostring(pid), f, fx or -1, v or -1, tostring(sent))
     fx_dirty = true
 end
 
@@ -2066,6 +2081,12 @@ function Kit.Param(note, pid)
 end
 
 function Kit.SetParam(note, pid, v)
+    -- La trace est POSEE ICI, avant tout aiguillage : si elle n apparait pas
+    -- dans le journal quand on tourne un bouton, c est que la fenetre n a
+    -- jamais appelé — et c est une conclusion tres differente de « l ecriture
+    -- a echoue ».
+    KitLog.Line("Kit.SetParam note=%s pid=%s v=%s IsFX=%s",
+                tostring(note), tostring(pid), tostring(v), tostring(Kit.IsFX()))
     if Kit.IsFX() then return fxSetParam(note, pid, v) end
     local pad = Kit.pads[note]
     if not pad or not pad.fx then return end
@@ -2555,6 +2576,103 @@ function Kit.FirstEmpty(from)
         if not (pad and pad.fx) then return n end
     end
     return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- L AUTO-TEST
+-- ---------------------------------------------------------------------------
+-- Il ne remplace pas l oreille : il repond aux questions que l oreille ne peut
+-- pas trancher. Chaque etape ecrit ce qu elle a VU, pas ce qu elle a demande —
+-- c est la meme regle que partout ailleurs ici, et c est celle qui a manque a
+-- chacun des defauts de la semaine.
+function Kit.SelfTest()
+    KitLog.SetEnabled(true)
+    KitLog.Section("etat")
+    KitLog.Line("engine=%s IsFX=%s gmem=%s slot=%s fx_index=%s",
+                tostring(Kit.engine), tostring(Kit.IsFX()),
+                tostring(KitFX.Ready()), tostring(fx_slot), tostring(fx_index))
+    KitLog.Line("parent valide=%s  version=%d  erreur=%s",
+                tostring(valid(Kit.parent)), Kit.version,
+                tostring(Kit.fx_error))
+
+    local raw = KitFX.Raw(fx_slot)
+    if raw then
+        KitLog.Line("gmem base=%d wpos=%d rpos=%d lseq=%d lack=%d lpad=%d "
+                    .. "status=%d nloaded=%d hb=%d",
+                    raw.base, raw.wpos, raw.rpos, raw.lseq, raw.lack,
+                    raw.lpad, raw.status, raw.nloaded, raw.hb)
+    else
+        KitLog.Line("gmem INDISPONIBLE — KitFX ne s est pas attache")
+    end
+
+    KitLog.Section("pads du miroir")
+    local npad = 0
+    for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
+        local pad = Kit.pads[note]
+        if pad then
+            npad = npad + 1
+            local nset = 0
+            for _ in pairs(pad.p or {}) do nset = nset + 1 end
+            KitLog.Line("note=%d idx=%d path=%s fx=%s choke=%s reglages=%d "
+                        .. "charge_instrument=%s",
+                        note, note - Kit.BASE,
+                        tostring(pad.path and (pad.path:match("[^/\\]+$")
+                                               or pad.path)),
+                        tostring(pad.fx), tostring(pad.choke), nset,
+                        tostring(KitFX.Loaded(fx_slot, note - Kit.BASE)))
+        end
+    end
+    KitLog.Line("pads dans le miroir : %d", npad)
+
+    -- L ECRITURE D UN REGLAGE, SUIVIE DE BOUT EN BOUT. On prend le premier pad
+    -- qui porte un echantillon, on lui ecrit un volume connu, et on regarde si
+    -- le mot est parti dans l anneau. Si wpos n avance pas, l ecriture n a pas
+    -- eu lieu ; s il avance et que rien ne s entend, c est le rendu.
+    KitLog.Section("ecriture d un reglage")
+    local target = nil
+    for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
+        local pad = Kit.pads[note]
+        if pad and pad.path then target = note break end
+    end
+    if not target then
+        KitLog.Line("aucun pad charge — rien a ecrire")
+    else
+        local before = KitFX.Raw(fx_slot)
+        KitLog.Line("cible note=%d  wpos avant=%d", target,
+                    before and before.wpos or -1)
+        for _, pid in ipairs({ Kit.P.VOL, Kit.P.PAN, Kit.P.TUNE,
+                               Kit.P.ATTACK, Kit.P.DECAY }) do
+            local cur = Kit.Param(target, pid)
+            KitLog.Line("  pid=%d lu=%s champ=%s",
+                        pid, tostring(cur), tostring(KitFX.Field(pid)))
+            Kit.SetParam(target, pid, 0.42)
+        end
+        local after = KitFX.Raw(fx_slot)
+        KitLog.Line("wpos apres=%d  (ecarts attendus : 5)",
+                    after and after.wpos or -1)
+    end
+
+    KitLog.Section("fin")
+    return KitLog.Path()
+end
+
+-- CE QUE LA FENETRE CROIT DU PAD SELECTIONNE. Un bouton grise n appelle jamais
+-- SetParam, et rien dans le moteur ne peut le savoir : la desactivation est
+-- une decision de dessin. C est le seul maillon que l auto-test ne voit pas
+-- depuis l interieur, donc la fenetre le declare.
+function Kit.LogUI(note, has_pad, has_path, has_fx)
+    KitLog.Section("ce que la fenetre voit")
+    KitLog.Line("selection=%s pad=%s path=%s fx=%s  => boutons %s",
+                tostring(note), tostring(has_pad), tostring(has_path),
+                tostring(has_fx),
+                (has_pad and has_fx) and "ACTIFS" or "GRISES")
+    if note then
+        for _, pid in ipairs({ Kit.P.VOL, Kit.P.PAN, Kit.P.TUNE }) do
+            KitLog.Line("  pid=%d Param=%s ParamFmt=%s",
+                        pid, tostring(Kit.Param(note, pid)),
+                        tostring(Kit.ParamFmt(note, pid)))
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------

@@ -208,6 +208,25 @@ end
 -- ---------------------------------------------------------------------------
 -- Ce que l'instrument publie
 -- ---------------------------------------------------------------------------
+-- Les mots bruts de la boite aux lettres, pour le journal. C'est la seule
+-- facon de savoir si une ecriture est PARTIE, par opposition a « on a appele
+-- la fonction qui ecrit ».
+function KitFX.Raw(slot)
+    if not attached then return nil end
+    local b = base(slot)
+    return {
+        base = b,
+        wpos = r.gmem_read(b + MB_WPOS) or -1,
+        rpos = r.gmem_read(b + MB_RPOS) or -1,
+        lseq = r.gmem_read(b + MB_LSEQ) or -1,
+        lack = r.gmem_read(b + MB_LACK) or -1,
+        lpad = r.gmem_read(b + MB_LPAD) or -1,
+        status = r.gmem_read(b + MB_STATUS) or -1,
+        nloaded = r.gmem_read(b + MB_NLOADED) or -1,
+        hb = r.gmem_read(b + MB_HB) or -1,
+    }
+end
+
 function KitFX.Peak(slot, pad)
     if not attached then return 0 end
     return r.gmem_read(base(slot) + MB_PEAK + pad) or 0
