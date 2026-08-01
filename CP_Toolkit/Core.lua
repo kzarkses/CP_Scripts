@@ -244,6 +244,27 @@ end
 function Core.ModCtrl()  return (state.mouse_cap & 4) ~= 0 end
 function Core.ModShift() return (state.mouse_cap & 8) ~= 0 end
 function Core.ModAlt()   return (state.mouse_cap & 16) ~= 0 end
+-- La touche Windows (Command sur macOS). REAPER s'en sert dans ses propres
+-- tables de modificateurs de souris — « double note length », « stretch note
+-- positions » — et le toolkit ne l'exposait pas, donc aucune fenetre CP ne
+-- pouvait offrir les memes gestes. Le bit vaut 32, comme les trois autres il
+-- vient de mouse_cap, et il ne coute rien tant que personne ne le lit.
+function Core.ModWin()   return (state.mouse_cap & 32) ~= 0 end
+
+-- LES QUATRE EN UN SEUL NOMBRE, dans un ordre a NOUS.
+--
+-- L'ordre des bits de mouse_cap est celui de REAPER (4, 8, 16, 32) et il n'a
+-- aucune raison de fuiter dans un fichier de configuration que quelqu'un
+-- relira dans deux ans. On republie donc un masque compact — Ctrl 1, Shift 2,
+-- Alt 4, Win 8 — qui se lit, se stocke et se compare sans avoir a se souvenir
+-- de rien. C'est la forme sur laquelle CP_Engine/Keymap indexe ses liaisons.
+function Core.Mods()
+    local c = state.mouse_cap
+    return ((c & 4)  ~= 0 and 1 or 0)
+         | ((c & 8)  ~= 0 and 2 or 0)
+         | ((c & 16) ~= 0 and 4 or 0)
+         | ((c & 32) ~= 0 and 8 or 0)
+end
 
 -- ============================================================================
 -- WIDGET STATE (hot/active/focus)

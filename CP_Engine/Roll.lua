@@ -203,6 +203,40 @@ function Roll.SelectBox(ta, tb, plo, phi, additive)
     return Roll.seln
 end
 
+-- BASCULER UNE NOTE dans la selection. Le geste « Ctrl+clic » de REAPER, et
+-- la seule facon honnete de l'ecrire : l'appelant tripotait `selset` et `seln`
+-- depuis l'exterieur, ce qui marche jusqu'au jour ou la selection apprend a
+-- tenir autre chose qu'un ensemble d'index.
+function Roll.ToggleSel(i)
+    if not i then return false end
+    if Roll.selset[i] then
+        Roll.selset[i] = nil
+        Roll.seln = Roll.seln - 1
+        if Roll.sel == i then
+            Roll.sel = nil
+            for k in pairs(Roll.selset) do Roll.sel = k break end
+        end
+        return false
+    end
+    Roll.AddSel(i)
+    return true
+end
+
+-- SELECTIONNER UNE PLAGE, de l'ancre a la note pointee.
+--
+-- « Add a range of notes to selection » de REAPER. La plage se prend sur le
+-- TEMPS, pas sur l'ordre du tableau : deux notes voisines dans le tableau
+-- peuvent etre a deux mesures d'ecart, et l'utilisateur designe ce qu'il voit.
+-- Toutes les hauteurs sont prises, comme chez REAPER — c'est un balayage
+-- horizontal, et le restreindre a une rangee en ferait un autre geste.
+function Roll.SelectRange(i0, i1, additive)
+    if not Roll.backend or not i0 or not i1 then return 0 end
+    local a = math.min(Roll.starts[i0], Roll.starts[i1])
+    local b = math.max(Roll.starts[i0] + Roll.lens[i0],
+                       Roll.starts[i1] + Roll.lens[i1])
+    return Roll.SelectBox(a, b, 0, 127, additive)
+end
+
 -- Select every note of a given pitch (drum-row header click).
 function Roll.SelectPitch(pitch, additive)
     if not additive then Roll.ClearSel() end
@@ -475,6 +509,94 @@ function Roll.SetLengthAll(len)
         if math.abs(Roll.lens[i] - len) > 1e-6 then Roll.ResizeLive(i, len); n = n + 1 end
     end)
     if n > 0 then Roll.Commit("MIDI: set length") end
+    return n
+end
+
+-- MULTIPLIER LA LONGUEUR des notes visees. Doubler et diviser par deux sont
+-- les deux gestes que Cedric a places sur Win, et ce sont les seuls facteurs
+-- qui gardent une figure sur la grille : ×1,5 sort du binaire des la premiere
+-- application. Le plancher est un centieme de beat, pour qu'une division
+-- repetee ne fabrique pas de notes de duree nulle qu'on ne peut plus attraper.
+function Roll.ScaleLen(f)
+    if not Roll.backend or not f or f <= 0 then return 0 end
+    local n = 0
+    forEachTarget(function(i)
+        local nl = Roll.lens[i] * f
+        if nl < 0.01 then nl = 0.01 end
+        if math.abs(nl - Roll.lens[i]) > 1e-6 then
+            Roll.ResizeLive(i, nl); n = n + 1
+        end
+    end)
+    if n > 0 then Roll.Commit("MIDI: scale length") end
+    return n
+end
+
+-- PEINDRE UNE LIGNE DROITE DE NOTES entre deux points de la grille.
+--
+-- `step` est le pas de temps, `len` la duree de chaque note. La hauteur
+-- interpole de p0 a p1 : une ligne horizontale fait une roulade, une ligne
+-- oblique fait une gamme — c'est ce que REAPER appelle « paint a straight line
+-- of notes », et l'interpolation EST le geste.
+--
+-- `chord` (optionnel) empile une triade AU-DESSUS DE CHAQUE NOTE : c'est ainsi
+-- que « paint notes and chords » se fait sans une seconde fonction — un accord
+-- n'est qu'une ligne a plusieurs voix. La triade est DIATONIQUE quand une gamme
+-- est posee : on monte de deux degres puis de deux degres, ce qui donne un
+-- accord mineur sur le second degre d'une majeure, comme il se doit. Sans
+-- gamme, la tierce majeure et la quinte — le choix de REAPER, et il vaut mieux
+-- qu'un refus.
+local chordBuf = {}
+local function chordAbove(p)
+    local c = chordBuf
+    c[1] = p
+    if not Roll.scale_on then
+        c[2], c[3] = p + 4, p + 7
+        return c
+    end
+    local q, steps = p, 0
+    while q < 127 and steps < 2 do
+        q = q + 1
+        if Roll.InScale(q) then steps = steps + 1 end
+    end
+    c[2] = q
+    steps = 0
+    while q < 127 and steps < 2 do
+        q = q + 1
+        if Roll.InScale(q) then steps = steps + 1 end
+    end
+    c[3] = q
+    return c
+end
+
+function Roll.PaintLine(t0, p0, t1, p1, step, len, vel, chord)
+    if not Roll.backend or not step or step <= 0 then return 0 end
+    if t1 < t0 then t0, t1, p0, p1 = t1, t0, p1, p0 end
+    local span = t1 - t0
+    local nsteps = math.floor(span / step + 1e-6)
+    if nsteps > 512 then nsteps = 512 end     -- garde-fou : un geste, pas un
+    local n = 0                               -- generateur
+    for k = 0, nsteps do
+        local at = t0 + k * step
+        local f  = (nsteps > 0) and (k / nsteps) or 0
+        local pp = math.floor(p0 + (p1 - p0) * f + 0.5)
+        if pp < 0 then pp = 0 elseif pp > 127 then pp = 127 end
+        if chord then
+            local c = chordAbove(pp)
+            for j = 1, 3 do
+                local q = c[j]
+                if q >= 0 and q <= 127 and not Roll.At(at + step * 0.5, q) then
+                    Roll.backend.insertNote(at, q, len, vel); n = n + 1
+                end
+            end
+        elseif not Roll.At(at + step * 0.5, pp) then
+            Roll.backend.insertNote(at, pp, len, vel); n = n + 1
+        end
+    end
+    if n > 0 then
+        Roll.backend.sort()
+        Roll.Sync()
+        Roll.backend.undo("MIDI: paint notes")
+    end
     return n
 end
 

@@ -29,6 +29,10 @@ local Ops   = dofile(cp_root .. "CP_Engine/Ops.lua")
 local Roll  = dofile(cp_root .. "CP_Engine/Roll.lua")
 local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
 local Rows  = dofile(cp_root .. "CP_Engine/Rows.lua")
+-- LES LIAISONS SONT DES DONNEES. Ce module ne dessine rien et n'appelle rien :
+-- il repond « quelle ACTION pour ce geste », et c'est tout ce qui separe un
+-- raccourci fige d'un raccourci qu'on peut changer.
+local Keymap = dofile(cp_root .. "CP_Engine/Keymap.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 -- L'AUDITION PARTAGEE (feuille de route phase 3). Le meme geste etait
@@ -57,6 +61,7 @@ Roll.init(r)
 Tracks.init(r)
 Kit.init(r, Tracks)
 Audition.init(r)
+Keymap.init(r, UI.Core)
 Insert.init(r)
 DragBus.init(r)
 Ident.init(r, Clip)
@@ -1446,11 +1451,22 @@ is already playing. The play cursor is REAPER's own colour and shows
 both our preview AND the arrange's transport running over this item.
 
 ## MIDI / clip
-Click = add note (keep dragging for length), drag = move, edge =
-resize, right-drag = marquee, velocity lane below. Q quantize,
-Ctrl+D duplicate, Ctrl+C/X/V, arrows transpose/nudge, Alt+arrows
-walk the notes, Esc leave. Transform: scale snap, chord, arpeggiate,
-euclidean, humanize... Drum rows show the kit's pads by name.
+Click empty = add note (keep dragging for length), drag = move,
+edge = resize, right-drag = marquee, velocity lane below.
+
+Mouse modifiers follow REAPER's own MIDI table:
+  Shift+drag       ignore snap        Ctrl+drag     copy
+  Alt+click/drag   erase              Shift+click   add a range
+  Ctrl+click       toggle one note    Shift+Alt     the whole measure
+  Ctrl+Alt+click   this note onward   Shift+Ctrl    one axis only
+  Alt on the edge  stretch            Ctrl+Win      arpeggiate
+  Ctrl+Alt+drag    paint a line       +Shift        paint chords
+  Shift/Ctrl+Win   double / halve the note length
+(On the RULER it is Ctrl that ignores snap — REAPER's own split.)
+
+Q quantize, Ctrl+D duplicate, Ctrl+C/X/V, arrows transpose/nudge,
+Alt+arrows walk the notes, Esc leave. Transform: scale snap, chord,
+arpeggiate, euclidean, humanize... Drum rows name the kit's pads.
 
 ## Clip loop (LOOP cluster)
 A clip born in the Looper/Session stays live: the playhead shows the
@@ -2927,6 +2943,144 @@ end
 
 -- Snapshot the current selection's original start/pitch/length (group
 -- move + group resize both read from this).
+
+-- ---------------------------------------------------------------------------
+-- LE VOCABULAIRE DE GESTES — la table des modificateurs de REAPER, en donnees
+-- ---------------------------------------------------------------------------
+-- Releve sur la config de Cedric (Preferences > Editing Behavior > Mouse
+-- Modifiers, contextes MIDI) et reproduit FIDELEMENT, y compris la ou REAPER
+-- n'est pas cohérent avec lui-meme : Shift ignore le magnetisme sur une note
+-- et sur la grille, mais c'est Ctrl qui l'ignore sur la REGLE. On ne corrige
+-- pas ca. Le geste que ses doigts connaissent vaut mieux qu'une regle propre
+-- qu'il faudrait reapprendre — et le jour ou il pense autrement, c'est une
+-- ligne de ce tableau, plus une ligne de code.
+--
+-- Ce que ce tableau CHANGE par rapport a l'ancien editeur : « ignorer le
+-- magnetisme » passe de Ctrl a Shift, et « ajouter a la selection » de Shift a
+-- Ctrl. Les deux suivent REAPER, et la premiere aligne enfin le piano roll sur
+-- la vue d'onde de cette meme fenetre, qui lit Shift depuis toujours
+-- (`waveSnap`). Il y avait donc DEUX conventions dans un seul editeur.
+--
+-- `ctx` nomme la zone sous le pointeur, `g` le geste brut. Un meme
+-- modificateur porte souvent le clic ET le glisser (Alt efface une note, Alt
+-- glisse en efface plusieurs) : ce sont deux lignes, parce que ce sont deux
+-- actions, et parce qu'on doit pouvoir les separer.
+local KM = "editor"
+local KEYMAP_ROWS = {
+    -- ----- une note, au clic ------------------------------------------------
+    { act = "note.select",         group = "Note", ctx = "note", g = "click", mods = "",
+      label = "Select note" },
+    { act = "note.select_range",   group = "Note", ctx = "note", g = "click", mods = "Shift",
+      label = "Add a range of notes to the selection" },
+    { act = "note.select_toggle",  group = "Note", ctx = "note", g = "click", mods = "Ctrl",
+      label = "Toggle note selection" },
+    { act = "note.erase",          group = "Note", ctx = "note", g = "click", mods = "Alt",
+      label = "Erase note" },
+    { act = "note.select_measure", group = "Note", ctx = "note", g = "click", mods = "Shift+Alt",
+      label = "Select all notes in the measure" },
+    { act = "note.select_to_end",  group = "Note", ctx = "note", g = "click", mods = "Ctrl+Alt",
+      label = "Select this note and all later notes" },
+    { act = "note.len_double",     group = "Note", ctx = "note", g = "click", mods = "Shift+Win",
+      label = "Double note length" },
+    { act = "note.len_halve",      group = "Note", ctx = "note", g = "click", mods = "Ctrl+Win",
+      label = "Halve note length" },
+    -- ----- une note, au glisser ---------------------------------------------
+    { act = "note.move",           group = "Note", ctx = "note", g = "drag", mods = "",
+      label = "Move note" },
+    { act = "note.move_free",      group = "Note", ctx = "note", g = "drag", mods = "Shift",
+      label = "Move note ignoring snap" },
+    { act = "note.copy",           group = "Note", ctx = "note", g = "drag", mods = "Ctrl",
+      label = "Copy note" },
+    { act = "note.move_axis",      group = "Note", ctx = "note", g = "drag", mods = "Shift+Ctrl",
+      label = "Move note on one axis only" },
+    { act = "note.erase_drag",     group = "Note", ctx = "note", g = "drag", mods = "Alt",
+      label = "Erase notes" },
+    { act = "note.stretch_pos",    group = "Note", ctx = "note", g = "drag", mods = "Ctrl+Win",
+      label = "Stretch note positions (arpeggiate)" },
+    -- ----- le bord d'une note -----------------------------------------------
+    { act = "edge.resize",         group = "Note edge", ctx = "edge", g = "drag", mods = "",
+      label = "Move note edge" },
+    { act = "edge.resize_free",    group = "Note edge", ctx = "edge", g = "drag", mods = "Shift",
+      label = "Move note edge ignoring snap" },
+    { act = "edge.resize_solo",    group = "Note edge", ctx = "edge", g = "drag", mods = "Ctrl",
+      label = "Move note edge ignoring selection" },
+    { act = "edge.stretch",        group = "Note edge", ctx = "edge", g = "drag", mods = "Alt",
+      label = "Stretch notes" },
+    -- ----- la grille vide ---------------------------------------------------
+    { act = "roll.insert",         group = "Grid", ctx = "roll", g = "click", mods = "",
+      label = "Insert note" },
+    { act = "roll.deselect",       group = "Grid", ctx = "roll", g = "click", mods = "Alt",
+      label = "Deselect all notes" },
+    { act = "roll.cursor",         group = "Grid", ctx = "roll", g = "click", mods = "Ctrl",
+      label = "Deselect all and move the edit cursor (no snap)" },
+    { act = "roll.insert_drag",    group = "Grid", ctx = "roll", g = "drag", mods = "",
+      label = "Insert note, drag to extend" },
+    { act = "roll.copy_sel",       group = "Grid", ctx = "roll", g = "drag", mods = "Ctrl",
+      label = "Copy the selected notes" },
+    { act = "roll.erase_drag",     group = "Grid", ctx = "roll", g = "drag", mods = "Alt",
+      label = "Erase notes" },
+    { act = "roll.paint_line",     group = "Grid", ctx = "roll", g = "drag", mods = "Ctrl+Alt",
+      label = "Paint a straight line of notes" },
+    { act = "roll.paint_chord",    group = "Grid", ctx = "roll", g = "drag", mods = "Shift+Ctrl+Alt",
+      label = "Paint notes and chords" },
+    { act = "roll.marquee",        group = "Grid", ctx = "roll", g = "rclick", mods = "",
+      label = "Marquee select (release without moving deletes)" },
+    -- ----- la colonne des libelles ------------------------------------------
+    { act = "lane.select_row",     group = "Rows", ctx = "lane", g = "click", mods = "",
+      label = "Select the whole row" },
+    { act = "lane.select_row_add", group = "Rows", ctx = "lane", g = "click", mods = "Ctrl",
+      label = "Add the row to the selection" },
+    { act = "lane.audition",       group = "Rows", ctx = "lane", g = "rclick", mods = "",
+      label = "Audition the row" },
+    -- ----- la regle ---------------------------------------------------------
+    -- ICI C'EST CTRL qui ignore le magnetisme, et non Shift. C'est le choix de
+    -- REAPER, pas le notre : sa regle repond a Ctrl et ses notes a Shift.
+    { act = "ruler.cursor",        group = "Ruler", ctx = "ruler", g = "click", mods = "",
+      label = "Move the edit cursor" },
+    { act = "ruler.cursor_free",   group = "Ruler", ctx = "ruler", g = "click", mods = "Ctrl",
+      label = "Move the edit cursor ignoring snap" },
+    { act = "ruler.select_in_ts",  group = "Ruler", ctx = "ruler", g = "click", mods = "Shift",
+      label = "Select the notes inside the time selection" },
+    { act = "ruler.clear_ts",      group = "Ruler", ctx = "ruler", g = "click", mods = "Alt",
+      label = "Clear the time selection" },
+}
+Keymap.Register(KM, KEYMAP_ROWS)
+
+-- LA MESURE QUI CONTIENT CET INSTANT, en unites de cache. Le mode case n'a pas
+-- de position dans le projet : sa mesure se compte a partir de son beat zero,
+-- avec la signature que le moteur annonce. Un take, lui, demande a REAPER,
+-- parce que le projet peut changer de signature en cours de route et que la
+-- mesure « quatre beats » serait alors fausse.
+local function measureAround(t)
+    if state.mode == "clip" then
+        local n = clipTsNum()
+        local m = math.floor(t / n)
+        return m * n, (m + 1) * n
+    end
+    local pt = itemPos() + t
+    local _, meas = r.TimeMap2_timeToBeats(0, pt)
+    local a = r.TimeMap2_beatsToTime(0, 0, meas)
+    local b = r.TimeMap2_beatsToTime(0, 0, meas + 1)
+    return a - itemPos(), b - itemPos()
+end
+
+-- Le DEBUT du groupe vise : le point fixe d'un etirement. Il ne peut pas etre
+-- la note qu'on a attrapee — etirer depuis elle deplacerait tout le reste sous
+-- la main sans que rien ne tienne.
+local function spanStart()
+    local a = math.huge
+    if Roll.seln > 0 then
+        for i in pairs(Roll.selset) do
+            if Roll.starts[i] < a then a = Roll.starts[i] end
+        end
+    else
+        for i = 1, Roll.count do
+            if Roll.starts[i] < a then a = Roll.starts[i] end
+        end
+    end
+    return (a < math.huge) and a or 0
+end
+
 local move_snap = {}
 local function snapshotSel()
     local n = 0
@@ -2959,13 +3113,30 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local row = math.floor((my - wave.ry) / row_h) + 1
     local pitch = rows.list[row]
     local pos = itemPos()
-    local add = Core_tk.ModShift()   -- additive selection
+
+    -- LA ZONE SOUS LE POINTEUR, nommee une fois. C'est elle qui choisit la
+    -- colonne du tableau de liaisons : la meme paire (modificateurs, geste) ne
+    -- veut pas dire la meme chose sur une note, sur son bord et sur le vide, et
+    -- c'est exactement ce que la table des modificateurs de REAPER encode.
+    --
+    -- `Roll.At` une seule fois : elle balaie les notes, et l'appeler pour la
+    -- zone puis pour le clic puis pour l'affordance la faisait trois fois par
+    -- frame sur une grille qui peut porter mille notes.
+    local hit = (in_grid and pitch) and Roll.At(t, pitch) or nil
+    local on_edge = hit ~= nil
+                    and mx > xAtTime(Roll.starts[hit] + Roll.lens[hit]) - 6
+    local zone = (in_ruler and "ruler") or (in_lane and "lane")
+              or (in_vel and "vel")
+              or (hit and (on_edge and "edge" or "note"))
+              or (in_grid and "roll") or nil
+    local mods = Keymap.Mods()
+    local function act(gesture, z) return Keymap.Mouse(KM, z or zone, gesture, mods) end
 
     -- ruler strip (top): real handles. Grab a time-selection EDGE to
     -- resize, its BODY to move it, the edit-cursor flag to drag it; an
     -- empty click sets the cursor, an empty drag makes a new selection.
     -- Grid-snapped unless Ctrl.
-    local rfree = Core_tk.ModCtrl()
+    local rfree = act("click", "ruler") == "ruler.cursor_free"
     local ts_a, ts_b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
     local has_ts = ts_b > ts_a + 0.0001
     local tsa = has_ts and (ts_a - pos) or nil
@@ -2983,6 +3154,20 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         end
     end
     if in_ruler and Core_tk.MouseClicked(1) then
+        -- Les deux actions qui ne touchent NI le curseur NI les bornes passent
+        -- d'abord : ce sont des ordres, pas des prises de poignee.
+        local ra = act("click", "ruler")
+        if ra == "ruler.clear_ts" then
+            r.GetSet_LoopTimeRange(true, false, 0, 0, false)
+            return
+        elseif ra == "ruler.select_in_ts" then
+            if has_ts then
+                local n = Roll.SelectBox(ts_a - pos, ts_b - pos, 0, 127, false)
+                state.row_hi = nil
+                flash(n .. " selected")
+            end
+            return
+        end
         if tsa and math.abs(mx - xAtTime(tsa)) <= 6 then
             state.ruler_drag = { mode = "resize_a", anchor = tsb }
         elseif tsb and math.abs(mx - xAtTime(tsb)) <= 6 then
@@ -3038,10 +3223,15 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     if in_lane and pitch then
         UI.SetCursor("hand")
         if Core_tk.MouseClicked(1) then
-            Roll.SelectPitch(pitch, add)
-            state.row_hi = pitch
+            local a = act("click")
+            if a == "lane.select_row" or a == "lane.select_row_add" then
+                Roll.SelectPitch(pitch, a == "lane.select_row_add")
+                state.row_hi = pitch
+            end
         elseif Core_tk.MouseClicked(2) then
-            auditionNote(pitch, state.last_vel)
+            if act("rclick") == "lane.audition" then
+                auditionNote(pitch, state.last_vel)
+            end
         end
     end
 
@@ -3104,29 +3294,119 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     end
 
     -- grid presses
+    -- LA PRISE FAIT DEUX CHOSES A LA FOIS, et c'est ce que la table de REAPER
+    -- decrit : l'action de CLIC s'applique tout de suite (selectionner,
+    -- effacer, doubler une longueur) et l'action de GLISSER s'arme derriere
+    -- pour le cas ou le pointeur bouge. Alt efface une note au clic et en
+    -- efface une trainee au glisser — un seul modificateur, deux lignes du
+    -- tableau, parce que ce sont deux actions.
     if in_grid and pitch then
         if Core_tk.MouseClicked(1) then
-            local idx = Roll.At(t, pitch)
-            if idx then
-                local x1 = xAtTime(Roll.starts[idx] + Roll.lens[idx])
-                -- keep a multi-selection if the clicked note is part of it;
-                -- else select this one (Shift adds to the set)
-                if not Roll.IsSel(idx) then
-                    if add then Roll.AddSel(idx) else Roll.SelectOnly(idx) end
+            local ca, da = act("click"), act("drag")
+            if hit then
+                -- ----- ce que le clic fait immediatement --------------------
+                if ca == "note.erase" or da == "note.erase_drag" then
+                    Roll.Delete(hit)
+                    state.row_hi = nil
+                    state.mdrag = { mode = "erase", moved = true }
+                    return
+                elseif ca == "note.select_toggle" then
+                    Roll.ToggleSel(hit)
+                    state.row_hi = nil
+                    return
+                elseif ca == "note.select_range" then
+                    Roll.SelectRange(Roll.sel or hit, hit, false)
+                    state.row_hi = nil
+                    return
+                elseif ca == "note.select_measure" then
+                    local a, b = measureAround(Roll.starts[hit])
+                    flash(Roll.SelectBox(a, b, 0, 127, false) .. " selected")
+                    state.row_hi = nil
+                    return
+                elseif ca == "note.select_to_end" then
+                    flash(Roll.SelectBox(Roll.starts[hit], 1e18, 0, 127, false)
+                          .. " selected")
+                    state.row_hi = nil
+                    return
+                elseif ca == "note.len_double" or ca == "note.len_halve" then
+                    if not Roll.IsSel(hit) then Roll.SelectOnly(hit) end
+                    Roll.ScaleLen(ca == "note.len_double" and 2 or 0.5)
+                    return
                 end
+
+                -- ----- sinon : selectionner, puis armer le glisser ----------
+                if not Roll.IsSel(hit) then Roll.SelectOnly(hit) end
                 state.row_hi = nil
-                if mx > x1 - 6 then
-                    state.mdrag = { mode = "resize", idx = idx, moved = false, px = mx, py = my,
-                                    multi = Roll.seln > 1 and snapshotSel() or nil,
-                                    ol = Roll.lens[idx] }
+                local idx = hit
+                if da == "note.copy" then
+                    -- LA COPIE SE FAIT A LA PRISE, pas au relachement : ce
+                    -- qu'on deplace ensuite est la COPIE, et l'original reste
+                    -- ou il est. Duplicate re-selectionne les copies par leur
+                    -- identite, donc la note sous le pointeur est la nouvelle.
+                    if Roll.Duplicate(0, 0) > 0 then
+                        idx = Roll.At(t, pitch) or idx
+                    end
+                end
+                if on_edge then
+                    if da == "edge.stretch" then
+                        local n = snapshotSel()
+                        state.mdrag = { mode = "stretch", idx = idx, moved = false,
+                                        multi = n > 0 and n or nil, px = mx, py = my,
+                                        a0 = spanStart(), t0 = t }
+                    else
+                        local solo = (da == "edge.resize_solo")
+                        state.mdrag = { mode = "resize", idx = idx, moved = false,
+                                        px = mx, py = my,
+                                        free = (da == "edge.resize_free"),
+                                        multi = (not solo) and Roll.seln > 1
+                                                and snapshotSel() or nil,
+                                        ol = Roll.lens[idx] }
+                    end
+                elseif da == "note.stretch_pos" then
+                    local n = snapshotSel()
+                    state.mdrag = { mode = "stretchpos", idx = idx, moved = false,
+                                    multi = n > 0 and n or nil, px = mx, py = my,
+                                    a0 = spanStart(), t0 = t }
                 else
                     state.mdrag = { mode = "move", idx = idx, moved = false,
                                     grab = t - Roll.starts[idx],
+                                    free = (da == "note.move_free"),
+                                    axis = (da == "note.move_axis"),
                                     multi = Roll.seln > 1 and snapshotSel() or nil,
+                                    px = mx, py = my,
                                     op = Roll.starts[idx], opp = Roll.pitches[idx] }
                 end
                 auditionNote(pitch, Roll.vels[idx])
             else
+                -- ----- la grille vide ---------------------------------------
+                if ca == "roll.deselect" or da == "roll.erase_drag" then
+                    Roll.ClearSel()
+                    state.row_hi = nil
+                    if da == "roll.erase_drag" then
+                        state.mdrag = { mode = "erase", moved = true }
+                    end
+                    return
+                elseif ca == "roll.cursor" then
+                    Roll.ClearSel()
+                    state.row_hi = nil
+                    if state.mode ~= "clip" then
+                        r.SetEditCurPos(pos + math.max(0, t), false, false)
+                    end
+                    return
+                elseif da == "roll.paint_line" or da == "roll.paint_chord" then
+                    state.mdrag = { mode = "paint", moved = false,
+                                    t0 = midiSnapFloor(t), p0 = pitch,
+                                    chord = (da == "roll.paint_chord") }
+                    return
+                elseif da == "roll.copy_sel" then
+                    if Roll.seln > 0 and Roll.Duplicate(0, 0) > 0 then
+                        state.mdrag = { mode = "move", idx = Roll.sel, moved = false,
+                                        grab = 0, multi = snapshotSel(),
+                                        px = mx, py = my,
+                                        op = midiSnap(t), opp = pitch }
+                    end
+                    return
+                end
                 -- FL: click on empty = insert in the cell UNDER the cursor.
                 -- Draw-then-drag: keep the button held and drag right to set the
                 -- length (a plain click keeps the one-cell default).
@@ -3146,8 +3426,11 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
             -- delete would Sync mid-drag and corrupt move_snap indices):
             -- start a marquee; a release without movement over a note
             -- deletes it (FL quick-delete preserved)
-            state.marquee = { x = mx, y = my, cx = mx, cy = my,
-                              t0 = t, p0 = pitch, moved = false }
+            if act("rclick", "roll") == "roll.marquee"
+               or act("rclick", "note") == "roll.marquee" then
+                state.marquee = { x = mx, y = my, cx = mx, cy = my,
+                                  t0 = t, p0 = pitch, moved = false }
+            end
         end
     end
 
@@ -3174,7 +3457,11 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     end
                 end
                 if phi >= plo then
-                    local n = Roll.SelectBox(ta, tb, plo, phi, add)
+                    -- Additif : le meme modificateur que le clic sur une
+                    -- note, sinon deux facons d'ajouter a une selection dans
+                    -- la meme fenetre.
+                    local n = Roll.SelectBox(ta, tb, plo, phi,
+                                             (mods & Keymap.CTRL) ~= 0)
                     state.row_hi = nil
                     flash(n .. " selected")
                 end
@@ -3205,12 +3492,61 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local md = state.mdrag
     if md then
         if Core_tk.MouseDown(1) then
-            local free = Core_tk.ModCtrl()   -- Ctrl = bypass snap
-            if md.mode == "move" and md.idx then
+            -- « Sans magnetisme » a ete decide A LA PRISE et voyage dans le
+            -- glisser. Le relire ici laissait changer d'avis en cours de geste,
+            -- ce qui parait souple et ne l'est pas : la note saute au moment ou
+            -- le doigt bouge sur le clavier, pas au moment ou on le voulait.
+            local free = md.free
+            if md.mode == "erase" then
+                if hit then Roll.Delete(hit) end
+                UI.SetCursor("arrow")
+            elseif md.mode == "paint" then
+                md.p1, md.t1 = pitch or md.p0, midiSnapFloor(t)
+                if md.t1 ~= md.t0 then md.moved = true end
+                UI.SetCursor("cross")
+            elseif md.mode == "stretch" or md.mode == "stretchpos" then
+                -- ETIRER : les positions se dilatent autour du DEBUT du groupe,
+                -- qui est le seul point fixe qui ne depende pas de la note
+                -- qu'on a attrapee. `stretch` emmene les longueurs avec elles,
+                -- `stretchpos` ne bouge que les departs — c'est ce que REAPER
+                -- appelle arpeger, et la difference est exactement la.
+                local a = md.a0 or 0
+                local d0 = (md.t0 or 0) - a
+                if math.abs(d0) > 1e-6 and md.multi then
+                    local f = (t - a) / d0
+                    if f < 0.02 then f = 0.02 elseif f > 50 then f = 50 end
+                    for k = 1, md.multi do
+                        local e = move_snap[k]
+                        local ns = a + (e.s - a) * f
+                        if ns < 0 then ns = 0 end
+                        Roll.MoveLive(e.i, ns, e.p)
+                        if md.mode == "stretch" then
+                            local nl = e.l * f
+                            if nl < 0.01 then nl = 0.01 end
+                            Roll.ResizeLive(e.i, nl)
+                        end
+                    end
+                    md.moved = true
+                end
+                UI.SetCursor("size_we")
+            elseif md.mode == "move" and md.idx then
                 local nt = t - (md.grab or 0)
                 if not free then nt = midiSnap(nt) end
                 if nt < 0 then nt = 0 end
                 local np = pitch or (md.multi and md.opp) or Roll.pitches[md.idx]
+                -- UN SEUL AXE : celui du plus grand mouvement, decide une fois
+                -- que le geste a une direction et jamais rediscute. Le decider
+                -- a chaque frame ferait osciller la note entre les deux des que
+                -- la main tremble sur la diagonale.
+                if md.axis then
+                    if not md.lock and md.px
+                       and (math.abs(mx - md.px) > 4 or math.abs(my - md.py) > 4) then
+                        md.lock = (math.abs(mx - md.px) >= math.abs(my - md.py))
+                                  and "time" or "pitch"
+                    end
+                    if md.lock == "time" then np = md.opp
+                    elseif md.lock == "pitch" then nt = md.op end
+                end
                 if md.multi and md.multi > 1 then
                     -- group move: same delta on every snapshot note. Vertically
                     -- the delta is in ROWS when the rows are a drum list — one
@@ -3279,9 +3615,26 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 md.moved = true
             end
         else
-            if md.moved then
+            if md.mode == "paint" then
+                -- ON PEINT AU RELACHEMENT, une seule fois. Peindre en continu
+                -- demanderait de defaire a chaque frame ce que la frame
+                -- precedente a insere — et une insertion re-trie, donc tous les
+                -- index bougent sous le geste. Un trait, une ecriture, une
+                -- annulation.
+                if md.moved and md.t1 then
+                    local step = gridStepSec(md.t0)
+                    if step > 0.001 then
+                        local n = Roll.PaintLine(md.t0, md.p0, md.t1, md.p1 or md.p0,
+                                                 step, step, state.last_vel,
+                                                 md.chord)
+                        flash(n .. " painted")
+                    end
+                end
+            elseif md.moved and md.mode ~= "erase" then
                 Roll.Commit(md.mode == "vel" and "MIDI: velocity"
                             or md.mode == "resize" and "MIDI: resize note"
+                            or md.mode == "stretch" and "MIDI: stretch notes"
+                            or md.mode == "stretchpos" and "MIDI: stretch note positions"
                             or "MIDI: move note")
             end
             state.mdrag = nil
@@ -3292,9 +3645,16 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     -- (skipped mid-pan so the middle-drag size_all cursor wins)
     if in_grid and not state.mdrag and not state.marquee and pitch
        and not Core_tk.MouseDown(64) then
-        local idx = Roll.At(t, pitch)
-        if idx then
-            if mx > xAtTime(Roll.starts[idx] + Roll.lens[idx]) - 6 then
+        -- LE POINTEUR ANNONCE CE QUI VA SE PASSER, modificateurs compris. Une
+        -- gomme qui ressemble a un deplacement se decouvre en effacant une note
+        -- qu'on ne voulait pas ; et c'est le seul retour qu'on a avant le clic.
+        local da = act("drag")
+        if da == "note.erase_drag" or da == "roll.erase_drag" then
+            UI.SetCursor("arrow")
+        elseif da == "roll.paint_line" or da == "roll.paint_chord" then
+            UI.SetCursor("cross")
+        elseif hit then
+            if on_edge then
                 UI.SetCursor("size_we")
             else
                 UI.SetCursor("size_all")
@@ -3556,6 +3916,36 @@ local function drawRoll(theme, area_h)
                          col_acc[1], col_acc[2], col_acc[3], 0.8, false)
     end
 
+    -- LE TRAIT QU'ON VA PEINDRE. On peint au relachement — une seule ecriture,
+    -- une seule annulation — donc il faut bien MONTRER ce qu'on vise, sans quoi
+    -- le geste se fait a l'aveugle et on le refait trois fois. Les cases sont
+    -- dessinees, pas une ligne : c'est ce qui sera insere, a la case pres.
+    local pd = state.mdrag
+    if pd and pd.mode == "paint" and pd.t1 then
+        local step = gridStepSec(pd.t0)
+        if step > 0.001 then
+            local a, b = pd.t0, pd.t1
+            local pa, pb = pd.p0, pd.p1 or pd.p0
+            if b < a then a, b, pa, pb = b, a, pb, pa end
+            local nst = math.floor((b - a) / step + 1e-6)
+            if nst > 512 then nst = 512 end
+            for k = 0, nst do
+                local at = a + k * step
+                local f = (nst > 0) and (k / nst) or 0
+                local pp = math.floor(pa + (pb - pa) * f + 0.5)
+                local rr = rows.map[pp]
+                if rr then
+                    local x0 = xAtTime(at)
+                    local x1 = xAtTime(at + step)
+                    local yy = wave.ry + (rr - 1) * row_h
+                    Core_tk.DrawRect(x0 + 1, yy + 1, math.max(2, x1 - x0 - 2),
+                                     row_h - 2,
+                                     col_acc[1], col_acc[2], col_acc[3], 0.35)
+                end
+            end
+        end
+    end
+
     rollInput(theme, rows, row_h, lane_w, vy)
     UI.Layout.AdvanceCursor(aw, area_h)
 end
@@ -3766,7 +4156,7 @@ local function frame(theme)
                                 NOTE_NAMES[Roll.pitches[Roll.sel]],
                                 Roll.vels[Roll.sel], Roll.lens[Roll.sel])
         else
-            msg = "click/drag = add · edge = resize · right-drag = select · Ctrl+D dup · Ctrl+C/V · Q quant · Transform menu"
+            msg = "click = add · edge = resize · Shift = no snap · Ctrl = copy · Alt = erase · right-drag = select · Q quant"
         end
     elseif state.sel_a then
         msg = string.format("sel  %.3f – %.3f  (%.3fs)",
