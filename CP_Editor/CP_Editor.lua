@@ -729,6 +729,12 @@ local function setFile(path)
     state.len  = r.GetMediaSourceLength(src) or 0
     state.ch   = r.GetMediaSourceNumChannels(src) or 1
     state.sr   = r.GetMediaSourceSampleRate(src) or 0
+    -- L'item selectionne au moment de l'ouverture ne doit pas reprendre le
+    -- focus tout de suite — mais le SUIVANT, oui. Meme regle que le mode case,
+    -- et posee ici pour qu'elle vaille par quelque porte qu'on soit entre : un
+    -- depot Windows, la barre de messages, ou un envoi depuis une autre
+    -- fenetre.
+    state.seen_sel_item = r.GetSelectedMediaItem(0, 0)
     resetForTarget()
     return true
 end
@@ -902,12 +908,16 @@ local function handleFileDrops()
     -- one editor, one target: the first file wins (the rest would just
     -- replace each other), and the lock is respected like any other open
     if setFile(drop_paths[1]) then
-        state.lock = true   -- a deliberate drop must not be stolen back by
-                            -- the next arrange selection
+        -- UN DEPOT SE DEFEND CONTRE LA SELECTION DEJA EN PLACE, PAS CONTRE LA
+        -- SUIVANTE. Le verrou faisait les deux : apres un depot, cliquer un
+        -- item de l'arrangement ne changeait plus rien et il fallait relancer
+        -- le script — un Lock qu'on n'a pas presse et qu'on ne pense donc pas
+        -- a lever. `setFile` se souvient maintenant de l'item selectionne a cet
+        -- instant, ce qui dit exactement ce qu'on voulait dire.
         flash(#drop_paths > 1
-              and ("Opened " .. state.name .. "  ·  follow locked  ·  "
+              and ("Opened " .. state.name .. "  ·  "
                    .. (#drop_paths - 1) .. " more ignored")
-              or ("Opened " .. state.name .. "  ·  follow locked"))
+              or ("Opened " .. state.name))
     end
 end
 
@@ -920,8 +930,8 @@ local function busConsume()
     if not clip then return end
     openClip(clip)
     if state.mode then
-        state.lock = true
-        flash("Opened " .. state.name .. "  ·  follow locked")
+        state.seen_sel_item = r.GetSelectedMediaItem(0, 0)
+        flash("Opened " .. state.name)
     end
 end
 
@@ -950,7 +960,13 @@ local function pollTarget()
     -- opened) pulls the editor back to the arrange.
     if not state.lock then
         local it = r.GetSelectedMediaItem(0, 0)
-        if state.mode == "clip" then
+        -- Une cible qui n'est PAS un item du projet — une case, un fichier
+        -- depose — garde le focus tant que la selection de l'arrangement ne
+        -- CHANGE pas. C'est la difference entre « on m'a ouvert ceci » et « on
+        -- vient de cliquer autre chose », et sans elle un fichier depose
+        -- repartait aussitot vers l'item deja selectionne, ou ne repartait
+        -- jamais selon la facon dont on avait bloque le premier cas.
+        if state.mode == "clip" or state.mode == "file" then
             if it ~= state.seen_sel_item then
                 state.seen_sel_item = it
                 if it then setItem(it) end
