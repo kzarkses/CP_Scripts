@@ -145,12 +145,6 @@ local IKNOB_OPTS  = {
     to_display   = function() return Kit.InstrParamPlain(ent_pid) or 0 end,
     from_display = function(v) return Kit.InstrNormForPlain(ent_pid, v) end,
 }
--- ±24 st over the knob travel: slower drag so one pixel stays sub-decimal
-local PITCH_KNOB_OPTS = {
-    size = 34, sensitivity = 0.002, decimals = 2,
-    to_display   = function() return Kit.PadPitch(ent_note) or 0 end,
-    from_display = function(st) return 0.5 + st / 48 end,   -- the knob window
-}
 -- Instrument row: three controls that are not continuous, in a dial's box.
 local ROOT_OPTS   = { on = false,
     tip = "Root note — the key the sample plays at its own pitch (click: choose, wheel: semitone, Ctrl+click a key)" }
@@ -732,7 +726,7 @@ only selects — the useful mode while a loop is running — and Enter
 plays the selection.
 
 ## Pad
-Vol / Pan / Tune (vinyl repitch) / Pitch (elastique, length kept) /
+Vol / Pan / Tune (repitch: pitch and length together, as a sampler does) /
 ADSR. Loop gates the sample while the pad is held. Choke groups cut
 each other. Shift = fine drag on every knob.
 
@@ -1365,28 +1359,17 @@ local function drawControls(theme, avail_h)
 
     knob("k_vol", "Vol", live, Kit.P.VOL, Kit.DEFAULT_VOL)
     knob("k_pan", "Pan", live, Kit.P.PAN, 0.5)
+    -- UN SEUL BOUTON DE HAUTEUR, et c'est Tune.
+    --
+    -- Il y en avait deux : Tune (le reechantillonnage du RS5K, hauteur et duree
+    -- couplees) et Pitch (un ReaPitch par pad, duree gardee). Le second est
+    -- parti avec son montage : un ReaPitch par pad exigeait de restructurer la
+    -- chaine d'effets DEPUIS UN BOUTON QU'ON TOURNE, plusieurs fois par
+    -- seconde. Un bouton ne restructure pas le projet.
+    --
+    -- Garder la tonalite reste possible et se fait la ou ca ne coute rien :
+    -- « Bake » cuit le fichier une fois, et on le joue a vitesse normale.
     knob("k_tune", "Tune", live, Kit.P.TUNE, 0.5)
-    do
-        -- Pitch that keeps the length (ReaPitch, élastique) — Tune above is
-        -- RS5K resample, the vinyl move: pitch and duration coupled.
-        -- The knob spans ±24 st on ReaPitch's continuous full-range shift
-        -- (SetPadPitch clamps into the param's real bounds); Shift = fine.
-        if live then
-            local st = Kit.PadPitch(live)
-            ent_note = live
-            local changed, nv = UI.Knob("k_rpitch", "Pitch", 0.5 + st / 48, 0.5,
-                                        PITCH_KNOB_OPTS)
-            if changed then Kit.SetPadPitch(live, (nv - 0.5) * 48) end
-            if UI.IsItemHovered() then
-                UI.Tooltip(string.format("%+.2f st — elastique pitch, length unchanged (Shift = fine, right-click = type)", st))
-            end
-        else
-            UI.BeginDisabled()
-            UI.Knob("k_rpitch", "Pitch", 0.5, 0.5, PITCH_KNOB_OPTS)
-            UI.EndDisabled()
-        end
-        UI.SameLine()
-    end
     knob("k_att", "A", live, Kit.P.ATTACK, Kit.DEFAULT_ATT)
     knob("k_dec", "D", live, Kit.P.DECAY, Kit.DEFAULT_DEC)
     knob("k_sus", "S", live, Kit.P.SUSTAIN, Kit.DEFAULT_SUS)

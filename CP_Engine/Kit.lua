@@ -739,7 +739,12 @@ function Kit.Poll()
     -- pas arrive. Sur un kit deja replie, c'est une poignee de lectures.
     if not repaired then
         repaired = true
-        if valid(Kit.parent) then Kit.Fold() end
+        if valid(Kit.parent) then
+            Kit.Fold()
+            -- et on reprend les ReaPitch qu'une version precedente de ce module
+            -- a empiles dans les boites de pad (voir Kit.CleanPitchLeftovers)
+            Kit.CleanPitchLeftovers()
+        end
         Kit.SplitInstrument()   -- one-time: the instrument leaves the kit
         Kit.Scan()
     end
@@ -1689,90 +1694,83 @@ end
 -- the semitone-shift param is found BY NAME and cached on the pad (param
 -- indices have moved across REAPER versions, names haven't).
 -- ---------------------------------------------------------------------------
--- UN REAPITCH PAR PAD, DONC DANS LA BOITE DU PAD.
+-- LE REAPITCH PAR PAD A ETE RETIRE, ET IL FAUT DIRE POURQUOI
+-- ---------------------------------------------------------------------------
+-- Il existait pour transposer un pad SANS changer sa duree — le complement du
+-- TUNE du RS5K, qui est un reechantillonnage (la hauteur et la duree bougent
+-- ensemble, le geste du vinyle). L'intention etait juste. Le montage ne l'etait
+-- pas.
 --
--- Il etait ajoute a la chaine de la piste du pad, apres le RS5K, et c'etait
--- juste tant qu'un pad avait une piste. Pose maintenant dans la chaine du kit,
--- il transposerait TOUS les pads places apres lui — et le premier pad qu'on
--- accorde volerait sa hauteur a tous les suivants. Il vit donc dans le
--- conteneur du pad, qui est cree pour l'occasion : accorder un pad, c'est lui
--- donner des effets a lui.
-local RP_ADD = "ReaPitch (Cockos)"
-
--- Ajouter un effet DANS un conteneur : REAPER ne sait pas le faire d'un coup.
--- On l'ajoute au bout de la chaine — donc en dernier, ce qui est la
--- configuration que moveLastIntoBox exige — puis on l'y fait entrer.
-local function addFxToBox(tr, box, addname)
-    local at = containerCount(tr, box)
-    local tmp = r.TrackFX_AddByName(tr, addname, false, -1)
-    if tmp < 0 then return nil end
-    hideFX(tr, tmp)
-    if not moveLastIntoBox(tr, box) then
-        r.TrackFX_Delete(tr, tmp)
-        return nil
-    end
-    return containerItem(tr, box, at)
+-- Un ReaPitch par pad veut dire un effet DE PLUS dans la chaine du kit, donc
+-- une boite par pad, donc un deplacement d'effet vers un conteneur — et ce
+-- deplacement se faisait sur le chemin d'un BOUTON QU'ON TOURNE, c'est-a-dire
+-- plusieurs fois par seconde tant que la souris est enfoncee. Chaque tour
+-- restructurait la chaine, la fenetre d'effets se redessinait, le rescan
+-- suivait, et quand un index encode se perdait le tour d'apres en ajoutait un
+-- autre. Un bouton ne restructure pas le projet. Jamais.
+--
+-- Ce qui reste, et qui couvre le besoin :
+--   · TUNE (Kit.P.TUNE) — la transposition du pad, couplee a la duree. C'est
+--     ce que fait tout echantillonneur materiel, c'est le defaut assume par
+--     toute la suite (« REPITCH est celui qui est en temps »), et c'est UN
+--     parametre sur UN effet : rien a creer, rien a deplacer.
+--   · Bake / Warp — quand il faut vraiment garder la tonalite, on CUIT le
+--     fichier une fois et on le joue a vitesse normale. C'est deja la reponse
+--     de CP_Session pour ses cases, et elle ne coute rien au fil audio.
+--   · Et la vraie sortie, ecrite dans la feuille de route : un instrument CP en
+--     plugin, ou un ADSR, une transposition et un choke sont des parametres du
+--     moteur et non des effets qu'on empile.
+--
+-- Kit.PadPitch/SetPadPitch survivent sous ce nom parce que les fenetres les
+-- appellent, mais elles parlent maintenant au TUNE. Un seul chemin, un seul
+-- parametre, aucune structure touchee pendant un geste.
+function Kit.PadPitch(note)
+    local pad = Kit.Pad(note)
+    if not (pad and pad.fx) then return 0 end
+    return plainOf(pad.track, pad.fx, Kit.P.TUNE) or 0
 end
 
--- Le ReaPitch du pad : cherche dans sa boite, cree la boite si besoin.
-local function padReaPitch(pad, create)
-    if not (pad and valid(pad.track)) then return nil end
-    local tr = pad.track
-    local box = pad.box
-    if not box then
-        if not create then return nil end
-        box = Kit.EnsurePadBox(pad.note)
-        if not box then return nil end
-        pad = Kit.Pad(pad.note)          -- le rescan a refait les index
-        if not pad then return nil end
-        tr, box = pad.track, pad.box
-        if not box then return nil end
-    end
+function Kit.SetPadPitch(note, st)
+    local pad = Kit.Pad(note)
+    if not (pad and pad.fx) then return end
+    plainSet(pad.track, pad.fx, Kit.P.TUNE, st)   -- clamps into the real range
+    pad.fmt[Kit.P.TUNE] = nil
+    last_change = r.GetProjectStateChangeCount(0)
+end
 
-    local fx = nil
-    for j = 0, containerCount(tr, box) - 1 do
-        local sub_i = containerItem(tr, box, j)
-        local a, b = r.TrackFX_GetFXName(tr, sub_i, "")
-        local nm = type(a) == "string" and a or b
-        if nm and nm:find("ReaPitch", 1, true) then fx = sub_i break end
-    end
-    if not fx then
-        if not create then return nil end
-        fx = addFxToBox(tr, box, RP_ADD)
-        if not fx then return nil end
-        hideFX(tr, fx)
-    end
-
-    -- Bind the CONTINUOUS "Shift (full range)" slider, not the stepped
-    -- integer "Shift (semitones)" one: a stepped param snaps every small
-    -- knob drag back to the last whole value, which reads as a dead —
-    -- then jumpy — knob. Semitones kept as a fallback for old ReaPitch
-    -- builds that may name things differently.
-    local full, semi
-    for i = 0, r.TrackFX_GetNumParams(tr, fx) - 1 do
-        local _, pn = r.TrackFX_GetParamName(tr, fx, i, "")
-        local low = pn and pn:lower() or ""
-        if not low:find("formant", 1, true) then
-            -- no break: BOTH are needed (semitones comes after full range)
-            if not full and low:find("full range", 1, true) then full = i end
-            if not semi and low:find("semitone", 1, true) then semi = i end
+-- REPARER CE QUE LE MONTAGE PRECEDENT A LAISSE. Une session ou le bouton a ete
+-- tourne peut contenir plusieurs ReaPitch empiles dans la boite d'un pad, voire
+-- des boites imbriquees. On les retire une fois par session, comme le repli :
+-- ce sont des effets que ce module a poses, donc c'est a lui de les reprendre.
+-- On ne retire QUE des ReaPitch, et seulement dans les boites de pad : c'est
+-- exactement ce que ce module y a mis, et rien d'autre n'y met de ReaPitch.
+-- Un pad dont la hauteur avait ete reglee revient donc a zero — c'est la perte
+-- assumee, et elle est petite a cote d'une chaine qui se restructure toute
+-- seule. Le TUNE du RS5K, lui, n'est pas touche.
+function Kit.CleanPitchLeftovers()
+    local kit = Kit.parent
+    if not valid(kit) then return 0 end
+    local removed = 0
+    for _, pad in pairs(Kit.pads) do
+        if pad.box then
+            -- a l'envers : retirer decale ce qui suit
+            local n = containerCount(kit, pad.box)
+            for j = n - 1, 0, -1 do
+                local sub_i = containerItem(kit, pad.box, j)
+                local a, b = r.TrackFX_GetFXName(kit, sub_i, "")
+                local nm = type(a) == "string" and a or b
+                if nm and nm:find("ReaPitch", 1, true) then
+                    r.TrackFX_Delete(kit, sub_i)
+                    removed = removed + 1
+                end
+            end
         end
     end
-    local best = full or semi
-    if not best then return nil end
-    -- One-shot migration: an earlier build drove the stepped slider —
-    -- fold any leftover shift into the continuous param so the audible
-    -- pitch and the knob agree again. DISPLAY units throughout: the raw
-    -- values are normalized, where 0.5 (not 0) means "no shift".
-    if full and semi and semi ~= full then
-        local sv = plainOf(tr, fx, semi)
-        if sv and math.abs(sv) > 0.005 then
-            local cur = plainOf(tr, fx, full) or 0
-            plainSet(tr, fx, full, cur + sv)
-            plainSet(tr, fx, semi, 0)
-        end
+    if removed > 0 then
+        Kit.version = Kit.version + 1
+        rescan()
     end
-    return fx, best
+    return removed
 end
 
 -- Plain-value access to a pad's RS5K params (ms / dB — what the sliders
@@ -1815,32 +1813,6 @@ end
 
 -- Current shift in semitones (0 while no ReaPitch exists — nothing is
 -- created by reading).
-function Kit.PadPitch(note)
-    local pad = Kit.Pad(note)
-    if not pad then return 0 end
-    local fx, pi = padReaPitch(pad, false)
-    if not fx then return 0 end
-    return plainOf(pad.track, fx, pi) or 0
-end
-
--- Le pad a-t-il de quoi transposer sans changer sa duree ? Une fenetre le
--- demande avant de proposer le reglage : creer un conteneur pour repondre
--- « zero » serait creer une boite pour rien.
-function Kit.PadHasPitch(note)
-    local pad = Kit.Pad(note)
-    return pad ~= nil and padReaPitch(pad, false) ~= nil
-end
-
-function Kit.SetPadPitch(note, st)
-    local pad = Kit.Pad(note)
-    if not pad then return end
-    local fx, pi = padReaPitch(pad, true)
-    if not fx then return end
-    pad = Kit.Pad(note) or pad        -- creer la boite a pu rescanner
-    plainSet(pad.track, fx, pi, st)   -- clamps into the param's real bounds
-    last_change = r.GetProjectStateChangeCount(0)
-end
-
 -- ---------------------------------------------------------------------------
 -- Live helpers
 -- ---------------------------------------------------------------------------
