@@ -1,4 +1,41 @@
-desc:CP Kit Sampler
+import io, sys
+sys.stdout.reconfigure(encoding="utf-8")
+
+OUT = ("c:/Users/Cedric/AppData/Roaming/REAPER/Scripts/CP_Scripts/"
+       "CP_JSFX/CP_KitSampler.jsfx")
+
+NPADS = 64
+BASE = 36  # pad 0 <-> note 36, comme Kit.BASE
+
+# --- sliders : master, puis un volume automatisable par pad ----------------
+sliders = []
+sliders.append("slider1:0<0,15,1>Kit slot")
+sliders.append("slider2:0<-60,12,0.1>Master (dB)")
+for i in range(NPADS):
+    # le '-' cache le slider de l'interface generique sans lui retirer son
+    # statut de parametre : c'est l'idiome deja utilise par cp_kit_choke.jsfx
+    sliders.append("slider%d:0<-60,12,0.1>-Pad %d volume"
+                   % (9 + i, i + 1))
+SLIDERS = "\n".join(sliders)
+
+# --- pins : huit paires stereo ---------------------------------------------
+pins = []
+for i in range(8):
+    pins.append("out_pin:out %d L" % (i + 1))
+    pins.append("out_pin:out %d R" % (i + 1))
+PINS = "\n".join(pins)
+
+# --- lecture des sliders de volume vers la table des pads ------------------
+readsl = "\n".join(
+    "  pad(%d)[P_VOL] = 10 ^ (slider%d / 20);" % (i, 9 + i)
+    for i in range(NPADS))
+
+# --- ecriture des sorties ---------------------------------------------------
+spl = "\n".join(
+    "spl%d = OUTBUS[%d] * master_gain;  spl%d = OUTBUS[%d] * master_gain;"
+    % (2 * i, 2 * i, 2 * i + 1, 2 * i + 1) for i in range(8))
+
+SRC = r'''desc:CP Kit Sampler
 //tags: instrument sampler
 //author: Cedric Pamalio
 // -----------------------------------------------------------------------------
@@ -31,89 +68,9 @@ desc:CP Kit Sampler
 options:gmem=CP_Kit, maxmem=33554432, gfx_idle=1
 
 in_pin:none
-out_pin:out 1 L
-out_pin:out 1 R
-out_pin:out 2 L
-out_pin:out 2 R
-out_pin:out 3 L
-out_pin:out 3 R
-out_pin:out 4 L
-out_pin:out 4 R
-out_pin:out 5 L
-out_pin:out 5 R
-out_pin:out 6 L
-out_pin:out 6 R
-out_pin:out 7 L
-out_pin:out 7 R
-out_pin:out 8 L
-out_pin:out 8 R
+__PINS__
 
-slider1:0<0,15,1>Kit slot
-slider2:0<-60,12,0.1>Master (dB)
-slider9:0<-60,12,0.1>-Pad 1 volume
-slider10:0<-60,12,0.1>-Pad 2 volume
-slider11:0<-60,12,0.1>-Pad 3 volume
-slider12:0<-60,12,0.1>-Pad 4 volume
-slider13:0<-60,12,0.1>-Pad 5 volume
-slider14:0<-60,12,0.1>-Pad 6 volume
-slider15:0<-60,12,0.1>-Pad 7 volume
-slider16:0<-60,12,0.1>-Pad 8 volume
-slider17:0<-60,12,0.1>-Pad 9 volume
-slider18:0<-60,12,0.1>-Pad 10 volume
-slider19:0<-60,12,0.1>-Pad 11 volume
-slider20:0<-60,12,0.1>-Pad 12 volume
-slider21:0<-60,12,0.1>-Pad 13 volume
-slider22:0<-60,12,0.1>-Pad 14 volume
-slider23:0<-60,12,0.1>-Pad 15 volume
-slider24:0<-60,12,0.1>-Pad 16 volume
-slider25:0<-60,12,0.1>-Pad 17 volume
-slider26:0<-60,12,0.1>-Pad 18 volume
-slider27:0<-60,12,0.1>-Pad 19 volume
-slider28:0<-60,12,0.1>-Pad 20 volume
-slider29:0<-60,12,0.1>-Pad 21 volume
-slider30:0<-60,12,0.1>-Pad 22 volume
-slider31:0<-60,12,0.1>-Pad 23 volume
-slider32:0<-60,12,0.1>-Pad 24 volume
-slider33:0<-60,12,0.1>-Pad 25 volume
-slider34:0<-60,12,0.1>-Pad 26 volume
-slider35:0<-60,12,0.1>-Pad 27 volume
-slider36:0<-60,12,0.1>-Pad 28 volume
-slider37:0<-60,12,0.1>-Pad 29 volume
-slider38:0<-60,12,0.1>-Pad 30 volume
-slider39:0<-60,12,0.1>-Pad 31 volume
-slider40:0<-60,12,0.1>-Pad 32 volume
-slider41:0<-60,12,0.1>-Pad 33 volume
-slider42:0<-60,12,0.1>-Pad 34 volume
-slider43:0<-60,12,0.1>-Pad 35 volume
-slider44:0<-60,12,0.1>-Pad 36 volume
-slider45:0<-60,12,0.1>-Pad 37 volume
-slider46:0<-60,12,0.1>-Pad 38 volume
-slider47:0<-60,12,0.1>-Pad 39 volume
-slider48:0<-60,12,0.1>-Pad 40 volume
-slider49:0<-60,12,0.1>-Pad 41 volume
-slider50:0<-60,12,0.1>-Pad 42 volume
-slider51:0<-60,12,0.1>-Pad 43 volume
-slider52:0<-60,12,0.1>-Pad 44 volume
-slider53:0<-60,12,0.1>-Pad 45 volume
-slider54:0<-60,12,0.1>-Pad 46 volume
-slider55:0<-60,12,0.1>-Pad 47 volume
-slider56:0<-60,12,0.1>-Pad 48 volume
-slider57:0<-60,12,0.1>-Pad 49 volume
-slider58:0<-60,12,0.1>-Pad 50 volume
-slider59:0<-60,12,0.1>-Pad 51 volume
-slider60:0<-60,12,0.1>-Pad 52 volume
-slider61:0<-60,12,0.1>-Pad 53 volume
-slider62:0<-60,12,0.1>-Pad 54 volume
-slider63:0<-60,12,0.1>-Pad 55 volume
-slider64:0<-60,12,0.1>-Pad 56 volume
-slider65:0<-60,12,0.1>-Pad 57 volume
-slider66:0<-60,12,0.1>-Pad 58 volume
-slider67:0<-60,12,0.1>-Pad 59 volume
-slider68:0<-60,12,0.1>-Pad 60 volume
-slider69:0<-60,12,0.1>-Pad 61 volume
-slider70:0<-60,12,0.1>-Pad 62 volume
-slider71:0<-60,12,0.1>-Pad 63 volume
-slider72:0<-60,12,0.1>-Pad 64 volume
+__SLIDERS__
 
 @init
 ext_noinit = 1;
@@ -579,70 +536,7 @@ file_avail(0) >= 0 ? ( reload_next = 0; );
 @slider
 gm = mailbox(min(max(slider1, 0), 15));
 master_gain = 10 ^ (slider2 / 20);
-  pad(0)[P_VOL] = 10 ^ (slider9 / 20);
-  pad(1)[P_VOL] = 10 ^ (slider10 / 20);
-  pad(2)[P_VOL] = 10 ^ (slider11 / 20);
-  pad(3)[P_VOL] = 10 ^ (slider12 / 20);
-  pad(4)[P_VOL] = 10 ^ (slider13 / 20);
-  pad(5)[P_VOL] = 10 ^ (slider14 / 20);
-  pad(6)[P_VOL] = 10 ^ (slider15 / 20);
-  pad(7)[P_VOL] = 10 ^ (slider16 / 20);
-  pad(8)[P_VOL] = 10 ^ (slider17 / 20);
-  pad(9)[P_VOL] = 10 ^ (slider18 / 20);
-  pad(10)[P_VOL] = 10 ^ (slider19 / 20);
-  pad(11)[P_VOL] = 10 ^ (slider20 / 20);
-  pad(12)[P_VOL] = 10 ^ (slider21 / 20);
-  pad(13)[P_VOL] = 10 ^ (slider22 / 20);
-  pad(14)[P_VOL] = 10 ^ (slider23 / 20);
-  pad(15)[P_VOL] = 10 ^ (slider24 / 20);
-  pad(16)[P_VOL] = 10 ^ (slider25 / 20);
-  pad(17)[P_VOL] = 10 ^ (slider26 / 20);
-  pad(18)[P_VOL] = 10 ^ (slider27 / 20);
-  pad(19)[P_VOL] = 10 ^ (slider28 / 20);
-  pad(20)[P_VOL] = 10 ^ (slider29 / 20);
-  pad(21)[P_VOL] = 10 ^ (slider30 / 20);
-  pad(22)[P_VOL] = 10 ^ (slider31 / 20);
-  pad(23)[P_VOL] = 10 ^ (slider32 / 20);
-  pad(24)[P_VOL] = 10 ^ (slider33 / 20);
-  pad(25)[P_VOL] = 10 ^ (slider34 / 20);
-  pad(26)[P_VOL] = 10 ^ (slider35 / 20);
-  pad(27)[P_VOL] = 10 ^ (slider36 / 20);
-  pad(28)[P_VOL] = 10 ^ (slider37 / 20);
-  pad(29)[P_VOL] = 10 ^ (slider38 / 20);
-  pad(30)[P_VOL] = 10 ^ (slider39 / 20);
-  pad(31)[P_VOL] = 10 ^ (slider40 / 20);
-  pad(32)[P_VOL] = 10 ^ (slider41 / 20);
-  pad(33)[P_VOL] = 10 ^ (slider42 / 20);
-  pad(34)[P_VOL] = 10 ^ (slider43 / 20);
-  pad(35)[P_VOL] = 10 ^ (slider44 / 20);
-  pad(36)[P_VOL] = 10 ^ (slider45 / 20);
-  pad(37)[P_VOL] = 10 ^ (slider46 / 20);
-  pad(38)[P_VOL] = 10 ^ (slider47 / 20);
-  pad(39)[P_VOL] = 10 ^ (slider48 / 20);
-  pad(40)[P_VOL] = 10 ^ (slider49 / 20);
-  pad(41)[P_VOL] = 10 ^ (slider50 / 20);
-  pad(42)[P_VOL] = 10 ^ (slider51 / 20);
-  pad(43)[P_VOL] = 10 ^ (slider52 / 20);
-  pad(44)[P_VOL] = 10 ^ (slider53 / 20);
-  pad(45)[P_VOL] = 10 ^ (slider54 / 20);
-  pad(46)[P_VOL] = 10 ^ (slider55 / 20);
-  pad(47)[P_VOL] = 10 ^ (slider56 / 20);
-  pad(48)[P_VOL] = 10 ^ (slider57 / 20);
-  pad(49)[P_VOL] = 10 ^ (slider58 / 20);
-  pad(50)[P_VOL] = 10 ^ (slider59 / 20);
-  pad(51)[P_VOL] = 10 ^ (slider60 / 20);
-  pad(52)[P_VOL] = 10 ^ (slider61 / 20);
-  pad(53)[P_VOL] = 10 ^ (slider62 / 20);
-  pad(54)[P_VOL] = 10 ^ (slider63 / 20);
-  pad(55)[P_VOL] = 10 ^ (slider64 / 20);
-  pad(56)[P_VOL] = 10 ^ (slider65 / 20);
-  pad(57)[P_VOL] = 10 ^ (slider66 / 20);
-  pad(58)[P_VOL] = 10 ^ (slider67 / 20);
-  pad(59)[P_VOL] = 10 ^ (slider68 / 20);
-  pad(60)[P_VOL] = 10 ^ (slider69 / 20);
-  pad(61)[P_VOL] = 10 ^ (slider70 / 20);
-  pad(62)[P_VOL] = 10 ^ (slider71 / 20);
-  pad(63)[P_VOL] = 10 ^ (slider72 / 20);
+__READSL__
 
 @block
 // 1. L'anneau des reglages. On draine TOUT ce qui est arrive depuis le bloc
@@ -752,14 +646,7 @@ loop(NVOICES,
   vi += 1;
 );
 
-spl0 = OUTBUS[0] * master_gain;  spl1 = OUTBUS[1] * master_gain;
-spl2 = OUTBUS[2] * master_gain;  spl3 = OUTBUS[3] * master_gain;
-spl4 = OUTBUS[4] * master_gain;  spl5 = OUTBUS[5] * master_gain;
-spl6 = OUTBUS[6] * master_gain;  spl7 = OUTBUS[7] * master_gain;
-spl8 = OUTBUS[8] * master_gain;  spl9 = OUTBUS[9] * master_gain;
-spl10 = OUTBUS[10] * master_gain;  spl11 = OUTBUS[11] * master_gain;
-spl12 = OUTBUS[12] * master_gain;  spl13 = OUTBUS[13] * master_gain;
-spl14 = OUTBUS[14] * master_gain;  spl15 = OUTBUS[15] * master_gain;
+__SPL__
 
 @gfx
 // LE DISQUE EST ICI, ET NULLE PART AILLEURS. gfx_idle=1 fait tourner cette
@@ -775,3 +662,13 @@ pending_load >= 0 ? (
   reload_next += 1;
   reload_next >= NPADS ? reload_next = -1;
 );
+'''
+
+SRC = (SRC.replace("__PINS__", PINS)
+          .replace("__SLIDERS__", SLIDERS)
+          .replace("__READSL__", readsl)
+          .replace("__SPL__", spl))
+
+io.open(OUT, "w", encoding="utf-8", newline="\n").write(SRC)
+print("ecrit :", OUT)
+print("lignes :", SRC.count("\n") + 1)
