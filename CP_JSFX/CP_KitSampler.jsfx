@@ -620,6 +620,10 @@ dbg_lastres  = -1;  // -1 aucune, 0 ok, 2 echec, 3 tronque
 dbg_lastpad  = -1;
 dbg_lastlen  = 0;   // longueur du dernier chemin lu
 dbg_gfx      = 0;   // @gfx a-t-il tourne, et combien de fois
+dbg_sets     = 0;   // reglages recus
+dbg_spad     = -1;  // ...du dernier : quel pad
+dbg_sfield   = -1;  // ...quel champ
+dbg_sval     = 0;   // ...quelle valeur
 voice_serial = 0;
 any_solo     = 0;
 pitch_bend   = 0;
@@ -760,7 +764,11 @@ while (gmem[gm + MB_RPOS] != gmem[gm + MB_WPOS]) (
   pi = gmem[gm + e + 1];
   op == OP_SET && pi >= 0 && pi < NPADS ? (
     k = gmem[gm + e + 2];
-    k >= 0 && k < PAD_SZ ? pad(pi)[k] = gmem[gm + e + 3];
+    k >= 0 && k < PAD_SZ ? (
+      pad(pi)[k] = gmem[gm + e + 3];
+      dbg_sets += 1; dbg_spad = pi; dbg_sfield = k;
+      dbg_sval = gmem[gm + e + 3];
+    );
   ) : op == OP_CLEAR && pi >= 0 && pi < NPADS ? (
     // LE CHEMIN PART AUSSI, ET LES REGLAGES REVIENNENT AU NEUF. Sans le
     // chemin, @serialize le resauve et le pad RESSUSCITE a la reouverture du
@@ -970,8 +978,19 @@ gmem[gm + MB_HB] == 0 ? (
   gfx_drawstr("gmem vivant");
 );
 
-gfx_set(0.42, 0.44, 0.48, 1);
+// LE DERNIER REGLAGE RECU. « Le bouton ne fait rien » a deux moitiés comme
+// le reste : ou il n'arrive pas, ou il arrive et ne s'entend pas. Ces quatre
+// nombres disent laquelle.
+gfx_set(0.70, 0.66, 0.90, 1);
 gfx_x = 12; gfx_y = 196;
+gfx_drawstr("reglages recus "); gfx_drawnumber(dbg_sets, 0);
+gfx_drawstr("   dernier : pad "); gfx_drawnumber(dbg_spad, 0);
+gfx_drawstr("  champ "); gfx_drawnumber(dbg_sfield, 0);
+gfx_drawstr("  = ");
+gfx_drawnumber(dbg_sval, 4);
+
+gfx_set(0.42, 0.44, 0.48, 1);
+gfx_x = 12; gfx_y = 216;
 gfx_drawstr("@gfx tours "); gfx_drawnumber(dbg_gfx, 0);
 gfx_drawstr("   voix actives ");
 i = 0; k = 0;
@@ -980,26 +999,38 @@ gfx_drawnumber(k, 0);
 
 // La liste des pads qui portent quelque chose : index, note, images, canaux.
 gfx_set(0.55, 0.57, 0.61, 1);
-gfx_x = 12; gfx_y = 224; gfx_drawstr("pad   note   images   canaux   Hz");
+gfx_x = 12; gfx_y = 244; gfx_drawstr("pad   note   images   canaux   Hz");
 i = 0; k = 0;
 loop(NPADS,
   (pad(i)[P_LOADED] || path_mem(i)[0]) && k < 12 ? (
-    gfx_y = 244 + k * 17; gfx_x = 12;
+    gfx_y = 264 + k * 17; gfx_x = 12;
+    // UN PAD QUI ATTEND SA MATIERE N'EST PAS UNE ERREUR. Il l'etait a
+    // l'ecran : pendant qu'un kit se recharge, toutes ses lignes passaient au
+    // rouge le temps d'une frame, ce qui ressemble a une alerte qu'on n'a
+    // meme pas le temps de lire. L'ambre dit « en cours », le rouge reste
+    // pour ce qui ne se reparera pas tout seul.
     pad(i)[P_LOADED] ? gfx_set(0.78, 0.80, 0.84, 1)
-                     : gfx_set(0.95, 0.45, 0.40, 1);
+    : (pending_load == i || reload_next >= 0
+       || gmem[gm + MB_LSEQ] != gmem[gm + MB_LACK])
+        ? gfx_set(0.95, 0.80, 0.40, 1)
+        : gfx_set(0.95, 0.45, 0.40, 1);
     gfx_drawnumber(i, 0);
     gfx_x = 60;  gfx_drawnumber(pad(i)[P_NLO], 0);
     gfx_x = 120; gfx_drawnumber(pad(i)[P_FRAMES], 0);
     gfx_x = 210; gfx_drawnumber(pad(i)[P_NCH], 0);
     gfx_x = 280; gfx_drawnumber(pad(i)[P_SRATE], 0);
     gfx_x = 360;
-    pad(i)[P_LOADED] ? gfx_drawstr("ok") : gfx_drawstr("chemin sans matiere");
+    pad(i)[P_LOADED] ? gfx_drawstr("ok")
+    : (pending_load == i || reload_next >= 0
+       || gmem[gm + MB_LSEQ] != gmem[gm + MB_LACK])
+        ? gfx_drawstr("en attente")
+        : gfx_drawstr("chemin sans matiere");
     k += 1;
   );
   i += 1;
 );
 k == 0 ? (
   gfx_set(0.55, 0.55, 0.58, 1);
-  gfx_x = 12; gfx_y = 246;
+  gfx_x = 12; gfx_y = 266;
   gfx_drawstr("aucun pad n'a de chemin — rien n'est arrive de la fenetre");
 );

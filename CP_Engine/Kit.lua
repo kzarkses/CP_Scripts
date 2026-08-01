@@ -1586,6 +1586,17 @@ end
 local load_q, load_head = {}, 1
 
 function fxQueueLoad(note, path)
+    -- SI LE CANAL EST LIBRE, ON PART MAINTENANT. La file existe parce que le
+    -- creneau de chargement est unique cote instrument, pas pour retarder le
+    -- cas courant : deposer UN echantillon devait sonner tout de suite, et il
+    -- attendait le prochain passage de la boucle — parfois immediat, parfois
+    -- une demi-seconde selon que la fenetre etait au repos. « Des fois
+    -- instantane, des fois pas » est le symptome exact d'une file qu'on ne
+    -- court-circuite jamais.
+    if load_head > #load_q and KitFX.LoadIdle(fx_slot) then
+        KitFX.Load(fx_slot, note - Kit.BASE, path)
+        return
+    end
     load_q[#load_q + 1] = { note = note, path = path }
 end
 
@@ -2649,7 +2660,16 @@ end
 function Kit.SavePreset(filepath)
     local f = io.open(filepath, "w")
     if not f then return false end
-    f:write("-- CP_Sampler kit preset\nreturn {\n  version = 1,\n  pads = {\n")
+    -- LE PRESET DIT SUR QUEL MOTEUR IL A ETE ECRIT. Les identifiants de
+    -- parametres sont les memes des deux cotes — c'est voulu, la fenetre en
+    -- depend — mais les VALEURS ne veulent pas dire la meme chose : 0,5 en
+    -- TUNE vaut zero demi-ton sur les deux, tandis que 0,5 en ATTACK vaut une
+    -- certaine duree chez le RS5K et une autre ici, parce que la courbe est a
+    -- nous. Appliquer les unes aux autres donne un kit qui sonne faux sans
+    -- rien signaler. Version 2 pour cette raison, et pas une autre.
+    f:write("-- CP_Sampler kit preset\nreturn {\n  version = 2,\n  engine = ",
+            string.format("%q", Kit.IsFX() and Kit.ENGINE_FX or Kit.ENGINE_RS5K),
+            ",\n  pads = {\n")
     for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
         local pad = Kit.Pad(note)
         if pad and pad.path then
@@ -2678,6 +2698,16 @@ function Kit.LoadPreset(filepath)
     if not ok or type(data) ~= "table" or type(data.pads) ~= "table" then
         return false
     end
+    -- UN PRESET D'UN AUTRE MOTEUR : ON PREND LES ECHANTILLONS, PAS LES
+    -- REGLAGES. Les chemins et les groupes de choke veulent dire la meme
+    -- chose partout ; les valeurs normalisees, non. Charger un kit RS5K dans
+    -- l'instrument avec ses reglages donnerait des attaques et des durees
+    -- fausses, sans rien dire — et un preset sans version est forcement de
+    -- l'epoque RS5K.
+    local from = data.engine or Kit.ENGINE_RS5K
+    local mine = Kit.IsFX() and Kit.ENGINE_FX or Kit.ENGINE_RS5K
+    local same_engine = (from == mine)
+
     ubegin()
     -- Replace semantics: silence every current pad first (keep the tracks
     -- and their FX chains), then load the preset's samples.
@@ -2694,7 +2724,7 @@ function Kit.LoadPreset(filepath)
             -- fight that write and outlive it (the next ApplyTempoSync
             -- would re-aim a pad the preset had tuned by hand)
             Kit.LoadSample(p.note, p.path, { no_sync = true })
-            if type(p.p) == "table" then
+            if same_engine and type(p.p) == "table" then
                 for pid, v in pairs(p.p) do
                     if type(pid) == "number" and type(v) == "number" then
                         Kit.SetParam(p.note, pid, v)
@@ -2708,7 +2738,9 @@ function Kit.LoadPreset(filepath)
     end
     Kit.version = Kit.version + 1
     uend("Sampler: load kit preset")
-    return true
+    -- On rend AUSSI ce qu'on n'a pas fait : la fenetre le dit, plutot que de
+    -- laisser croire que le preset est revenu entier.
+    return true, same_engine or "samples only (preset written for the other engine)"
 end
 
 return Kit

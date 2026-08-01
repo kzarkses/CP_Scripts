@@ -609,7 +609,15 @@ local function loadPresetMenu()
         if name then
             local full = dir .. "/" .. fn
             items[#items + 1] = { label = name, action = function()
-                if Kit.LoadPreset(full) then
+                -- LE PRESET DIT CE QU'IL N'A PAS RENDU. Un preset ecrit
+                -- sur l'autre moteur rend ses echantillons, pas ses
+                -- reglages : les identifiants sont les memes, les VALEURS ne
+                -- veulent pas dire la meme chose. Se taire ferait chercher
+                -- pourquoi le kit sonne autrement.
+                local ok, note = Kit.LoadPreset(full)
+                if ok and type(note) == "string" then
+                    flash("Kit loaded: " .. name .. " - " .. note)
+                elseif ok then
                     flash("Kit loaded: " .. name)
                 else
                     flash("Load failed: " .. name)
