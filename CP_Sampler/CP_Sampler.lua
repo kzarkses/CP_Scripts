@@ -16,7 +16,7 @@
 --   Requires SWS (direct preview) — js_ReaScriptAPI recommended (cross-
 --   window drops, file dialogs).
 
-local r = reaper
+local r = reaper   -- the REAPER API, as everywhere in the suite
 
 -- ---------------------------------------------------------------------------
 -- Toolkit + modules
@@ -541,23 +541,25 @@ local function openPadMenu(note)
         items[#items + 1] = { label = "Rename pad...", action = function()
             local ok, name = r.GetUserInputs("Rename pad", 1,
                                              "Name:,extrawidth=160", pad.name)
-            if ok and name ~= "" then
-                pad.name = name
-                r.GetSetMediaTrackInfo_String(pad.track, "P_NAME", name, true)
-                Kit.version = Kit.version + 1
-            end
+            if ok and name ~= "" then Kit.SetPadName(note, name) end
         end }
         items[#items + 1] = { label = "Show RS5K UI", action = function()
             Kit.FloatRS5K(note)
         end }
-        items[#items + 1] = { separator = true }
-        items[#items + 1] = { label = "Clear pad (keep track FX)", action = function()
-            Kit.ClearPad(note)
+        -- LES EFFETS DE CE PAD. Un pad est un RS5K dans la chaine du kit ; y
+        -- ajouter un effet le mettrait sur le chemin de tous les pads suivants.
+        -- Le conteneur est la boite qui rend « les effets de CE pad » possible
+        -- sans piste par pad — et il n'est cree qu'ici, a la demande.
+        items[#items + 1] = { label = Kit.PadHasBox(note)
+                                      and "Pad FX chain..." or "Give this pad its own FX chain",
+                              action = function()
+            if not Kit.ShowPadBox(note) then flash("Could not create the pad FX container") end
         end }
+        items[#items + 1] = { separator = true }
     end
     if pad then
-        items[#items + 1] = { label = "Delete pad track", action = function()
-            Kit.DeletePad(note)
+        items[#items + 1] = { label = "Remove pad", action = function()
+            Kit.ClearPad(note)
         end }
     end
     UI.NativeMenu(items)
@@ -649,22 +651,22 @@ local function openSettings()
             Kit.SetInputAll()
             flash("Kit track now listens to all MIDI inputs")
           end },
-        { label = "Create kit bus now", disabled = Kit.Exists(),
-          action = function() Kit.Ensure() flash("Kit bus created") end },
+        { label = "Create the kit track now", disabled = Kit.Exists(),
+          action = function() Kit.Ensure() flash("Kit track created") end },
         { separator = true },
         { label = "Rescan kit now", action = function()
             Kit.Scan()
             local pads, loaded = Kit.Count()
-            flash(string.format("Kit: %d pad tracks, %d loaded", pads, loaded))
+            flash(string.format("Kit: %d pads, %d loaded", pads, loaded))
         end },
-        { label = "Adopt selected track as kit bus (mpl/hand-built kits)",
+        { label = "Adopt selected track as a kit (mpl / hand-built kits)",
           action = function()
             local tr = r.GetSelectedTrack(0, 0)
             if tr and Kit.Adopt(tr) then
                 local pads, loaded = Kit.Count()
-                flash(string.format("Adopted: %d pad tracks, %d loaded", pads, loaded))
+                flash(string.format("Adopted: %d pads, %d loaded", pads, loaded))
             else
-                flash("Select the kit folder track first")
+                flash("Select the kit track first")
             end
         end },
     })
@@ -778,9 +780,9 @@ local function drawToolbar(theme)
     UI.BarLeft()
 
     if not Kit.Exists() then
-        if UI.BarButton("mk_kit", "Create kit bus") then
+        if UI.BarButton("mk_kit", "Create kit track") then
             Kit.Ensure()
-            flash("Kit bus created — drop samples on the pads")
+            flash("Kit track created — drop samples on the pads")
         end
         UI.EndBar()
         return
@@ -1927,7 +1929,7 @@ local function frame(theme)
 
     if not msg then
         if not Kit.Exists() then
-            msg = "no kit bus yet — create one to start dropping samples"
+            msg = "no kit track yet — create one to start dropping samples"
         elseif Kit.mode == "instrument" then
             msg = "click the keyboard to play · drop a sample to load it chromatically"
         elseif state.sel and Kit.pads[state.sel] and Kit.pads[state.sel].fx then

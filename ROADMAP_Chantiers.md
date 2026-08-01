@@ -146,28 +146,51 @@ machinerie au lieu d'en ajouter. Ce n'est pas un compromis.
 
 ### Étapes
 
-- [ ] **Les RS5K montent dans la chaîne de la piste du kit**, un par pad, et le
-      fan-out d'envois disparaît avec les pistes enfants.
-- [ ] **Un conteneur d'effets par pad qui en veut un** (REAPER 7). C'est ce qui
-      garde le traitement par pad sans piste par pad.
+- [x] **Les RS5K montent dans la chaîne de la piste du kit**, un par pad, et le
+      fan-out d'envois disparaît avec les pistes enfants. L'identité d'un pad
+      est désormais **sa plage de notes** (`lo == hi`) : la seule qui ne puisse
+      pas mentir, puisque c'est elle qui décide sur quelle touche il sonne.
+- [x] **Un conteneur d'effets par pad qui en veut un** (REAPER 7), créé **à la
+      demande** — « Give this pad its own FX chain » dans le menu du pad, et
+      automatiquement quand on lui demande un ReaPitch (qui, posé à plat,
+      transposerait tous les pads suivants). Un pad en conteneur porte un index
+      encodé, et il se lit et s'écrit comme les autres : le reste du module ne
+      sait pas lequel des deux il tient.
+- [x] **Plus de dossier CP.** Le kit naît en piste ordinaire, marquée
+      `P_EXT:CP` comme le veut la règle de découverte, et `DropFolderIfEmpty`
+      retire le dossier quand le repli l'a vidé. L'instrument chromatique aussi.
+- [x] **Le JSFX de choke reste**, premier de la chaîne, caché — et `ensureChoke`
+      le **remonte** en tête s'il traîne ailleurs : placé après un RS5K, il
+      couperait des notes que celui-ci a déjà jouées.
+- [x] **Migration** — `Kit.Fold`, une fois par session, au premier poll. Une
+      règle la commande : *on ne supprime jamais une piste dont le contenu n'a
+      pas été déplacé avec succès.* Chaque pad **déménage**
+      (`TrackFX_CopyToTrack` en mode move) — à plat quand il n'avait que son
+      RS5K, dans un conteneur quand il avait des effets à lui, ce qui les
+      préserve exactement. L'identité de tempo est relue avant que la piste ne
+      parte et reposée sur le kit. Jamais les deux formes en même temps : c'est
+      un déplacement, pas une copie, donc jamais le même pad joué deux fois.
 - [ ] **L'instrument chromatique devient un pad** dont la plage de notes couvre
       le clavier. `CP_KIT_INSTR`, `Kit.mode` et le singleton disparaissent.
+      **Pas fait** : c'est une refonte de l'interface de CP_Sampler (le mode
+      instrument est un écran entier), pas du routage, et rien n'en dépend.
 - [ ] **« Éclater ce pad vers une piste »** devient un geste explicite (un
-      envoi depuis le conteneur), à la demande — jamais par défaut.
-- [ ] **Plus de dossier CP.** `Tracks.DropFolderIfEmpty` existe déjà.
-- [ ] **Le JSFX de choke reste**, mais invisible et non déplaçable : c'est la
-      seule pièce qui puisse couper une note à l'échantillon tant que le RS5K
-      est le moteur. Il disparaîtra avec lui.
-- [ ] **Migration.** Un kit existant est des pistes ; il faut le replier sans
-      perdre les réglages. À écrire comme `Loop.MigrateLegacy` : lire, replier,
-      supprimer — et jamais laisser les deux formes coexister, sinon le kit
-      sonne deux fois.
+      envoi depuis le conteneur), à la demande — jamais par défaut. **Pas
+      fait** : c'est un ajout, pas une suppression, et c'est la réponse au seul
+      manque assumé ci-dessous.
 
 ### Ce qu'on perd, et qui est assumé
 
 Le fader, le mute/solo et le VU **par pad** dans le mixer de REAPER. Les effets
 par pad, non — les conteneurs les gardent. Pour le pad qui a vraiment besoin de
 sa tranche, l'éclatement explicite est la réponse.
+
+Conséquence visible tout de suite : la **lueur d'un pad** n'est plus un VU.
+REAPER mesure une piste, pas un effet. Elle est maintenant le niveau du kit
+attribué au pad dont on *sait* qu'il vient d'être frappé — un retour de geste,
+pas une mesure, et elle ne prétend rien sur les pads déclenchés par un item ou
+une lane. Un kit pas encore replié garde son vrai VU, puisqu'il a encore ses
+pistes.
 
 ---
 

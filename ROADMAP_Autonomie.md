@@ -2497,3 +2497,92 @@ muet, la cause est là et nulle part ailleurs.
 
 **141 assertions** au harnais, 49 defstrings sans anomalie, zéro allocation dans
 le fil audio.
+
+
+---
+
+# Session 22 (suite) — chantier 2 : un kit, une piste
+
+Un kit était un dossier « CP Kit », une piste « CP Kit MIDI » portant le choke,
+et **une piste par pad**. Soixante-quatre pads, c'était jusqu'à soixante-cinq
+pistes dans le projet de quelqu'un qui voulait une batterie — le « bordel »,
+dans ses mots. C'est une piste maintenant : sa chaîne d'effets porte le choke
+puis un RS5K par pad, et c'est tout le kit.
+
+## La trouvaille qui rend le chantier léger, vérifiée en l'écrivant
+
+Le fan-out d'envois MIDI filtrés vers les pads **n'existait que parce que les
+pads étaient des pistes séparées**. Dans une seule chaîne, tous les RS5K voient
+le même MIDI et chacun ne répond qu'à *sa* plage de notes — le filtrage était
+déjà le sien, les envois ne faisaient que lui apporter ce qu'il allait de toute
+façon trier. Replier a donc **supprimé** de la machinerie : `insertChildTrack`,
+`MIDI_TO_CH1`, `Kit.Repair` et son réseau d'envois, `scanPad` et le tag
+`CP_KIT_NOTE`.
+
+## Ce qui identifie un pad, maintenant
+
+**Sa plage de notes.** `lo == hi == la touche`. C'est la seule identité qui ne
+puisse pas mentir, parce que c'est elle qui décide sur quelle touche il sonne ;
+un tag rangé à côté pouvait diverger de ce qu'on entendait. Le nom du pad est
+l'**étiquette renommée** de l'effet (`renamed_name`) — visible dans la chaîne de
+REAPER, c'est-à-dire au même endroit qu'avant. Ce qu'un pad sait de lui-même
+(tempo de source, sync, accord mis de côté) vit en `P_EXT:CP_KIT_<CLÉ>_<note>`
+sur la piste du kit.
+
+## Les conteneurs, et pourquoi seulement à la demande
+
+Un pad à plat est un RS5K dans la chaîne : lui ajouter un effet le mettrait sur
+le chemin de **tous les pads suivants**. Le conteneur (REAPER 7) est la boîte
+qui rend « les effets de CE pad » possible sans piste par pad. Créé à la
+demande — soixante-quatre boîtes vides seraient soixante-quatre choses à
+regarder pour rien — et automatiquement quand on demande un ReaPitch à un pad,
+puisque c'est exactement le cas qui casserait sinon.
+
+**Le piège, écrit dans le code** : l'index encodé d'un pad en conteneur vaut
+`0x2000000 + (j+1)·(count+1) + (ci+1)`, où `count` est le nombre d'effets de la
+chaîne. Ajouter un pad décale donc tous les autres. Toute modification de
+structure rescanne — mais **une fois par geste**, pas soixante-quatre fois
+pendant le chargement d'un preset : le rescan attend la fin du bloc
+d'annulation, qui est exactement la définition d'un geste.
+
+## La migration
+
+`Kit.Fold`, une fois par session au premier poll. Une règle la commande, et le
+reste en découle : **on ne supprime jamais une piste dont le contenu n'a pas été
+déplacé avec succès.** Chaque pad déménage par `TrackFX_CopyToTrack` en mode
+*move* — à plat quand il n'avait que son RS5K, dans un conteneur quand il avait
+des effets à lui, ce qui les préserve exactement. Un pad qui refuse de partir
+garde sa piste, avec tout ce qu'elle contient, et le repli reprendra.
+
+Et jamais les deux formes en même temps : c'est un **déplacement**, pas une
+copie, donc jamais le même pad joué deux fois.
+
+Deux détails qui auraient coûté une soirée : le choke du bus est **récupéré**
+plutôt que recréé (ses réglages *sont* les groupes de choke du kit), et jamais
+en double — une seconde instance re-couperait ce que la première vient de
+laisser passer. Et la fermeture du dossier est laissée à la comptabilité de
+profondeur qui rend le pas au voisin du dessus : la forcer avalerait la piste
+suivante du projet dans un dossier qui n'a rien demandé.
+
+## Ce que ça règle, en plus
+
+L'inconnu que le chantier 1 laissait ouvert — le MIDI d'un aperçu de piste
+franchit-il les **envois** de cette piste — disparaît : il n'y a plus d'envoi
+entre le port et les RS5K. Le port est versé dans la piste du kit, les RS5K sont
+dans sa chaîne.
+
+## Ce qui est perdu, et c'était prévu
+
+Le fader, le mute/solo et le VU **par pad** dans le mixer de REAPER. Les effets
+par pad, non. Conséquence immédiate : la lueur d'un pad n'est plus un VU —
+REAPER mesure une piste, pas un effet. C'est désormais le niveau du kit attribué
+au pad dont on *sait* qu'il vient d'être frappé, avec une décroissance : un
+retour de geste, pas une mesure, et il ne prétend rien sur les pads déclenchés
+par un item ou une lane. Un kit pas encore replié garde son vrai VU.
+
+## Ce qui reste du chantier 2
+
+Deux étapes, laissées volontairement et écrites comme telles dans le plan :
+**l'instrument chromatique replié en pad** (c'est une refonte d'écran de
+CP_Sampler, pas de routage) et **« éclater ce pad vers une piste »** (c'est un
+ajout, et c'est la réponse au seul manque assumé ci-dessus).
