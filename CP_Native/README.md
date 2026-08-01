@@ -1,8 +1,14 @@
-# CP_Native — le moteur de clips
+# CP_Native — le moteur de clips ET de lanes
 
 Extension REAPER en C++ (`reaper_cpclip`) qui joue des clips audio **exacts à
-l'échantillon**, depuis la RAM, sur une piste REAPER — **sans rien poser dans la
-chaîne d'effets de l'utilisateur**.
+l'échantillon** depuis la RAM, et **tient les boucles MIDI** — modes, quantize
+de lancement, horloge libre, porte par bloc — sur une piste REAPER, **sans rien
+poser dans la chaîne d'effets de l'utilisateur**.
+
+Depuis l'ABI 1.6 (session 20), il n'y a plus ni JSFX, ni piste routeur, ni
+envoi filtré par canal, ni gmem : chaque lane écrit dans **son** port, pré-FX,
+et le plafond de quatre colonnes — qui venait du budget de seize canaux MIDI
+d'une seule piste — a disparu avec la piste.
 
 Trois documents, trois rôles :
 
@@ -141,13 +147,14 @@ src/core/     AUCUN appel à l'API REAPER, aucune I/O, aucune allocation
   cp_pool.*     échantillons en RAM, publication par store(release),
                 libération derrière une barrière de deux blocs
   cp_voice.*    une voix : un clip, une position, un rendez-vous
+  cp_lanes.*    les lanes MIDI : modes, quantize, horloge libre, la porte
   cp_engine.*   ports, voix, horloge, application des commandes
 
 src/host/     la seule couche qui connaît REAPER
   cp_source.*   PCM_source par colonne, aperçu permanent, MIDI, chronomètre
   cp_main.cpp   point d'entrée, surface CP_*, décodage, hook d'horloge
 
-src/test/     harness.cpp — 88 assertions déterministes
+src/test/     harness.cpp — 138 assertions déterministes
 lua/          les sondes de mesure
 ```
 
@@ -158,8 +165,8 @@ lignes :
 
 | | possède |
 |---|---|
-| **fil principal** | les mots de propriété (`claim_`), le vivier, l'ancre d'horloge |
-| **fil audio** | les structures `Voice`, les listes de port, l'horloge |
+| **fil principal** | les mots de propriété (`claim_`), le vivier, l'ancre d'horloge, **les notes des lanes**, l'ancre de transport |
+| **fil audio** | les structures `Voice`, les listes de port, l'horloge, **l'état des lanes** (mode, en attente, ce qui sonne) |
 
 Aucune moitié n'écrit dans l'autre. La **seule** exception est le bit `owned`
 d'un mot de propriété, que le fil audio *efface* — et n'écrit jamais autrement —
@@ -232,7 +239,7 @@ exact.
 
 ## 5. Le harnais
 
-`build_test.cmd` compile `src/core` **sans REAPER** et lance 119 assertions
+`build_test.cmd` compile `src/core` **sans REAPER** et lance 138 assertions
 déterministes : départ exact pour des blocs de 1, 17, 63, 64, 128 et 512 ;
 lecture bit-exacte à taux 1,0 ; boucle sans dérive sur 133 tours ; arrêt daté ;
 enchaînement au frame exact ; changement de taux d'échantillonnage ; handles
@@ -255,6 +262,17 @@ orpheline dans les listes de port, zéro allocation dans le fil audio.
 
 Un raisonnement sur les barrières mémoire n'aurait rien prouvé. Ce projet a déjà
 vu cinq affirmations de ce genre infirmées par la mesure.
+
+### Ce que les tests de lanes vérifient
+
+Pas « ça sonne » : l'exactitude à l'échantillon de chaque transition, et surtout
+**la règle d'attente**. Un second lancement par-dessus un premier vise la
+frontière de mesure et part **à** cette frontière, pas au multiple suivant —
+c'est exactement la faute que le portage Lua des cases audio avait faite en
+session 19, et elle ne peut plus repasser sans que le harnais le dise.
+
+Une note d'un beat à 120 BPM dure **24000 échantillons**. Pas 24000 plus ou moins
+un tampon : le JSFX ne savait poser un événement qu'à l'offset zéro d'un bloc.
 
 ---
 

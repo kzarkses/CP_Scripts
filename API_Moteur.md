@@ -268,7 +268,7 @@ décodage a réellement coûté sur **cette** machine.
 
 ```lua
 if not reaper.APIExists("CP_EngineABI") then return end
-if reaper.CP_EngineABI() < 1.5 then return end   -- un MINIMUM, pas une égalité
+if reaper.CP_EngineABI() < 1.6 then return end   -- un MINIMUM, pas une égalité
 ```
 
 **ReaPack n'a aucun mécanisme de dépendance** — mesuré : 89 index, 5993 paquets,
@@ -309,7 +309,79 @@ sinon chaque ajout casse tout le monde.
 
 `mode` : 0 = une fois, 1 = boucle.
 
-### 3.3 Instruments de mesure
+### 3.3 Les lanes MIDI (ABI 1.6)
+
+C'est la surface qui **remplace gmem**. Le JSFX et Lua se parlaient par un bloc
+de mémoire partagée dont les deux côtés recopiaient la carte à la main : une
+constante fausse d'un côté, et le symptôme ressemblait à un bug de Lua. Ici la
+forme est vérifiée par le compilateur d'un côté et par le nom de la fonction de
+l'autre.
+
+| fonction | rend |
+|---|---|
+| `CP_LaneCount()` | nombre de lanes servies (32) |
+| `CP_LaneBind(lane, port, chan)` | bool — où cette lane parle. `port` −1 = nulle part |
+| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` |
+| `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` |
+| `CP_LaneCmd(lane, cmd, arg)` | bool |
+| `CP_LaneSetNote(lane, i, start, len, pitch, vel)` | bool — écrit dans le tampon **qui dort** |
+| `CP_LanePublish(lane, count)` | bool — échange les deux tampons |
+| `CP_LaneGetNote(lane, i)` | ok, start, len, pitch, vel — lit le tampon **publié** |
+| `CP_TransportSync(tempo, beat, playing, tsNum)` | — l'ancre, **une fois par frame** |
+| `CP_SetFreeRun(on)` / `CP_GetFreeRun()` | horloge libre ou transport de l'hôte |
+| `CP_SetLaunchQ(beats)` / `CP_GetLaunchQ()` | quantize de lancement, 0 = tout de suite |
+| `CP_SetAudioRun(on)` | « une case audio de Lua sonne » |
+| `CP_EngineBeat()` | position de l'horloge sur laquelle le moteur travaille |
+| `CP_ClockRunning()` | y a-t-il une horloge du tout |
+| `CP_LanesPanic()` | tout arrêter, rien de tenu |
+| `CP_LanesDiag()` | état des lanes en une ligne |
+
+**Commandes** (`CP_LaneCmd`) : 1 rec · 2 stop-rec · 3 clear · 4 panic · 5 play ·
+6 stop · 7 clear-all · 8 overdub · 9 set-mode (`arg` = le mode).
+
+**Modes** : 0 vide · 1 enregistre · 2 arrêté · 3 joue · 4 armé · 5 overdub.
+**En attente** : 0 aucun · 1 play · 2 stop · 3 rec · 4 stop-rec · 5 overdub.
+
+#### Les notes s'écrivent en entier, puis se publient
+
+Le moteur tient **deux tampons par lane** et n'en lit qu'un. `CP_LaneSetNote`
+remplit celui qui dort ; `CP_LanePublish` échange les deux, d'un seul store
+atomique. Conséquence à ne pas oublier : **le tampon qui dort contient
+l'avant-dernière version**, donc un appelant qui n'écrirait que la note modifiée
+publierait la liste d'avant avec une note neuve dedans. On écrit tout, on publie
+une fois — c'est ce que fait un éditeur de toute façon, et c'est ce qui rend la
+publication atomique pour le fil audio.
+
+Côté Lua, `Loop.BumpVer(lane)` est le seul endroit qui publie : chaque geste
+d'édition l'appelle déjà exactement une fois à la fin. Publier par NOTE aurait
+rendu une suppression quadratique en appels d'ABI ; ne jamais publier aurait
+rendu un glissé de note inaudible.
+
+#### Ce que le fil audio ne fait pas
+
+**Il n'écrit jamais de note.** Il les lit. La capture live entre par
+`MIDI_GetRecentInputEvent`, côté Lua, où chaque événement arrive **déjà horodaté
+en échantillons relatifs à maintenant** — donc plus précisément que ce qu'un
+`midirecv` par bloc pouvait donner. Une frame de defer sonde en retard ; elle
+n'enregistre pas en retard.
+
+Le moteur dit qu'une prise commence en incrémentant `recgen`. C'est ainsi que
+Lua sait qu'il doit vider sa liste : la propriété n'est jamais partagée, elle
+est signalée.
+
+#### Ce que le portage gagne sur le JSFX
+
+`tick()` prépare **le bloc suivant**, donc chaque événement est daté au frame
+absolu au lieu d'être posé à l'offset zéro. La porte réconcilie sur la phase de
+**fin** de bloc et calcule l'instant exact de chaque transition. Mesure du
+harnais : une note d'un beat à 120 BPM dure **24000 échantillons**, pas 24000
+plus ou moins un tampon.
+
+Dégénérescence prévue : un tampon plus long que la boucle elle-même sauterait
+des notes entières. Dans ce cas seul on revient à la phase de début de bloc, ce
+qui est exactement le comportement du JSFX — moins juste, jamais faux.
+
+### 3.4 Instruments de mesure
 
 Ils ne servent pas à faire de la musique et ne doivent pas entrer dans une
 fenêtre. Marqués EXPERIMENTAL dans le code — ce ne sont pas des interfaces.

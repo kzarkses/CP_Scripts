@@ -1822,18 +1822,159 @@ construite entièrement dans `CP_Session` ne se perd plus à la fermeture.
 
 # ROADMAP LONG TERME — la migration vers l'autonomie
 
+---
+
+## Session 20 (2026-08-01) — l'autonomie est atteinte : plus une seule piste d'infrastructure
+
+Cinq phases dans une session, de la 2 à la 6. Ce qui suit dit ce qui a changé et
+— surtout — ce qu'il faut regarder en premier au retour.
+
+### Le résultat, en une phrase
+
+**Il n'y a plus aucune piste que la suite crée dans le projet de quelqu'un.**
+Ni routeur, ni dossier CP, ni enfant sampler pour une colonne qui ne joue que
+des sons. Un binaire, du Lua, et REAPER.
+
+### Phase 2 — l'identité
+
+`CP_Engine/Ident.lua`. Rien ne possédait « ce clip, dans cet état » : tout était
+adressé par POSITION, et `Clip.CellTag` était le symptôme — une clé étrangère
+inventée faute d'une table où pointer.
+
+Trois conséquences, et les trois étaient reproductibles : déplacer un clip le
+renommait ; deux clips ayant occupé la même case à deux moments portaient le
+même nom, donc une édition atterrissait dans le clip qu'on n'éditait pas ; et
+seule une case de grille avait un nom du tout.
+
+Les deux espaces de nombres ne se rencontrent pas — un tag positionnel vit sous
+`Ident.BASE`, une identité au-dessus — et c'est ce qui rend la migration
+gratuite. `Ident.TagOf` est le seul endroit qui tranche.
+
+### Phase 3 — une seule audition, une seule réponse sur le tempo
+
+Deux unifications, et la seconde était la plus sournoise.
+
+**Le tempo.** « À quelle vitesse va ce fichier » avait TROIS réponses qui ne
+s'accordaient pas : le navigateur (REAPER puis le nom du fichier — il croyait
+« 808 Kick 120bpm.wav » sur parole et repitchait un one-shot de 30 %), la grille
+(le tempo rangé sur le clip, puis délégation au navigateur, donc le même défaut),
+et le sampler (lecteur de nom plus strict, garde-fou « assez long pour ÊTRE une
+boucle », inférence par la durée — mais il ne demandait jamais à REAPER, donc un
+tempo embarqué lui était invisible). `CP_Engine/SrcTempo.lua` est l'union, chaque
+source classée par ce qu'elle mérite de crédit, et **la raison fait partie de la
+réponse**.
+
+**L'audition.** `CP_Toolkit/Audio.lua` disparaît ; sa moitié qui manquait à
+`Preview` (la SECTION — jouer une partie d'un fichier comme si elle était le
+fichier) y entre, et `Audition` la rend **par capacité** : le moteur porte des
+points de boucle, donc le retour tombe à l'échantillon ; le repli se fait
+surveiller une fois par frame.
+
+Un défaut évité en chemin : `needsPreview` ne lisait que les réglages du module.
+Un pad d'instrument demande sa transposition dans `opts` — la voix native aurait
+joué la note de référence à la place de celle qu'on presse, en silence, pour
+toutes les touches sauf une.
+
+### Phase 4 — l'étirement se cuit
+
+`CP_Engine/Warp.lua`. L'étireur de REAPER coûte 2,3 % du fil audio par voix et
+85 à 139 ms d'amorçage : un clip qui doit tomber sur la frontière ne peut pas
+passer un dixième de seconde à réfléchir. L'étirement est donc **rendu une fois**
+dans un fichier, au tempo auquel il sera joué, puis relu à taux 1.0.
+
+Le cache est indexé par (fichier, région, tempo cible) et vit à côté des scripts,
+pas à côté des échantillons de l'utilisateur. La cuisson n'a pas lieu sur un
+clic : `Request` met en file, `Tick` rend une entrée par frame, et la case dit
+« baking » — une fenêtre qui gèle sans rien annoncer paraît cassée.
+
+Choix assumé : tant que la version cuite manque, une case en stretch **joue en
+repitch**. Elle est en mesure, ce pour quoi le lancement existait ; seule la
+tonalité est fausse, et pour une passe.
+
+### Phase 6 — le moteur MIDI entre dans l'extension
+
+`CP_Native/src/core/cp_lanes.*`, ABI 1.6.
+
+**Ce qui est dans le fil audio, et ce qui n'y est pas.** Le JSFX faisait tout
+dans le fil audio parce qu'il n'avait pas le choix. Ici on choisit, sur une seule
+question : est-ce que se tromper de 30 ms s'entend ? La porte, les transitions en
+attente et l'horloge, oui — une double-croche à 140 BPM dure 107 ms. Les notes,
+la capture, la persistance, le routage, non.
+
+Conséquence voulue : **le fil audio n'écrit jamais de note.** La capture live
+entre par `MIDI_GetRecentInputEvent`, où chaque événement arrive DÉJÀ horodaté en
+échantillons — une frame de defer sonde en retard, elle n'enregistre pas en
+retard. Et la capture ne dépend plus de rien d'armé, ce qui fait un état de moins
+dans lequel se tromper.
+
+**La liste de notes est double.** Le JSFX partageait la sienne par gmem : bénin
+en pratique, indéfini en droit, et ce dépôt a déjà payé une fois pour la
+différence. Le principal remplit le tampon qui dort, puis publie l'indice d'un
+seul store. Prix : un mégaoctet, alloué UNE fois à l'init — le mettre dans la
+structure avait mis 786 Ko sur la pile de quiconque déclare un `Engine`, et le
+harnais s'y est effondré sans dire pourquoi.
+
+**Ce que le portage gagne.** Le tick prépare le bloc SUIVANT, la porte réconcilie
+sur la phase de fin de bloc, et chaque transition est datée à l'échantillon.
+Mesure : une note d'un beat à 120 BPM dure 24000 échantillons. Le JSFX ne savait
+poser un événement qu'à l'offset zéro d'un bloc.
+
+**Ce qui disparaît du projet de l'utilisateur** : la piste routeur avec son JSFX,
+son armement et son monitoring ; un envoi MIDI filtré par canal par lane ; le
+dossier CP quand il ne reste rien dedans ; gmem comme protocole ; et le plafond
+de quatre colonnes, qui ne venait pas d'un `MAX_LANES` mais du budget de seize
+canaux MIDI d'une seule piste.
+
+**La migration n'est pas du rangement.** Un ancien projet porte encore le JSFX
+sur une piste armée, et ce JSFX joue toujours ses lanes depuis gmem : le laisser
+là ferait jouer le même set DEUX FOIS, à quelques millisecondes d'écart — ce qui
+ne s'entend pas comme un reste mais comme un instrument cassé.
+`Loop.MigrateLegacy` lit le routeur, range son état dans `ProjExtState`, puis
+supprime la piste.
+
+**Le monitoring redevient celui de REAPER.** Le routeur devait être la SEULE
+chose armée pour qu'une note n'atteigne pas un instrument deux fois. Sans routeur
+il n'y a plus de second chemin : armer une lane arme sa piste de destination, et
+on s'entend jouer sans latence ajoutée.
+
+### Deux pièges rencontrés, et ce qu'ils enseignent
+
+1. **Rebrancher un port détache l'aperçu**, donc coupe ce qu'il portait. Le
+   rafraîchissement des destinations tourne deux fois par seconde ; rebrancher à
+   chaque passage aurait haché le MIDI sans qu'aucune erreur n'apparaisse nulle
+   part. *Une opération idempotente en apparence ne l'est pas si elle passe par
+   un détachement.*
+2. **`Loop.BumpVer` publie.** Le backend Roll du Looper appelle `PutNote` sans
+   `SetNoteCount` pour un déplacement de note — donc rien n'aurait été entendu.
+   Publier par note aurait rendu une suppression quadratique. Le bon grain est le
+   GESTE, et chaque chemin d'édition appelait déjà `BumpVer` exactement une fois
+   à la fin. *Le point de publication existait déjà ; il fallait le reconnaître,
+   pas l'inventer.*
+
+### Ce que la session laisse ouvert
+
+- **Rien n'a été joué.** Tout ce qui précède est compilé (138 assertions, zéro
+  avertissement) et relu, pas entendu. C'est la première chose à faire.
+- Le nombre de colonnes reste à **4** : le moteur en sert 32, et le passer à 8
+  ou 16 est une ligne dans `Loop.MAX_LANES` — mais c'est une décision sur la
+  largeur de la fenêtre, pas sur le moteur, donc elle n'a pas été prise seule.
+- La campagne de session longue n'a toujours pas tourné.
+- Phase 7 (livraison ReaPack) n'est pas commencée, comme convenu.
+
 ## Ce que « autonomie » veut dire, concrètement
 
-| dépendance actuelle | qui s'en sert | ce qui la remplace |
-|---|---|---|
-| **SWS `CF_Preview`** | MediaExplorer, Editor, Sampler | voix CP_Native |
-| **RS5K** | CP_Session (cases audio) | voix CP_Native |
-| **`CP_MidiLooper.jsfx`** | Session, Looper, Editor | moteur MIDI natif |
-| **piste routeur + envois filtrés** | tout le MIDI | disparaît avec le JSFX |
-| **gmem comme protocole** | Loop.lua ↔ JSFX | disparaît avec le JSFX |
-| **plafond de 4 colonnes** | — | disparaît avec le JSFX (16 canaux MIDI) |
+| dépendance | qui s'en servait | remplacée par | état |
+|---|---|---|---|
+| **SWS `CF_Preview`** | MediaExplorer, Editor, Sampler | voix CP_Native | **par capacité** — il reste le repli pour ce que le moteur ne sait pas faire (transposer, lire un long fichier depuis le disque, jouer une `PCM_source` sans fichier) |
+| **RS5K** | CP_Session (cases audio) | voix CP_Native | **fait** (session 19) |
+| **`CP_MidiLooper.jsfx`** | Session, Looper, Editor | `cp_lanes.*` | **fait** (session 20) |
+| **piste routeur + envois filtrés** | tout le MIDI | un port par colonne | **fait** — et l'ancienne piste est supprimée à l'ouverture |
+| **gmem comme protocole** | Loop.lua ↔ JSFX | ABI 1.6 | **fait** |
+| **plafond de 4 colonnes** | — | 32 lanes | **levé côté moteur** ; `Loop.MAX_LANES` reste à 8 (= 4 colonnes) parce que c'est une décision sur la largeur de la fenêtre |
 
-À l'arrivée : **un binaire, du Lua, et REAPER.** Rien d'autre.
+À l'arrivée : **un binaire, du Lua, et REAPER.** C'est atteint depuis la
+session 20 — plus aucune piste d'infrastructure n'est créée dans le projet de
+quelqu'un.
 
 ## Trois règles transverses, valables à chaque phase
 
@@ -1894,17 +2035,20 @@ un vrai utilisateur de l'ABI qui n'est pas une sonde.
 est un calcul (~3,4 ms de décodage par seconde de stéréo), pas une écoute.
 `Audition.last_load_ms` dit ce qu'il coûte réellement sur la machine.
 
-## Phase 2 — l'identité *(1 jour, survit à 100 %)*
+## Phase 2 — l'identité — **FAIT (session 20)**
 
 Le diagnostic de l'analyse d'écosystème : **rien ne possède « ce clip, dans cette
 case, dans cet état »**. Tout est adressé par *position* — `t*1000+s`, indice de
 lane, indice de colonne. `Clip.CellTag` est une clé étrangère inventée parce
 qu'il manque une table.
 
-- [ ] un allocateur d'ID stable + une table registre
-- [ ] `Clip.CellTag` devient une vue de compatibilité
-- [ ] sites : `Clip.lua:88-104`, `CP_Session.lua:225` + ~8 appels,
-      `CP_Editor.lua:661`, `CP_Looper.lua:1658`
+- [x] un allocateur d'ID stable + une table registre (`CP_Engine/Ident.lua`)
+- [x] `Clip.CellTag` devient une vue de compatibilité — et la bascule tient
+      dans une fonction, `Ident.TagOf`, parce que les deux espaces de nombres
+      ne se rencontrent pas
+- [x] sites : tous convertis. Le seul endroit où un numéro précède le clip
+      qu'il nomme est l'enregistrement — une prise a besoin d'un nom avant
+      d'avoir un contenu
 
 Le tag gmem est **déjà** un entier opaque (`Loop.lua:876-897`) : le protocole ne
 bouge pas d'un octet.
@@ -1913,17 +2057,22 @@ bouge pas d'un octet.
 lignes qu'elle refactorerait sont programmées pour la suppression. Refactorer du
 code condamné, seul, est le pire ratio du plan.
 
-## Phase 3 — CP_Editor et CP_Sampler passent par `Voice.lua` *(2 jours)*
+## Phase 3 — CP_Editor et CP_Sampler passent par `Voice.lua` — **FAIT (session 20)**
 
-- [ ] l'audition de l'éditeur et celle du sampler empruntent le même chemin
-- [ ] **une seule réponse sur le tempo d'un fichier.** `rateFor` existe
-      aujourd'hui en trois exemplaires qui ne répondent pas pareil.
+- [x] l'audition de l'éditeur et celle du sampler empruntent le même chemin
+      (`CP_Toolkit/Audio.lua` supprimé ; la SECTION entre dans `Preview` et
+      `Audition` la rend par capacité)
+- [x] **une seule réponse sur le tempo d'un fichier** — `CP_Engine/SrcTempo.lua`.
+      Les trois exemplaires savaient chacun quelque chose que les deux autres
+      ignoraient ; l'union garde tous les garde-fous, et rend AUSSI la raison.
 
-## Phase 4 — la cuisson du warp *(1 à 2 jours, survit à toutes les issues)*
+## Phase 4 — la cuisson du warp — **FAIT (session 20)**
 
-- [ ] `D_PLAYRATE` + `B_PPITCH` + `I_PITCHMODE` dans `Bake.FileRegionToWav`
-      (`CP_Engine/Bake.lua:160-186` fait déjà les neuf dixièmes)
-- [ ] cache indexé par (chemin, région, BPM cible), état « cuisson » sur la cellule
+- [x] `D_PLAYRATE` + `B_PPITCH` + `I_PITCHMODE` dans `Bake.FileRegionToWav`.
+      C'est l'accesseur qui imprime l'étirement : `RegionToWav` lit la prise
+      TELLE QU'ELLE JOUE, donc trois lignes et pas un rééchantillonneur
+- [x] cache indexé par (chemin, région, BPM cible), état « cuisson » sur la
+      cellule (`CP_Engine/Warp.lua`)
 
 *Ce que ça répare aujourd'hui :* « Stretch (keeps the key) » fait un **repitch
 silencieux** — `rateFor` rend `(taux, stretch)` et `CP_Session.lua:653` jette le
@@ -1931,7 +2080,7 @@ second retour.
 *Ce que ça débloque :* le warp devient gratuit pour le cas courant, et le coût
 mesuré de l'étireur ne concerne plus que le taux variable.
 
-## Phase 5 — la moitié audio de CP_Session *(3 à 5 jours)*
+## Phase 5 — la moitié audio de CP_Session — **FAIT (session 19)**
 
 Étape essentiellement **soustractive**. Disparaissent : la piste enfant « … smp »
 et ses deux RS5K, le canal MIDI réservé, `Loop.WireAudio`, `SetLaneAudio`, le
@@ -1972,7 +2121,7 @@ l'extension et comme retour en arrière. La décision se prend à une ligne
 *On arrête si :* trois sessions de jeu réelles montrent une régression.
 *Coût d'abandon :* une ligne, pas un `git revert`.
 
-## Phase 6 — le moteur MIDI entre dans l'extension *(le gros morceau)*
+## Phase 6 — le moteur MIDI entre dans l'extension — **FAIT (session 20)**
 
 Le véhicule est prouvé ; le moteur, non. `CP_MidiLooper.jsfx` ne fait pas
 qu'émettre des notes : il tient les boucles, **réconcilie à chaque bloc** les
@@ -1980,11 +2129,18 @@ notes qui sonnent contre celles qui couvrent la phase (porte par bloc —
 comportement de Live, et bien fait), capture l'entrée live, et possède le
 quantize, les états en attente et l'horloge libre.
 
-- [ ] porter la porte par bloc, avec parité mesurée contre le JSFX
-- [ ] porter la capture live
-- [ ] porter le quantize, les états en attente, l'horloge libre
-- [ ] **cohabitation :** en horloge libre, l'extension possède l'horloge et le
-      JSFX la lit. C'est le seul couplage à écrire pendant la transition.
+- [x] porter la porte par bloc — et mieux : la réconciliation se fait sur la
+      phase de FIN de bloc, donc chaque transition est datée à l'échantillon
+      (mesure : une note d'un beat à 120 BPM dure 24000 échantillons)
+- [x] porter la capture live — par `MIDI_GetRecentInputEvent`, côté Lua, où
+      chaque événement arrive déjà horodaté. Elle ne dépend plus de rien d'armé
+- [x] porter le quantize, les états en attente, l'horloge libre
+- [x] **cohabitation : elle n'a pas été nécessaire.** Le plan prévoyait de faire
+      lire l'horloge de l'extension par le JSFX pendant la transition. Il n'y a
+      pas eu de transition : les deux moteurs ne peuvent pas coexister (le même
+      set jouerait deux fois), donc l'ancien routeur est *supprimé* à
+      l'ouverture plutôt que synchronisé.
+- [ ] **entendre.** Rien n'a été joué : tout ceci est compilé et relu.
 
 *Ce que ça tue :* la piste routeur, `wireLane`/`makeLaneSend`/`SyncSends`, gmem
 comme protocole, et **le plafond de 4 colonnes** — qui ne vient pas de
@@ -2041,11 +2197,12 @@ moteur :
       donc changer de projet aurait mis un set dans le fichier d'un autre : la
       détection de changement de routeur descend elle aussi dans `Loop`, et
       l'autosave se désarme tout seul si le routeur a bougé depuis l'adoption.
-- [ ] **La garde anti-note-fantôme ne tient pas à froid.** gmem est à zéro, donc
-      `GetLaneTag = 0` ; `Loop.LaneOfTag(t, 0)` rend `LiveLane(t)` et non nil,
-      mais `Clip.CellOfTag(0)` rend nil, donc `audio = false` — alors que
-      `LoadState` a remis la lane en mode 3 avec une note 60 vélocité 127. La
-      note part **dans l'instrument de la colonne**, en boucle.
-- [ ] **Aucun `Undo_` dans `CP_Session`.** Ouvrir la fenêtre peut insérer une
-      piste et transformer une piste utilisateur en dossier, sans bloc
-      d'annulation. Le modèle existe déjà à `Bake.lua:170-186`.
+- [x] **La garde anti-note-fantôme ne tenait pas à froid** — et elle n'a plus
+      lieu d'être : le canal sonore et son envoi filtré sont partis avec le
+      routeur. Une case audio est une voix CP sur son propre port, l'instrument
+      de la colonne est sur un autre ; ce ne sont plus deux choses à tenir
+      d'accord, ce sont deux fils qui ne se croisent pas.
+- [ ] **Aucun `Undo_` dans `CP_Session`.** Nettement moins grave depuis la
+      session 20 — ouvrir la fenêtre n'insère plus de piste du tout — mais un
+      enfant sampler naît encore sans bloc d'annulation quand une colonne porte
+      un instrument. Le modèle existe déjà à `Bake.lua:170-186`.

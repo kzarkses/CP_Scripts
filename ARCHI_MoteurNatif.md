@@ -1254,3 +1254,143 @@ l'éditeur ni dans le sampler.
   en une ligne ; `Audition.last_load_ms` dit ce que le décodage coûte réellement
   sur la machine.
 - **`CP_Editor` et `CP_Sampler`** n'ont pas encore basculé sur `Audition`.
+
+---
+
+# 14. Session 20 — le MIDI entre dans le binaire, et la dernière piste s'en va
+
+Le §13 fermait la course de propriété et donnait au moteur ses deux premiers
+consommateurs. Celui-ci ferme le dossier : il n'y a plus une seule piste que la
+suite crée dans le projet de quelqu'un.
+
+## 14.1 La question qui a décidé du partage
+
+Le JSFX faisait tout dans le fil audio parce qu'il n'avait pas le choix : c'est
+le seul endroit où un JSFX existe. En C++ on choisit, et la question posée a été
+une seule, appliquée à chaque morceau :
+
+> **Est-ce que se tromper de 30 ms — une frame de defer — s'entend ?**
+
+| morceau | réponse | où il vit |
+|---|---|---|
+| la porte (quelles notes doivent sonner) | oui — une double-croche à 140 BPM dure 107 ms | fil audio |
+| les transitions en attente | oui — un lancement quantifié doit tomber sur SA frontière | fil audio |
+| l'horloge libre | oui — c'est la référence de phase de tout le reste | fil audio |
+| les notes elles-mêmes | non | fil principal |
+| la capture live | non — voir §14.3 | fil principal |
+| la persistance, le routage, l'interface | non | fil principal |
+
+La conséquence est structurante et elle est **voulue** : **le fil audio n'écrit
+jamais de note.** Il les lit. Tout ce qui suit en découle.
+
+## 14.2 La liste de notes est double, et pourquoi c'était nécessaire
+
+Le JSFX partageait sa liste par gmem : le fil principal écrivait pendant que le
+fil audio lisait. Bénin en pratique sur x86, indéfini en droit — et ce dépôt a
+déjà payé une fois pour cette différence exacte (§13.1).
+
+Chaque lane porte donc **deux tampons**. Le principal remplit celui qui n'est pas
+publié, puis publie l'indice d'un seul `store(release)`. Le fil audio prend
+l'indice une fois en début de bloc et lit ce tampon-là jusqu'au bout. Aucune
+lecture déchirée, aucun verrou.
+
+**Le contrat qui en découle, et qu'il faut connaître** : le tampon qui dort
+contient l'*avant-dernière* version. Un appelant qui n'écrirait que la note
+modifiée publierait la liste d'avant avec une note neuve dedans. On écrit tout,
+on publie une fois.
+
+Côté Lua, le point de publication n'a pas été inventé : il existait déjà.
+`Loop.BumpVer(lane)` veut dire « les notes de cette lane ont changé », et chaque
+chemin d'édition l'appelait déjà exactement une fois, à la fin du geste. Publier
+par NOTE aurait rendu une suppression quadratique en appels d'ABI ; ne publier
+qu'à `SetNoteCount` aurait rendu un glissé de note inaudible, parce que le
+backend Roll du Looper appelle `PutNote` sans toucher au compte.
+
+**Le mégaoctet est alloué UNE fois, à l'init.** Le mettre dans la structure
+`Lane` avait mis 786 Ko dans l'`Engine`, donc sur la pile de tout ce qui en
+déclare un — le harnais s'y est effondré, et une pile qui déborde ne dit pas
+pourquoi. La règle du dossier est « aucune allocation *après* l'initialisation »,
+pas « aucun tas » : le vivier de clips le faisait déjà.
+
+## 14.3 La capture n'a pas besoin du fil audio, et elle est plus précise sans lui
+
+`MIDI_GetRecentInputEvent` lit l'historique global d'entrée de REAPER depuis le
+fil principal. Le point qui rend ce choix meilleur et pas seulement équivalent :
+**chaque événement arrive déjà horodaté en échantillons relatifs à maintenant.**
+
+Une frame de defer *sonde* en retard. Elle n'*enregistre* pas en retard. Le JSFX,
+lui, ne voyait ses `midirecv` qu'à la granularité du bloc.
+
+Deux conséquences gratuites :
+
+- **la capture ne dépend plus de rien d'armé.** Le routeur devait être armé et
+  monitoré pour voir quoi que ce soit ; l'historique global voit tous les
+  périphériques. C'est un état de moins dans lequel se tromper ;
+- **le monitoring redevient celui de REAPER.** Le routeur devait être la SEULE
+  chose armée pour qu'une note n'atteigne pas un instrument deux fois —
+  directement, puis par un envoi de lane. Sans routeur il n'y a pas de second
+  chemin : armer une lane arme sa piste de destination, et on s'entend jouer sans
+  latence ajoutée. Tout le ballet `disarmDest` / `pollKitInput` disparaît.
+
+Le moteur signale qu'une prise commence en incrémentant `recgen`. La propriété
+n'est jamais partagée : elle est **signalée**.
+
+## 14.4 Ce que le portage gagne, mesuré
+
+`tick()` prépare le **bloc suivant** — `clock + frames` est le frame du prochain
+échantillon à produire — et la porte réconcilie sur la phase de **fin** de bloc
+au lieu de celle du début. Chaque transition est donc contenue dans le bloc à
+venir, et son instant exact est calculé plutôt qu'arrondi à la frontière.
+
+Mesure du harnais : **une note d'un beat à 120 BPM dure 24000 échantillons.** Pas
+24000 plus ou moins un tampon.
+
+Dégénérescence prévue et traitée : un tampon plus long que la boucle elle-même
+(une boucle d'un demi-temps à 1024 échantillons) sauterait des notes entières. Ce
+cas-là seul revient à la phase de début de bloc — exactement le comportement du
+JSFX, moins juste, jamais faux.
+
+## 14.5 Le plafond de quatre colonnes ne venait pas d'où on croyait
+
+Il ne venait pas de `MAX_LANES`. Il venait du **budget de seize canaux MIDI d'une
+seule piste routeur** : chaque lane parlait sur son canal, une case audio prenait
+les canaux 9 à 12, l'aperçu de la suite prenait le 16.
+
+Un port n'est pas un canal. Chaque lane écrit dans le sien, pré-FX, et le moteur
+en sert 32. Le nombre de colonnes est redevenu ce qu'il aurait toujours dû être :
+une décision sur la largeur de la fenêtre. `Loop.MAX_LANES` reste à 8 (quatre
+colonnes) — pas par contrainte, par abstention.
+
+## 14.6 La migration n'est pas du rangement
+
+Un ancien projet porte encore `CP_MidiLooper.jsfx` sur une piste armée, et ce
+JSFX **joue toujours ses lanes depuis gmem**. Le laisser là ferait jouer le même
+set deux fois, par deux moteurs, à quelques millisecondes d'écart — ce qui ne
+s'entend pas comme un reste, mais comme un instrument cassé.
+
+Le plan prévoyait une cohabitation (« en horloge libre, l'extension possède
+l'horloge et le JSFX la lit »). Elle n'a pas été nécessaire, et surtout elle
+n'était **pas possible** : deux moteurs qui jouent les mêmes lanes ne se
+synchronisent pas, ils se doublent. `Loop.MigrateLegacy` lit le routeur, range
+son état dans `ProjExtState`, puis supprime la piste — et le dossier CP avec elle
+quand il ne reste rien dedans.
+
+## 14.7 Les deux pièges de la session, et ce qu'ils enseignent
+
+**Une opération idempotente en apparence ne l'est pas si elle passe par un
+détachement.** Rebrancher un port détache l'aperçu, donc coupe ce qu'il portait.
+Le rafraîchissement des destinations tourne deux fois par seconde ; rebrancher à
+chaque passage aurait haché le MIDI sans qu'aucune erreur n'apparaisse nulle
+part. Le port se souvient de ce à quoi il est lié.
+
+**Le point de publication existait déjà ; il fallait le reconnaître, pas
+l'inventer.** Voir §14.2.
+
+## 14.8 Ce que la session laisse ouvert
+
+- **Rien n'a été joué.** 138 assertions, zéro avertissement, et pas une note
+  entendue. C'est la première chose à faire.
+- La campagne de session longue (`WIP/CP_SoakProbe`) n'a toujours pas tourné, et
+  elle ne couvre pas encore les lanes.
+- Le nombre de colonnes reste à 4 alors que le moteur en sert 32.
+- Phase 7 (livraison ReaPack) n'est pas commencée, comme convenu.

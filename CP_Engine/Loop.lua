@@ -678,7 +678,15 @@ end
 -- Restore a lane's playing state on recall (0 empty · 2 stopped · 3 playing).
 function Loop.SetMode(lane, m) cmd(9, lane, m or 0) end
 
-function Loop.BumpVer(lane) evtver[lane] = (evtver[lane] or 0) + 1 end
+-- "The notes of this lane changed" — and therefore also the moment to hand the
+-- list to the engine. Every editing path already calls this exactly once at
+-- the end of a gesture, which is precisely the granularity the double buffer
+-- wants: publishing per NOTE would have made a delete O(n^2) in ABI calls, and
+-- publishing never would have made a note drag inaudible.
+function Loop.BumpVer(lane)
+    evtver[lane] = (evtver[lane] or 0) + 1
+    publish(lane)
+end
 
 function Loop.GetNote(lane, i)
     local t = store(lane)
@@ -725,13 +733,20 @@ end
 --     so a sampler pad clicked during a take does not land in the take.
 -- ---------------------------------------------------------------------------
 local UI_CHAN = 15          -- mirror of Kit.UI_CHAN
-local held = {}             -- [lane] = { [pitch] = start_phase }
+-- Two tables, not one keyed cleverly: a single table holding both the start
+-- phase and the velocity has to encode which is which, and closeHeld would
+-- then walk the velocities as though they were pitches — inventing notes at
+-- negative pitch out of an iteration order.
+local held_st  = {}         -- [lane][pitch] = start phase
+local held_vel = {}         -- [lane][pitch] = velocity
 local last_seq = nil
 
 local function heldOf(lane)
-    local h = held[lane]
-    if not h then h = {} held[lane] = h end
-    return h
+    local a = held_st[lane]
+    if not a then a = {} held_st[lane] = a end
+    local b = held_vel[lane]
+    if not b then b = {} held_vel[lane] = b end
+    return a, b
 end
 
 -- Append a finished note to the lane, clamped to its loop.
@@ -748,15 +763,15 @@ end
 
 -- Close every note still held on this lane, at `phase`.
 local function closeHeld(lane, phase)
-    local h = held[lane]
-    if not h then return false end
+    local a = held_st[lane]
+    if not a then return false end
+    local b = held_vel[lane] or {}
     local any = false
-    for pitch, st in pairs(h) do
-        addNote(lane, st, phase - st, pitch, h[-pitch - 1] or 100)
-        h[pitch] = nil
-        h[-pitch - 1] = nil
+    for pitch, st in pairs(a) do
+        addNote(lane, st, phase - st, pitch, b[pitch] or 100)
         any = true
     end
+    held_st[lane], held_vel[lane] = nil, nil
     return any
 end
 
@@ -774,7 +789,7 @@ local function pollCapture()
             if seen_recgen[lane] ~= nil then
                 local t = store(lane)
                 t.n = 0
-                held[lane] = nil
+                held_st[lane], held_vel[lane] = nil, nil
                 publish(lane)
                 evtver[lane] = (evtver[lane] or 0) + 1
             end
@@ -783,16 +798,16 @@ local function pollCapture()
         local m = math.floor(r.CP_LaneGet(lane, "mode") + 0.5)
         if m == 1 or m == 5 then
             capturing = true
-        elseif held[lane] then
+        elseif held_st[lane] then
             -- The take ended (auto-stop, boundary, transport stop): close what
-            -- was still held so the last note is KEPT rather than lost.
+            -- was still held so the last note is KEPT rather than lost. A take
+            -- that stops mid-note used to strand it in the JSFX's local heap
+            -- and lose it entirely.
             local Lb = Loop.LenBeats(lane)
             local ph = r.CP_LaneGet(lane, "phase")
             if closeHeld(lane, (ph > 0) and ph or Lb) then
-                publish(lane)
-                evtver[lane] = (evtver[lane] or 0) + 1
+                Loop.BumpVer(lane)
             end
-            held[lane] = nil
         end
     end
 
@@ -847,22 +862,22 @@ local function pollCapture()
                     if m == 1 or m == 5 then
                         local Lb = Loop.LenBeats(lane)
                         local ph = beat - math.floor(beat / Lb) * Lb
-                        local h = heldOf(lane)
+                        local hs, hv = heldOf(lane)
                         if on then
                             -- a new note-on closes any pending note of the
                             -- same pitch first
-                            if h[pitch] then
-                                addNote(lane, h[pitch], ph - h[pitch], pitch,
-                                        h[-pitch - 1] or 100)
+                            if hs[pitch] then
+                                addNote(lane, hs[pitch], ph - hs[pitch], pitch,
+                                        hv[pitch] or 100)
                                 changed[lane] = true
                             end
-                            h[pitch] = ph
-                            h[-pitch - 1] = vel
-                        elseif h[pitch] then
-                            addNote(lane, h[pitch], ph - h[pitch], pitch,
-                                    h[-pitch - 1] or 100)
-                            h[pitch] = nil
-                            h[-pitch - 1] = nil
+                            hs[pitch] = ph
+                            hv[pitch] = vel
+                        elseif hs[pitch] then
+                            addNote(lane, hs[pitch], ph - hs[pitch], pitch,
+                                    hv[pitch] or 100)
+                            hs[pitch] = nil
+                            hv[pitch] = nil
                             changed[lane] = true
                         end
                     end
@@ -870,10 +885,7 @@ local function pollCapture()
             end
         end
     end
-    for lane in pairs(changed) do
-        publish(lane)
-        evtver[lane] = (evtver[lane] or 0) + 1
-    end
+    for lane in pairs(changed) do Loop.BumpVer(lane) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -999,7 +1011,7 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if not ver:match("^[1-5]$") then return false end
+    if not ver or not ver:match("^[1-5]$") then return false end
     local v2 = (ver ~= "1")
 
     local base = v2 and 2 or 1
