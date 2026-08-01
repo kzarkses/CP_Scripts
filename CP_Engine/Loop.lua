@@ -1072,39 +1072,34 @@ end
 -- Per-frame pump — the ONE call every host makes before reading anything
 -- ---------------------------------------------------------------------------
 local dest_chg, dest_t = -1, 0
-local was_playing = false
 
--- THE HOST'S TRANSPORT IS THE MASTER — when we have chosen to follow it.
+-- L'ETAT D'UN CLIP APPARTIENT A CELUI QUI L'A LANCE, PAS AU TRANSPORT.
 --
--- A launch and a stop asked for FROM the grid wait for the quantize: that is
--- the whole point of a quantize. The transport's own stop is not one of those.
--- Pressing stop means stop, and until now it meant "carry on to the end of the
--- pass" — the note flush happened in the audio thread but the audio cells kept
--- their scheduled pass, so a bar could go by. Nobody presses stop and means
--- "in a bar".
+-- On arretait ici chaque lane qui jouait des que le transport de l'hote
+-- tombait. Le son se taisait — mais l'ETAT partait avec, et rappuyer sur play
+-- ne relancait rien : il fallait recliquer chaque case une par une. En mode
+-- Suivre, arreter le transport veut dire « suspends », jamais « oublie ce que
+-- je t'ai demande ». C'est la promesse que fait toute grille de session :
+-- une case allumee le reste tant que personne ne l'a eteinte.
 --
--- The queued stop is the right instrument even so: `stop_target` already
--- returns NOW when no clock runs (cp_lanes.cpp, "rien ne sonne, donc il ne
--- reste rien a finir"), and by this point the transport has stopped, so
--- `active` is false. One command per playing lane, on the frame the transport
--- falls, and Cells stops its voices on the next one when it sees mode 2.
+-- Le moteur avait deja raison de son cote. Sur le front descendant de `active`
+-- il relache ce qui sonne et ferme les prises en cours, mais il LAISSE une
+-- lane en lecture dans son mode (cp_lanes.cpp, « front descendant de
+-- `active` »). L'horloge ne bat plus, donc rien ne sort ; et quand elle
+-- reprend, la lane se raccroche a la phase du projet comme n'importe quelle
+-- passe suivante. Il n'y avait donc rien a defaire.
 --
--- In FREE RUN nothing happens here, and that is the point of free run: the
--- session is its own transport and REAPER's has no authority over it.
-local function followHostStop()
-    if Loop.GetFreeRun() then was_playing = false return end
-    local playing = Loop.Playing()
-    if was_playing and not playing then
-        for lane = 0, Loop.MAX_LANES - 1 do
-            -- Playing and overdub only. A take in progress is already closed by
-            -- the engine on the same falling edge (cp_lanes.cpp, "le transport
-            -- s'arrete : une prise en cours se ferme sur ce qu'elle a"), and a
-            -- queued stop would not have handled it anyway.
-            local m = math.floor((Loop.Mode(lane) or 0) + 0.5)
-            if m == 3 or m == 5 then Loop.StopClip(lane) end
-        end
-    end
-    was_playing = playing
+-- Ce qui justifiait cet arret, c'etaient les cases AUDIO : ce sont des voix et
+-- non des lanes, elles gardaient leur passe programmee et pouvaient sonner
+-- encore une mesure apres le stop. Elles se taisent maintenant d'elles-memes
+-- quand l'horloge ne bat plus (`Cells.drive`) — le silence ne se paie plus
+-- d'un etat perdu.
+--
+-- L'HORLOGE BAT : la meme condition que le `active` du moteur. L'horloge libre
+-- bat toujours — c'est tout l'objet du mode libre, la session est son propre
+-- transport — celle de l'hote bat quand le transport roule.
+function Loop.ClockRunning()
+    return Loop.GetFreeRun() or Loop.Playing()
 end
 
 function Loop.Poll()
@@ -1125,9 +1120,6 @@ function Loop.Poll()
     r.CP_TransportSync(Loop.Tempo(), r.TimeMap2_timeToQN(0, pos),
                        Loop.Playing() and 1 or 0, Loop.TsNum())
     resolveLive()
-    -- AFTER the anchor and resolveLive, BEFORE anything reads a mode: the stop
-    -- must be visible to the same frame that draws.
-    followHostStop()
     pollCapture()
     local c = r.GetProjectStateChangeCount(0)
     if c ~= dest_chg then

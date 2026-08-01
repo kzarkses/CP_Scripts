@@ -59,6 +59,10 @@ local TRACKS = 4
 -- tot, tomber juste.
 local LOOKAHEAD_BEATS = 1.0
 
+-- L'HORLOGE BAT-ELLE ? Relue UNE fois par frame dans Cells.Tick, parce que la
+-- reponse traverse deux appels d'ABI et que `drive` passe huit fois.
+local clock_on = true
+
 -- EN DESSOUS DE CE RETARD, UN DEPART QU'ON N'A PAS VU VENIR A BEL ET BIEN
 -- COMMENCE A LA PHASE ZERO — on ne l'a su qu'apres.
 --
@@ -485,6 +489,23 @@ local function drive(t, half, gate)
     local slot = col[t].half[half]
     if not slot.clip then return end
 
+    -- L'HORLOGE S'EST ARRETEE : ON TAIT LE SON, ON NE TOUCHE PAS A L'ETAT.
+    --
+    -- Une lane arretee ne sonne plus d'elle-meme — elle n'a plus de beat qui
+    -- avance. Une VOIX, si : elle a recu une date de depart et une duree en
+    -- frames, et l'appareil continue de tourner. C'est pour la faire taire que
+    -- Loop demandait l'arret de la lane a chaque stop du transport, et c'est
+    -- ce detour qui coutait l'etat de lecture de toute la grille.
+    --
+    -- On coupe donc ici, ou est le probleme. `stopSlot` remet `running` a faux,
+    -- ce qui suffit a faire repartir la passe au retour du transport : `drive`
+    -- verra mode 3 sans voix qui tourne et rentrera en cours de passe, sur la
+    -- phase que le moteur publie. Suspendre et reprendre, plutot qu'eteindre.
+    if not clock_on then
+        if slot.running or slot.armed then stopSlot(slot) end
+        return
+    end
+
     local lane = (half == 0) and t or (t + TRACKS)
     local mode = math.floor((Loop.Mode(lane) or 0) + 0.5)
     local pend = Loop.Pending(lane) or 0
@@ -558,6 +579,7 @@ end
 -- A appeler UNE fois par frame, apres Loop.Poll().
 function Cells.Tick(gate)
     if not NATIVE then return end
+    clock_on = Loop.ClockRunning()
     Voice.Sync()
     prate = Voice.PlayRate()
 
