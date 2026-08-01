@@ -1031,6 +1031,25 @@ local function pollSection()
         return
     end
 
+    -- TANT QUE NOTRE ECOUTE SONNE, LA FENETRE RESTE EVEILLEE.
+    --
+    -- Le bouton Play ne se mettait pas toujours a « Stop » apres un appui sur
+    -- la barre d'espace, alors que le son partait : la fenetre s'endormait.
+    -- Les touches sont traitees APRES le dessin, donc l'appui laisse toujours
+    -- une image de retard ; l'elan d'entree la rattrapait — quand il durait
+    -- assez. Passe ce delai, la boucle retombait a deux images par seconde et
+    -- l'ecran restait fige sur « Play » pendant que ca jouait.
+    --
+    -- Le reveil etait demande ailleurs : par le CURSEUR DE LECTURE, et
+    -- seulement quand il tombait juste (`playCursorTime` rend nil des que la
+    -- position n'est pas lisible). Une fenetre qui se rafraichit parce qu'elle
+    -- a quelque chose a dessiner s'arrete de le faire des qu'elle n'a plus
+    -- rien — et l'etat d'un bouton, lui, doit rester vrai.
+    --
+    -- Ici, la condition est la bonne : ca sonne, donc ce qui montre que ca
+    -- sonne doit continuer d'etre redessine.
+    UI.RequestRedraw()
+
     -- Does the selection govern playback at all right now? Only if there is
     -- one AND something says what its end means: the loop, the stop rule, or
     -- the fact that you asked to play it.
