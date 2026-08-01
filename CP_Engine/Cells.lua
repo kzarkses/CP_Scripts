@@ -257,6 +257,17 @@ function Cells.Arm(t, lane, path, rate, loop, offs, len, gain)
     if not ensureVoices(t, slot) then return false, "no_voice" end
 
     if slot.path ~= path then
+        -- LA MATIERE NE PART PAS SOUS UN SON EN COURS. Decharger un clip le
+        -- rend invisible du fil audio des le bloc suivant : la voix n'a plus
+        -- rien a lire et meurt SANS FONDU, ce qui s'entend comme un clic.
+        -- Le pool est sur — il attend deux blocs avant de liberer, et get()
+        -- ne rend plus rien des la mise au rebut — donc ce n'est pas une
+        -- lecture apres liberation, c'est une coupure seche. On coupe donc
+        -- proprement d'abord. Changer le mode tempo d'une case qui sonne
+        -- passe exactement par ici.
+        for i = 1, 2 do
+            if slot.v[i] then Voice.Stop(slot.v[i], 0.008) end
+        end
         if slot.path then clipUnref(slot.path) end
         local e, why = clipRef(path)
         if not e then slot.path, slot.clip = nil, nil return false, why end
