@@ -172,7 +172,7 @@ local playTarget
 local fx_slot, fx_index, fx_dirty = 0, nil, false
 local findKitFX, fxEnsure, fxDeserialize, fxSave
 local fxPad, fxLoadSample, fxClearPad, fxParam, fxSetParam
-local fxQueueLoad, fxPumpLoads
+local fxQueueLoad, fxPumpLoads, fxReconcile
 
 local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
 
@@ -608,6 +608,7 @@ function Kit.Poll()
     if Kit.IsFX() then
         KitFX.Heartbeat(fx_slot)
         fxPumpLoads()
+        fxReconcile()
         -- fx_dirty ETAIT POSE ET JAMAIS LU : tourner un bouton changeait le
         -- son et le miroir en memoire, mais rien ne l'ecrivait sur la piste.
         -- Le premier evenement qui refaisait un scan rendait tous les boutons
@@ -1597,6 +1598,44 @@ function Kit.FXLoading()
     if n < 0 then n = 0 end
     if n == 0 and not KitFX.LoadIdle(fx_slot) then return 1 end
     return n
+end
+
+-- ---------------------------------------------------------------------------
+-- LA RECONCILIATION, ET C'EST LE TROU QUE J'AVAIS VU PUIS ECARTE
+-- ---------------------------------------------------------------------------
+-- J'avais ecrit : « le JSFX possede l'etat qui fait le son, Kit tient un
+-- miroir pour l'affichage, et s'ils divergent le JSFX gagne — le miroir se
+-- refait au prochain scan ». La deuxieme moitie est FAUSSE : le miroir ne
+-- peut pas se refaire depuis l'instrument, qui ne publie ni chemins ni noms.
+-- Et l'instrument ne recevait le miroir que si l'effet venait d'etre cree.
+--
+-- Resultat : un pad qui existe dans la fenetre, dessine avec son nom et sa
+-- forme d'onde, et un instrument vide. Rien ne rapprochait les deux, et rien
+-- ne le disait. C'est litteralement ce qu'on a passe la soiree a regarder.
+--
+-- La regle devient : QUAND L'INSTRUMENT EN A MOINS QUE LA FENETRE, LA FENETRE
+-- RENVOIE TOUT. On ne compare que dans ce sens — l'instrument peut
+-- legitimement en avoir plus pendant qu'il se recharge tout seul apres une
+-- ouverture de projet, et l'ecraser alors serait le defaut inverse.
+local rec_wait = 0
+local RECONCILE_EVERY = 90        -- passages, soit une seconde et demie
+
+fxReconcile = function()
+    if not KitFX.Ready() then return end
+    rec_wait = rec_wait + 1
+    if rec_wait < RECONCILE_EVERY then return end
+    rec_wait = 0
+    -- Jamais pendant un chargement : « ce pad n'a pas de matiere » voudrait
+    -- alors dire « pas encore », et on renverrait tout en boucle.
+    if Kit.FXLoading() > 0 then return end
+    local want = 0
+    for _, pad in pairs(Kit.pads) do
+        if pad.path then want = want + 1 end
+    end
+    if want == 0 then return end
+    local have = KitFX.LoadedCount(fx_slot)
+    if have < 0 or have >= want then return end
+    Kit.SyncAll()
 end
 
 -- Un chargement par passage de la boucle, et seulement quand le precedent est
