@@ -734,6 +734,22 @@ local function kitMenu()
     -- L'ANCIEN MOTEUR RESTE ATTEIGNABLE, et il le restera tant que des projets
     -- en contiennent. Ce n'est pas de l'indecision : un kit existant n'a aucune
     -- raison d'etre converti sans qu'on le demande.
+    -- UN INSTRUMENT CHROMATIQUE SE CREE COMME UN KIT, parce qu'il EST un kit
+    -- d'un seul pad. Il etait atteignable — clic droit sur un pad charge,
+    -- « Chromatic » — mais rien ne le disait, et « je ne peux pas creer
+    -- d'instrument » est la reponse normale a une fonction qu'on ne voit pas.
+    items[#items + 1] = { label = "New chromatic instrument...", action = function()
+        local ok, fn = r.GetUserFileNameForRead("", "Sample for the instrument",
+                                                ".wav")
+        if not ok then return end
+        local tr, why = Kit.NewInstrument("CP Instrument", fn, 60)
+        if tr then
+            markDirty()
+            flash("Instrument created - plays across the keyboard from C4")
+        else
+            flash("Instrument: " .. tostring(why))
+        end
+    end }
     items[#items + 1] = { label = "New kit (legacy RS5K tracks)...",
                           action = function()
         local ok, name = r.GetUserInputs("New kit (RS5K)", 1,
@@ -824,9 +840,16 @@ actually hold audio: "jsfx/targeted 4 loaded". Zero loaded points at
 loading; a right count with no sound points at routing.
 
 ## Chromatic is a property of a pad
-A pad normally answers one note. Right-click it and choose Chromatic
-and it plays across the keyboard from its own root — that is what used
-to be a separate INSTRUMENT track, and it is now two fields on a pad.
+A pad normally answers one note. Right-click it and choose CHROMATIC and
+it plays from its own root across every key that no other pad claims —
+alone in its kit, that is the whole keyboard. That is what used to be a
+separate INSTRUMENT track, and it is now two fields on a pad.
+
+The kit menu has "New chromatic instrument..." for the common case: a
+kit of ONE chromatic pad, which is all an instrument ever was here.
+A range is taken from its neighbours, never decreed: the sixty-four pads
+share one MIDI stream, so a pad that claimed 0..127 would answer every
+drum note too.
 
 ## The internal mixer, and breaking out
 Vol, Pan, Mute and Solo are per pad, inside the instrument. A pad that

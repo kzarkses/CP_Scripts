@@ -1875,6 +1875,35 @@ function Kit.PadChromatic(note)
     return v ~= nil and v >= 0.5
 end
 
+-- LA PLACE LIBRE AUTOUR D'UN PAD. Un pad chromatique prenait 0..127, donc il
+-- repondait a TOUTES les notes — y compris celles des pads de batterie, qui
+-- sonnaient alors a deux. Les soixante-quatre partagent le meme flux : une
+-- plage se prend sur ses voisins, elle ne se decrete pas.
+--
+-- On s'etend donc de part et d'autre jusqu'a butter sur un autre pad charge.
+-- Seul dans son kit, un pad prend tout le clavier — ce qui est exactement ce
+-- qu'on veut d'un instrument chromatique. A cote de quinze pads de batterie,
+-- il prend ce qui reste, et personne ne sonne a deux.
+local function freeSpan(note)
+    local lo, hi = 0, 127
+    for n, pad in pairs(Kit.pads) do
+        if n ~= note and pad.path then
+            if n < note and n + 1 > lo then lo = n + 1 end
+            if n > note and n - 1 < hi then hi = n - 1 end
+        end
+    end
+    return lo, hi
+end
+
+function Kit.PadSpan(note)
+    local pad = Kit.pads[note]
+    if not pad then return note, note end
+    local lo = Kit.Param(note, Kit.P.NOTE_LO)
+    local hi = Kit.Param(note, Kit.P.NOTE_HI)
+    return math.floor((lo or note / 127) * 127 + 0.5),
+           math.floor((hi or note / 127) * 127 + 0.5)
+end
+
 function Kit.SetPadChromatic(note, on, root)
     if not Kit.IsFX() then return end
     local pad = Kit.pads[note]
@@ -1882,9 +1911,10 @@ function Kit.SetPadChromatic(note, on, root)
     ubegin()
     fxSetParam(note, Kit.P.CHROMATIC, on and 1 or 0)
     if on then
+        local lo, hi = freeSpan(note)
         fxSetParam(note, Kit.P.PADROOT, (root or note) / 127)
-        fxSetParam(note, Kit.P.NOTE_LO, 0)
-        fxSetParam(note, Kit.P.NOTE_HI, 1)
+        fxSetParam(note, Kit.P.NOTE_LO, lo / 127)
+        fxSetParam(note, Kit.P.NOTE_HI, hi / 127)
     else
         fxSetParam(note, Kit.P.NOTE_LO, note / 127)
         fxSetParam(note, Kit.P.NOTE_HI, note / 127)
@@ -1892,6 +1922,24 @@ function Kit.SetPadChromatic(note, on, root)
     fxSave()
     Kit.version = Kit.version + 1
     uend("Sampler: pad chromatic")
+end
+
+-- UN INSTRUMENT CHROMATIQUE EST UN KIT D'UN SEUL PAD, et c'est tout ce qui
+-- reste de ce qui fut une piste, un singleton, un mode de fenetre et trois
+-- chemins de code. On le cree donc comme un kit, avec un pad qui couvre le
+-- clavier — puisqu'il y est seul.
+function Kit.NewInstrument(name, path, root)
+    if not path or path == "" then return nil, "aucun echantillon" end
+    local tr = Kit.NewKitFX(name or "CP Instrument")
+    if not tr then return nil, "instrument introuvable" end
+    local note = root or 60
+    if note < Kit.BASE then note = Kit.BASE end
+    if note >= Kit.BASE + Kit.MAX then note = Kit.BASE end
+    if not Kit.LoadSample(note, path, { no_sync = true }) then
+        return nil, "chargement refuse"
+    end
+    Kit.SetPadChromatic(note, true, note)
+    return tr, note
 end
 
 -- --- creation ---------------------------------------------------------------
