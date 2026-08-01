@@ -103,6 +103,29 @@ local cur      = nil      -- entree de vivier en cours de lecture
 local sect_end   = nil
 local sect_start = 0
 
+-- ---------------------------------------------------------------------------
+-- LE LOQUET DE DEPART — un lancement ne doit pas se lire comme une fin
+-- ---------------------------------------------------------------------------
+-- `Voice.Play` ne fait pas sonner : il POSTE une commande que le fil audio
+-- draine a son prochain bloc. Entre les deux, le moteur repond honnetement
+-- « cette voix ne joue pas » — et `IsPlaying` le prenait pour « elle a fini ».
+-- Elle appelait alors `finished()`, qui remet le backend a « none » et lache
+-- `cur`. Le son partait quand meme (la commande finissait par etre drainee),
+-- mais la fenetre le croyait arrete pour toujours : bouton fige sur Play,
+-- aucun curseur d'avancement, et un second appui qui RELANCE au lieu
+-- d'arreter. C'est exactement le symptome observe, et il est intermittent
+-- parce qu'il depend de la taille du tampon audio contre la duree d'une frame.
+--
+-- Le loquet dit la difference que l'etat seul ne peut pas dire : « lancee, pas
+-- encore vue sonner » n'est pas « finie ». On tient donc l'instant du
+-- lancement, et tant que la voix n'a jamais ete VUE hors repos, un repos
+-- pendant le delai de grace se lit comme un depart en attente. Des qu'on l'a
+-- vue sonner une fois, le repos reprend son sens normal — la fin.
+local started  = false   -- la voix a-t-elle ete vue hors repos depuis le depart
+local start_t  = -1      -- quand on l'a lancee (r.time_precise)
+local START_GRACE = 0.5  -- s. Large : rater une fin de 0,5 s ne s'entend pas,
+                         -- rater un depart ment sur toute la duree du son.
+
 -- Vivier local, indexe par chemin.
 local clips      = {}
 local clip_bytes = 0
@@ -368,6 +391,7 @@ function Audition.Play(path, opts)
                 cur = e
                 sect_end, sect_start = nil, nil   -- le moteur la tient lui-meme
                 Audition.playing_path = path
+                started, start_t = false, r.time_precise()
                 return true
             end
         end
@@ -398,6 +422,7 @@ function Audition.playThrough(start, opts)
     Preview.route_track = Audition.route_track
     if not start() then return false end
     backend = "preview"
+    started, start_t = false, r.time_precise()
     sect_end   = opts and opts.end_s or nil
     sect_start = (opts and (opts.loop_start or opts.start_s or opts.position)) or 0
     return true
@@ -438,6 +463,7 @@ function Audition.Stop()
     backend = "none"
     cur = nil
     sect_end = nil
+    started, start_t = false, -1
     Audition.playing_path = nil
 end
 
@@ -446,17 +472,31 @@ local function finished()
     backend = "none"
     cur = nil
     sect_end = nil
+    started, start_t = false, -1
     Audition.playing_path = nil
+end
+
+-- « Le repos que je lis est-il une fin, ou un depart pas encore parti ? »
+-- Une seule expression, parce que deux lecteurs qui repondent differemment a
+-- la meme question sont exactement ce qui a produit le defaut.
+local function settling()
+    return (not started) and start_t >= 0
+           and (r.time_precise() - start_t) < START_GRACE
 end
 
 function Audition.IsPlaying()
     if backend == "native" then
         if not vh then finished() return false end
         local st = Voice.State(vh)
-        if st == Voice.IDLE then finished() return false end
-        return true
+        if st ~= Voice.IDLE then started = true return true end
+        if settling() then return true end
+        finished() return false
     elseif backend == "preview" then
-        if not Preview.IsPlaying() then finished() return false end
+        if not Preview.IsPlaying() then
+            if settling() then return true end
+            finished() return false
+        end
+        started = true
         return true
     end
     return false
@@ -467,13 +507,23 @@ function Audition.Progress()
     if backend == "native" then
         if not vh or not cur then return nil end
         local st, pos = Voice.State(vh)
-        if st == Voice.IDLE then finished() return nil end
+        if st == Voice.IDLE then
+            -- Pas encore partie : elle est au debut, pas nulle part. Rendre nil
+            -- ici eteignait le curseur d'avancement ET le reveil de la fenetre
+            -- qui en dependait.
+            if settling() then return 0, 0, cur.len end
+            finished() return nil
+        end
+        started = true
         local frac = (cur.frames > 0) and (pos / cur.frames) or 0
         if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
         return frac, pos / cur.srate, cur.len
     elseif backend == "preview" then
         local f, p, l = Preview.Progress()
-        if not f then finished() end
+        if not f then
+            if settling() then return 0, 0, 0 end
+            finished()
+        end
         return f, p, l
     end
     return nil
