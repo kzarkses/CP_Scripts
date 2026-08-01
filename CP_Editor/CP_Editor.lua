@@ -547,6 +547,73 @@ local function clipLaunch()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- ANNULATION SUR UNE CASE
+-- ---------------------------------------------------------------------------
+-- UNE CASE VIT HORS DE L'ANNULATION DE REAPER, et c'est structurel : elle n'a
+-- pas d'item, donc rien que Undo_OnStateChange puisse retenir. Le contrat de
+-- Roll prevoit be.undo et l'appelle a chaque geste structurel ; le backend
+-- take le branche sur l'annulation de REAPER, le backend clip le branchait sur
+-- scheduleApply(), c'est-a-dire sur rien. Un Quantize, un Euclidean ou une
+-- suppression dans une case etaient DEFINITIFS, et Ctrl+Z etait explicitement
+-- reserve au mode take.
+--
+-- Une pile de photos des notes, ici. Ce n'est pas un journal d'operations :
+-- une case porte quelques centaines de notes, quatre tableaux de nombres se
+-- recopient pour rien du tout, et un journal aurait demande a chaque geste de
+-- savoir se defaire — c'est-a-dire du travail a CHAQUE ajout futur, contre
+-- zero ici.
+local HIST_MAX = 64
+local hist = { snaps = {}, top = 0, key = nil }
+
+local function histSnap(nt)
+    local n = #nt.s
+    local s, l, p, v = {}, {}, {}, {}
+    for i = 1, n do
+        s[i], l[i], p[i], v[i] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+    end
+    return { s = s, l = l, p = p, v = v }
+end
+
+local function histRestore(nt, sn)
+    local s, l, p, v = {}, {}, {}, {}
+    for i = 1, #sn.s do
+        s[i], l[i], p[i], v[i] = sn.s[i], sn.l[i], sn.p[i], sn.v[i]
+    end
+    nt.s, nt.l, nt.p, nt.v = s, l, p, v
+end
+
+-- La pile appartient a UNE case. Changer de case la remet a zero : melanger
+-- les historiques ferait annuler un geste dans une autre case, ce qui est
+-- pire que de ne pas annuler du tout.
+local function histReset(c, key)
+    hist.key = key
+    hist.snaps = { histSnap(c.notes) }
+    hist.top = 1
+end
+
+local function histPush(c)
+    if hist.top < 1 then return end
+    for i = #hist.snaps, hist.top + 1, -1 do hist.snaps[i] = nil end
+    hist.snaps[#hist.snaps + 1] = histSnap(c.notes)
+    if #hist.snaps > HIST_MAX then table.remove(hist.snaps, 1) end
+    hist.top = #hist.snaps
+end
+
+local function histUndo(c)
+    if hist.top <= 1 then return false end
+    hist.top = hist.top - 1
+    histRestore(c.notes, hist.snaps[hist.top])
+    return true
+end
+
+local function histRedo(c)
+    if hist.top >= #hist.snaps then return false end
+    hist.top = hist.top + 1
+    histRestore(c.notes, hist.snaps[hist.top])
+    return true
+end
+
 local function makeClipBackend(c)
     local nt = c.notes
     return {
@@ -589,7 +656,13 @@ local function makeClipBackend(c)
             end
             nt.s, nt.l, nt.p, nt.v = s, l, p, v
         end,
-        undo = function() scheduleApply() end,
+        -- be.undo est appele APRES le geste : la photo prise ici est donc
+        -- l'etat qui en resulte, et la pile part de l'etat initial pose au
+        -- chargement de la case. Annuler, c'est revenir d'un cran.
+        undo = function()
+            histPush(c)
+            scheduleApply()
+        end,
     }
 end
 
@@ -687,6 +760,11 @@ local function setClip(c)
     state.ch, state.sr = 0, 0
     -- the item selected when the clip opened must not steal the focus back
     state.seen_sel_item = r.GetSelectedMediaItem(0, 0)
+    -- L'HISTORIQUE APPARTIENT A CETTE CASE. La cle est son identite quand
+    -- elle en a une, son adresse sinon : melanger deux historiques ferait
+    -- annuler un geste dans une autre case, ce qui est pire que de ne pas
+    -- annuler.
+    histReset(c, state.clip_tag ~= 0 and state.clip_tag or tostring(c))
     Roll.SetBackend(makeClipBackend(c))
     -- vertical fit to the notes (same as the midi branch of setItem)
     local vlo, vhi = 127, 0
@@ -3407,12 +3485,37 @@ local function handleKeys()
 
     if not midi_edit then return end
 
-    -- in-editor undo / redo (take-backed only: the take is part of REAPER's
-    -- undo, a clip lives outside it). pollTarget re-validates + re-syncs
+    -- in-editor undo / redo. Un take passe par l'annulation de REAPER ; une
+    -- case a la sienne, parce qu'elle vit dehors (pas d'item a retenir). pollTarget re-validates + re-syncs
     -- the roll next frame, so don't touch it here.
     if state.mode == "midi" then
         if char == 26 then r.Undo_DoUndo2(0); UI.ConsumeChar(); return end   -- Ctrl+Z
         if char == 25 then r.Undo_DoRedo2(0); UI.ConsumeChar(); return end   -- Ctrl+Y
+    elseif state.mode == "clip" and state.clip then
+        -- UNE CASE A SON PROPRE HISTORIQUE, parce qu'elle vit hors de celui de
+        -- REAPER : pas d'item, donc rien que Undo_OnStateChange puisse
+        -- retenir. Ctrl+Z n'est plus reserve au mode take, et un Quantize dans
+        -- une case cesse d'etre definitif.
+        if char == 26 then
+            if histUndo(state.clip) then
+                Roll.ClearSel()
+                Roll.Sync()
+                scheduleApply()
+                flash("Undo")
+            else
+                flash("Nothing to undo in this cell")
+            end
+            UI.ConsumeChar(); return
+        end
+        if char == 25 then
+            if histRedo(state.clip) then
+                Roll.ClearSel()
+                Roll.Sync()
+                scheduleApply()
+                flash("Redo")
+            end
+            UI.ConsumeChar(); return
+        end
     end
 
     -- shared note-editing commands (identical keyboard map in CP_Looper)
