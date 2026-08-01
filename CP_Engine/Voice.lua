@@ -52,6 +52,13 @@ local Preview  -- CP_Engine/Preview, injecte (chemin de repli)
 local NATIVE = false          -- reaper_cpclip charge et a la bonne ABI
 local ABI_MIN = 1.5
 
+-- Resolue UNE fois a l'init plutot que testee par frame. Elle n'existe qu'a
+-- partir de l'ABI 1.7 et ce module en accepte 1.5 : un moteur plus ancien est
+-- parfaitement utilisable, il ne sait simplement pas dire a quelle vitesse le
+-- projet defile — et sa reponse est alors « 1.0 », qui est vraie tant que
+-- personne ne touche la reglette.
+local PLAYRATE_FN = nil
+
 local NULL = 4294967295       -- kNullVoice cote moteur
 
 Voice.NONE   = NULL
@@ -110,6 +117,8 @@ function Voice.init(reaper_api, preview_module)
         local ok, abi = pcall(r.CP_EngineABI)
         NATIVE = (ok and abi and abi >= ABI_MIN) or false
     end
+    PLAYRATE_FN = (NATIVE and r.APIExists and r.APIExists("CP_PlayRate"))
+                  and r.CP_PlayRate or nil
 
     for i = 1, MAXV do
         vst[i] = Voice.IDLE
@@ -196,6 +205,23 @@ end
 function Voice.Srate()
     if NATIVE then return r.CP_Srate() end
     return 48000
+end
+
+-- A QUELLE VITESSE LA LIGNE DE TEMPS DU PROJET DEFILE-T-ELLE.
+--
+-- Ce n'est pas un tempo : le tempo ne bouge pas, c'est le projet entier qui va
+-- plus vite. Pour un producteur de son, cela veut dire deux choses distinctes
+-- et il faut les tenir separees :
+--   · une DUREE de projet vaut moins d'echantillons — diviser par ce taux ;
+--   · un son deja lance doit ACCELERER — multiplier son taux de lecture.
+-- La valeur vient de l'ancre, donc c'est la meme que celle avec laquelle le
+-- moteur a date ce qu'il a date.
+function Voice.PlayRate()
+    if PLAYRATE_FN then
+        local v = PLAYRATE_FN()
+        if v and v > 0.0001 then return v end
+    end
+    return 1.0
 end
 
 -- Instant du projet (secondes) -> frame absolu. Passe par la derniere ancre.

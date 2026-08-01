@@ -140,11 +140,18 @@ struct Transport {
   double  tempo;
   double  beat;       // beat du projet a l'instant `at_frame`
   double  ts_num;
+  // La vitesse de lecture maitresse de REAPER. Elle n'est PAS un facteur de
+  // tempo : le tempo du projet ne bouge pas, c'est la ligne de temps entiere
+  // qui defile plus vite. Consequence pour nous, et c'est la seule : un beat
+  // dure `rate` fois moins d'echantillons. Sans elle, un moteur qui compte ses
+  // echantillons continue au tempo nominal pendant que le projet accelere, et
+  // les deux se separent lineairement.
+  double  rate;
   int     playing;
   frame_t at_frame;
 
-  Transport() : seq(0), tempo(120.0), beat(0.0), ts_num(4.0), playing(0),
-                at_frame(0) {}
+  Transport() : seq(0), tempo(120.0), beat(0.0), ts_num(4.0), rate(1.0),
+                playing(0), at_frame(0) {}
 };
 
 struct Lane {
@@ -203,8 +210,11 @@ class Lanes {
   void set_srate(double srate) { if (srate > 1.0) srate_ = srate; }
 
   // --- fil principal ---------------------------------------------------------
+  // `rate` a une valeur par defaut pour que les appelants qui ne connaissent
+  // pas la vitesse de lecture — le harnais, et tout ce qui teste le coeur hors
+  // REAPER — restent justes sans avoir a la nommer.
   void publish_transport(double tempo, double beat, int playing, double ts_num,
-                         frame_t at_frame);
+                         frame_t at_frame, double rate = 1.0);
   bool post(int lane, int cmd, double arg);
 
   void   set_freerun(bool on)   { freerun_.store(on ? 1 : 0, std::memory_order_relaxed); }

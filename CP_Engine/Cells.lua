@@ -64,6 +64,21 @@ local WAIT_TEST = -1e8
 
 local NATIVE = false
 
+-- LA VITESSE DE LECTURE DU PROJET, relue une fois par frame et gardee ici.
+--
+-- Elle entre dans ce module par deux portes qu'il ne faut pas confondre :
+--   · une passe DURE moins d'echantillons quand le projet va plus vite, donc
+--     toute conversion secondes -> frames se divise par elle ;
+--   · un son deja lance doit accelerer AVEC le projet, donc le taux de la voix
+--     se multiplie par elle. C'est un varispeed, comme la reglette de REAPER
+--     sans « preserve pitch » : la hauteur monte, et c'est le comportement
+--     attendu d'un lanceur d'echantillons.
+-- On garde la derniere valeur pour ne pousser un nouveau taux aux voix que
+-- lorsqu'elle CHANGE : ecrire le meme taux a chaque frame serait une commande
+-- par voix et par frame pour rien.
+local prate      = 1.0
+local prate_last = 1.0
+
 -- Etat par colonne. Prealloue une fois : ce module est interroge a chaque frame.
 local col = {}
 
@@ -249,6 +264,9 @@ local function beatToFrame(beat)
         local tempo = Loop.Tempo()
         if not tempo or tempo <= 0 then tempo = 120 end
         local d = (beat - Loop.EngineBeat()) * 60.0 / tempo
+        -- Pas de division par prate ici, et c'est voulu : l'horloge libre est
+        -- le transport de la SESSION. La reglette de vitesse est une propriete
+        -- du transport de l'hote, et il n'y a pas d'hote quand on tourne libre.
         return Voice.Now() + math.floor(d * Voice.Srate() + 0.5)
     end
     return Voice.BeatToSample(beat)
@@ -291,12 +309,20 @@ local function playAt(slot, at, phase, len_beats, gate)
 
     local opts = slot.opts
     if not opts then opts = {} slot.opts = opts end
-    opts.rate = slot.rate
+    -- Le taux du fichier fois celui du projet. Les deux se composent parce
+    -- qu'ils disent la meme chose a deux echelles : « joue ce materiau plus
+    -- vite ».
+    opts.rate = slot.rate * prate
     opts.gain = 1.0
     opts.loop = false
     if phase > 0 then
-        -- La position dans la MATIERE, pas dans le temps : la voix avance de
-        -- rate * srate_clip echantillons source par seconde de sortie.
+        -- La position dans la MATIERE, pas dans le temps. Et le taux du PROJET
+        -- n'entre pas ici : `phase * spb` est deja une duree de projet, et une
+        -- seconde de projet consomme toujours `srate_clip * slot.rate`
+        -- echantillons source, quelle que soit la vitesse a laquelle elle
+        -- passe. Multiplier par prate aurait fait entrer la boucle deux fois
+        -- trop loin a vitesse 2 — l'erreur qui ressemble le plus a un bug de
+        -- phase alors qu'elle est de conversion.
         opts.offset = math.floor(phase * spb * slot.clip.srate * slot.rate + 0.5)
         if opts.offset >= slot.clip.frames then return end
     else
@@ -305,7 +331,10 @@ local function playAt(slot, at, phase, len_beats, gate)
 
     if Voice.PlayAtSample(h, slot.clip.id, at, opts) then
         slot.last_start = at
-        Voice.StopAtSample(h, at + math.floor(left * spb * Voice.Srate() + 0.5), 0.005)
+        -- `left * spb` est une duree de PROJET : a vitesse 2 elle se parcourt
+        -- en deux fois moins d'echantillons.
+        local dur = math.floor(left * spb * Voice.Srate() / prate + 0.5)
+        Voice.StopAtSample(h, at + dur, 0.005)
     end
 end
 
@@ -386,6 +415,49 @@ end
 function Cells.Tick(gate)
     if not NATIVE then return end
     Voice.Sync()
+    prate = Voice.PlayRate()
+
+    -- LA REGLETTE A BOUGE PENDANT QUE CA SONNE. Les passes futures partiront au
+    -- bon taux toutes seules — elles le lisent au lancement. Ce qui sonne DEJA,
+    -- non : sa voix garde le taux qu'elle avait, et le son se separerait du
+    -- projet jusqu'a la fin de la passe. On le pousse donc a la volee, ce que
+    -- le moteur accepte sans faire repartir la lecture du debut.
+    --
+    -- Et on DEFAIT ce qui etait en file sans encore sonner : sa date de depart
+    -- a ete calculee a l'ancienne vitesse et ne vaut plus rien. On l'annule
+    -- plutot que de la laisser tomber a cote — une passe pas encore audible
+    -- s'annule sans bruit, c'est le seul moment ou c'est gratuit — et on rend
+    -- son emplacement de voix pour que drive() la reprogramme dans la MEME,
+    -- sans quoi les deux voix de la moitie finiraient armees sur la meme passe
+    -- et on l'entendrait deux fois.
+    --
+    -- Ce qui SONNE deja n'est pas touche : sa date de fin est desormais un peu
+    -- fausse, mais la passe suivante se raccroche a la phase publiee par le
+    -- moteur, donc la grille se rattrape en une passe. Couper ce qu'on entend
+    -- pour corriger sa queue serait payer une coupure pour un detail de queue.
+    if prate ~= prate_last then
+        prate_last = prate
+        for t = 0, TRACKS - 1 do
+            for h = 0, 1 do
+                local slot = col[t].half[h]
+                if slot.clip then
+                    for i = 1, 2 do
+                        if slot.v[i] then
+                            Voice.Set(slot.v[i], "rate", slot.rate * prate)
+                        end
+                    end
+                    if slot.armed then
+                        local qi = (slot.vi == 1) and 2 or 1   -- la derniere armee
+                        if slot.v[qi] then Voice.Stop(slot.v[qi], 0.002) end
+                        slot.vi = qi
+                        slot.armed = false
+                        slot.dated = false
+                    end
+                end
+            end
+        end
+    end
+
     for t = 0, TRACKS - 1 do
         drive(t, 0, gate)
         drive(t, 1, gate)

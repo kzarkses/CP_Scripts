@@ -69,7 +69,7 @@ void Lanes::init(double srate) {
 // Fil principal
 // ---------------------------------------------------------------------------
 void Lanes::publish_transport(double tempo, double beat, int playing,
-                              double ts_num, frame_t at_frame) {
+                              double ts_num, frame_t at_frame, double rate) {
   // Sequence impaire = ecriture en cours. Le lecteur qui tombe dessus garde sa
   // derniere version coherente plutot que d'attendre : un bloc de retard sur le
   // tempo est sans consequence, un fil audio qui patiente ne l'est pas.
@@ -78,6 +78,7 @@ void Lanes::publish_transport(double tempo, double beat, int playing,
   tr_.tempo    = (tempo > 1.0) ? tempo : 120.0;
   tr_.beat     = beat;
   tr_.ts_num   = (ts_num >= 1.0) ? ts_num : 4.0;
+  tr_.rate     = (rate > 0.0001) ? rate : 1.0;
   tr_.playing  = playing;
   tr_.at_frame = at_frame;
   tr_.seq.store(s + 2, std::memory_order_release);
@@ -576,6 +577,7 @@ void Lanes::tick(frame_t clock, int frames) {
       t.tempo    = tr_.tempo;
       t.beat     = tr_.beat;
       t.ts_num   = tr_.ts_num;
+      t.rate     = tr_.rate;
       t.playing  = tr_.playing;
       t.at_frame = tr_.at_frame;
       const uint32_t s1 = tr_.seq.load(std::memory_order_acquire);
@@ -583,6 +585,7 @@ void Lanes::tick(frame_t clock, int frames) {
         tr_cache_.tempo    = t.tempo;
         tr_cache_.beat     = t.beat;
         tr_cache_.ts_num   = t.ts_num;
+        tr_cache_.rate     = t.rate;
         tr_cache_.playing  = t.playing;
         tr_cache_.at_frame = t.at_frame;
       }
@@ -591,9 +594,24 @@ void Lanes::tick(frame_t clock, int frames) {
 
   const double tempo  = (tr_cache_.tempo > 1.0) ? tr_cache_.tempo : 120.0;
   const double ts_num = (tr_cache_.ts_num >= 1.0) ? tr_cache_.ts_num : 4.0;
-  const double block_beats = (double)frames * tempo / (60.0 * srate_);
+  const double prate  = (tr_cache_.rate > 0.0001) ? tr_cache_.rate : 1.0;
   const bool   freerun = (freerun_.load(std::memory_order_relaxed) != 0);
   const bool   playing = (tr_cache_.playing & 1) != 0;
+
+  // DEUX LONGUEURS DE BLOC EN BEATS, ET ELLES NE SONT PAS LA MEME.
+  //
+  // L'horloge LIBRE est le transport de la session : elle bat au tempo, point.
+  // La vitesse de lecture de REAPER est une propriete du transport de l'HOTE,
+  // et il n'y a pas d'hote quand on tourne libre.
+  //
+  // En suivi, au contraire, la ligne de temps du projet defile `prate` fois
+  // plus vite : le meme bloc d'echantillons couvre `prate` fois plus de beats.
+  // Sans cette distinction, bouger la reglette de vitesse pendant qu'une case
+  // joue laissait le moteur au tempo nominal et separait les deux
+  // lineairement — ce qui ne s'entend pas comme un retard mais comme un
+  // decrochage qui empire.
+  const double free_bb  = (double)frames * tempo / (60.0 * srate_);
+  const double block_beats = freerun ? free_bb : (free_bb * prate);
 
   // --- LA SESSION TOURNE-T-ELLE ? --------------------------------------------
   // Une lane qui sonne ou qui capture, ou une case audio que Lua joue. SONNE,
@@ -614,7 +632,7 @@ void Lanes::tick(frame_t clock, int frames) {
       if (m == kLaneRec || m == kLanePlaying || m == kLaneOverdub) sbusy = true;
     }
   }
-  free_beat_ = sbusy ? (free_beat_ + block_beats) : 0.0;
+  free_beat_ = sbusy ? (free_beat_ + free_bb) : 0.0;
 
   double pb;
   if (freerun) {
@@ -623,7 +641,7 @@ void Lanes::tick(frame_t clock, int frames) {
     // Le beat du projet, avance par le compte d'echantillons du fil audio
     // depuis l'ancre. Le fil audio ne demande jamais l'heure ; il compte.
     const frame_t d = clock - tr_cache_.at_frame;
-    pb = tr_cache_.beat + (double)d * tempo / (60.0 * srate_);
+    pb = tr_cache_.beat + (double)d * tempo * prate / (60.0 * srate_);
   }
   const bool active = freerun || playing;
 

@@ -925,6 +925,60 @@ static void test_lane_loop_and_bounds() {
   check_eq(on_after, 0, "rien ne repart tant que la lane est muette");
 }
 
+// LA VITESSE DE LECTURE DU PROJET RACCOURCIT LE BEAT.
+//
+// C'est le seul endroit du moteur ou un beat ne vaut pas 60/tempo secondes. En
+// SUIVI de transport, la ligne de temps du projet defile `rate` fois plus vite,
+// donc le meme beat se parcourt en `rate` fois moins d'echantillons. Le test
+// mesure la duree d'une note d'un beat a vitesse 2 : 12000 frames et non 24000.
+//
+// On teste en suivi et pas en horloge libre, parce que la difference EST la :
+// l'horloge libre est le transport de la session et ignore la reglette.
+static void test_lane_playrate() {
+  group("lanes : la vitesse de lecture raccourcit le beat");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(false);
+  L.set_launch_q(0.0);
+  // 120 BPM, transport en marche, vitesse 2 : un beat = 12000 frames.
+  L.publish_transport(120.0, 0.0, 1, 4.0, 0, 2.0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.channel.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);
+  // La note est ecrite au beat 2 et non au beat 0 : l'ancre dit « beat 0 au
+  // frame 0 », or le premier tick sert deja le bloc qui commence a 512. Une
+  // note au beat 0 serait donc DEJA passee et se ferait repousser au tour
+  // suivant — ce qui est le bon comportement, mais ne mesure plus une duree.
+  lane_note(L, 0, 0, 2.0, 1.0, 60, 100);
+  L.publish_notes(0, 1);
+  L.post(0, kLcSetMode, (double)kLanePlaying);
+
+  LaneCap cap;
+  const int B = 512;
+  frame_t clk = B;
+
+  frame_t on_at = -1;
+  int off_seen = 0;
+  for (int i = 0; i < 200 && !off_seen; ++i) {
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      if (cap.msg[k][0] == 0x90 && on_at < 0) on_at = cap.at[k];
+      else if (cap.msg[k][0] == 0x80 && on_at >= 0) {
+        check_near((double)(cap.at[k] - on_at), 12000.0, 2.0,
+                   "un beat a vitesse 2 dure la moitie d'un beat");
+        off_seen = 1;
+      }
+    }
+    clk += B;
+  }
+  check(on_at >= 0, "l'attaque a bien eu lieu");
+  check(off_seen == 1, "la note se coupe d'elle-meme");
+}
+
 static void test_lane_no_alloc() {
   group("lanes : zero allocation dans le fil audio");
   Engine e;
@@ -1010,6 +1064,7 @@ int main() {
   test_lane_launch_quantize();
   test_lane_loop_and_bounds();
   test_lane_panic_and_clear();
+  test_lane_playrate();
   test_lane_no_alloc();
 
   std::printf("\n=====================================\n");

@@ -80,6 +80,11 @@ static reaper_plugin_info_t* g_rec = nullptr;
 // demander l'heure : il compte, et cette ancre lui dit une fois ou il est.
 static double  g_anchor_pos = 0.0;
 static int64_t g_anchor_smp = 0;
+// La vitesse de lecture maitresse, relevee AVEC l'ancre parce qu'elle en fait
+// partie : une seconde de projet ne vaut plus une seconde d'echantillons des
+// qu'elle n'est pas 1.0, et toute conversion qui l'ignore se trompe du meme
+// facteur.
+static double  g_anchor_rate = 1.0;
 
 // ---------------------------------------------------------------------------
 // Hook materiel : le battement de l'horloge.
@@ -715,6 +720,12 @@ double CP_ClockNow() { return g_eng ? (double)g_eng->clock_now() : 0.0; }
 // Il converge toujours, parce qu'un bloc dure des millisecondes quand ces trois
 // lectures durent des nanosecondes.
 // ---------------------------------------------------------------------------
+static double anchor_rate() {
+  if (!Master_GetPlayRate) return 1.0;
+  const double v = Master_GetPlayRate(0);
+  return (v > 0.0001) ? v : 1.0;
+}
+
 static void take_anchor() {
   if (!g_eng) return;
   for (int tries = 0; tries < 8; ++tries) {
@@ -724,6 +735,7 @@ static void take_anchor() {
     if (s0 == s1) {
       g_anchor_smp = s0;
       g_anchor_pos = p;
+      g_anchor_rate = anchor_rate();
       return;
     }
   }
@@ -732,6 +744,7 @@ static void take_anchor() {
   // fausse d'un bloc au pire — plutot que de garder une ancre d'une frame.
   g_anchor_smp = g_eng->clock_now();
   g_anchor_pos = GetPlayPosition2 ? GetPlayPosition2() : GetPlayPosition();
+  g_anchor_rate = anchor_rate();
 }
 
 double CP_ClockSync() {
@@ -746,9 +759,16 @@ double CP_ClockSync() {
   return (double)s;
 }
 
+// UNE SECONDE DE PROJET N'EST PAS UNE SECONDE D'ECHANTILLONS. A vitesse de
+// lecture 2, la ligne de temps defile deux fois plus vite : l'ecart de projet
+// se parcourt en deux fois moins d'echantillons. Diviser par le taux est donc
+// la conversion, pas une correction. Sans lui, tout ce qu'on datait pendant que
+// la reglette n'etait pas a 1.0 tombait a cote, d'autant plus loin que
+// l'echeance etait lointaine.
 double CP_TimeToSample(double projectTime) {
   if (!g_eng) return 0.0;
-  return (double)g_anchor_smp + (projectTime - g_anchor_pos) * g_eng->srate();
+  return (double)g_anchor_smp
+       + (projectTime - g_anchor_pos) * g_eng->srate() / g_anchor_rate;
 }
 
 // La position que la DERNIERE ancre a retenue. Ce n'est pas un synonyme de
@@ -757,6 +777,11 @@ double CP_TimeToSample(double projectTime) {
 // ligne de temps — le transport des lanes, typiquement — doit partir d'ici et
 // non d'une lecture fraiche, sinon il reintroduit l'ecart qu'on vient de fermer.
 double CP_ClockPos() { return g_anchor_pos; }
+
+// La vitesse que l'ancre a retenue. Un appelant qui convertit lui-meme des
+// secondes de projet en frames — la duree d'une passe, par exemple — doit
+// diviser par elle, pour la meme raison que CP_TimeToSample.
+double CP_PlayRate() { return g_anchor_rate; }
 
 void CP_Panic() { if (g_eng) g_eng->panic(); }
 
@@ -909,7 +934,7 @@ void CP_TransportSync(double tempo, double beat, int playing,
                              double tsNum) {
   if (!g_eng) return;
   g_eng->lanes().publish_transport(tempo, beat, playing, tsNum,
-                                   (frame_t)g_anchor_smp);
+                                   (frame_t)g_anchor_smp, g_anchor_rate);
 }
 
 void   CP_SetFreeRun(bool on) { if (g_eng) g_eng->lanes().set_freerun(on); }
@@ -964,6 +989,7 @@ VA(CP_Srate)      { (void)arg; (void)narg; return retd(CP_Srate()); }
 VA(CP_ClockNow)   { (void)arg; (void)narg; return retd(CP_ClockNow()); }
 VA(CP_ClockSync)  { (void)arg; (void)narg; return retd(CP_ClockSync()); }
 VA(CP_ClockPos)   { (void)arg; (void)narg; return retd(CP_ClockPos()); }
+VA(CP_PlayRate)   { (void)arg; (void)narg; return retd(CP_PlayRate()); }
 VA(CP_Panic)      { (void)arg; (void)narg; CP_Panic(); return nullptr; }
 
 VA(CP_ClipLoad)   { return retd(CP_ClipLoad((const char*)argp(arg, narg, 0))); }
@@ -1067,6 +1093,7 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_ClockNow, "double\0\0\0Frame absolu compte par le fil audio.");
   REG(CP_ClockSync, "double\0\0\0Prend l'ancre horloge<->projet. A appeler une fois par frame.");
   REG(CP_ClockPos, "double\0\0\0Position projet que la derniere ancre a retenue. A utiliser plutot qu'une lecture fraiche pour rester sur la meme ligne de temps.");
+  REG(CP_PlayRate, "double\0\0\0Vitesse de lecture maitresse que la derniere ancre a retenue. Diviser par elle pour convertir des secondes de projet en frames.");
   REG(CP_TimeToSample, "double\0double\0projectTime\0Convertit un instant du projet en frame absolu, via la derniere ancre.");
   REG(CP_Panic, "void\0\0\0Eteint toutes les voix en 5 ms.");
   REG(CP_Diag, "const char*\0\0\0Etat du moteur en une ligne. Fil principal uniquement.");
@@ -1103,7 +1130,7 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_VoiceRelease);UNREG(CP_VoicePlayAtSample);UNREG(CP_VoiceStopAtSample);
   UNREG(CP_VoiceSet);    UNREG(CP_VoiceQueueNext);   UNREG(CP_VoiceState);
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
-  UNREG(CP_ClockPos);
+  UNREG(CP_ClockPos);     UNREG(CP_PlayRate);
   UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
   UNREG(CP_TestMidiAt);  UNREG(CP_TestMidiDiag);
   UNREG(CP_LaneCount);   UNREG(CP_LaneBind);      UNREG(CP_LaneSet);
