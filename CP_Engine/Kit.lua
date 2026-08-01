@@ -1587,6 +1587,7 @@ function Kit.IsFX()
 end
 
 local load_q, load_head = {}, 1
+local stuck = 0     -- passages depuis que l'accuse se fait attendre
 
 function fxQueueLoad(note, path)
     -- SI LE CANAL EST LIBRE, ON PART MAINTENANT. La file existe parce que le
@@ -1660,7 +1661,18 @@ function fxPumpLoads()
         if load_head > 1 then load_q, load_head = {}, 1 end
         return
     end
-    if not KitFX.LoadIdle(fx_slot) then return end
+    -- UN ACCUSE PERDU NE DOIT PAS BLOQUER LA FILE POUR LA SESSION. Le
+    -- chargement au demarrage d'un projet passe par un autre chemin cote
+    -- instrument (il relit ses propres chemins) et peut consommer le creneau
+    -- sans repondre ; l'attente serait alors sans fin, et tous les depots
+    -- suivants resteraient en file sans que rien ne le dise. Au bout d'une
+    -- seconde et demie on repart : au pire on recharge un pad deja charge,
+    -- ce qui est gratuit, et jamais on ne reste muet.
+    if not KitFX.LoadIdle(fx_slot) then
+        stuck = stuck + 1
+        if stuck < 90 then return end
+    end
+    stuck = 0
     local e = load_q[load_head]
     load_head = load_head + 1
     if e then KitFX.Load(fx_slot, e.note - Kit.BASE, e.path) end
