@@ -2491,6 +2491,15 @@ local function frame(theme)
     -- the fader alone to the whole channel, and one drag says which.
     local zone_h = 0
     mix_hot = false
+    -- A strip that is not DRAWN this frame must stop claiming its rectangle. A
+    -- drop is resolved against where a strip WAS — that is the only place it
+    -- can be — so a column that disappeared, or a mixer that was folded away,
+    -- would keep catching FX dropped over whatever now occupies that spot.
+    -- Clearing the y is enough: every reader tests it.
+    for t = 0, TRACKS - 1 do
+        local g = mix_col[t]
+        if g then g.y = nil end
+    end
     if mix_open then
         local my = sy + sh + 4
         local win_w, win_h = Core.GetWindowSize()
