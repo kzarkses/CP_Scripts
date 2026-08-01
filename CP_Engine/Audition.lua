@@ -96,6 +96,13 @@ local bound_to = false    -- la sortie a laquelle le port est lie (false = aucun
 local vh       = nil      -- LA voix tenue : une audition, une voix, reutilisee
 local cur      = nil      -- entree de vivier en cours de lecture
 
+-- La section, quand c'est NOUS qui devons la tenir. Une voix native porte ses
+-- points de boucle et n'a besoin de personne ; CF_Preview ne sait boucler que
+-- la source entiere, donc le retour de boucle est surveille une fois par
+-- frame (Audition.Poll). Ces deux champs ne servent qu'a ce second cas.
+local sect_end   = nil
+local sect_start = 0
+
 -- Vivier local, indexe par chemin.
 local clips      = {}
 local clip_bytes = 0
@@ -115,7 +122,11 @@ function Audition.init(reaper_api)
     Voice   = dofile(root .. "CP_Engine/Voice.lua")
     Preview.init(r)
     Voice.init(r, Preview)
-    Audition.available = Voice.Available()
+    -- « Quelque chose peut sonner » — pas « le moteur natif est la ». Les deux
+    -- backends font entendre un fichier, et une fenetre qui annonce « aucun
+    -- moteur d'audition » alors que SWS est installe ment a l'utilisateur.
+    -- Le message que le navigateur affiche nomme d'ailleurs les deux.
+    Audition.available = Voice.Available() or Preview.available
     return Audition.available
 end
 
@@ -266,49 +277,99 @@ end
 -- ---------------------------------------------------------------------------
 -- Une transformation demandee que le moteur de voix ne sait pas rendre renvoie
 -- le lancement a CF_Preview. C'est une question de CAPACITE, jamais de backend.
-local function needsPreview(rate_override)
-    if Audition.pitch ~= 0 and not Voice.CanPitchShift() then return true end
-    local rate = rate_override or Audition.rate
+-- Les surcharges ponctuelles comptent AUTANT que les reglages persistants.
+-- Un pad d'instrument demande sa transposition dans opts (une touche = un
+-- intervalle), et ne lire que le reglage du module aurait laisse la voix
+-- native jouer la note de reference a la place de celle qu'on a pressee —
+-- silencieusement, et pour toutes les touches sauf une.
+local function needsPreview(opts)
+    local pitch = (opts and opts.pitch) or Audition.pitch
+    if pitch and pitch ~= 0 and not Voice.CanPitchShift() then return true end
+    local rate = (opts and (opts.rate or opts.rate_override)) or Audition.rate
     if rate and math.abs(rate - 1.0) > 1e-9 and not Voice.CanTimeStretch() then
         return true
     end
+    -- Une PARTIE de fichier bouclee : le moteur porte des points de boucle, le
+    -- repli ne boucle que la source entiere et se fait surveiller.
+    if opts and opts.end_s and not Voice.CanSection() then return true end
     return false
 end
 
 -- ---------------------------------------------------------------------------
 -- Lecture
 -- ---------------------------------------------------------------------------
--- opts (optionnelles) : { position = secondes dans le fichier, rate_override }
+-- ---------------------------------------------------------------------------
+-- opts, toutes optionnelles — la reunion de ce que les trois fenetres
+-- demandaient chacune de leur cote :
+--
+--   position / start_s   ou la lecture commence, en secondes source
+--   end_s, loop_start    LA SECTION : ou elle finit, ou une boucle revient
+--   loop                 revenir a la fin de section au lieu de s'arreter
+--   vol, pitch, rate     surcharges ponctuelles des reglages persistants
+--   ppitch               0 = un changement de taux transpose (defaut : non)
+--   fade_in, fade_out    les fondus de l'item, plutot que l'anti-clic
+--   out_track            passer par la chaine FX et le fader de cette piste
+--   rate_override        l'ancien nom de `rate` (l'accord tempo du navigateur)
+--
+-- Ce que le moteur ne sait pas rendre renvoie a CF_Preview, et c'est toujours
+-- une question de CAPACITE : `Voice.CanSection` decide de la section comme
+-- `CanPitchShift` decide de la transposition.
+-- ---------------------------------------------------------------------------
 function Audition.Play(path, opts)
     if not path then return false end
     Audition.Stop()
 
-    local rate_override = opts and opts.rate_override
+    local section = opts and opts.end_s
 
-    if not needsPreview(rate_override) and ensurePort() then
+    if not needsPreview(opts) and ensurePort() then
         local e = loadClip(path)
         if e and ensureVoice() then
+            local start_s = opts and (opts.start_s or opts.position)
             local offset = 0
-            if opts and opts.position and opts.position > 0 then
-                offset = math.floor(opts.position * e.srate + 0.5)
+            if start_s and start_s > 0 then
+                offset = math.floor(start_s * e.srate + 0.5)
                 if offset >= e.frames then offset = 0 end
             end
             popts.rate   = 1.0
-            popts.gain   = Audition.volume
-            popts.loop   = Audition.loop
+            popts.gain   = (opts and opts.vol) or Audition.volume
+            popts.loop   = (opts and opts.loop) or Audition.loop
             popts.offset = offset
+            popts.fade_in  = opts and opts.fade_in or nil
+            popts.fade_out = opts and opts.fade_out or nil
+            -- La section, en frames : le retour de boucle tombe a
+            -- l'echantillon, sans surveillance par frame.
+            if section then
+                local ls = (opts.loop_start or start_s or 0) * e.srate
+                popts.loop_start = math.floor(ls + 0.5)
+                popts.loop_end   = math.floor(section * e.srate + 0.5)
+            else
+                popts.loop_start, popts.loop_end = nil, nil
+            end
             if Voice.Play(vh, e.id, popts) then
                 backend = "native"
                 cur = e
+                sect_end, sect_start = nil, nil   -- le moteur la tient lui-meme
                 Audition.playing_path = path
                 return true
             end
         end
     end
 
-    -- Repli. Il n'est pas un pis-aller : il sait deux choses que le moteur ne
-    -- sait pas, la transposition et la lecture disque.
+    -- Repli. Il n'est pas un pis-aller : il sait trois choses que le moteur ne
+    -- sait pas, la transposition, la lecture disque, et jouer une PCM_source
+    -- qu'on lui tend sans fichier derriere.
     if not Preview.available then return false end
+    local ok = Audition.playThrough(function() return Preview.Play(path, opts) end,
+                                    opts)
+    if ok then Audition.playing_path = path end
+    return ok
+end
+
+-- Les reglages persistants de ce module descendent dans CF_Preview avant le
+-- lancement, et la section — celle qu'IL ne sait pas tenir — remonte ici.
+-- Deux chemins l'appellent (par chemin, par source) et c'etait la seule chose
+-- qu'ils avaient en commun.
+function Audition.playThrough(start, opts)
     Preview.volume   = Audition.volume
     Preview.pitch    = Audition.pitch
     Preview.rate     = Audition.rate
@@ -317,11 +378,36 @@ function Audition.Play(path, opts)
     Preview.fade_out = Audition.fade_out
     Preview.out_track   = Audition.out_track
     Preview.route_track = Audition.route_track
-    local ok = Preview.Play(path, opts)
-    if ok then
-        backend = "preview"
-        Audition.playing_path = path
-    end
+    if not start() then return false end
+    backend = "preview"
+    sect_end   = opts and opts.end_s or nil
+    sect_start = (opts and (opts.loop_start or opts.start_s or opts.position)) or 0
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- JOUER UNE SOURCE QU'ON NOUS TEND
+--
+-- Un item de l'editeur n'a pas toujours de fichier : une prise inversee ou une
+-- SECTION est une PCM_source construite par REAPER, sans chemin, et c'est la
+-- seule facon d'entendre exactement ce que la fenetre dessine.
+--
+-- Le moteur ne sait pas la jouer — il decode DEPUIS un fichier — et c'est une
+-- capacite manquante, pas un backend a interroger : CanPlaySource repond non,
+-- et l'appelant n'a rien d'autre a savoir. L'appelant possede la source et
+-- doit la garder en vie tant qu'elle sonne.
+-- ---------------------------------------------------------------------------
+function Audition.CanPlaySource()
+    return Preview.available and true or false
+end
+
+function Audition.PlaySource(src, opts)
+    if not src then return false end
+    Audition.Stop()
+    if not Preview.available then return false end
+    local ok = Audition.playThrough(function() return Preview.PlaySource(src, opts) end,
+                                    opts)
+    if ok then Audition.playing_path = nil end
     return ok
 end
 
@@ -333,6 +419,7 @@ function Audition.Stop()
     end
     backend = "none"
     cur = nil
+    sect_end = nil
     Audition.playing_path = nil
 end
 
@@ -340,6 +427,7 @@ end
 local function finished()
     backend = "none"
     cur = nil
+    sect_end = nil
     Audition.playing_path = nil
 end
 
@@ -418,6 +506,42 @@ function Audition.SetLoop(on)
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- LA SECTION, DEPLACEE PENDANT QU'ELLE SONNE
+--
+-- Bouger la selection en cours de lecture doit bouger ce qu'on entend, pas
+-- attendre la prochaine touche — et relancer pour l'appliquer ferait sauter la
+-- position en arriere. Les deux moteurs savent le faire, chacun a sa facon :
+-- la voix porte des points de boucle, CF_Preview se fait surveiller.
+-- ---------------------------------------------------------------------------
+function Audition.SetSection(on, end_s, start_s)
+    Audition.loop = on and true or false
+    if backend == "native" then
+        if vh and cur then
+            if end_s then
+                Voice.Set(vh, "loop_end", math.floor(end_s * cur.srate + 0.5))
+            end
+            if start_s then
+                Voice.Set(vh, "loop_start", math.floor(start_s * cur.srate + 0.5))
+            end
+            Voice.SetLoop(vh, Audition.loop)
+        end
+    elseif backend == "preview" then
+        if end_s   then sect_end   = end_s   end
+        if start_s then sect_start = start_s end
+        Preview.SetSection(Audition.loop, end_s, start_s)
+    end
+end
+
+-- Position en secondes source, et la duree — ou nil a l'arret. Progress()
+-- repond a la meme question en fraction ; un appelant qui compare a une
+-- selection exprimee en secondes veut celle-ci, et devait sinon multiplier par
+-- une duree qu'il n'avait pas.
+function Audition.Position()
+    local _, pos, len = Audition.Progress()
+    return pos, len
+end
+
 -- Prend effet au PROCHAIN lancement. Rebrancher une sortie coupe le son dans
 -- les deux moteurs ; autant que ce soit a un moment choisi.
 function Audition.SetOutputTrack(track)
@@ -462,7 +586,17 @@ end
 -- ---------------------------------------------------------------------------
 function Audition.Tick()
     Voice.Sync()
+    -- La section, quand c'est CF_Preview qui joue : il ne sait boucler que la
+    -- source entiere, donc le retour appartient a cette boucle-ci. La voix
+    -- native n'a besoin de rien — ses points de boucle sont dans le moteur, et
+    -- son retour tombe a l'echantillon.
+    if backend == "preview" and sect_end then Preview.Poll() end
 end
+
+-- Ancien nom du battement, garde parce que deux fenetres l'appelaient sur
+-- l'autre module d'audition. Un seul battement par frame, quel que soit le
+-- nom par lequel on le demande.
+function Audition.Poll() Audition.Tick() end
 
 -- ---------------------------------------------------------------------------
 -- Fermeture

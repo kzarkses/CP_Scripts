@@ -34,6 +34,15 @@ local Kit = {}
 
 local r  -- reaper, injected
 
+-- « A quelle vitesse va ce fichier » — une seule reponse pour toute la suite
+-- (feuille de route phase 3). Les lecteurs de tempo vivaient ici, et c'etait
+-- l'exemplaire soigneux des trois : il avait les garde-fous, et il etait le
+-- seul a ne jamais demander a REAPER. Il garde ses garde-fous et gagne
+-- l'analyse. `reaper` et non le `r` injecte : cette ligne s'execute au
+-- CHARGEMENT, l'injection n'a lieu qu'a Kit.init.
+local SrcTempo = dofile(reaper.GetResourcePath()
+                        .. "/Scripts/CP_Scripts/CP_Engine/SrcTempo.lua")
+
 Kit.BASE = 36    -- pad 0 ↔ MIDI note 36 (GM kick, FL/Ableton convention)
 Kit.MAX  = 64    -- 64 pads = 4 pages of 16
 Kit.version = 0  -- bumped on every structural change (UI cache key)
@@ -89,6 +98,7 @@ local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
 function Kit.init(reaper_api, tracks_module)
     r = reaper_api
     Tracks = tracks_module
+    SrcTempo.init(r)
 end
 
 local function valid(tr)
@@ -843,61 +853,15 @@ end
 -- and the sync flag persist on the pad track (P_EXT), so they travel with
 -- the project like everything else about a pad.
 -- ---------------------------------------------------------------------------
-local function bpmFromName(path)
-    if not path then return nil end
-    local name = path:match("([^/\\]+)%.%w+$") or path
-    local bpm = name:match("[%s_%-](%d%d%d?)%s*[bB][pP][mM]")
-              or name:match("^(%d%d%d?)%s*[bB][pP][mM]")
-    if not bpm then
-        -- bare number between separators, in a plausible loop-tempo range
-        for n in name:gmatch("[%s_%-](%d%d%d?)[%s_%-%.]") do
-            local v = tonumber(n)
-            if v and v >= 60 and v <= 200 then bpm = n break end
-        end
-    end
-    return tonumber(bpm)
-end
-
--- Audio length in seconds (nil for MIDI or an unreadable file).
-local function srcLen(path)
-    if not path or path == "" then return nil end
-    local src = r.PCM_Source_CreateFromFile(path)
-    if not src then return nil end
-    local len, isQN = r.GetMediaSourceLength(src)
-    r.PCM_Source_Destroy(src)
-    if isQN or not len or len <= 0 then return nil end
-    return len
-end
-
--- No tempo in the name: infer one from the source length — a musical loop
--- spans a whole number of beats, so some count in {4,8,16,32} lands on a
--- plausible tempo. The catch is that those windows OVERLAP: a 3 s file is
--- "4 beats at 80" and "8 beats at 160" at once, and picking the nearest to
--- the project tempo would hand every one-shot a tempo it never had. So the
--- guess only stands when EXACTLY ONE bar count falls in a narrow band
--- around the project tempo — ambiguity means "unknown", not "pick one".
-local function bpmFromLength(len)
-    if not len or len < 1.2 then return nil end   -- one-shot: no guess
-    local ref = r.Master_GetTempo() or 120
-    if ref <= 0 then ref = 120 end
-    local lo, hi = ref / 1.5, ref * 1.5
-    local best, n = nil, 0
-    for _, beats in ipairs({ 4, 8, 16, 32 }) do
-        local bpm = 60 * beats / len
-        if bpm >= lo and bpm <= hi then n = n + 1; best = bpm end
-    end
-    if n ~= 1 then return nil end
-    return best
-end
-
--- Stored BPM wins; the filename guess is only a default. The store is
--- written when a tempo is DECIDED (the user typing one, autoSync engaging
+-- Stored BPM wins; everything else is a guess and is ranked as one. The store
+-- is written when a tempo is DECIDED (the user typing one, autoSync engaging
 -- sync) and cleared by LoadSample when the material changes.
 function Kit.PadSrcBpm(note)
     local pad = Kit.Pad(note)
     if not pad then return nil end
-    return tonumber(getExt(pad.track, "CP_KIT_BPM") or "")
-        or bpmFromName(pad.path)
+    local stored = tonumber(getExt(pad.track, "CP_KIT_BPM") or "")
+    if stored and stored > 0 then return stored end
+    return (SrcTempo.FromName(pad.path))
 end
 
 -- Aim one pad's TUNE at the project tempo. Display-unit write (plainSet):
@@ -990,17 +954,15 @@ end
 autoSync = function(note)
     local pad = Kit.Pad(note)
     if not (pad and pad.fx and pad.path) then return end
-    local len = srcLen(pad.path)
-    if not len then return end
     local ref = r.Master_GetTempo()
     if not ref or ref <= 0 then return end
-    local bpm = bpmFromName(pad.path)
-    if bpm and len < (60 / bpm) * 2 * 0.9 then bpm = nil end   -- < 2 beats
-    if not bpm then
-        bpm = bpmFromLength(len)
-        if not bpm then return end
-        if math.abs(12 * math.log(ref / bpm, 2)) > 2 then return end
-    end
+    -- SrcTempo applies exactly the two tiers this pad always used — a named
+    -- tempo only when the file is long enough to be a loop at it, an inferred
+    -- one only when unambiguous AND within two semitones — plus REAPER's own
+    -- analysis, which this window never asked for and which reads an embedded
+    -- tempo when the file carries one. No answer means: do not touch it.
+    local bpm = SrcTempo.Bpm(pad.path)
+    if not bpm then return end
     setExt(pad.track, "CP_KIT_BPM", string.format("%.3f", bpm))
     if Kit.PadSynced(note) then
         applySync(note, pad, ref)   -- already synced: just re-aim

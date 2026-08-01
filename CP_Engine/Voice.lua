@@ -147,6 +147,13 @@ end
 
 -- Sait-on changer la duree SANS changer la hauteur ? Meme reponse, meme raison.
 -- Le taux natif est un varispeed : il change les deux, comme un echantillonneur.
+-- Sait-on jouer et boucler une PARTIE d'un fichier a l'echantillon (des
+-- points de boucle en frames source) ? Le moteur oui ; CF_Preview ne boucle
+-- que la source entiere, et la partie doit alors etre surveillee par frame.
+function Voice.CanSection()
+    return NATIVE
+end
+
 function Voice.CanTimeStretch()
     return (not NATIVE) and Preview ~= nil and Preview.SetRate ~= nil
 end
@@ -322,14 +329,22 @@ function Voice.Release(h)
 end
 
 -- opts, toutes optionnelles :
---   { rate, gain, loop, fade_in, fade_out, pan, offset }
+--   { rate, gain, loop, fade_in, fade_out, pan, offset,
+--     loop_start, loop_end }   -- en FRAMES source
 -- Aucune table n'est allouee ici ; opts est fournie par l'appelant, qui a tout
 -- interet a la reutiliser en place s'il appelle par frame.
+--
+-- loop_start / loop_end sont LA SECTION : jouer une partie d'un fichier comme
+-- si elle etait le fichier. Le moteur les tient nativement, donc le retour de
+-- boucle tombe a l'echantillon — la ou CF_Preview ne sait boucler que la
+-- source entiere et oblige a surveiller la position une fois par frame.
 local function applyOpts(h, opts)
     if not opts or not NATIVE then return end
     if opts.pan then r.CP_VoiceSet(h, "pan", opts.pan) end
     if opts.fade_in then r.CP_VoiceSet(h, "fade_in", opts.fade_in) end
     if opts.fade_out then r.CP_VoiceSet(h, "fade_out", opts.fade_out) end
+    if opts.loop_start then r.CP_VoiceSet(h, "loop_start", opts.loop_start) end
+    if opts.loop_end then r.CP_VoiceSet(h, "loop_end", opts.loop_end) end
 end
 
 -- `offset` se pose APRES le lancement, et c'est volontaire : l'anneau de

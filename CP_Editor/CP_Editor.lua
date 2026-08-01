@@ -31,7 +31,12 @@ local RollUI = dofile(cp_root .. "CP_Engine/RollUI.lua")
 local Rows  = dofile(cp_root .. "CP_Engine/Rows.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
-local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
+-- L'AUDITION PARTAGEE (feuille de route phase 3). Le meme geste etait
+-- ecrit trois fois dans la suite ; c'est un seul module maintenant, et il
+-- choisit par CAPACITE — une voix du moteur quand elle suffit, CF_Preview
+-- pour ce qu'elle ne sait pas faire (transposer, lire un long fichier
+-- depuis le disque, jouer une PCM_source qu'on lui tend sans fichier).
+local Audition = dofile(cp_root .. "CP_Engine/Audition.lua")
 local Insert = dofile(cp_root .. "CP_Engine/Insert.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Clip  = dofile(cp_root .. "CP_Engine/Clip.lua")
@@ -44,7 +49,7 @@ Ops.init(r, Peaks)
 Roll.init(r)
 Tracks.init(r)
 Kit.init(r, Tracks)
-Audio.init(r)
+Audition.init(r)
 Insert.init(r)
 DragBus.init(r)
 Ident.init(r, Clip)
@@ -103,7 +108,7 @@ local opts = {
     -- walk straight through it reads as the editor ignoring you.
     stop_at_sel = cfg.stop_at_sel ~= false,
 }
-Audio.volume = cfg.vol or 1.0
+Audition.volume = cfg.vol or 1.0
 
 local state = {
     -- target
@@ -151,7 +156,7 @@ local function persistConfig()
     cfg.snap_zero = opts.snap_zero
     cfg.norm_db   = opts.norm_db
     cfg.sens      = state.sens
-    cfg.vol       = Audio.volume
+    cfg.vol       = Audition.volume
     cfg.midi_snap = opts.midi_snap
     cfg.last_vel  = state.last_vel
     cfg.grid_div  = opts.grid_div
@@ -375,7 +380,7 @@ local function resetForTarget()
     state.meta_line = nil
     state.gen = state.gen + 1
     fitView()
-    Audio.Stop()
+    Audition.Stop()
 end
 
 -- Re-read source-dependent fields (item mode: the take source can be
@@ -385,7 +390,7 @@ local function refreshItemFields()
     if src ~= state.src then
         -- the preview may be playing the OLD source, which the swap (e.g.
         -- reverse wrapping it in a section) is about to destroy
-        Audio.Stop()
+        Audition.Stop()
         state.src = src
         state.gen = state.gen + 1
         state.meta_line = nil
@@ -693,7 +698,7 @@ end
 
 local function clearTarget()
     flushApply()
-    Audio.Stop()   -- a dying item takes its source with it; stop first
+    Audition.Stop()   -- a dying item takes its source with it; stop first
     dropOwnSource()
     Roll.Detach()
     state.mode, state.item, state.take = nil, nil, nil
@@ -934,7 +939,7 @@ end
 -- It also re-asserts the section every frame, so MOVING the selection while it
 -- plays moves what plays instead of being ignored until the next press.
 local function pollSection()
-    if not Audio.IsPlaying() then
+    if not Audition.IsPlaying() then
         state.fenced = false
         return
     end
@@ -950,21 +955,21 @@ local function pollSection()
         -- if the rule that armed it was just switched off.
         state.fenced = false
         local _, pe, pl = previewSpan(state.play_from)
-        Audio.SetLoop(opts.loop, pe, pl)
+        Audition.SetSection(opts.loop, pe, pl)
         return
     end
 
     if not state.fenced and state.play_from ~= "sel" then
-        local pos = Audio.Progress()
+        local pos = Audition.Position()
         if not (pos and pos >= state.sel_a and pos < state.sel_b) then
             -- outside it still: the material's span applies until we arrive
             local _, pe, pl = previewSpan(state.play_from)
-            Audio.SetLoop(opts.loop, pe, pl)
+            Audition.SetSection(opts.loop, pe, pl)
             return
         end
         state.fenced = true
     end
-    Audio.SetLoop(opts.loop, state.sel_b, state.sel_a)
+    Audition.SetSection(opts.loop, state.sel_b, state.sel_a)
 end
 
 -- from: "cursor" (default) | "sel" | "start"
@@ -978,8 +983,8 @@ local function togglePlay(from)
         r.Main_OnCommand(40044, 0)   -- Transport: Play/stop
         return
     end
-    if Audio.IsPlaying() then
-        Audio.Stop()
+    if Audition.IsPlaying() then
+        Audition.Stop()
         return
     end
     state.play_from = from or "cursor"
@@ -1007,8 +1012,8 @@ local function togglePlay(from)
         end
         local v = r.GetMediaItemTakeInfo_Value(state.take, "D_VOL")
         -- compose take gain WITH the user's preview-volume setting (an OR in
-        -- Audio.Play would otherwise let take gain replace the monitor level)
-        PLAY_OPTS.vol    = Audio.volume * math.abs(v)
+        -- Audition.Play would otherwise let take gain replace the monitor level)
+        PLAY_OPTS.vol    = Audition.volume * math.abs(v)
         PLAY_OPTS.pitch  = r.GetMediaItemTakeInfo_Value(state.take, "D_PITCH")
         PLAY_OPTS.rate   = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
         PLAY_OPTS.ppitch = r.GetMediaItemTakeInfo_Value(state.take, "B_PPITCH")
@@ -1022,7 +1027,7 @@ local function togglePlay(from)
         -- previews correctly (same time base as the peaks on screen), and
         -- was not previewable at all by path
         if state.src then
-            Audio.PlaySource(state.src, PLAY_OPTS)
+            Audition.PlaySource(state.src, PLAY_OPTS)
             return
         end
     end
@@ -1030,7 +1035,7 @@ local function togglePlay(from)
         flash("No previewable file for this source")
         return
     end
-    Audio.Play(state.path, PLAY_OPTS)
+    Audition.Play(state.path, PLAY_OPTS)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1140,8 +1145,8 @@ local function openSettings()
                  action = function() opts.norm_db = db markDirty() end }
     end
     local function volItem(pct)
-        return { label = pct .. "%", checked = Audio.volume == pct / 100,
-                 action = function() Audio.SetVolume(pct / 100) markDirty() end }
+        return { label = pct .. "%", checked = Audition.volume == pct / 100,
+                 action = function() Audition.SetVolume(pct / 100) markDirty() end }
     end
     UI.NativeMenu({
         { label = "Snap selection to zero crossings", checked = opts.snap_zero,
@@ -1329,7 +1334,7 @@ local V_RATE = { format = "%.2fx",   step = 0.05, integer = false, default = 1, 
 local V_SENS = { format = "%d%%",    step = 1,   default = 50, w = 3 }
 
 local function barAudio(theme)
-    local playing = Audio.IsPlaying()
+    local playing = Audition.IsPlaying()
     if UI.BarToggle("play", "Stop", "Play", playing,
                     playing and "Stop" or "Play", false, roles(theme).play) then
         togglePlay()
@@ -1584,8 +1589,8 @@ end
 --
 -- Both answers are in the SOURCE domain, so one xAtTime serves both.
 local function playCursorTime()
-    if Audio.IsPlaying() then
-        local pos = Audio.Progress()
+    if Audition.IsPlaying() then
+        local pos = Audition.Position()
         if pos then return pos end
     end
     if state.mode ~= "item" and state.mode ~= "midi" then return nil end
@@ -1647,7 +1652,7 @@ local function startDragOut()
     if not c then return end
     state.adrag = { label = "+ " .. c.name,
                     section = { offs = c.offs, len = c.len } }
-    Audio.Stop()                     -- a drag stays silent
+    Audition.Stop()                     -- a drag stays silent
     Bus.BeginClip(c, BUS_ID)         -- CP windows can take it too (not us)
 end
 
@@ -3400,7 +3405,7 @@ local function frame(theme)
     busConsume()        -- Clips dropped from another CP window
     pollTarget()
     Kit.Poll()
-    Audio.Poll()
+    Audition.Poll()
     pollSection()
     -- The drag-out lives OUTSIDE the window once it starts, so it is polled
     -- from the frame rather than from the wave's input pass.
@@ -3544,7 +3549,7 @@ UI.OnClose(function()
     if state.aud_note then Kit.StuffNote(state.aud_note, false) end
     if state.registered then DragBus.Unregister(BUS_ID) end
     persistConfig()
-    Audio.Destroy()
+    Audition.Destroy()
     Peaks.Destroy()
     dropOwnSource()
 end)

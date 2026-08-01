@@ -28,7 +28,12 @@ local Kit     = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks  = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Tempo   = dofile(cp_root .. "CP_Engine/Tempo.lua")
 local Bake    = dofile(cp_root .. "CP_Engine/Bake.lua")
-local Audio   = dofile(cp_root .. "CP_Toolkit/Audio.lua")
+-- L'AUDITION PARTAGEE (feuille de route phase 3). Le meme geste — on
+-- appuie, ca sonne — etait ecrit trois fois dans la suite ; c'est
+-- desormais un seul module, qui choisit par CAPACITE entre une voix du
+-- moteur et CF_Preview. Un pad court entre donc en RAM et attaque a
+-- l'echantillon, sans que cette fenetre ait a le savoir.
+local Audition = dofile(cp_root .. "CP_Engine/Audition.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Clip    = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Bus     = dofile(cp_root .. "CP_Engine/Bus.lua")
@@ -42,7 +47,7 @@ Tracks.init(r)
 Kit.init(r, Tracks)
 Tempo.init(r)
 Bake.init(r)
-Audio.init(r)
+Audition.init(r)
 DragBus.init(r)
 Bus.init(r, DragBus, Clip)
 if Peaks then Peaks.init(r) end
@@ -65,7 +70,7 @@ local opts = {
     -- mode while a loop is running. Enter/Space still triggers the selection.
     play_on_select = cfg.play_on_select ~= false,
 }
-Audio.volume = cfg.vol or 1.0
+Audition.volume = cfg.vol or 1.0
 
 local state = {
     page       = cfg.page or 0,   -- 0..3 (16 notes per page)
@@ -94,7 +99,7 @@ local function persistConfig()
     cfg.velocity = opts.velocity
     cfg.audition = opts.audition
     cfg.play_on_select = opts.play_on_select
-    cfg.vol      = Audio.volume
+    cfg.vol      = Audition.volume
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -154,7 +159,7 @@ local VOICE_OPTS  = { on = false,
 local ILOOP_OPTS  = { tip = "Loop the sample while a note is held; release fades out" }
 local VOICE_LBL   = { "1", "2", "3", "4", "5", "6", "7", "8",
                       "9", "10", "11", "12", "13", "14", "15", "16" }
-local PLAY_OPTS   = {}            -- pooled Audio.Play opts
+local PLAY_OPTS   = {}            -- pooled Audition.Play opts
 local GRID_GAP    = 6
 -- Control strip reserve. It is the SAME whatever is selected: the strip draws
 -- its dials disabled rather than collapsing, so the grid never resizes under
@@ -209,7 +214,7 @@ local function editorOpen(note)
     local s = Kit.Param(note, Kit.P.SOFFS) or 0
     local e = Kit.Param(note, Kit.P.EOFFS) or 1
     if e > s and (s > 0 or e < 1) then
-        local len = Audio.Meta(pad.path)
+        local len = Audition.Meta(pad.path)
         if len and len > 0 then
             c.offs, c.len = s * len, (e - s) * len
         end
@@ -230,7 +235,7 @@ local function padOn(note)
         Kit.StuffNote(note, true, opts.velocity)
         state.press_midi = note
     else
-        local len = Audio.Meta(pad.path)
+        local len = Audition.Meta(pad.path)
         PLAY_OPTS.start_s, PLAY_OPTS.end_s = nil, nil
         if len then
             local s = Kit.Param(note, Kit.P.SOFFS) or 0
@@ -238,7 +243,7 @@ local function padOn(note)
             if s > 0 then PLAY_OPTS.start_s = s * len end
             if e < 1 then PLAY_OPTS.end_s = e * len end
         end
-        Audio.Play(pad.path, PLAY_OPTS)
+        Audition.Play(pad.path, PLAY_OPTS)
     end
 end
 
@@ -1016,7 +1021,7 @@ local function metaLine(pad)
     if state.meta_key == pad.path and state.meta_ver == Kit.version then
         return state.meta_line
     end
-    local len, ch, sr = Audio.Meta(pad.path)
+    local len, ch, sr = Audition.Meta(pad.path)
     if len then
         state.meta_line = string.format("%s  ·  %.2fs  ·  %dch  ·  %.1fk",
                                         NOTE_NAMES[pad.note], len, ch, sr / 1000)
@@ -1091,10 +1096,10 @@ local function drawRegionStrip(theme, note, pad, h)
     local col_env  = theme.colors.mod or col_acc
     local SS = Peaks and Peaks.SS or 2
 
-    local len = Audio.Meta(pad.path)
+    local len = Audition.Meta(pad.path)
     local entry = nil
     if Peaks and len and len > 0 then
-        local src = Audio.GetSource(pad.path)
+        local src = Audition.GetSource(pad.path)
         if src then
             -- peaks at the SUPERSAMPLED width: the smoothness comes from
             -- reading finer, not from blurring coarse data
@@ -1468,7 +1473,7 @@ local function instrNoteOn(note)
     else
         PLAY_OPTS.start_s, PLAY_OPTS.end_s = nil, nil
         PLAY_OPTS.pitch = note - instr.root
-        Audio.Play(instr.path, PLAY_OPTS)
+        Audition.Play(instr.path, PLAY_OPTS)
         PLAY_OPTS.pitch = nil
     end
 end
@@ -1479,11 +1484,11 @@ local function instrWave(theme, x, y, w, h)
     local col_bg   = theme.colors.list_bg or theme.colors.window_bg
     local col_acc  = theme.colors.accent
     local col_bord = theme.colors.border
-    local len = instr.path and Audio.Meta(instr.path) or nil
+    local len = instr.path and Audition.Meta(instr.path) or nil
     local entry = nil
     local SS = Peaks and Peaks.SS or 2
     if Peaks and len and len > 0 then
-        local src = Audio.GetSource(instr.path)
+        local src = Audition.GetSource(instr.path)
         if src then entry = Peaks.Read(src, instr.path, 0, len, w * SS, 0) end
     end
     if entry and (istrip.path ~= instr.path or istrip.w ~= w or istrip.h ~= h) then
@@ -1798,7 +1803,7 @@ local function frame(theme)
         state.meta_key = nil
         UI.RequestRedraw()
     end
-    Audio.Poll()
+    Audition.Poll()
     -- Project tempo → synced pads (chantier 8). One poll per frame; the
     -- re-aim runs only when the tempo moved or the kit changed (scan,
     -- load, swap — Kit.version covers them all), and Kit itself writes
@@ -1906,7 +1911,7 @@ UI.OnClose(function()
     if state.key_off_note then Kit.StuffNote(state.key_off_note, false) end
     DragBus.Unregister(BUS_ID)
     persistConfig()
-    Audio.Destroy()
+    Audition.Destroy()
     if Peaks then Peaks.Destroy() end
 end)
 

@@ -37,6 +37,8 @@ local Bus    = dofile(cp_root .. "CP_Engine/Bus.lua")
 -- and this grid must reach the same answer for the same file. Its playback
 -- half is never used here (sound cells own their previews).
 local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
+-- « A quelle vitesse va ce fichier » — une seule reponse pour toute la suite.
+local SrcTempo = dofile(cp_root .. "CP_Engine/SrcTempo.lua")
 -- The engine that makes a SOUND cell sound. With the CP extension installed it
 -- is a CP voice, dated on the engine's own launch boundary and entering the
 -- column pre-FX — no child track unless the column also holds an instrument,
@@ -50,6 +52,7 @@ Mix.init(r)
 DragBus.init(r)
 Bus.init(r, DragBus, Clip)
 Preview.init(r)
+SrcTempo.init(r, Preview)   -- le cache de PCM_source, pour ne pas rouvrir le disque
 Voice.init(r, Preview)
 
 local Core = UI.Core
@@ -480,14 +483,11 @@ end
 local function rateFor(c)
     local mode = c.tempo_mode or "repitch"
     if mode == "none" then return 1.0, false end
-    local rt
-    if c.src_bpm and c.src_bpm > 0 then
-        local pb = r.Master_GetTempo()
-        rt = (pb and pb > 0) and (pb / c.src_bpm) or 1.0
-    else
-        rt = Preview.TempoSyncRate(c.path, 1.0)
-    end
-    if not (rt and rt > 0.05 and rt < 20) then rt = 1.0 end
+    -- ONE answer for the whole suite (Engine/SrcTempo, roadmap phase 3). The
+    -- clip's own announced tempo is the "declared" source and still wins; what
+    -- changed is that when it has none, the browser, this grid and the sampler
+    -- now reach the SAME conclusion about the same file instead of three.
+    local rt = SrcTempo.Rate(c.path, { declared = c.src_bpm })
     return rt, (mode == "stretch")
 end
 

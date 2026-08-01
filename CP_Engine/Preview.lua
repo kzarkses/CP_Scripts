@@ -18,6 +18,12 @@ local Preview = {}
 
 local r  -- reaper, injected
 
+-- The one answer on a file's tempo (roadmap phase 3). Loaded here rather
+-- than injected: this module is dofile'd by half the suite, and a caller that
+-- has to remember to wire a dependency is a caller that will forget.
+local SrcTempo = dofile(reaper.GetResourcePath()
+                        .. "/Scripts/CP_Scripts/CP_Engine/SrcTempo.lua")
+
 -- ---------------------------------------------------------------------------
 -- Availability
 -- ---------------------------------------------------------------------------
@@ -143,48 +149,88 @@ Preview.out_track   = nil    -- DEDICATED preview track — outranks route_track
 Preview.fade_in     = 0.003
 Preview.fade_out    = 0.008
 
--- opts (all optional): { position, rate_override }
--- Returns true when playback started.
-function Preview.Play(path, opts)
-    if not Preview.available or not path then return false end
-    Preview.Stop()
+-- ---------------------------------------------------------------------------
+-- THE SECTION — a part of a file, played and looped as if it were the file.
+--
+-- CF_Preview's own B_LOOP repeats the whole source, so it cannot express
+-- "play these four bars and turn back". The turnaround is therefore ours: a
+-- once-per-frame poll (Preview.Poll) that watches the position and either
+-- stops at the end or sends it back to the start. That is exactly what the
+-- editor's section playback needs, and it is why this lived in a second
+-- audition module until now.
+--
+-- `cur_start` is not always where playback BEGAN: starting from a cursor
+-- dropped in the middle of a loop and then turning back to that point would
+-- repeat a fragment nobody asked for. The loop belongs to the PART, so its
+-- owner names it (opts.loop_start).
+-- ---------------------------------------------------------------------------
+local cur_end   = nil
+local cur_start = 0
+local cur_loop  = false
 
-    local src = Preview.GetSource(path)
+-- opts (all optional):
+--   position / start_s   where playback begins, in source seconds
+--   end_s, loop_start    the section: where it ends, where a loop turns back
+--   loop                 turn back at end_s instead of stopping there
+--   vol, pitch, rate     per-call overrides of the persistent settings
+--   ppitch               0 = a rate change repitches (default preserves pitch)
+--   fade_in, fade_out    override the declick defaults (an item's own fades)
+--   out_track            route through that track's FX chain and fader
+--   rate_override        legacy name for `rate` (the browser's tempo match)
+--
+-- Everything the caller does not state falls back to the module setting, so
+-- the browser's "set it once, play many" style and the editor's "state it per
+-- press" style are the same function.
+local function startPreview(src, path, opts)
     if not src then return false end
-
     -- MIDI sources have no audio path through CF_Preview.
     if r.GetMediaSourceSampleRate(src) == 0 then return false end
 
     local preview = r.CF_CreatePreview(src)
     if not preview then return false end
 
-    r.CF_Preview_SetValue(preview, "D_VOLUME", Preview.volume)
-    if Preview.fade_in  > 0 then r.CF_Preview_SetValue(preview, "D_FADEINLEN",  Preview.fade_in)  end
-    if Preview.fade_out > 0 then r.CF_Preview_SetValue(preview, "D_FADEOUTLEN", Preview.fade_out) end
-    if Preview.pitch ~= 0 then
-        r.CF_Preview_SetValue(preview, "D_PITCH", Preview.pitch)
+    local vol   = (opts and opts.vol) or Preview.volume
+    local fin   = (opts and opts.fade_in)  or Preview.fade_in
+    local fout  = (opts and opts.fade_out) or Preview.fade_out
+    local pitch = (opts and opts.pitch) or Preview.pitch
+    local rate  = (opts and (opts.rate or opts.rate_override)) or Preview.rate
+    local start = (opts and (opts.start_s or opts.position)) or 0
+
+    r.CF_Preview_SetValue(preview, "D_VOLUME", vol)
+    if fin  > 0 then r.CF_Preview_SetValue(preview, "D_FADEINLEN",  fin)  end
+    if fout > 0 then r.CF_Preview_SetValue(preview, "D_FADEOUTLEN", fout) end
+    if pitch ~= 0 then
+        r.CF_Preview_SetValue(preview, "D_PITCH", pitch)
     end
-    local rate = (opts and opts.rate_override) or Preview.rate
     if rate ~= 1.0 then
         r.CF_Preview_SetValue(preview, "D_PLAYRATE", rate)
-        r.CF_Preview_SetValue(preview, "B_PPITCH", 1)
+        r.CF_Preview_SetValue(preview, "B_PPITCH",
+                              (opts and opts.ppitch == 0) and 0 or 1)
     end
-    r.CF_Preview_SetValue(preview, "B_LOOP", Preview.loop and 1 or 0)
-    if opts and opts.position and opts.position > 0 then
-        r.CF_Preview_SetValue(preview, "D_POSITION", opts.position)
+    -- SWS's own loop repeats the SOURCE; a section turns back in Poll. Both
+    -- would fight, so the native one is only asked for when there is no
+    -- section to respect.
+    local section = opts and opts.end_s
+    local want_loop = (opts and opts.loop) or (opts == nil and Preview.loop)
+    if opts and opts.loop == nil then want_loop = Preview.loop end
+    r.CF_Preview_SetValue(preview, "B_LOOP",
+                          (want_loop and not section) and 1 or 0)
+    if start > 0 then
+        r.CF_Preview_SetValue(preview, "D_POSITION", start)
     end
 
-    -- Optional routing: a dedicated preview track wins; otherwise the first
-    -- selected track when route_track is on. Either way the preview plays
-    -- through that track's FX chain. No route = hardware default.
-    local out = Preview.out_track
+    -- Optional routing: the caller's track wins, then a dedicated preview
+    -- track, then the first selected track when route_track is on. Either way
+    -- the preview plays through that track's FX chain. No route = hardware.
+    local out = (opts and opts.out_track) or Preview.out_track
     if out and not r.ValidatePtr2(0, out, "MediaTrack*") then
-        out, Preview.out_track = nil, nil          -- track died: fall back
+        out = nil
+        if not (opts and opts.out_track) then Preview.out_track = nil end
     end
     if not out and Preview.route_track then
         out = r.GetSelectedTrack(0, 0)
     end
-    if out then
+    if out and r.CF_Preview_SetOutputTrack then
         r.CF_Preview_SetOutputTrack(preview, 0, out)
     end
 
@@ -192,9 +238,29 @@ function Preview.Play(path, opts)
 
     cur_preview          = preview
     cur_len              = r.GetMediaSourceLength(src) or 0
+    cur_start            = (opts and (opts.loop_start or opts.start_s)) or 0
+    cur_end              = section or nil
+    cur_loop             = want_loop and true or false
     Preview.playing_path = path
-    last_played_path     = path
+    if path then last_played_path = path end
     return true
+end
+
+-- Returns true when playback started.
+function Preview.Play(path, opts)
+    if not Preview.available or not path then return false end
+    Preview.Stop()
+    return startPreview(Preview.GetSource(path), path, opts)
+end
+
+-- Play an EXISTING PCM_source — an item take's real source, SECTION and
+-- reversed sources included, which have no standalone file path and cannot be
+-- reached any other way. The caller owns that source and must keep it alive
+-- while it plays: this module never caches it and never destroys it.
+function Preview.PlaySource(src, opts)
+    if not Preview.available or not src then return false end
+    Preview.Stop()
+    return startPreview(src, nil, opts)
 end
 
 function Preview.Stop()
@@ -202,7 +268,41 @@ function Preview.Stop()
         pcall(r.CF_Preview_Stop, cur_preview)
     end
     cur_preview          = nil
+    cur_end              = nil
     Preview.playing_path = nil
+end
+
+-- Install or move the section of what is ALREADY playing. Toggling a loop
+-- must take effect on what you are hearing, not on the next thing you press,
+-- and restarting the preview to apply it would jump the position back.
+function Preview.SetSection(on, end_s, start_s)
+    cur_loop = on and true or false
+    if end_s   then cur_end   = end_s   end
+    if start_s then cur_start = start_s end
+    -- With a section installed the turnaround is ours; SWS's whole-source
+    -- loop has to stand down or the two disagree at the boundary.
+    if cur_preview and cur_end then
+        pcall(r.CF_Preview_SetValue, cur_preview, "B_LOOP", 0)
+    end
+end
+
+-- Once per defer frame: enforce the section end (stop, or turn back) and reap
+-- a handle SWS already collected. A no-op while idle.
+function Preview.Poll()
+    if not cur_preview or not cur_end then return end
+    local ok, retval, pos = pcall(r.CF_Preview_GetValue, cur_preview, "D_POSITION")
+    if not ok or not retval then
+        cur_preview, cur_end = nil, nil
+        Preview.playing_path = nil
+        return
+    end
+    if pos >= cur_end then
+        if cur_loop then
+            pcall(r.CF_Preview_SetValue, cur_preview, "D_POSITION", cur_start)
+        else
+            Preview.Stop()
+        end
+    end
 end
 
 function Preview.IsPlaying()
@@ -266,9 +366,21 @@ end
 
 function Preview.SetLoop(loop)
     Preview.loop = loop
-    if cur_preview then
+    cur_loop = loop and true or false
+    -- Only when there is no section: with one, Poll owns the turnaround and
+    -- SWS's whole-source loop would repeat material outside the part.
+    if cur_preview and not cur_end then
         pcall(r.CF_Preview_SetValue, cur_preview, "B_LOOP", loop and 1 or 0)
     end
+end
+
+-- Position in source seconds, and the playback length — or nil when stopped.
+-- Progress() answers the same question as a fraction; a caller comparing
+-- against a selection in seconds wants this one, and had to divide by a
+-- length it did not have otherwise.
+function Preview.Position()
+    local _, pos, len = Preview.Progress()
+    return pos, len
 end
 
 -- Dedicated preview track (nil clears it). Takes effect on the next Play —
@@ -278,32 +390,26 @@ function Preview.SetOutputTrack(track)
 end
 
 -- ---------------------------------------------------------------------------
--- Tempo sync (native Media Explorer "tempo match" semantics)
+-- Tempo sync — DELEGATED (roadmap phase 3)
 -- ---------------------------------------------------------------------------
--- mult = the ME-style ×0.5 / ×1 / ×2 multiplier.
---   1. REAPER's own tempo-match math: GetTempoMatchPlayRate — the same
---      routine the native ME uses (stretch to a round power-of-2 bar count,
---      using embedded/estimated source tempo). Returns (retval, rate, len).
---   2. Fallback: BPM parsed from the filename ("...120bpm...")
---      → rate = project_bpm / source_bpm.
--- Returns rate (1.0 when nothing sensible was found).
+-- This used to be one of three routines in the suite that answered "how fast
+-- is this file", and the three did not agree. Engine/SrcTempo is the answer
+-- now; this stays as the browser's name for it, and passes the source cache
+-- along so asking costs no disk.
+--
+-- mult = the Media-Explorer-style ×0.5 / ×1 / ×2 multiplier.
+-- Returns rate (1.0 when no tempo deserved belief).
 function Preview.TempoSyncRate(path, mult)
-    mult = mult or 1.0
-    if r.GetTempoMatchPlayRate then
-        local src = Preview.GetSource(path)
-        if src then
-            local ok, retval, rate = pcall(r.GetTempoMatchPlayRate, src, 1.0, 0, mult)
-            if ok and retval and rate and rate > 0.05 and rate < 20 then
-                return rate
-            end
-        end
-    end
-    local name = path:match("([^/\\]+)$") or path
-    local bpm = tonumber(name:match("(%d%d%d?%.?%d*)%s*[bB][pP][mM]"))
-    if bpm and bpm >= 40 and bpm <= 300 then
-        return (r.Master_GetTempo() / bpm) * mult
-    end
-    return 1.0
+    SrcTempo.init(r, Preview)
+    return (SrcTempo.Rate(path, { mult = mult or 1.0 }))
+end
+
+-- The tempo itself, and WHY it is believed ("declared" | "analysed" |
+-- "named" | "inferred"). A window showing a number the user cannot account
+-- for is a window they learn to distrust.
+function Preview.SrcBpm(path, declared)
+    SrcTempo.init(r, Preview)
+    return SrcTempo.Bpm(path, declared)
 end
 
 -- ---------------------------------------------------------------------------
