@@ -467,7 +467,9 @@ function Kit.Scan()
             -- LA VUE SUIT LE KIT. « Drum » et « Piano » sont deux facons de
             -- regarder le meme kit ; le mode se lit sur la piste comme le
             -- reste, et Kit.instr est republie a chaque balayage.
-            Kit.mode = getExt(Kit.parent, "CP_KIT_MODE") or "drum"
+            -- LE MODE EST UNE PROPRIETE DU KIT, pas de la fenetre : la vue
+            -- suit le kit actif, et non l'inverse.
+            Kit.mode = Kit.ModeOf(Kit.parent) or "drum"
             fxRefreshInstr()
             Kit.version = Kit.version + 1
             last_change = r.GetProjectStateChangeCount(0)
@@ -675,7 +677,10 @@ function Kit.Ensure()
     -- l'ancien montage : un dossier, un bus, une piste par pad. On retombait
     -- donc sur le moteur RS5K en croyant essayer le nouveau, sans que rien ne
     -- le dise. Un kit neuf nait sur le nouveau moteur, comme dans le menu.
-    local tr = Kit.NewKitFX("CP Kit")
+    -- LE KIT NAIT DANS LE MODE QU'ON REGARDE. Deposer sur un pad fait une
+    -- batterie, deposer dans l'espace instrument fait un instrument.
+    local m = Kit.mode or "drum"
+    local tr = Kit.NewKitFX(m == "instrument" and "CP Instrument" or "CP Kit", m)
     if tr then return tr end
 
     -- Repli : sans gmem ni instrument, un kit RS5K vaut mieux que rien.
@@ -839,6 +844,18 @@ function Kit.LoadSample(note, path, opts)
     -- MEME ORDRE QU'AILLEURS : le kit peut naitre ici, et depuis qu'il nait
     -- instrument, tester le moteur avant Kit.Ensure faisait poser un RS5K
     -- dans la chaine du kit-instrument qu'on venait de creer.
+    --
+    -- ET UN PAD VA DANS UNE BATTERIE. Deposer sur un pad pendant qu'un kit
+    -- instrument est actif y ajoutait un pad, sous la plage du pad
+    -- chromatique : le son se mettait a suivre la hauteur de la note, ce qui
+    -- est exactement le symptome observe. On rejoint le kit de batterie du
+    -- projet, ou on en cree un.
+    if Kit.IsFX() and Kit.ModeOf(Kit.parent) == "instrument"
+       and Kit.mode ~= "instrument" then
+        local tr = Kit.KitOfMode("drum")
+        if tr then Kit.SetActive(tr) Kit.Scan()
+        else Kit.NewKitFX("CP Kit", "drum") end
+    end
     Kit.Ensure()
     if Kit.IsFX() then
         ubegin()
@@ -1315,6 +1332,20 @@ end
 function Kit.LoadInstrument(path, root)
     if Kit.IsFX() then
         if not path or path == "" then return false end
+        -- UN INSTRUMENT VA DANS UN KIT INSTRUMENT. Si celui qu'on regarde
+        -- n'en est pas un, on rejoint celui du projet, ou on en cree un —
+        -- jamais on ne pose un pad chromatique au milieu d'une batterie.
+        if Kit.ModeOf(Kit.parent) ~= "instrument" then
+            local tr = Kit.KitOfMode("instrument")
+            if tr then
+                Kit.SetActive(tr) Kit.Scan()
+            else
+                if not Kit.NewKitFX("CP Instrument", "instrument") then
+                    return false
+                end
+            end
+            Kit.mode = "instrument"
+        end
         local note = fxInstrSlot()
         if not note then return false end
         ubegin()
@@ -1377,12 +1408,21 @@ function Kit.SetMode(mode)
     -- confondus a supprime le geste (« je ne peux plus passer en vue
     -- instrument ») en meme temps que le defaut.
     if Kit.IsFX() then
-        ubegin()
-        setExt(Kit.parent, "CP_KIT_MODE", mode)
+        -- ON CHANGE DE KIT, ON NE CONVERTIT PAS CELUI-CI. Ecrire le mode sur
+        -- la piste active transformerait une batterie en instrument sous les
+        -- doigts de l'utilisateur, et melangerait a nouveau les deux flux.
+        local tr = Kit.KitOfMode(mode)
         Kit.mode = mode
-        fxRefreshInstr()
+        if tr and tr ~= Kit.parent then
+            Kit.SetActive(tr)
+            Kit.Scan()
+        elseif not tr then
+            -- Aucun kit de ce mode : la vue est vide, et un depot en creera
+            -- un. C'est le geste que Cedric decrit — deposer dans l'espace
+            -- instrument cree l'instrument.
+            fxRefreshInstr()
+        end
         Kit.version = Kit.version + 1
-        uend("Sampler: view " .. mode)
         Notes.SetTrack(playTarget())
         return
     end
@@ -1907,12 +1947,41 @@ end
 -- neutralise Kit.SetMode pour empecher la piste de renaitre, et neutralise le
 -- bouton avec : la fonction et son effet de bord etaient confondus.
 --
--- Le pad de l'instrument est celui qui porte CHROMATIC. Il n'y en a qu'un par
--- kit dans cette vue ; s'il en existe plusieurs, le premier gagne, et les
--- autres restent joignables depuis la grille.
+-- UNE BATTERIE ET UN INSTRUMENT SONT DEUX KITS, SUR DEUX PISTES. J'avais
+-- fait des deux modes deux VUES du meme kit, et c'etait faux : les
+-- soixante-quatre pads partagent un seul flux MIDI, donc un pad chromatique
+-- qui couvre le clavier repond aussi a chaque note de batterie. On l'a vu
+-- tout de suite — un son depose sur un pad se mettait a suivre la hauteur de
+-- la note. Deux instruments qui ecoutent la meme entree se chevauchent
+-- toujours ; la seule separation qui tienne est la piste.
+--
+-- « Drum » et « Piano » choisissent donc QUEL KIT on regarde, et le mode est
+-- une propriete du kit (P_EXT:CP_KIT_MODE), pas de la fenetre. Un kit
+-- instrument porte UN pad chromatique et rien d'autre.
 local INSTR_DEFAULT_NOTE = 60          -- do central, quand la place est libre
 
+-- Le mode d'un kit, tel qu'il est ecrit sur sa piste.
+function Kit.ModeOf(tr)
+    if not valid(tr) then return nil end
+    return getExt(tr, "CP_KIT_MODE") or "drum"
+end
+
+-- Le premier kit de ce mode dans le projet, s'il y en a un.
+function Kit.KitOfMode(mode)
+    for _, tr in ipairs(Kit.kits) do
+        if valid(tr) and Kit.ModeOf(tr) == mode
+           and getExt(tr, "CP_KIT_ENGINE") == Kit.ENGINE_FX then
+            return tr
+        end
+    end
+    return nil
+end
+
 fxInstrNote = function()
+    -- Un kit de batterie n'a pas d'instrument, et repondre « le premier pad
+    -- chromatique que je trouve » ferait dessiner le panneau instrument avec
+    -- un pad de batterie dedans.
+    if Kit.ModeOf(Kit.parent) ~= "instrument" then return nil end
     for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
         local pad = Kit.pads[note]
         if pad and pad.path and Kit.PadChromatic(note) then return note end
@@ -2073,8 +2142,9 @@ end
 -- clavier — puisqu'il y est seul.
 function Kit.NewInstrument(name, path, root)
     if not path or path == "" then return nil, "aucun echantillon" end
-    local tr = Kit.NewKitFX(name or "CP Instrument")
+    local tr = Kit.NewKitFX(name or "CP Instrument", "instrument")
     if not tr then return nil, "instrument introuvable" end
+    Kit.mode = "instrument"
     local note = root or 60
     if note < Kit.BASE then note = Kit.BASE end
     if note >= Kit.BASE + Kit.MAX then note = Kit.BASE end
@@ -2089,7 +2159,7 @@ end
 -- UNE PISTE. Pas de dossier, pas de bus, pas d'enfant, pas d'envoi. C'est
 -- tout le chantier 2, et il tient en dix lignes une fois que l'instrument
 -- existe — la difficulte n'a jamais ete le rangement des pistes.
-function Kit.NewKitFX(name)
+function Kit.NewKitFX(name, mode)
     ubegin()
     local idx = r.CountTracks(0)
     r.InsertTrackAtIndex(idx, true)
@@ -2097,6 +2167,7 @@ function Kit.NewKitFX(name)
     r.GetSetMediaTrackInfo_String(tr, "P_NAME", name or "CP Kit", true)
     setExt(tr, "CP_KIT", "1")
     setExt(tr, "CP_KIT_ENGINE", Kit.ENGINE_FX)
+    setExt(tr, "CP_KIT_MODE", mode or "drum")
 
     -- L'IDENTITE AVANT TOUT LE RESTE. Cette fonction fait ensuite une
     -- douzaine d'appels a REAPER, et si l'un d'eux leve, ce qui suit ne
@@ -2105,6 +2176,7 @@ function Kit.NewKitFX(name)
     -- exactement ce qui est arrive avec Tracks.Mark appele a un argument.
     Kit.parent = tr
     Kit.engine = Kit.ENGINE_FX
+    Kit.mode   = mode or "drum"
     Kit.bus    = nil
     Kit.pads   = {}
     fx_index   = nil

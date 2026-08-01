@@ -714,6 +714,12 @@ local function kitMenu()
     for _, ktr in ipairs(Kit.kits) do
         local _, nm = r.GetTrackName(ktr)
         if nm == "" then nm = "Kit" end
+        -- LA LISTE DIT DE QUEL GENRE EST CHAQUE KIT. Une batterie et un
+        -- instrument sont deux kits sur deux pistes ; sans la mention, deux
+        -- lignes du menu se ressemblent et on active la mauvaise.
+        if Kit.ModeOf and Kit.ModeOf(ktr) == "instrument" then
+            nm = nm .. "  (instrument)"
+        end
         local tr = ktr
         items[#items + 1] = { label = nm, checked = tr == Kit.parent,
                               action = function()
@@ -838,6 +844,18 @@ the toolbar kit button picks it.
 The status line says which engine is answering and how many pads
 actually hold audio: "jsfx/targeted 4 loaded". Zero loaded points at
 loading; a right count with no sound points at routing.
+
+## A drum kit and an instrument are two kits, on two tracks
+Drum and Piano choose WHICH KIT you are looking at; the kind is a
+property of the kit, not of the window. Dropping on a pad makes a drum
+kit, dropping in the instrument space makes an instrument — each one
+created only when you drop the first sample into it. Once they exist, a
+drop REPLACES; a new kit is an explicit choice, from the kit menu.
+
+They cannot share a track: the sixty-four pads listen to one MIDI
+stream, so a chromatic pad covering the keyboard would answer every
+drum note too — the drum sample would start following the pitch of the
+note. The only separation that holds is the track.
 
 ## Chromatic is a property of a pad
 A pad normally answers one note. Right-click it and choose CHROMATIC and
