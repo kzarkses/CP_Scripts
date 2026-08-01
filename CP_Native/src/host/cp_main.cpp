@@ -42,7 +42,12 @@ using namespace cp;
 // 1.5 : CP_PortAttachOut (sortie materielle, sans piste), parametres de voix
 //       « pos » et « loop », CP_ClipLoad refuse au-dela du plafond au lieu de
 //       tronquer en silence, CP_VoiceAlloc refuse sur un port sans sortie.
-static const double kEngineABI = 1.6;
+// 1.7 : L'ANCRE CHANGE DE POSITION DE REFERENCE, et c'est une correction de
+//       justesse, pas un ajout. Voir take_anchor() : tout ce que le moteur
+//       datait partait en retard de la latence de sortie. CP_ClockPos rend la
+//       position que l'ancre a retenue, pour que le transport des lanes se
+//       pose sur EXACTEMENT la meme paire.
+static const double kEngineABI = 1.7;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -677,14 +682,62 @@ const char* CP_WarpProbe(double tempoRatio, int nvoices) {
 
 double CP_ClockNow() { return g_eng ? (double)g_eng->clock_now() : 0.0; }
 
-// Prend l'ancre. Les deux lectures sont collees volontairement : tout ce qui se
-// glisse entre elles devient de l'erreur.
+// ---------------------------------------------------------------------------
+// PRENDRE L'ANCRE — et il a fallu un test d'ecoute pour voir ce qu'elle avait
+// de faux.
+//
+// DEUX INSTANTS QUI NE SONT PAS LE MEME. L'horloge du moteur compte les
+// echantillons DEJA TRAITES : elle avance dans OnAudioBuffer, au passage POST,
+// c'est-a-dire au moment ou le bloc vient d'etre produit. `GetPlayPosition`,
+// lui, rend — la documentation de REAPER est explicite — la position
+// « latency-compensated actual-what-you-hear » : ce que le haut-parleur emet A
+// CET INSTANT, donc un bloc produit il y a plusieurs millisecondes.
+//
+// Apparier les deux revient a dire « le frame N a ete produit au moment ou on
+// entend le frame N - latence ». Toute date calculee ensuite par
+// CP_TimeToSample sort donc trop grande — c'est-a-dire TROP TARD — d'exactement
+// la latence de sortie du peripherique. Mesure par le testeur sur un clip de
+// quatre noires : jusqu'a 28 ms de retard sur le metronome, constant, sans
+// derive. Un retard constant qui vaut une latence EST une latence.
+//
+// `GetPlayPosition2` rend « position of next audio block being processed » :
+// la meme ligne de temps que l'horloge. C'est le bon interlocuteur.
+//
+// LE JSFX N'AVAIT PAS CE PROBLEME parce qu'il n'avait pas d'ancre : il vivait
+// DANS la chaine audio, ou le temps de traitement est le seul qui existe. Le
+// defaut est apparu avec le portage, pas avec le portage mal fait.
+//
+// LA DEUXIEME MOITIE : L'APPARIEMENT LUI-MEME. Les deux lectures sont faites
+// sur le fil principal pendant que le fil audio tourne. Rien n'empeche un bloc
+// de tomber entre elles, et la paire est alors fausse d'un bloc entier — 5,8 ms
+// a 256 echantillons. On encadre donc la lecture de position par deux lectures
+// d'horloge et on recommence si elle a bouge : c'est un seqlock cote lecteur.
+// Il converge toujours, parce qu'un bloc dure des millisecondes quand ces trois
+// lectures durent des nanosecondes.
+// ---------------------------------------------------------------------------
+static void take_anchor() {
+  if (!g_eng) return;
+  for (int tries = 0; tries < 8; ++tries) {
+    const int64_t s0 = g_eng->clock_now();
+    const double  p  = GetPlayPosition2 ? GetPlayPosition2() : GetPlayPosition();
+    const int64_t s1 = g_eng->clock_now();
+    if (s0 == s1) {
+      g_anchor_smp = s0;
+      g_anchor_pos = p;
+      return;
+    }
+  }
+  // Huit blocs consecutifs pendant trois lectures de compteur : impossible sans
+  // que la machine ait de plus gros soucis. On prend quand meme une paire —
+  // fausse d'un bloc au pire — plutot que de garder une ancre d'une frame.
+  g_anchor_smp = g_eng->clock_now();
+  g_anchor_pos = GetPlayPosition2 ? GetPlayPosition2() : GetPlayPosition();
+}
+
 double CP_ClockSync() {
   if (!g_eng) return 0.0;
-  const int64_t s = g_eng->clock_now();
-  const double  p = GetPlayPosition();
-  g_anchor_smp = s;
-  g_anchor_pos = p;
+  take_anchor();
+  const int64_t s = g_anchor_smp;
   // Le battement du fil principal, et donc le bon endroit pour rendre la memoire
   // des clips retires : le contrat dit qu'une fenetre appelle ceci une fois par
   // frame. Sans point de passage regulier, un clip decharge pendant qu'aucun
@@ -697,6 +750,13 @@ double CP_TimeToSample(double projectTime) {
   if (!g_eng) return 0.0;
   return (double)g_anchor_smp + (projectTime - g_anchor_pos) * g_eng->srate();
 }
+
+// La position que la DERNIERE ancre a retenue. Ce n'est pas un synonyme de
+// GetPlayPosition2 : c'est CELLE qui a ete appariee a l'horloge, et c'est
+// pourquoi elle existe. Un appelant qui veut publier autre chose sur la meme
+// ligne de temps — le transport des lanes, typiquement — doit partir d'ici et
+// non d'une lecture fraiche, sinon il reintroduit l'ecart qu'on vient de fermer.
+double CP_ClockPos() { return g_anchor_pos; }
 
 void CP_Panic() { if (g_eng) g_eng->panic(); }
 
@@ -834,16 +894,22 @@ bool CP_LaneGetNote(int lane, int i, double* startOut, double* lenOut,
   return true;
 }
 
-// L'ANCRE DE TRANSPORT. A poser une fois par frame, comme CP_ClockSync — et
-// pour la meme raison : le fil audio ne demande jamais l'heure, il compte ses
-// echantillons et cette ancre lui dit une fois ou il en est. Les deux lectures
-// (position et horloge) sont collees l'une a l'autre, donc l'erreur vaut le
-// temps entre elles, pas une frame de defer.
+// L'ANCRE DE TRANSPORT. Le fil audio ne demande jamais l'heure : il compte ses
+// echantillons, et ceci lui dit une fois ou il en est.
+//
+// LE FRAME N'EST PLUS RELU ICI, ET C'EST LE CORRECTIF. Prendre `clock_now()`
+// maintenant reviendrait a apparier un beat calcule il y a quelques
+// microseconds — a partir de CP_ClockPos() — avec une horloge qui a pu changer
+// de bloc entre-temps. On reutilise donc la paire que take_anchor() a validee.
+//
+// CONTRAT, et il est tenu par Loop.Poll() : CP_ClockSync() est appelee JUSTE
+// AVANT, dans la meme frame. C'est elle qui pose la paire ; celle-ci s'y
+// raccroche.
 void CP_TransportSync(double tempo, double beat, int playing,
                              double tsNum) {
   if (!g_eng) return;
   g_eng->lanes().publish_transport(tempo, beat, playing, tsNum,
-                                   g_eng->clock_now());
+                                   (frame_t)g_anchor_smp);
 }
 
 void   CP_SetFreeRun(bool on) { if (g_eng) g_eng->lanes().set_freerun(on); }
@@ -897,6 +963,7 @@ VA(CP_EngineABI)  { (void)arg; (void)narg; return retd(CP_EngineABI()); }
 VA(CP_Srate)      { (void)arg; (void)narg; return retd(CP_Srate()); }
 VA(CP_ClockNow)   { (void)arg; (void)narg; return retd(CP_ClockNow()); }
 VA(CP_ClockSync)  { (void)arg; (void)narg; return retd(CP_ClockSync()); }
+VA(CP_ClockPos)   { (void)arg; (void)narg; return retd(CP_ClockPos()); }
 VA(CP_Panic)      { (void)arg; (void)narg; CP_Panic(); return nullptr; }
 
 VA(CP_ClipLoad)   { return retd(CP_ClipLoad((const char*)argp(arg, narg, 0))); }
@@ -999,6 +1066,7 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_VoiceStartedAt, "double\0double\0voice\0Frame absolu du premier echantillon reellement audible, -1 si pas encore demarre. Verite terrain, sans course.");
   REG(CP_ClockNow, "double\0\0\0Frame absolu compte par le fil audio.");
   REG(CP_ClockSync, "double\0\0\0Prend l'ancre horloge<->projet. A appeler une fois par frame.");
+  REG(CP_ClockPos, "double\0\0\0Position projet que la derniere ancre a retenue. A utiliser plutot qu'une lecture fraiche pour rester sur la meme ligne de temps.");
   REG(CP_TimeToSample, "double\0double\0projectTime\0Convertit un instant du projet en frame absolu, via la derniere ancre.");
   REG(CP_Panic, "void\0\0\0Eteint toutes les voix en 5 ms.");
   REG(CP_Diag, "const char*\0\0\0Etat du moteur en une ligne. Fil principal uniquement.");
@@ -1035,6 +1103,7 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_VoiceRelease);UNREG(CP_VoicePlayAtSample);UNREG(CP_VoiceStopAtSample);
   UNREG(CP_VoiceSet);    UNREG(CP_VoiceQueueNext);   UNREG(CP_VoiceState);
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
+  UNREG(CP_ClockPos);
   UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
   UNREG(CP_TestMidiAt);  UNREG(CP_TestMidiDiag);
   UNREG(CP_LaneCount);   UNREG(CP_LaneBind);      UNREG(CP_LaneSet);

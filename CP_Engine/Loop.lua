@@ -55,7 +55,12 @@ Loop.TRACKS      = Loop.MAX_LANES // 2
 -- another instrument halfway through.
 Loop.PORT_BASE = 8
 
-local ABI_MIN = 1.6
+-- 1.7 and not 1.6: this file now reads CP_ClockPos, and an engine that predates
+-- it does not merely lack a function — it anchors the transport on the
+-- what-you-hear position, which puts every note out late by the device's output
+-- latency. Running against it would sound broken while claiming to work, so the
+-- honest answer is to decline the engine.
+local ABI_MIN = 1.7
 local NATIVE  = false
 
 local EXT_SEC    = "CP_Loop"
@@ -895,10 +900,19 @@ local dest_chg, dest_t = -1, 0
 
 function Loop.Poll()
     if not NATIVE then return end
-    -- THE ANCHOR, first. The audio thread never asks the time; it counts its
-    -- samples, and this tells it once where it is. The two reads are next to
-    -- each other, so the error is the time between them and not a defer frame.
-    local pos = nowPos()
+    -- THE ANCHOR, first, and it is taken by the ENGINE — CP_ClockSync pairs the
+    -- audio clock with the position of the block being PROCESSED, retrying until
+    -- the two readings fall inside the same block.
+    --
+    -- We then build the beat from THAT position rather than from a fresh
+    -- GetPlayPosition(). The difference is not cosmetic: GetPlayPosition is the
+    -- latency-compensated what-you-hear position, so a beat derived from it
+    -- describes an instant that the audio thread produced milliseconds ago, and
+    -- every note the engine dates from it lands late by the device's output
+    -- latency. Measured before this line existed: up to 28 ms behind the
+    -- metronome, constant, no drift.
+    r.CP_ClockSync()
+    local pos = Loop.Playing() and r.CP_ClockPos() or r.GetCursorPosition()
     r.CP_TransportSync(Loop.Tempo(), r.TimeMap2_timeToQN(0, pos),
                        Loop.Playing() and 1 or 0, Loop.TsNum())
     resolveLive()
