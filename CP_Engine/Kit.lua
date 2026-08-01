@@ -2260,6 +2260,10 @@ end
 -- removing, and the workaround it undoes has been unnecessary since the sends
 -- were fixed. What it fixes now is routing, which is what it is for.
 function Kit.Repair()
+    -- RIEN A REPARER SUR UN INSTRUMENT. Cette fonction remet d'aplomb les
+    -- envois MIDI du bus vers les pistes des pads ; un kit JSFX n'a ni bus,
+    -- ni envoi, ni piste de pad, et elle partait sur un bus nil.
+    if Kit.IsFX() then repaired = true return end
     if not valid(Kit.parent) then return end
     ubegin()
     local bus = Kit.EnsureBus()

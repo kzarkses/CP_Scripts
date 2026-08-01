@@ -551,12 +551,12 @@ gm           = mailbox(0);
 //
 // file_avail rend une valeur negative en ecriture : c'est ainsi qu'un JSFX
 // sait dans quel sens il travaille.
-file_var(ser_version);
+file_var(0, ser_version);
 i = 0;
 loop(NPADS,
   p = pad(i);
   j = P_SAVE_LO;
-  loop(P_SAVE_HI - P_SAVE_LO + 1, file_var(p[j]); j += 1;);
+  loop(P_SAVE_HI - P_SAVE_LO + 1, file_var(0, p[j]); j += 1;);
   i += 1;
 );
 file_mem(0, PATHS, NPADS * PATH_LEN);

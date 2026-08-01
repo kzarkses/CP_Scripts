@@ -398,7 +398,29 @@ function Loop.KitViewOfTrack(tr)
     local pads, n = kitview.pads, 0
     for k in pairs(pads) do pads[k] = nil end
     local parent = kitParentOf(tr)
+    -- UN KIT JSFX N'A PAS D'ENFANTS. Ses pads vivent dans le miroir que Kit
+    -- persiste sur la piste elle-meme (P_EXT:CP_KIT_PADS, un enregistrement
+    -- par ligne : note, chemin, nom, reglages). Sans ce chemin, ouvrir un
+    -- clip MIDI sur une colonne de kit ne montrait plus aucun nom de pad —
+    -- la grille redevenait une grille de notes anonymes.
     if parent then
+        local _, eng = r.GetSetMediaTrackInfo_String(parent,
+                           "P_EXT:CP_KIT_ENGINE", "", false)
+        if eng == "jsfx" then
+            local _, blob = r.GetSetMediaTrackInfo_String(parent,
+                                "P_EXT:CP_KIT_PADS", "", false)
+            for line in (blob or ""):gmatch("[^\n]+") do
+                local note, _, nm = line:match("^(%d+)\t([^\t]*)\t([^\t]*)")
+                note = tonumber(note)
+                if note and note >= 0 and note <= 127 then
+                    pads[note] = { fx = true, name = (nm ~= "" and nm) or "" }
+                    n = n + 1
+                end
+            end
+            kitview.n = n
+            kitview.version = kitview.version + 1
+            return n > 0 and kitview or nil
+        end
         local i = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
         local depth, cnt = 1, r.CountTracks(0)
         while depth > 0 and i < cnt do
