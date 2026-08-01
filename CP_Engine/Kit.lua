@@ -606,6 +606,7 @@ function Kit.Poll()
     -- passage par CP_Sampler et CP_Editor, et rien d'autre dans ce module
     -- n'a de battement.
     if Kit.IsFX() then
+        KitFX.Heartbeat(fx_slot)
         fxPumpLoads()
         -- fx_dirty ETAIT POSE ET JAMAIS LU : tourner un bouton changeait le
         -- son et le miroir en memoire, mais rien ne l'ecrivait sur la piste.

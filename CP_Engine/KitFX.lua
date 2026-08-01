@@ -40,6 +40,7 @@ local MB_STR   = 8208
 local PATH_MAX = 255                 -- le JSFX reserve 256 slots, zero compris
 local MB_PEAK, MB_NACT, MB_LOADED = 8464, 8528, 8592
 local MB_NLOADED = 8656
+local MB_HB = 8720
 
 local OP_SET, OP_CLEAR, OP_CLEARALL = 1, 2, 3
 
@@ -91,10 +92,16 @@ function KitFX.init(reaper_api)
     r = reaper_api
     if not attached and r.gmem_attach then
         r.gmem_attach(GM_NAME)
-        attached = true
+        -- ON VERIFIE QUE C'EST ARRIVE. gmem_attach ne rend rien, et un
+        -- attachement qui echoue laisse gmem_read rendre nil : Lua ecrivait
+        -- alors dans le vide en croyant parler. Une ecriture suivie d'une
+        -- relecture le prouve en deux lignes.
+        r.gmem_write(0, 0x43504B31)
+        attached = (r.gmem_read(0) == 0x43504B31)
     end
     KitFX.Install()
 end
+
 
 -- Sans gmem, l'instrument existe mais on ne peut pas lui parler. On le DIT au
 -- lieu d'echouer en silence : c'est la meme regle que « cells: silent » dans
@@ -103,6 +110,15 @@ function KitFX.Ready() return attached == true end
 
 local function base(slot)
     return GM_BASE + (slot % KitFX.SLOTS) * GM_SLOT_SZ
+end
+-- Le battement : Lua l'avance a chaque passage, l'instrument l'affiche. S'il
+-- reste a zero dans la fenetre du JSFX, les deux ne partagent pas la meme
+-- memoire, et c'est la SEULE conclusion a en tirer.
+local hb = 0
+function KitFX.Heartbeat(slot)
+    if not attached then return end
+    hb = hb + 1
+    r.gmem_write(base(slot) + MB_HB, hb)
 end
 
 -- ---------------------------------------------------------------------------

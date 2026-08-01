@@ -84,7 +84,15 @@ SRC = r'''desc:CP Kit Sampler
 // approche pas ; une nappe de trente secondes n'est pas un pad, c'est une case
 // de Session, et le moteur natif la joue deja.
 // -----------------------------------------------------------------------------
-options:gmem=CP_Kit, maxmem=33554432, gfx_idle=1
+// LES OPTIONS SE SEPARENT PAR DES ESPACES, PAS PAR DES VIRGULES. Sur une
+// quarantaine de lignes options installees sur cette machine, TOUTES separent
+// par des espaces — « options:gfx_hz=60 no_meter gmem=mseg1 ». J'avais copie
+// la forme a virgules d'un seul plugin, sans preuve qu'il fonctionne ici. Si
+// REAPER decoupe sur l'espace, le nom de l'espace memoire devient « CP_Kit, »
+// avec sa virgule : la fenetre et l'instrument ne se parlent alors JAMAIS,
+// chacun ecrivant dans sa propre gmem, et tout le reste marche — le MIDI
+// arrive, l'audio passe, et pas un echantillon ne se charge.
+options:gmem=CP_Kit maxmem=33554432 gfx_idle
 
 __PINS__
 
@@ -171,6 +179,7 @@ MB_RING=16; RING_N=2048; RING_SZ=4;    // 16..8207  (op, pad, param, valeur)
 MB_STR=8208;                           // 8208..8463 : le chemin, en codes
 MB_PEAK=8464; MB_NACT=8528;            // publies vers Lua, un par pad
 MB_LOADED=8592;                        // 1 = ce pad porte de la matiere
+MB_HB=8720;                            // battement ecrit par Lua a chaque passage
 MB_NLOADED=8656;                       // combien de pads au total
 OP_NONE=0; OP_SET=1; OP_CLEAR=2; OP_CLEARALL=3;
 
@@ -812,8 +821,32 @@ dbg_notes == 0 ? (
   gfx_drawstr("l'instrument recoit et joue");
 );
 
-gfx_set(0.42, 0.44, 0.48, 1);
+// LES MOTS BRUTS DE LA BOITE AUX LETTRES. C'est la mesure qui tranche entre
+// « Lua n'ecrit pas » et « le JSFX ne lit pas au bon endroit » : le battement
+// avance a chaque passage de la fenetre, et les compteurs de sequence disent
+// si une demande est en attente. Tout a zero veut dire que les deux ne
+// partagent pas la meme gmem, et rien d'autre.
+gfx_set(0.55, 0.70, 0.90, 1);
 gfx_x = 12; gfx_y = 140;
+gfx_drawstr("gmem base "); gfx_drawnumber(gm, 0);
+gfx_drawstr("   battement Lua "); gfx_drawnumber(gmem[gm + MB_HB], 0);
+gfx_x = 12; gfx_y = 158;
+gfx_drawstr("lseq "); gfx_drawnumber(gmem[gm + MB_LSEQ], 0);
+gfx_drawstr("  lack "); gfx_drawnumber(gmem[gm + MB_LACK], 0);
+gfx_drawstr("  lpad "); gfx_drawnumber(gmem[gm + MB_LPAD], 0);
+gfx_drawstr("  wpos "); gfx_drawnumber(gmem[gm + MB_WPOS], 0);
+gfx_drawstr("  rpos "); gfx_drawnumber(gmem[gm + MB_RPOS], 0);
+gfx_x = 12; gfx_y = 176;
+gmem[gm + MB_HB] == 0 ? (
+  gfx_set(0.95, 0.45, 0.40, 1);
+  gfx_drawstr("gmem MUET — la fenetre et l'instrument ne partagent pas la meme memoire");
+) : (
+  gfx_set(0.45, 0.85, 0.50, 1);
+  gfx_drawstr("gmem vivant");
+);
+
+gfx_set(0.42, 0.44, 0.48, 1);
+gfx_x = 12; gfx_y = 196;
 gfx_drawstr("@gfx tours "); gfx_drawnumber(dbg_gfx, 0);
 gfx_drawstr("   voix actives ");
 i = 0; k = 0;
@@ -822,11 +855,11 @@ gfx_drawnumber(k, 0);
 
 // La liste des pads qui portent quelque chose : index, note, images, canaux.
 gfx_set(0.55, 0.57, 0.61, 1);
-gfx_x = 12; gfx_y = 168; gfx_drawstr("pad   note   images   canaux   Hz");
+gfx_x = 12; gfx_y = 224; gfx_drawstr("pad   note   images   canaux   Hz");
 i = 0; k = 0;
 loop(NPADS,
   (pad(i)[P_LOADED] || path_mem(i)[0]) && k < 12 ? (
-    gfx_y = 188 + k * 17; gfx_x = 12;
+    gfx_y = 244 + k * 17; gfx_x = 12;
     pad(i)[P_LOADED] ? gfx_set(0.78, 0.80, 0.84, 1)
                      : gfx_set(0.95, 0.45, 0.40, 1);
     gfx_drawnumber(i, 0);
@@ -842,7 +875,7 @@ loop(NPADS,
 );
 k == 0 ? (
   gfx_set(0.55, 0.55, 0.58, 1);
-  gfx_x = 12; gfx_y = 190;
+  gfx_x = 12; gfx_y = 246;
   gfx_drawstr("aucun pad n'a de chemin — rien n'est arrive de la fenetre");
 );
 '''
