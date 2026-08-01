@@ -113,79 +113,57 @@ chantier suivant.
 
 ---
 
-## Chantier 2 — Un kit, une piste
+## Chantier 2 — Un kit, une piste — **FAIT (2026-08-02)**
 
-> **ÉCRIT, PUIS RETIRÉ LE MÊME JOUR (2026-08-01).** Le repli des RS5K dans une
-> seule chaîne d'effets a été livré, puis annulé : il a fait perdre leurs
-> échantillons aux pads. Le but ne change pas. **Le moyen, si.** Voir
-> `ANALYSE_Sampler_JSFX_vs_CLAP.md`, qui pose les deux positions.
+Un kit est **une piste portant un effet** : `CP_JSFX/CP_KitSampler.jsfx`,
+64 pads, 64 voix, 8 paires de sortie. Plus de dossier, plus de piste par pad,
+plus d'envoi MIDI filtré, plus de conteneur.
 
-### Le défaut
+### Ce que l'instrument porte
 
-Un kit = un dossier « CP Kit » + **une piste enfant par pad**. Soixante-quatre
-pads, c'est jusqu'à soixante-cinq pistes dans le projet de l'utilisateur.
+Tout ce que faisait le RS5K — volume, pan, tune, A/D/S/R, choke, boucle,
+région, min vol, vélocité min/max, plage de notes, canal MIDI, max voices,
+probabilité, round-robin, mode sample ou chromatique — **plus** ce qui
+manquait : portamento, obey note-offs, note-off release override, pitch bend,
+loop start offset. **Plus** ce qu'exige un mixer interne : mute, solo et
+sortie par pad, avec « Break out to a new track » pour rendre fader, mute,
+solo et VU à un pad qui les mérite.
 
-### Ce que la recherche a tranché
+Trois réglages du RS5K disparaissent parce qu'ils n'ont plus de sens :
+*Cache samples smaller than* (tout est en RAM), *Remove played notes from FX
+chain* (on ne repasse pas la note — le réglage est devenu le comportement),
+*Resample mode* (l'interpolation est la nôtre).
 
-**Personne ne modélise « un kit » et « un instrument » comme deux objets
-différents.** Chez Ableton, un Drum Rack et un Simpler sont deux *devices* sur
-une piste, et un pad de Drum Rack est une chaîne qui contient un Simpler : le
-même objet à deux granularités. Chez FL, un channel sampler est chromatique par
-défaut et le Channel Rack n'est que la liste des channels — l'objet « kit »
-n'existe pas. Chez Battery ou Kontakt, une instance = un kit, sorties séparées
-optionnelles.
+### Ce qui reste ouvert sur l'instrument
 
-### Ce que la tentative a appris, et qui vaut plus que le code retiré
+- [ ] `P_XFADE`, `P_INTERP`, `P_PLO/PHI` sont déclarés, sérialisés, et **rien
+      ne les lit** — c'est écrit dans le fichier, à ne pas laisser pourrir.
+- [ ] Le pitch à durée constante rend zéro plutôt que de mentir : il demande
+      un étirement, que `Warp` fait hors ligne et qu'un fil audio de 2005 ne
+      fera pas. C'est là qu'il faudra le brancher.
 
-Le repli était fondé sur une trouvaille juste : **le fan-out d'envois MIDI
-filtrés n'existe que parce que les pads sont des pistes séparées.** Dans une
-seule chaîne, chaque RS5K filtre par sa propre plage de notes. Replier
-*supprime* de la machinerie. Ça, c'est vrai et ça reste vrai.
+### Les deux moteurs cohabitent
 
-Ce qui était faux, c'est de croire qu'on pouvait y arriver **avec des RS5K**.
-Deux accidents, une seule racine :
+Un kit dit lequel il est (`P_EXT:CP_KIT_ENGINE`) ; tout demande à
+`Kit.IsFX()`. Un kit neuf naît sur l'instrument — y compris quand un
+glisser-déposer le crée. La migration **construit à côté et n'efface rien** :
+elle compte les pads qui SONNENT et laisse Cédric supprimer l'ancien kit.
 
-- **le pitch** — un ReaPitch par pad exige un conteneur par pad, donc un
-  déplacement d'effet, et ce déplacement se faisait sur le chemin d'un **bouton
-  qu'on tourne**. Une chaîne d'effets ne se restructure pas pendant un geste ;
-- **la migration** — `TrackFX_CopyToTrack(..., is_move=true)` a déplacé les
-  instances de RS5K, et les échantillons n'ont pas suivi. Le garde-fou
-  vérifiait le *déplacement*, pas le *son*.
+### Ce que cette semaine a appris, et qui vaut pour la suite
 
-**La règle qu'on en tire, et qui vaut pour la suite entière :** tout paramètre
-d'instrument absent du RS5K coûte un effet de plus dans une chaîne partagée.
-ADSR complet, zones de vélocité, choke sans JSFX, transposition à durée
-constante, sorties séparées : tous butent là. Dans un instrument à nous, ce sont
-des paramètres — on en tourne un, il change.
+**Chaque défaut a été trouvé par une MESURE, aucun par un raisonnement.** Les
+mots bruts de gmem ont désigné une virgule en trente secondes ; le compteur de
+notes reçues a séparé « le MIDI n'arrive pas » de « rien n'est chargé » ; le
+journal a montré que les boutons marchaient alors qu'on cherchait pourquoi ils
+ne marchaient pas. Trois soirées ont été perdues avant d'instrumenter.
 
-### Le chantier, refondu
-
-- [ ] **Décider du moyen** — `ANALYSE_Sampler_JSFX_vs_CLAP.md`. Trois sondes
-      d'une soirée décident : `file_open` accepte-t-il un chemin littéral, quel
-      est le plafond mémoire réel d'un JSFX, et que coûtent 64 voix au fil audio.
-- [ ] **Un instrument, une piste, un effet.** Le kit devient **un** plugin
-      (JSFX ou CLAP) qui reçoit du MIDI, tient ses 64 pads, ses enveloppes, ses
-      groupes de choke et ses zones de vélocité. Plus de dossier, plus de piste
-      par pad, plus d'envois filtrés, plus de conteneur.
-- [ ] **L'instrument chromatique devient un pad** dont la plage de notes couvre
-      le clavier. `CP_KIT_INSTR`, `Kit.mode` et le singleton disparaissent.
-- [ ] **Le kit redevient une colonne de la Session** — par construction, une
-      fois qu'il est une piste ordinaire qui fait du son. Il était exclu parce
-      qu'un kit-dossier ne peut pas être une colonne : le MIDI versé dans la
-      piste parente n'atteint pas les pads.
-- [ ] **Migration RS5K → instrument, UNE fois.** Lire chaque pad (chemin,
-      région, enveloppe, choke, tune, boucle), écrire l'état du plugin,
-      supprimer les pistes — et **vérifier que le pad sonne encore**, pas
-      seulement qu'il a bougé. C'est la leçon du 1er août, et elle a un nom :
-      un garde-fou qui contrôle le geste et non son résultat ne garde rien.
-- [ ] **« Éclater ce pad vers une piste »** — un envoi explicite, à la demande.
-      C'est la réponse pour le pad qui a vraiment besoin de sa tranche de mixer.
-
-### Ce qu'on perd, et qui est assumé
-
-Le fader, le mute/solo et le VU **par pad** dans le mixer de REAPER — sauf si le
-plugin sort sur plusieurs paires, ce que la position CLAP offre et pas la
-position JSFX. C'est un des termes de l'arbitrage.
+Les outils qui en sortent vivent dans `Tools/` et tournent avant chaque
+commit : `lua_lint.py` (blocs, locale utilisée avant déclaration, argument
+manquant qu'une fonction concatène), `jsfx_lint.py` (blocs, arité des
+fonctions de fichier, accès gmem, propreté du fil audio), `gen_kitsampler.py`.
+Et l'instrument **dit ce qu'il fait** dans sa propre fenêtre : pads chargés,
+notes reçues, notes réellement jouées, dernier réglage reçu, mots bruts de la
+boîte aux lettres, battement de Lua.
 
 ## Chantier 3 — Dire ce que la suite sait déjà
 
@@ -460,10 +438,11 @@ Pour ne pas y revenir tous les trois mois.
 
 ## La destination — un instrument CP en plugin
 
-**Ce n'est plus la direction lointaine, c'est le chantier 2.** Le 1er août a
-montré que le RS5K ne peut pas porter ce qu'on lui demande, et que chaque
-tentative de l'y forcer coûte une restructuration de la chaîne d'effets au
-mauvais moment. `ANALYSE_Sampler_JSFX_vs_CLAP.md` pose les deux moyens.
+**Atteinte le 2026-08-02, par le JSFX.** `ANALYSE_Sampler_JSFX_vs_CLAP.md`
+posait les deux moyens ; le JSFX l'a emporté pour la raison qui y était
+écrite — il rend l'échantillonneur disponible après un simple clone. Le CLAP
+reste la bonne réponse **pour le moteur de clips**, qui est déjà écrit, déjà
+testé, et dont la sortie de REAPER a un sens. Deux métiers, deux moteurs.
 
 Ce qui manque au moteur pour remplacer le RS5K est **petit** : un ADSR (il n'y
 a que des fondus linéaires), un vol de voix par groupe de choke (plus simple en

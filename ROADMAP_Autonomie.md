@@ -2711,3 +2711,68 @@ ce que chacune tue, et les trois sondes d'une soirée qui décident. Mon avis y
 est marqué comme tel : le JSFX, parce qu'il rend l'échantillonneur disponible
 après un simple clone, et parce qu'il fait disparaître la classe de bug qui a
 coûté cette journée au lieu de la déplacer.
+
+
+---
+
+# Session 23 — l'instrument existe, et il dit ce qu'il fait
+
+Vingt et un commits. Le chantier 2 est fini : **un kit est une piste portant
+un effet**, et il sonne.
+
+## Le chemin, parce qu'il est instructif
+
+L'instrument a été écrit en une passe et n'a pas sonné pendant trois soirées.
+Sept défauts s'empilaient, chacun suffisant à lui seul, et chacun invisible
+tant que le précédent n'était pas levé :
+
+1. `gm[X]` au lieu de `gmem[gm + X]` — en EEL2, gmem est un tableau à part et
+   il n'existe aucun pointeur dedans. Vingt-sept accès visaient la mémoire
+   locale, c'est-à-dire **la table des pads elle-même** : la boîte aux lettres
+   n'était jamais lue, et son drainage écrasait ce qu'il devait remplir.
+2. `file_var(x)` sans son handle — le JSFX ne compilait pas, donc silence
+   complet, et le message n'était visible que dans la fenêtre du plugin.
+3. `spl0 = ...` au lieu de `spl0 += ...` — l'instrument **remplaçait** la
+   sortie de la piste au lieu de s'y ajouter. Insérer l'effet rendait la piste
+   muette, ce qui se lit comme un problème de routage.
+4. Le chargement vivait dans `@gfx`, que `gfx_idle` ne fait pas tourner de
+   façon fiable ; le repli attendait deux cents blocs audio qu'une piste au
+   repos ne produit pas.
+5. Une **virgule** dans la ligne `options:` — les quarante lignes `options:`
+   installées sur la machine séparent par des espaces. Le nom de l'espace
+   mémoire devenait `CP_Kit,` et les deux moitiés ne se parlaient jamais.
+6. Rien ne **réconciliait** le miroir de la fenêtre et l'état de
+   l'instrument : un pad déposé avant une correction restait visible et muet
+   pour toujours. J'avais écrit « ils se réconcilient » sans écrire la
+   réconciliation.
+7. `gmem_attach` est **global au script**, et `Tempo.Poll()` se rebranche sur
+   `CP_Tempo` à chaque passage. Le piège était documenté dans `Tempo.lua`
+   depuis la session 20 — « the trap is armed for the one that will » — mais
+   à côté de celui qui le pose, pas de celui qui tombe dedans.
+
+## La leçon, et elle n'est pas technique
+
+**Aucun de ces sept défauts n'a été trouvé par un raisonnement. Tous par une
+mesure.** Les mots bruts de gmem ont désigné la virgule en trente secondes.
+Le compteur de notes reçues a séparé « le MIDI n'arrive pas » de « rien n'est
+chargé ». Le journal a montré que les boutons marchaient pendant qu'on
+cherchait pourquoi ils ne marchaient pas.
+
+Et deux des sept sont **des fautes de la mesure elle-même** : l'auto-test
+écrivait une valeur connue dans cinq paramètres et s'en allait, mettant un pad
+à −30 dB et −12,8 demi-tons ; la plage de Tune valait ±80 demi-tons, recopiée
+du RS5K, ce qui envoyait l'échantillon cent fois trop vite au bout de la
+course. Une mesure qui abîme ce qu'elle mesure fabrique le défaut suivant.
+
+## Ce qui en reste, au-delà du sampler
+
+`Tools/lua_lint.py` et `Tools/jsfx_lint.py` tournent avant chaque commit et
+ont attrapé neuf vrais défauts, dont trois que la relecture avait laissés
+passer. Deux audits contradictoires (quatre lecteurs, un réfuteur par
+trouvaille) ont rendu cinquante-cinq affirmations et vingt-six confirmations.
+
+Hors sampler : la région et le gain d'une case sont enfin lus (découper un
+break en huit cases marche), `+Scene` en Ctrl-clic, un clavier dans
+CP_Session, Ctrl+Z sur les notes d'une case et sur un Alt+clic, l'accès disque
+sorti de la boucle de dessin, et le fondu qui manquait au déchargement d'un
+son en cours.
