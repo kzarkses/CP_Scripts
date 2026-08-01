@@ -185,6 +185,7 @@ MB_RING=16; RING_N=2048; RING_SZ=4;    // 16..8207  (op, pad, param, valeur)
 MB_STR=8208;                           // 8208..8463 : le chemin, en codes
 MB_PEAK=8464; MB_NACT=8528;            // publies vers Lua, un par pad
 MB_LOADED=8592;                        // 1 = ce pad porte de la matiere
+MB_NLOADED=8656;                       // combien de pads au total
 OP_NONE=0; OP_SET=1; OP_CLEAR=2; OP_CLEARALL=3;
 
 function pad(i)      ( PADS + i * PAD_SZ );
@@ -527,6 +528,7 @@ any_solo     = 0;
 pitch_bend   = 0;
 pending_load = -1;
 reload_next  = -1;
+load_wait    = 0;
 master_gain  = 1;
 gm           = mailbox(0);
 
@@ -667,6 +669,22 @@ gm[MB_LSEQ] != gm[MB_LACK] && pending_load < 0 ? (
   pending_load = gm[MB_LPAD];
   copy_path_from_gmem(pending_load);
   gm[MB_STATUS] = 1;
+  load_wait = 0;
+);
+
+// LE REPLI. @gfx est le bon endroit pour lire un fichier — il n'est pas le
+// fil audio. Mais s'il ne tourne pas (gfx_idle non honore, fenetre jamais
+// ouverte), le pad n'est jamais charge et l'instrument est muet POUR
+// TOUJOURS. Au bout d'environ une seconde d'attente, on lit ici. Ca coute un
+// clic une fois ; l'autre branche coute le silence definitif, et entre les
+// deux il n'y a pas a hesiter.
+pending_load >= 0 ? (
+  load_wait += 1;
+  load_wait > 200 ? (
+    load_pad(pending_load);
+    pending_load = -1;
+    gm[MB_LACK] = gm[MB_LSEQ];
+  );
 );
 
 // Le solo vaut pour tout le kit : une fois par bloc, pas par pad et par
@@ -691,6 +709,7 @@ while (midirecv(mofs, m1, m2, m3)) (
 
 // 3. Les cretes et le compte de voix, pour les VU de la fenetre. Une fois par
 //    bloc : un VU n'a pas besoin de mieux que soixante hertz.
+nloaded = 0;
 i = 0;
 loop(NPADS,
   gm[MB_PEAK + i] = pad(i)[P_PEAK];
@@ -711,8 +730,10 @@ loop(NPADS,
   // ne garde rien, et celle du 1er aout a supprime des pistes dont les
   // echantillons n'avaient pas suivi.
   gm[MB_LOADED + i] = pad(i)[P_LOADED] && pad(i)[P_FRAMES] > 0;
+  nloaded += gm[MB_LOADED + i];
   i += 1;
 );
+gm[MB_NLOADED] = nloaded;
 
 @sample
 o = 0;
@@ -733,7 +754,7 @@ spl10 = OUTBUS[10] * master_gain;  spl11 = OUTBUS[11] * master_gain;
 spl12 = OUTBUS[12] * master_gain;  spl13 = OUTBUS[13] * master_gain;
 spl14 = OUTBUS[14] * master_gain;  spl15 = OUTBUS[15] * master_gain;
 
-@gfx 0 0
+@gfx
 // LE DISQUE EST ICI, ET NULLE PART AILLEURS. gfx_idle=1 fait tourner cette
 // section fenetre fermee : un kit se charge sans qu'on ouvre quoi que ce soit,
 // et un fichier de trente megaoctets ne fait pas craquer le fil audio.

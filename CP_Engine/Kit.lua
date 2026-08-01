@@ -1575,13 +1575,19 @@ end
 -- question qu'on se pose vraiment est « est-ce que ce que je vois est ce qui
 -- sonne ».
 function Kit.EngineLabel()
-    if not Kit.IsFX() then return "rs5k/tracks" end
+    if not Kit.IsFX() then return "rs5k/" .. Notes.Label() end
     if not KitFX.Ready() then return "jsfx (no gmem)" end
+    -- COMBIEN DE PADS SONNENT, ET PAR OU ARRIVE LA NOTE. Les deux moities de
+    -- la question « je n'entends rien » : zero pad charge accuse le
+    -- chargement, un compte juste accuse le routage. Sans ce chiffre il n'y a
+    -- que le silence, et le silence ne dit rien.
+    local n = KitFX.LoadedCount(fx_slot)
     local st = KitFX.Status(fx_slot)
-    if st == KitFX.ST_FAILED then return "jsfx (load failed)" end
-    if st == KitFX.ST_TRUNCATED then return "jsfx (sample truncated)" end
-    if st == KitFX.ST_BUSY then return "jsfx (loading)" end
-    return "jsfx"
+    local why = (st == KitFX.ST_FAILED) and " load failed"
+             or (st == KitFX.ST_TRUNCATED) and " truncated"
+             or (st == KitFX.ST_BUSY) and " loading"
+             or ""
+    return string.format("jsfx/%s %d loaded%s", Notes.Label(), n, why)
 end
 
 function Kit.FXSlot() return fx_slot end

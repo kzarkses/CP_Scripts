@@ -39,6 +39,7 @@ local MB_RING, RING_N, RING_SZ = 16, 2048, 4
 local MB_STR   = 8208
 local PATH_MAX = 255                 -- le JSFX reserve 256 slots, zero compris
 local MB_PEAK, MB_NACT, MB_LOADED = 8464, 8528, 8592
+local MB_NLOADED = 8656
 
 local OP_SET, OP_CLEAR, OP_CLEARALL = 1, 2, 3
 
@@ -196,6 +197,15 @@ end
 function KitFX.Loaded(slot, pad)
     if not attached then return false end
     return (r.gmem_read(base(slot) + MB_LOADED + pad) or 0) > 0.5
+end
+
+-- Combien de pads portent de la matiere, tout de suite. C'est le chiffre qui
+-- transforme « je n'entends rien » en une question qu'on peut trancher : zero
+-- veut dire que rien n'est charge, et le probleme est le chargement ; un
+-- chiffre juste veut dire que le probleme est le routage MIDI ou la sortie.
+function KitFX.LoadedCount(slot)
+    if not attached then return -1 end
+    return r.gmem_read(base(slot) + MB_NLOADED) or 0
 end
 
 function KitFX.Active(slot, pad)

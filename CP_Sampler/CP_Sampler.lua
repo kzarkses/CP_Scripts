@@ -1995,8 +1995,7 @@ local function frame(theme)
         local eng = Kit.EngineLabel and Kit.EngineLabel() or "rs5k/tracks"
         local loading = Kit.FXLoading and Kit.FXLoading() or 0
         local src = padUsesMidi(pad)
-                    and ((Kit.IsFX() and Kit.IsFX()) and eng
-                         or ("RS5K/" .. Kit.PlayLabel()))
+                    and (Kit.IsFX() and eng or ("RS5K/" .. Kit.PlayLabel()))
                     or (Audition.WillUseVoices() and "voice" or "preview")
         if loading > 0 then src = src .. " (" .. loading .. " loading)" end
         if state.badge_src ~= src then
