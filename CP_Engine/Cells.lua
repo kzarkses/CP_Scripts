@@ -350,14 +350,24 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
     -- format depuis toujours et que personne ne lisait).
     local loop_m = slot.loop and true or false
 
-    -- Ce qu'il reste a jouer avant la porte. La porte existe pour la meme raison
-    -- qu'avec le RS5K : le son doit finir avant la passe suivante, sinon la voix
-    -- suivante commence pendant que celle-ci sonne encore.
+    -- LA PASSE VA JUSQU'AU BOUT — et la porte de 97 % qui vivait ici etait un
+    -- reliquat du RS5K.
     --
-    -- Sauf quand la matiere boucle : elle n'a rien a laisser finir, et lui
-    -- retirer 3 % ouvre un trou a chaque frontiere — 60 ms sur une mesure a
-    -- 120 BPM, parfaitement audible.
-    local left = (len_beats * (loop_m and 1.0 or (gate or 0.97))) - phase
+    -- Elle existait parce qu'UN sampler ne peut pas jouer deux fois le meme
+    -- echantillon : il fallait que le son ait fini avant que la passe suivante
+    -- le redeclenche. Ce module a DEUX voix par moitie, et son propre en-tete
+    -- dit pourquoi : « une passe doit pouvoir etre armee pendant que la
+    -- precedente sonne encore ». La contrainte n'existe plus ; la porte, si.
+    --
+    -- Ce qu'elle coutait : trois pour cent de chaque passe, tranches. Sur une
+    -- boucle de quatre mesures a 115 BPM, 250 ms de queue coupee a chaque tour
+    -- — le son s'arrete avant la frontiere, la boucle n'est pas fluide, et
+    -- l'enregistrement de la piste le montre en un coup d'oeil face au fichier
+    -- d'origine.
+    --
+    -- `gate` reste dans la signature : il decrit la note du clip d'une note que
+    -- la lane porte encore (muette), pas la duree du son.
+    local left = len_beats - phase
     if left <= 0.01 then return end
 
     local h = slot.v[slot.vi]
@@ -404,7 +414,17 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
         -- `left * spb` est une duree de PROJET : a vitesse 2 elle se parcourt
         -- en deux fois moins d'echantillons.
         local dur = math.floor(left * spb * Voice.Srate() / prate + 0.5)
-        Voice.StopAtSample(h, at + dur, 0.005)
+        -- LE FONDU COMMENCE A LA FRONTIERE, IL NE S'Y TERMINE PAS.
+        --
+        -- Le moteur fait atteindre zero au rendez-vous : demander l'arret A la
+        -- frontiere ferait donc descendre le son AVANT elle, et rouvrirait en
+        -- petit le trou qu'on vient de fermer. On decale le rendez-vous de la
+        -- longueur du fondu : la voix sortante s'eteint pendant que l'entrante
+        -- attaque, ce qui est un vrai fondu croise de cinq millisecondes — et
+        -- c'est exactement pour ca qu'une moitie possede DEUX voix.
+        local fade = 0.005
+        Voice.StopAtSample(h, at + dur + math.floor(fade * Voice.Srate() + 0.5),
+                           fade)
     end
 end
 
