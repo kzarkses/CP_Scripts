@@ -43,6 +43,13 @@ local Clip  = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Ident = dofile(cp_root .. "CP_Engine/Ident.lua")
 local Bus   = dofile(cp_root .. "CP_Engine/Bus.lua")
 local Loop  = dofile(cp_root .. "CP_Engine/Loop.lua")
+-- JOUER UNE NOTE DANS LA PISTE QUE CE CLIP ALIMENTE, et nulle part ailleurs.
+-- Cet editeur auditionnait par le bus du kit de CP_Sampler, ce qui voulait dire
+-- deux choses fausses a la fois : il fallait un kit pour s'entendre, et la note
+-- partait en broadcast vers toute piste armee. Un piano roll ouvert sur une
+-- case de session doit sonner comme cette case sonne — donc par SA piste.
+local Voice = dofile(cp_root .. "CP_Engine/Voice.lua")
+local Notes = dofile(cp_root .. "CP_Engine/Notes.lua")
 
 Peaks.init(r)
 Ops.init(r, Peaks)
@@ -54,6 +61,8 @@ Insert.init(r)
 DragBus.init(r)
 Ident.init(r, Clip)
 Bus.init(r, DragBus, Clip)
+Voice.init(r)
+Notes.init(r, Voice, Voice.PLAY_PORT_EDITOR)
 
 -- Loop (the live-lane link for clips born in the Looper/Session) is armed
 -- LAZILY, on the first clip that names a lane: its init re-scans the
@@ -2195,11 +2204,34 @@ local BLACK_KEY = { [1] = true, [3] = true, [6] = true, [8] = true, [10] = true 
 local VEL_H  = 44     -- velocity lane height
 local MROLL_BUF = 906 -- grid background buffer (905 = waveform)
 
--- Audition through the CP_Sampler kit bus (armed bus hears the VKB).
+-- LA PISTE QUI DOIT SONNER. Un piano roll n'a pas d'instrument a lui : il
+-- montre des notes qui alimentent quelque chose, et c'est ce quelque chose
+-- qu'on veut entendre. Deux cas, tous deux sans ambiguite :
+--   · une prise MIDI  -> la piste de son item ;
+--   · une case/lane   -> la piste de destination de sa colonne.
+-- Rien d'autre ne sonne. C'est volontaire : jouer « quelque part » etait
+-- exactement le probleme qu'on vient de retirer, et un silence explicable vaut
+-- mieux qu'un son dont personne ne sait d'ou il sort.
+local function auditionTrack()
+    if state.item and r.ValidatePtr2(0, state.item, "MediaItem*") then
+        return r.GetMediaItemTrack(state.item)
+    end
+    -- Pas de `loopInit()` ici, et c'est important : il rebranche les ports des
+    -- colonnes, ce qui COUPE ce qu'ils portaient. Le faire depuis une audition,
+    -- c'est-a-dire pendant qu'on joue, taillerait dans le son de la session.
+    -- Il n'y a rien a initialiser de toute facon : `clip_track` n'est pose que
+    -- par le chemin d'ouverture d'un clip, qui l'a deja appele.
+    if state.mode == "clip" and state.clip_track then
+        return Loop.GetLaneDest(state.clip_lane or state.clip_track)
+    end
+    return nil
+end
+
 local function auditionNote(pitch, vel)
     if not opts.audition then return end
-    if state.aud_note then Kit.StuffNote(state.aud_note, false) end
-    Kit.StuffNote(pitch, true, vel or state.last_vel)
+    Notes.SetTrack(auditionTrack())
+    if state.aud_note then Notes.Off(state.aud_note) end
+    Notes.On(pitch, vel or state.last_vel)
     state.aud_note = pitch
     state.aud_off_t = r.time_precise() + 0.2
 end
@@ -2440,7 +2472,7 @@ local function barMidi(theme)
         opts.audition = not opts.audition
         -- a note may be sounding right now: do not strand it
         if not opts.audition and state.aud_note then
-            Kit.StuffNote(state.aud_note, false)
+            Notes.Off(state.aud_note)
             state.aud_note = nil
         end
         markDirty()
@@ -3463,9 +3495,10 @@ local function frame(theme)
     if Peaks.Step() then UI.RequestRedraw() end
     handleKeys()
 
-    -- deferred audition note-off (piano roll clicks through the kit bus)
+    -- deferred audition note-off (the note is held for 0.2 s, then released
+    -- in the track it was played into)
     if state.aud_note and r.time_precise() >= state.aud_off_t then
-        Kit.StuffNote(state.aud_note, false)
+        Notes.Off(state.aud_note)
         state.aud_note = nil
     end
 
@@ -3546,7 +3579,8 @@ end
 UI.OnClose(function()
     -- Core keeps a SINGLE OnClose callback — everything belongs here.
     flushApply()   -- a pending clip edit must reach its engine
-    if state.aud_note then Kit.StuffNote(state.aud_note, false) end
+    Notes.Close()   -- rien de tenu, et l'apercu quitte la piste de l'utilisateur
+    state.aud_note = nil
     if state.registered then DragBus.Unregister(BUS_ID) end
     persistConfig()
     Audition.Destroy()

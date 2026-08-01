@@ -2406,3 +2406,94 @@ correction de régression. Les trois sont intégrés.
 
 **141 assertions** au harnais, zéro avertissement, zéro allocation dans le fil
 audio, 48 defstrings sans anomalie.
+
+
+---
+
+# Session 22 — chantier 1 : la propriété de l'entrée MIDI
+
+Premier chantier de `ROADMAP_Chantiers.md`, et le seul qui bloquait un usage
+entier. Une seule question le résume : **« je ne comprends pas ce qui rentre en
+MIDI, quand, et pourquoi »**.
+
+## La cause, et elle est unique
+
+`StuffMIDIMessage` — par lequel passait *toute* note d'aperçu de la suite : un
+clic de pad, une touche du clavier chromatique, une note tirée dans un piano
+roll. Le SDK le décrit comme une écriture dans la file du **clavier virtuel**.
+Une file n'a pas de destinataire : ce qu'on y met part vers **toute piste armée
+en monitoring**, à la fois.
+
+Trois conséquences en chaîne, et ce sont exactement les trois symptômes :
+
+1. pour s'entendre, il fallait **armer** une piste — donc `Kit.EnsureBus` posait
+   `I_RECARM`, `I_RECMON` et « toutes entrées / tous canaux » à la création, et
+   `Kit.HoldArm()` les réaffirmait à chaque poll ;
+2. comme il se réarmait tout seul, le kit ne « ne réagissait pas » aux pistes
+   armées de REAPER : **il était en compétition avec elles et il gagnait** ;
+3. un clic de pad sonnait aussi ce qui était armé ailleurs, d'où
+   `enforceSingleListener` (désarmer le bus des autres kits, en boucle) et un
+   **canal réservé** pour que les autres apprennent à ignorer nos aperçus. Un
+   timbre-poste sur une lettre sans adresse.
+
+## Ce qui a été écrit
+
+**ABI 1.8 — `CP_PortMidiAt(port, at, status, d1, d2)`.** Un message MIDI brut
+dans le flux d'un port, donc dans **une** piste, pré-FX. Rien d'autre ne
+l'entend, aucun armement n'entre en jeu, et il traverse la chaîne d'effets de
+cette piste comme s'il venait d'un item. `at < 0` = maintenant, même convention
+que `CP_VoiceStopAtSample` et pour la même raison.
+
+Ce n'est pas un ajout spéculatif : c'était `CP_TestMidiAt`, la sonde du §12.9.1,
+écrite pour demander « REAPER route-t-il le MIDI d'un aperçu de piste vers la
+chaîne de cette piste ». Elle a répondu oui, et les lanes en vivent depuis
+l'ABI 1.6. **Une expérience qui a répondu doit devenir une fonction ou
+disparaître** ; celle-ci reste, comme diagnostic, bâtie sur la nouvelle.
+
+**`CP_Engine/Notes.lua`** tient la cible et le registre des notes non relâchées
+(une note coincée ne demande pas la permission). Il ne teste aucun backend :
+il demande à `Voice` une **capacité**, `CanSendMidi()`. Sans le moteur il
+retombe sur le broadcast, et il le **nomme** — `Notes.Label()` rend
+`"broadcast"`, que le badge du sampler affiche : `pads: RS5K/targeted`.
+
+**La carte des ports** réserve 24 au jeu live du sampler, 25 à celui de
+l'éditeur. Deux fenêtres sont deux états Lua mais un seul moteur : partager un
+port ferait qu'un clic de pad vole sa piste au piano roll.
+
+**Le kit n'arme plus rien de sa propre initiative.** `Kit.HoldArm`,
+`Kit.arm_intent` et `enforceSingleListener` n'existent plus ; `Kit.Repair` ne
+désarme plus les pads ; `SplitInstrument` ne repose plus `INPUT_ALL` ; le bus et
+la piste de l'instrument naissent comme n'importe quelle piste d'instrument.
+`Kit.Armed()` est une **lecture**, `Kit.SetArmed` une écriture unique et sur
+demande, qui ne désarme plus l'autre instrument — une piste que l'utilisateur a
+armée lui-même est à lui. « Écoute toutes les entrées MIDI » devient un geste
+nommé dans le menu (`Kit.SetInputAll`).
+
+**L'éditeur joue enfin dans la bonne piste.** Il auditionnait par le bus du kit
+de CP_Sampler : il fallait un kit pour s'entendre, et la note partait en
+broadcast. Elle va maintenant dans la piste de l'item pour une prise, dans la
+destination de la colonne pour une case. Sans destination, rien ne sonne — un
+silence explicable vaut mieux qu'un son dont personne ne sait d'où il sort.
+
+**La Session suit la même discipline.** `Loop.SetArmedLane` écrit `I_RECARM` :
+elle est désormais réservée au geste. Les deux chemins de restitution
+(`Deserialize`, `LoadGlobals`) passent par `Loop.AdoptArmedLane`, qui **se
+souvient sans écrire**. Ouvrir un projet n'arme plus aucune piste.
+
+## Ce qui change à l'usage
+
+Un clic de pad **sonne toujours**, armé ou non — donc le réglage « auto » ne
+parle plus d'armement : il veut dire *fais sonner le pad*, avec sa chaîne
+d'effets, son choke et son enveloppe. Et l'armement ne veut plus dire que ce que
+REAPER en dit : cette piste enregistre et monitore son entrée.
+
+## Le seul appui non mesuré
+
+Le MIDI d'un aperçu de piste franchit-il les **envois** de cette piste ? Qu'il
+traverse la chaîne d'effets est acquis (les lanes en vivent). Le saut
+supplémentaire vers les pistes de pads est le seul inconnu — et le chantier 2 le
+supprime en remontant les RS5K dans la chaîne du bus. Si un clic de pad reste
+muet, la cause est là et nulle part ailleurs.
+
+**141 assertions** au harnais, 49 defstrings sans anomalie, zéro allocation dans
+le fil audio.

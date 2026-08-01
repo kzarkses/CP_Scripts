@@ -268,7 +268,7 @@ décodage a réellement coûté sur **cette** machine.
 
 ```lua
 if not reaper.APIExists("CP_EngineABI") then return end
-if reaper.CP_EngineABI() < 1.7 then return end   -- un MINIMUM, pas une égalité
+if reaper.CP_EngineABI() < 1.8 then return end   -- un MINIMUM, pas une égalité
 ```
 
 **ReaPack n'a aucun mécanisme de dépendance** — mesuré : 89 index, 5993 paquets,
@@ -293,6 +293,7 @@ sinon chaque ajout casse tout le monde.
 | `CP_PortActive(port)` | bool |
 | `CP_PortDetach(port)` | — |
 | `CP_PortGain(port, gain)` | — |
+| `CP_PortMidiAt(port, at, status, d1, d2)` | **1.8** — un message MIDI brut dans la piste de ce port, et nulle part ailleurs. `at < 0` = maintenant |
 | `CP_VoiceAlloc(port)` | handle, ou 4294967295 |
 | `CP_VoiceRelease(v)` | — |
 | `CP_VoicePlayAtSample(v, clip, at, mode, rate, gain)` | bool |
@@ -414,6 +415,45 @@ Dégénérescence prévue : un tampon plus long que la boucle elle-même sautera
 des notes entières. Dans ce cas seul on revient à la phase de début de bloc, ce
 qui est exactement le comportement du JSFX — moins juste, jamais faux.
 
+### 3.3 bis Une note qui a un destinataire (ABI 1.8)
+
+`CP_PortMidiAt(port, at, status, d1, d2)` dépose un message MIDI brut dans le
+flux du port. Un port est versé dans **une** piste, pré-FX : le message traverse
+la chaîne d'effets de cette piste comme s'il venait d'un item, et rien d'autre
+dans le projet ne l'entend.
+
+**Ce qu'elle remplace, et pourquoi ce n'était pas un détail.** Toute la suite
+jouait ses notes d'aperçu par `StuffMIDIMessage`, que le SDK décrit comme une
+écriture dans la file du **clavier virtuel**. Une file n'a pas de destinataire :
+ce qu'on y met part vers *toute* piste armée en monitoring. Trois conséquences
+en chaîne, et ce sont les trois symptômes rapportés au premier test d'écoute :
+
+1. pour s'entendre, il fallait **armer** une piste — donc le sampler armait la
+   sienne de force, et la réaffirmait à chaque poll ;
+2. comme il réarmait tout seul, il **gagnait** contre les pistes armées à la
+   main : « ça ne réagit pas avec les armed track de REAPER natif » ;
+3. un clic de pad sonnait aussi ce qui était armé ailleurs, d'où un **canal
+   réservé** inventé pour que les autres apprennent à ignorer nos aperçus —
+   un timbre-poste sur une lettre sans adresse.
+
+Avec une adresse, les trois tombent ensemble : l'armement redevient ce que
+REAPER en dit, et `Kit.Armed()` est une lecture, plus une volonté.
+
+**`at < 0` veut dire maintenant**, même convention que `CP_VoiceStopAtSample` et
+pour la même raison : une date lue sur le fil principal est déjà passée quand le
+fil audio la regarde, et « au plus tôt » est la seule réponse honnête à un doigt.
+
+**Le message est brut à dessein.** Note-on, note-off, CC, pitch bend,
+all-notes-off sont la même chose vue du port. Composer une note **tenue** est le
+travail de l'appelant, qui seul sait quand le doigt part —
+`CP_Engine/Notes.lua` le fait, et tient le registre des notes non relâchées.
+
+**La carte des ports** (énoncée dans `Voice.lua`) réserve **24** au jeu live du
+sampler et **25** à celui de l'éditeur. Deux fenêtres sont deux états Lua mais un
+seul moteur : partager un port ferait qu'un clic de pad vole sa piste au piano
+roll. Un port par consommateur coûte une `PCM_source` silencieuse et rend le
+partage impossible par construction.
+
 ### 3.4 Instruments de mesure
 
 Ils ne servent pas à faire de la musique et ne doivent pas entrer dans une
@@ -424,7 +464,7 @@ fenêtre. Marqués EXPERIMENTAL dans le code — ce ne sont pas des interfaces.
 | `CP_LoadReset()` / `CP_LoadDiag()` | ports, voix, ratio du port le plus mal servi, part du fil audio |
 | `WIP/CP_SoakProbe.lua` | **la session longue** : sept invariants, première violation horodatée |
 | `CP_WarpProbe(tempoRatio, nvoices)` | amorçage et coût de l'étireur de REAPER |
-| `CP_TestMidiAt(port, at, note, vel, dur)` | dépose une note datée |
+| `CP_TestMidiAt(port, at, note, vel, dur)` | une note **et sa coupure** en un appel, sur `CP_PortMidiAt` |
 | `CP_TestMidiDiag()` | événements remis, exacts, en retard |
 
 ---

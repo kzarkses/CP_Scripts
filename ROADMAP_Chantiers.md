@@ -60,34 +60,56 @@ Le sampler pointe **une** piste. Le son sort par cette piste. C'est l'armement
 de **cette** piste — dans REAPER, dans le mixer, ou dans CP_Sampler, c'est le
 même bit — qui décide si tu la joues. Rien d'autre n'est touché.
 
-### Étapes
+### Étapes — **FAIT** (écrit et compilé, ABI 1.8)
 
-- [ ] **Ne plus forcer, lire.** `Kit.HoldArm` et `Kit.SetArm` cessent d'écrire
-      `I_RECARM`/`I_RECMON` de leur propre initiative. `Kit.Armed()` devient la
-      lecture de l'état de la piste ciblée, et le bouton de CP_Sampler l'écrit
-      une fois, sur demande de l'utilisateur.
-- [ ] **Rendre l'entrée normale.** `I_RECINPUT` cesse d'être forcé à
-      « toutes entrées / tous canaux ». Le bus prend l'entrée que la piste a,
-      comme n'importe quelle piste d'instrument.
-- [ ] **Les clics de pad cessent d'être un broadcast.** `StuffMIDIMessage`
-      atteint toute piste armée en monitoring. Le remplacer par une injection
-      qui ne concerne que la piste du kit — un envoi MIDI depuis une source
-      dédiée, ou le chemin d'audition du moteur pour un simple aperçu.
-      *À trancher en écrivant : le clic doit-il traverser la chaîne d'effets du
-      pad (donc passer par le RS5K) ou seulement faire entendre le fichier ?*
-- [ ] **`enforceSingleListener` disparaît** ou se réduit à « un seul kit est
-      la cible du sampler à la fois », ce qui est une propriété de la fenêtre
-      et non de l'armement du projet.
-- [ ] **La même règle vaut pour la Session.** `Loop.SetArmedLane` écrit
-      `I_RECARM` sur la piste de destination : même discipline, et le mapping
-      MIDI des cases (refusé pour l'instant) ne redeviendra envisageable
-      qu'après ce chantier.
+- [x] **Ne plus forcer, lire.** `Kit.HoldArm` et `Kit.arm_intent` n'existent
+      plus. `Kit.Armed()` lit l'état de la piste ciblée ; `Kit.SetArmed` écrit
+      une fois, sur demande, et ne désarme plus l'autre instrument — une piste
+      que l'utilisateur a armée lui-même est à lui.
+- [x] **Rendre l'entrée normale.** Le bus naît comme n'importe quelle piste
+      d'instrument : ni armé, ni monitoré, avec l'entrée que REAPER lui donne.
+      « Écoute toutes les entrées MIDI » devient un geste nommé
+      (`Kit.SetInputAll`, dans le menu), plus un état imposé. Idem pour la
+      piste de l'instrument chromatique et pour la migration `SplitInstrument`.
+- [x] **Les clics de pad cessent d'être un broadcast.** Nouvelle fonction
+      d'ABI `CP_PortMidiAt(port, at, status, d1, d2)` : un message MIDI brut
+      dans la piste d'un port, et nulle part ailleurs. `CP_Engine/Notes.lua`
+      tient la cible et les notes non relâchées ; `Voice` expose la capacité
+      (`CanSendMidi`) et la carte des ports réserve **24** au sampler, **25**
+      à l'éditeur. **Tranché en écrivant : oui, le clic traverse la chaîne
+      d'effets du pad** — le port est versé dans la piste du kit, donc le choke
+      JSFX puis les RS5K. « Fais-moi entendre ce pad » ne peut pas vouloir dire
+      autre chose que « ce que ce pad sonne ».
+- [x] **`enforceSingleListener` disparaît.** Il désarmait le bus de tous les
+      autres kits, en boucle, uniquement parce qu'un clic était un broadcast.
+      Ce qui reste de l'idée est `Kit.active_guid` : un seul kit est la cible du
+      sampler, et c'est une propriété de la fenêtre qui ne touche à l'état
+      d'aucune piste. `Kit.Repair` ne désarme plus rien non plus.
+- [x] **La même règle vaut pour la Session.** `Loop.SetArmedLane` reste, mais
+      elle est désormais réservée au geste : les deux chemins de restitution
+      (chargement de projet, relecture du blob) passent par
+      `Loop.AdoptArmedLane`, qui **se souvient sans écrire**. Ouvrir un projet
+      n'arme plus aucune piste.
+- [x] **L'éditeur aussi.** CP_Editor auditionnait ses notes par le bus du kit
+      de CP_Sampler — donc il fallait un kit pour s'entendre, et la note
+      partait en broadcast. Il joue maintenant dans **la piste que ce clip
+      alimente** : la piste de l'item pour une prise, la destination de la
+      colonne pour une case. Sans destination, rien ne sonne — un silence
+      explicable vaut mieux qu'un son dont personne ne sait d'où il sort.
 
 ### À quoi on saura que c'est fini
 
 Armer une piste dans REAPER et jouer : seul cet instrument sonne. Ouvrir
 CP_Sampler ne change rien tant qu'on ne lui demande rien. Cliquer un pad fait
 sonner ce pad, et rien d'autre dans le projet.
+
+**Le seul point sur lequel ce chantier s'appuie sans l'avoir mesuré** : le MIDI
+d'un aperçu de piste franchit-il les **envois** de cette piste ? Il traverse la
+chaîne d'effets, c'est acquis depuis l'ABI 1.6 (les lanes en vivent). Le saut
+supplémentaire vers les pads est le seul inconnu, et le chantier 2 le supprime
+en remontant les RS5K dans la chaîne du bus. Si un clic de pad reste muet, ce
+n'est pas la peine de chercher ailleurs — c'est ça, et la réponse est le
+chantier suivant.
 
 ---
 

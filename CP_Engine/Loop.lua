@@ -498,7 +498,7 @@ function Loop.Setup()
     -- happened to be selected would undo that on the first setup.
     Loop.RefreshDests()
     Loop.SetFreeRun(true)
-    Loop.SetArmedLane(nil)   -- nothing monitors until you arm something
+    Loop.AdoptArmedLane(nil)   -- nothing monitors until YOU arm something
     -- One bar, as in Ableton, and for the same reason: the launch quantize is
     -- what makes a clip swap, a scene and a TAKE land on the grid instead of
     -- wherever the mouse happened to be.
@@ -609,11 +609,29 @@ local function setMonitor(tr, on)
     r.SetMediaTrackInfo_Value(tr, "I_RECMON", on and 1 or 0)
 end
 
+-- UN GESTE, UNE ECRITURE. Cette fonction ecrit I_RECARM sur une piste du
+-- projet : elle n'a donc le droit d'exister qu'au bout d'un clic. Tout ce qui
+-- RESTITUE un etat (chargement de projet, relecture du blob) passe par
+-- AdoptArmedLane et n'ecrit rien — meme discipline que le kit du sampler, et
+-- pour la meme raison : un armement qu'on n'a pas demande est indistinguable
+-- d'un armement qui se defend tout seul.
 function Loop.SetArmedLane(lane)
     if armed_lane then setMonitor(Loop.GetLaneDest(armed_lane), false) end
     armed_lane = lane
     r.SetProjExtState(0, EXT_SEC, "armed", tostring(lane or -1))
     if lane then setMonitor(Loop.GetLaneDest(lane), true) end
+end
+
+-- Se SOUVENIR de la lane armee sans toucher a une seule piste. Ce que la
+-- session avait note reste vrai si la piste l'est encore ; sinon la memoire est
+-- simplement fausse, et une memoire fausse est moins couteuse qu'un projet qui
+-- se rearme tout seul a l'ouverture.
+function Loop.AdoptArmedLane(lane)
+    armed_lane = nil
+    if not lane then return end
+    local tr = Loop.GetLaneDest(lane)
+    if not valid(tr) then return end
+    if r.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 then armed_lane = lane end
 end
 
 function Loop.GetArmedLane()
@@ -1187,7 +1205,9 @@ function Loop.Deserialize(str)
             -- anything. Restoring it would re-arm lane 0 in every existing
             -- project, so it is dropped.
             local a = (ver == "4" or ver == "5") and math.floor(tonumber(arm) or -1) or -1
-            Loop.SetArmedLane(a >= 0 and a or nil)
+            -- ADOPTE, n'arme pas. Restaurer un etat n'est pas un geste de
+            -- l'utilisateur : ouvrir un projet ne doit armer aucune piste.
+            Loop.AdoptArmedLane(a >= 0 and a or nil)
             if lq then Loop.SetLaunchQ(migrateQ(ver, tonumber(lq))) end
         end
     end
@@ -1284,7 +1304,7 @@ function Loop.LoadGlobals()
     Loop.SetFreeRun(fr == "1")
     local a = (fields[1] == "4" or fields[1] == "5")
               and math.floor(tonumber(arm) or -1) or -1
-    Loop.SetArmedLane(a >= 0 and a or nil)
+    Loop.AdoptArmedLane(a >= 0 and a or nil)
     if lq then Loop.SetLaunchQ(migrateQ(fields[1], tonumber(lq))) end
     return true
 end

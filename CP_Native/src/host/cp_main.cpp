@@ -47,7 +47,16 @@ using namespace cp;
 //       datait partait en retard de la latence de sortie. CP_ClockPos rend la
 //       position que l'ancre a retenue, pour que le transport des lanes se
 //       pose sur EXACTEMENT la meme paire.
-static const double kEngineABI = 1.7;
+// 1.8 : CP_PortMidiAt — UNE NOTE, UNE PISTE. La sonde du §12.9.1 a repondu
+//       oui : REAPER route bien le MIDI d'un apercu de piste vers la chaine
+//       de cette piste, et les lanes en vivent depuis l'ABI 1.6. Ce qui etait
+//       une experience devient donc une fonction, et elle ferme la question
+//       « qu'est-ce qui rentre en MIDI, quand, et pourquoi » : jusqu'ici un
+//       clic de pad partait par StuffMIDIMessage, qui est un BROADCAST vers
+//       toute piste armee en monitoring, et il fallait armer une piste de
+//       force pour s'entendre. Ici on ecrit dans UN port, donc dans UNE
+//       piste, et l'armement redevient ce que REAPER en dit.
+static const double kEngineABI = 1.8;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -432,27 +441,44 @@ double CP_VoiceStartedAt(double h) {
   return (double)g_eng->voice_started_at((voice_h)h);
 }
 
-// EXPERIMENTAL — la sonde du §12.9.1, et rien d'autre.
+// UN MESSAGE MIDI, UNE PISTE, ET NULLE PART AILLEURS.
 //
-// Depose une note-on datee et sa note-off dans le flux MIDI du bloc que REAPER
-// nous tend. La question n'est pas « est-ce que ca marche » mais « est-ce que
-// REAPER route le MIDI d'un apercu de PISTE vers la chaine de cette piste ».
-// Si oui, l'affranchissement du JSFX est total. Si non, on aura la reponse en
-// une soiree plutot qu'en discutant.
+// Ce que ce depot avait avant : StuffMIDIMessage, dont le SDK dit lui-meme
+// qu'il pousse dans la file du clavier virtuel — donc vers TOUTE piste armee
+// en monitoring. Une note d'apercu n'a jamais su a qui elle parlait, et il
+// fallait armer une piste de force pour l'entendre. C'est de la que venait
+// tout le brouillard MIDI du sampler.
 //
-// Ce n'est PAS l'interface MIDI definitive : celle-ci passerait par des voix,
-// comme l'audio. On ne dessine pas l'ABI d'une chose dont on ignore encore si
-// elle existe.
-bool CP_TestMidiAt(int port, double atSample, int note, int vel, double durSamples) {
-  if (port < 0 || port >= kMaxPorts) return false;
+// Ici l'adresse est le port, et un port est verse dans une piste. Rien
+// d'autre ne l'entend, aucun armement n'entre en jeu, et le message traverse
+// la chaine d'effets de cette piste comme s'il venait d'un item.
+//
+// atSample < 0 signifie MAINTENANT — meme convention que CP_VoiceStopAtSample,
+// et pour la meme raison : une date lue ici est deja passee quand le fil audio
+// la regarde, et « au plus tot » est la seule reponse honnete a un doigt.
+//
+// Le message est brut a dessein : note-on, note-off, CC, pitch bend, all-notes
+// -off sont la meme chose vue du port. Composer une note tenue (on, puis off au
+// relachement) est le travail de l'appelant, qui seul sait quand le doigt part.
+bool CP_PortMidiAt(int port, double atSample, int status, int d1, int d2) {
+  if (port < 0 || port >= kMaxPorts || !g_eng) return false;
   Port& p = g_ports[port];
   if (!p.active || !p.src) return false;
-  const frame_t on = (frame_t)atSample;
-  const frame_t off = on + (frame_t)((durSamples > 0.0) ? durSamples : 4800.0);
-  const unsigned char n = (unsigned char)(note & 0x7F);
-  const unsigned char v = (unsigned char)(vel & 0x7F);
-  if (!p.src->queue_midi(on, 0x90, n, v)) return false;
-  return p.src->queue_midi(off, 0x80, n, 0);
+  const frame_t at = (atSample < 0.0) ? g_eng->clock_now() : (frame_t)atSample;
+  return p.src->queue_midi(at, (unsigned char)(status & 0xFF),
+                           (unsigned char)(d1 & 0x7F),
+                           (unsigned char)(d2 & 0x7F));
+}
+
+// La sonde du §12.9.1. Elle a repondu OUI, et sa reponse est devenue
+// CP_PortMidiAt ci-dessus ; on la garde parce qu'une note et sa coupure en un
+// seul appel est exactement ce qu'un diagnostic veut, et rien de ce qui joue
+// ne passe plus par elle.
+bool CP_TestMidiAt(int port, double atSample, int note, int vel, double durSamples) {
+  const double dur = (durSamples > 0.0) ? durSamples : 4800.0;
+  if (!CP_PortMidiAt(port, atSample, 0x90, note, vel)) return false;
+  const double on = (atSample < 0.0 && g_eng) ? (double)g_eng->clock_now() : atSample;
+  return CP_PortMidiAt(port, on + dur, 0x80, note, 0);
 }
 
 const char* CP_TestMidiDiag() {
@@ -1036,6 +1062,11 @@ VA(CP_VoiceState) {
 }
 VA(CP_TimeToSample) { return retd(CP_TimeToSample(argd(arg, narg, 0))); }
 VA(CP_VoiceStartedAt) { return retd(CP_VoiceStartedAt(argd(arg, narg, 0))); }
+VA(CP_PortMidiAt) {
+  return retb(CP_PortMidiAt(argi(arg, narg, 0), argd(arg, narg, 1),
+                            argi(arg, narg, 2), argi(arg, narg, 3),
+                            argi(arg, narg, 4)));
+}
 VA(CP_TestMidiAt) {
   return retb(CP_TestMidiAt(argi(arg, narg, 0), argd(arg, narg, 1),
                             argi(arg, narg, 2), argi(arg, narg, 3),
@@ -1108,7 +1139,8 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_TimeToSample, "double\0double\0projectTime\0Convertit un instant du projet en frame absolu, via la derniere ancre.");
   REG(CP_Panic, "void\0\0\0Eteint toutes les voix en 5 ms.");
   REG(CP_Diag, "const char*\0\0\0Etat du moteur en une ligne. Fil principal uniquement.");
-  REG(CP_TestMidiAt, "bool\0int,double,int,int,double\0port,atSample,note,vel,durSamples\0EXPERIMENTAL: depose une note datee dans le flux MIDI du bloc. Sonde uniquement.");
+  REG(CP_PortMidiAt, "bool\0int,double,int,int,int\0port,atSample,status,d1,d2\0Un message MIDI brut dans la piste de ce port, et nulle part ailleurs. atSample < 0 = maintenant. Aucun armement n'entre en jeu.");
+  REG(CP_TestMidiAt, "bool\0int,double,int,int,double\0port,atSample,note,vel,durSamples\0Diagnostic: une note et sa coupure en un appel. Le jeu passe par CP_PortMidiAt.");
   REG(CP_TestMidiDiag, "const char*\0\0\0EXPERIMENTAL: REAPER fournit-il un midi_events, combien d'evenements remis, exacts, en retard.");
   REG(CP_LoadReset, "void\0\0\0Remet a zero les compteurs de charge (temps fil audio, ratios par port).");
   REG(CP_LoadDiag, "const char*\0\0\0Montee en charge: ports, voix, ratio minimum, part du fil audio consommee.");
@@ -1143,6 +1175,7 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
   UNREG(CP_ClockPos);     UNREG(CP_PlayRate);
   UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
+  UNREG(CP_PortMidiAt);
   UNREG(CP_TestMidiAt);  UNREG(CP_TestMidiDiag);
   UNREG(CP_LaneCount);   UNREG(CP_LaneBind);      UNREG(CP_LaneSet);
   UNREG(CP_LaneGet);     UNREG(CP_LaneCmd);       UNREG(CP_LaneSetNote);

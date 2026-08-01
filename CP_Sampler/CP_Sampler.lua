@@ -229,9 +229,17 @@ end
 -- line and the trigger read the SAME expression: a badge that keeps its own
 -- copy of this rule is a badge that will eventually lie, and a lying badge is
 -- worse than none — it is what you check when you already doubt the sound.
+-- L'ARMEMENT N'ENTRE PLUS DANS CETTE REPONSE, et c'est le changement qui rend
+-- la fenetre lisible. « auto » voulait dire « par le kit SI une piste est
+-- armee », parce qu'une note d'apercu partait en broadcast et n'atteignait
+-- qu'une piste armee ; il fallait donc armer, et le sampler armait de force.
+-- La note a une adresse maintenant : elle atteint le kit, armee ou pas. Donc
+-- « auto » veut dire ce qu'il a toujours voulu dire — FAIS SONNER LE PAD, avec
+-- sa chaine d'effets, son choke et son enveloppe — et le repli sur la lecture
+-- brute du fichier ne sert plus qu'aux pads sans instrument.
 local function padUsesMidi(pad)
     return opts.audition == "midi"
-        or (opts.audition == "auto" and Kit.Armed())
+        or (opts.audition == "auto" and Kit.Exists())
         or not (pad and pad.path)   -- no readable file → only MIDI can play it
 end
 
@@ -240,7 +248,7 @@ local function padOn(note)
     if not pad or not pad.fx then return end
     local use_midi = padUsesMidi(pad)
     if use_midi then
-        Kit.StuffNote(note, true, opts.velocity)
+        Kit.PlayNote(note, true, opts.velocity)
         state.press_midi = note
     else
         local len = Audition.Meta(pad.path)
@@ -257,7 +265,7 @@ end
 
 local function padOff()
     if state.press_midi then
-        Kit.StuffNote(state.press_midi, false)
+        Kit.PlayNote(state.press_midi, false)
         state.press_midi = nil
     end
     -- direct previews ring out (one-shot feel) — no stop here
@@ -613,9 +621,9 @@ end
 local function openSettings()
     UI.NativeMenu({
         { label = "Pad click audition", children = {
-            auditionItem("Auto (through kit bus when armed)", "auto"),
-            auditionItem("Always MIDI through kit bus", "midi"),
-            auditionItem("Always direct preview", "preview"),
+            auditionItem("Auto — play the pad (FX chain, choke, envelope)", "auto"),
+            auditionItem("Always play the pad", "midi"),
+            auditionItem("Always preview the raw file", "preview"),
         } },
         { label = "Pad velocity", children = {
             velocityItem(64), velocityItem(80), velocityItem(100),
@@ -625,11 +633,22 @@ local function openSettings()
         -- it is answered several times a session, and a decision taken that
         -- often has no business being two clicks deep in a menu.
         { separator = true },
+        -- L'ARMEMENT NE FAIT PLUS SONNER LES CLICS : ils sonnent toujours,
+        -- parce qu'ils ont une adresse. Il ne veut donc plus dire que ce que
+        -- REAPER en dit — cette piste enregistre et monitore son entree — et
+        -- l'intitule le dit, sinon on reprendrait l'ancienne habitude.
         { label = Kit.mode == "instrument"
-                  and "Instrument armed (MIDI input + key clicks sound)"
-                  or "Kit bus armed (MIDI input + pad clicks sound)",
+                  and "Record-arm the instrument track (play it from a keyboard)"
+                  or "Record-arm the kit track (play it from a keyboard)",
           checked = Kit.Armed(),
           action = function() Kit.SetArmed(not Kit.Armed()) end },
+        { label = "Listen to every MIDI input on that track",
+          checked = Kit.InputIsAll(),
+          disabled = Kit.InputIsAll(),
+          action = function()
+            Kit.SetInputAll()
+            flash("Kit track now listens to all MIDI inputs")
+          end },
         { label = "Create kit bus now", disabled = Kit.Exists(),
           action = function() Kit.Ensure() flash("Kit bus created") end },
         { separator = true },
@@ -732,10 +751,14 @@ Load sample, Open in Editor (the trim lands selected), Bake: crop to
 a new file, Sync to project tempo, choke group.
 ]]
 
-local ARM_ON  = "Armed: MIDI input and clicks play through the pads"
-local ARM_OFF = "Disarmed: clicks fall back to direct preview"
-local IARM_ON  = "Armed: MIDI input and key clicks play through the instrument"
-local IARM_OFF = "Disarmed: key clicks fall back to direct preview"
+-- CE QUE L'ARMEMENT DIT MAINTENANT. Il ne parle plus des clics — ils sonnent
+-- dans tous les cas, parce qu'ils s'adressent a la piste du kit et a elle
+-- seule. Il ne parle que de ce dont REAPER parle : un clavier branche, et
+-- l'enregistrement de ce qu'on y joue.
+local ARM_ON  = "Record-armed: your MIDI keyboard plays the kit, and records here"
+local ARM_OFF = "Not record-armed. Pad clicks sound anyway"
+local IARM_ON  = "Record-armed: your MIDI keyboard plays the instrument, and records here"
+local IARM_OFF = "Not record-armed. Key clicks sound anyway"
 local CLICK_ON  = "Clicking a pad plays it"
 local CLICK_OFF = "Clicking a pad only selects it — Enter plays"
 local KIT_W   = { w = 4 }
@@ -765,8 +788,8 @@ local function drawToolbar(theme)
 
     -- Armed: a held state, so it lights. The role colour is `record`, which
     -- is what the rest of the suite already uses to mean "this is live".
-    -- It arms WHAT IS ON SCREEN — the pads or the instrument — because only
-    -- one of the two can hear the keyboard at a time (Kit.armTarget).
+    -- It arms WHAT IS ON SCREEN — the pads or the instrument — and it does not
+    -- disarm the other one: a track the user armed himself is his.
     local armed = Kit.Armed()
     local inst = Kit.mode == "instrument"
     if UI.BarToggle("arm", "Record", nil, armed,
@@ -1474,9 +1497,9 @@ local function instrNoteOn(note)
     local instr = Kit.instr
     if not instr or not instr.path then return end
     local use_midi = opts.audition == "midi"
-        or (opts.audition == "auto" and Kit.Armed())
+        or (opts.audition == "auto" and instr.fx ~= nil)
     if use_midi then
-        Kit.StuffNote(note, true, opts.velocity)
+        Kit.PlayNote(note, true, opts.velocity)
         state.press_midi = note
     else
         PLAY_OPTS.start_s, PLAY_OPTS.end_s = nil, nil
@@ -1830,7 +1853,7 @@ local function frame(theme)
 
     -- deferred keyboard note-off
     if state.key_off_note and r.time_precise() >= state.key_off_t then
-        Kit.StuffNote(state.key_off_note, false)
+        Kit.PlayNote(state.key_off_note, false)
         state.key_off_note = nil
     end
 
@@ -1851,7 +1874,7 @@ local function frame(theme)
         drawInstrument(theme, body_h - (theme.pad_small or 4))
         -- release a MIDI-triggered note on mouse-up (keyboard clicks)
         if state.press_midi and not Core_tk.MouseDown(1) then
-            Kit.StuffNote(state.press_midi, false)
+            Kit.PlayNote(state.press_midi, false)
             state.press_midi = nil
         end
     else
@@ -1894,7 +1917,7 @@ local function frame(theme)
     -- quand un de ses termes change : elle vit dans une boucle de dessin.
     do
         local pad = state.sel and Kit.pads[state.sel] or nil
-        local src = padUsesMidi(pad) and "RS5K"
+        local src = padUsesMidi(pad) and ("RS5K/" .. Kit.PlayLabel())
                     or (Audition.WillUseVoices() and "voice" or "preview")
         if state.badge_src ~= src then
             state.badge_src = src
@@ -1930,8 +1953,8 @@ UI.Init("Sampler", 420, 560, {
 
 UI.OnClose(function()
     r.TrackCtl_SetToolTip("", 0, 0, true)
-    if state.press_midi then Kit.StuffNote(state.press_midi, false) end
-    if state.key_off_note then Kit.StuffNote(state.key_off_note, false) end
+    state.press_midi, state.key_off_note = nil, nil
+    Kit.PlayClose()   -- rien de tenu, et l'apercu quitte la piste du kit
     DragBus.Unregister(BUS_ID)
     persistConfig()
     Audition.Destroy()

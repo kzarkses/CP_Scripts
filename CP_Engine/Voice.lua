@@ -59,6 +59,11 @@ local ABI_MIN = 1.5
 -- personne ne touche la reglette.
 local PLAYRATE_FN = nil
 
+-- Meme raison, meme forme : le depot d'un message MIDI dans un port n'existe
+-- qu'a partir de l'ABI 1.8. Absent, une fenetre retombe sur le broadcast du
+-- clavier virtuel — et doit pouvoir le DIRE, pas le decouvrir.
+local MIDI_FN = nil
+
 -- CE QU'UNE FENETRE AFFICHE POUR DIRE QUI FAIT LE SON.
 --
 -- Construite UNE fois, a l'init, et pour deux raisons : elle part dans une
@@ -86,13 +91,29 @@ Voice.LOOP   = 1
 --   8 .. 15   LE MIDI d'une colonne (CP_Engine/Loop : port = PORT_BASE + t) —
 --             les DEUX moities d'une paire partagent le meme, parce qu'une
 --             paire est une seule piste musicale
---   16 .. 30  libres
+--   16 .. 23  libres
+--   24        LE JEU LIVE DU SAMPLER — un clic de pad, une touche du clavier
+--             chromatique. Verse dans la piste du kit et dans elle seule.
+--   25        LE JEU LIVE DE L'EDITEUR — la note qu'on pose, qu'on tire ou
+--             qu'on ecoute dans un piano roll, versee dans la piste que ce
+--             clip alimente.
+--   26 .. 30  libres
 --   31        L'AUDITION, partagee par toute la suite. Une audition est une
 --             capacite commune : le navigateur, l'editeur et le sampler
 --             ecoutent le meme fichier de la meme facon, et il n'y a aucune
 --             raison qu'ils s'ouvrent chacun une sortie.
+--
+-- POURQUOI 24 ET 25 SONT NOMMES SEPAREMENT, et ne sont pas « le port de jeu ».
+-- Les fenetres sont des scripts distincts, donc des etats Lua distincts, mais
+-- le moteur est UN. Deux fenetres ouvertes qui viseraient le meme port se
+-- voleraient sa piste a chaque clic, et le symptome serait « le sampler joue
+-- dans l'editeur » — exactement le genre de brouillard qu'on vient de retirer.
+-- Un port par consommateur coute une PCM_source silencieuse et rend le partage
+-- impossible par construction.
 -- ---------------------------------------------------------------------------
 Voice.AUDITION_PORT = 31
+Voice.PLAY_PORT_SAMPLER = 24
+Voice.PLAY_PORT_EDITOR  = 25
 
 -- Etats, alignes sur le moteur (cp_types.h)
 Voice.IDLE      = 0
@@ -131,6 +152,8 @@ function Voice.init(reaper_api, preview_module)
     end
     PLAYRATE_FN = (NATIVE and r.APIExists and r.APIExists("CP_PlayRate"))
                   and r.CP_PlayRate or nil
+    MIDI_FN = (NATIVE and r.APIExists and r.APIExists("CP_PortMidiAt"))
+              and r.CP_PortMidiAt or nil
 
     for i = 1, MAXV do
         vst[i] = Voice.IDLE
@@ -193,6 +216,30 @@ end
 
 function Voice.CanTimeStretch()
     return (not NATIVE) and Preview ~= nil and Preview.SetRate ~= nil
+end
+
+-- ---------------------------------------------------------------------------
+-- MIDI VERS UNE PISTE, ET UNE SEULE
+--
+-- La question n'est pas « sais-tu faire du MIDI » mais « une note peut-elle
+-- avoir un DESTINATAIRE ». Sans le moteur il n'y en a pas : StuffMIDIMessage
+-- ecrit dans la file du clavier virtuel, qui sert toute piste armee en
+-- monitoring a la fois. C'est ce qui obligeait le sampler a armer une piste de
+-- force pour s'entendre — et donc a gagner contre les pistes que l'utilisateur
+-- armait lui-meme.
+--
+-- Le port est l'adresse : il est verse dans une piste, pre-FX, et le message
+-- traverse la chaine d'effets de cette piste comme s'il venait d'un item.
+-- ---------------------------------------------------------------------------
+function Voice.CanSendMidi()
+    return MIDI_FN ~= nil
+end
+
+-- at_sample < 0 (ou nil) = MAINTENANT, au sens du fil audio : le moteur date au
+-- bloc qu'il traite, pas au frame que Lua a lu une frame de defer plus tot.
+function Voice.SendMidi(port, at_sample, status, d1, d2)
+    if not MIDI_FN then return false end
+    return MIDI_FN(port, at_sample or -1, status, d1, d2) and true or false
 end
 
 function Voice.Diag()

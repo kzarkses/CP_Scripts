@@ -24,16 +24,33 @@
 --   parent: P_EXT:CP_KIT = "1"     pads: P_EXT:CP_KIT_NOTE = "36".."99"
 --   instrument: P_EXT:CP_KIT_INSTR = "1"   (its own track, beside the kits)
 --
--- MIDI flow: the kit's MIDI bus receives all MIDI inputs (armed + monitoring),
--- its FX chain runs the generated choke JSFX, then per-pad MIDI-only sends fan
--- out to the children whose RS5K note range does the note filtering.
+-- MIDI flow — READ THIS ONE, it is the part that used to be incomprehensible.
 --
--- The chromatic INSTRUMENT is not part of that fan-out: it is a second
--- instrument on a track of its own, with its own input, its own output and no
--- tie to any kit. Both can sound at once (that is the point) — only the LIVE
--- listener is exclusive, because pad clicks are a broadcast on the virtual
--- keyboard queue and would otherwise reach both. Kit.mode says which one is on
--- screen, and the listener follows it.
+-- TWO ROADS REACH THE KIT, AND THEY ARE NOT THE SAME ROAD.
+--   1. What YOU play. A pad click, a key on the chromatic keyboard, a note
+--      auditioned in the editor: CP_Engine/Notes writes it into ONE engine
+--      port, and that port is poured into the kit's MIDI bus track, pre-FX.
+--      Nothing else in the project hears it. No track is armed for this, ever.
+--   2. What the PROJECT plays. A recorded MIDI item on the bus, a looper lane
+--      routed here, a keyboard you monitor because you armed the track — all
+--      of it is REAPER's own MIDI, arriving the way it arrives on any
+--      instrument track.
+-- Both land in the same FX chain: the generated choke JSFX, then per-pad
+-- MIDI-only sends whose RS5K note range does the filtering.
+--
+-- WHAT THIS MODULE NO LONGER DOES, and it is the whole point: it does not arm
+-- anything of its own accord. It used to force I_RECARM, I_RECMON and
+-- "all inputs / all channels" onto the bus, and re-assert them every time
+-- REAPER cleared them — which meant it was not ignoring your armed tracks, it
+-- was COMPETING with them and winning. Road 1 needed an armed track because it
+-- travelled by StuffMIDIMessage, a broadcast. Road 1 has an address now, so
+-- the arm goes back to meaning what REAPER means by it, and Kit.Armed() is a
+-- reading, not an intent.
+--
+-- The chromatic INSTRUMENT is a second instrument on a track of its own, with
+-- its own input and its own output. Both can sound at once — and now they
+-- really can, because a pad click no longer reaches anything but the kit.
+-- Kit.mode says which one is on screen, and the live port follows it.
 --
 -- RS5K param indices (verified against mpl_RS5K_manager_functions.lua):
 --   0 vol · 1 pan · 3/4 note range · 8 max voices · 9 attack · 10 release
@@ -55,6 +72,14 @@ local r  -- reaper, injected
 -- CHARGEMENT, l'injection n'a lieu qu'a Kit.init.
 local SrcTempo = dofile(reaper.GetResourcePath()
                         .. "/Scripts/CP_Scripts/CP_Engine/SrcTempo.lua")
+
+-- « Faire sonner une note DANS cette piste ». Deux modules, une capacite : Voice
+-- sait si le moteur peut adresser une note, Notes tient la cible et les notes
+-- tenues. Meme raison qu'au-dessus pour `reaper` plutot que `r`.
+local Voice = dofile(reaper.GetResourcePath()
+                     .. "/Scripts/CP_Scripts/CP_Engine/Voice.lua")
+local Notes = dofile(reaper.GetResourcePath()
+                     .. "/Scripts/CP_Scripts/CP_Engine/Notes.lua")
 
 Kit.BASE = 36    -- pad 0 ↔ MIDI note 36 (GM kick, FL/Ableton convention)
 Kit.MAX  = 64    -- 64 pads = 4 pages of 16
@@ -89,7 +114,7 @@ local CHOKE_VERSION = "CP Kit Choke v1"
 local MIDI_TO_CH1 = 1 << 5
 
 Kit.parent = nil       -- folder MediaTrack (validated on access)
-Kit.bus    = nil       -- "CP Kit MIDI" child track — the INPUT bus.
+Kit.bus    = nil       -- "CP Kit MIDI" child track — the kit's MIDI track.
                        -- CRITICAL: MIDI fan-out sends must come from a
                        -- separate child track, NOT the folder parent: a
                        -- parent→child send + the child's audio returning
@@ -106,13 +131,27 @@ local choke_tr = nil   -- …and the track carrying it (bus; parent = legacy)
 local last_change = -1 -- GetProjectStateChangeCount snapshot
 local repaired = false -- one routing migration/repair pass per session
 
+-- « La piste qu'on joue » — le bus du kit, ou la piste de l'instrument quand
+-- c'est lui qui est a l'ecran. Declaree ici parce que le cycle de vie du kit
+-- (SetActive, SetMode) doit pouvoir y renvoyer les notes tenues, et que son
+-- corps vit avec les helpers de jeu, tout en bas.
+local playTarget
+
 local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
 
 function Kit.init(reaper_api, tracks_module)
     r = reaper_api
     Tracks = tracks_module
     SrcTempo.init(r)
+    Voice.init(r)
+    Notes.init(r, Voice, Voice.PLAY_PORT_SAMPLER)
 end
+
+-- Comment une note jouee ici atteint le kit : « targeted » (un port, une piste)
+-- ou « broadcast » (le repli sans le moteur, qui reveille toute piste armee).
+-- Une fenetre l'affiche telle quelle : c'est la premiere chose a savoir quand
+-- un routage surprend.
+function Kit.PlayLabel() return Notes.Label() end
 
 local function valid(tr)
     return tr ~= nil and r.ValidatePtr2(0, tr, "MediaTrack*")
@@ -418,42 +457,27 @@ local function busOf(parent)
     return bus
 end
 
--- Pad clicks travel over the VKB queue, which reaches EVERY armed bus —
--- so exactly one kit may listen: the ACTIVE one. This runs continuously
--- (from Poll), not just at SetActive time, because project loads restore
--- saved arm states and selection helpers (CP_AutoArmVSTiTrack) re-arm
--- tracks behind our back. Inactive kits still PLAY through channel sends
--- (e.g. CP_Looper lanes; sends ignore arm) — they just stop listening to
--- live input. Only writes on an actual mismatch.
-local function enforceSingleListener()
-    if #Kit.kits < 2 then return end
-    for _, ktr in ipairs(Kit.kits) do
-        if ktr ~= Kit.parent and valid(ktr) then
-            local bus = busOf(ktr)
-            if bus and (r.GetMediaTrackInfo_Value(bus, "I_RECARM") == 1
-                     or r.GetMediaTrackInfo_Value(bus, "I_RECMON") ~= 0) then
-                r.SetMediaTrackInfo_Value(bus, "I_RECARM", 0)
-                r.SetMediaTrackInfo_Value(bus, "I_RECMON", 0)
-                last_change = r.GetProjectStateChangeCount(0)
-            end
-        end
-    end
-end
+-- `enforceSingleListener` vivait ici. Il desarmait le bus de tous les autres
+-- kits du projet, en boucle, parce qu'un clic de pad etait un broadcast et
+-- aurait sinon fait sonner les deux. Ce n'etait donc pas une regle musicale
+-- mais un pansement sur l'absence d'adresse — et il avait un effet de bord
+-- durable : il ecrasait l'armement d'une piste que l'utilisateur avait pu
+-- armer pour tout autre chose.
+--
+-- Ce qui reste de l'idee est vrai et suffisant : UN SEUL KIT EST LA CIBLE DU
+-- SAMPLER a la fois. C'est `Kit.active_guid`, une propriete de la fenetre, et
+-- elle ne touche a l'etat d'aucune piste.
 
--- Choose which kit this module drives. Armed is the working default, so
--- switching kits re-asserts it — and builds the MIDI bus if this kit
--- never had one (a kit without a bus could not arm, which read as the
--- arm state "turning itself off" when coming back to it). The choice is
--- saved per project.
+-- Choose which kit this module drives — and builds its MIDI bus if it never
+-- had one. The choice is saved per project.
 function Kit.SetActive(track)
     if not valid(track) then return false end
     Kit.active_guid = r.GetTrackGUID(track)
     r.SetProjExtState(0, "CP_Sampler", "ACTIVE_KIT", Kit.active_guid)
     Kit.Scan()
     if not valid(Kit.bus) then Kit.EnsureBus() end
-    enforceSingleListener()
-    Kit.arm_intent = true
-    Kit.HoldArm()
+    -- ce qui sonnait sonnait dans l'ancien kit : on l'y relache
+    Notes.SetTrack(playTarget())
     return true
 end
 
@@ -497,12 +521,10 @@ function Kit.Poll()
     if c == last_change then return false end
     last_change = c
     Kit.Scan()
-    -- something changed the project: that is exactly when another script may
-    -- have disarmed our input bus — or re-armed an inactive kit's — so
-    -- re-assert both intents before anything else reads Kit.Armed() (the
-    -- audition path branches on it).
-    Kit.HoldArm()
-    enforceSingleListener()
+    -- Le kit a pu changer de forme (undo, edition manuelle, autre script) :
+    -- la cible de jeu suit, et ce qui sonnait est relache la ou il sonnait.
+    -- C'est tout ce que ce poll ecrit — plus aucun armement n'est reaffirme.
+    Notes.SetTrack(playTarget())
     -- One-time routing migration/repair per session: kits built before
     -- the MIDI-bus architecture have choke+sends on the folder parent
     -- (feedback-muted) and possibly pads armed as a user workaround.
@@ -577,10 +599,15 @@ local function insertChildTrack(parent)
     return tr
 end
 
--- The MIDI input bus: armed + monitoring, listens to all MIDI inputs
--- (incl. the virtual keyboard = StuffMIDIMessage pad clicks), hosts the
--- choke JSFX, and fans MIDI out to the pads. Recording lands MIDI
--- performances as items HERE — their playback drives the kit too.
+-- The kit's MIDI bus: hosts the choke JSFX and fans MIDI out to the pads.
+-- Recording lands MIDI performances as items HERE — their playback drives the
+-- kit too.
+--
+-- IT IS BORN LIKE ANY OTHER INSTRUMENT TRACK: not armed, not monitoring, with
+-- whatever input REAPER gives a new track. It used to be born armed on all
+-- inputs and all channels, and that was not a convenience — it was the whole
+-- reason live MIDI was impossible to reason about. Playing it is arming it,
+-- yourself, once, like anything else in REAPER.
 function Kit.EnsureBus()
     if valid(Kit.bus) then return Kit.bus end
     local parent = Kit.Ensure()
@@ -596,9 +623,6 @@ function Kit.EnsureBus()
     local tr = insertChildTrack(parent)
     r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Kit MIDI", true)
     setExt(tr, "CP_KIT_MIDI", "1")
-    r.SetMediaTrackInfo_Value(tr, "I_RECINPUT", 4096 + (63 << 5))
-    r.SetMediaTrackInfo_Value(tr, "I_RECARM", 1)
-    r.SetMediaTrackInfo_Value(tr, "I_RECMON", 1)
     r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)   -- record MIDI input
     if ensureChokeFile() then
         local fi = r.TrackFX_AddByName(tr, CHOKE_ADD, false, -1000)
@@ -1037,11 +1061,9 @@ function Kit.EnsureInstrument()
     end
     setExt(tr, "CP_KIT_INSTR", "1")
     setExt(tr, "CP_KIT_ROOT", "60")
-    -- listens for itself (the kit bus fans out to the PADS and stops there)
-    r.SetMediaTrackInfo_Value(tr, "I_RECINPUT", Kit.INPUT_ALL)
+    -- comme le bus : une piste d'instrument ordinaire, ni armee ni branchee
+    -- d'office sur toutes les entrees du systeme
     r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)
-    r.SetMediaTrackInfo_Value(tr, "I_RECARM", 0)
-    r.SetMediaTrackInfo_Value(tr, "I_RECMON", 0)
     local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
     if fx >= 0 then
         hideFX(tr, fx)
@@ -1106,10 +1128,10 @@ function Kit.SetRoot(note)
     last_change = r.GetProjectStateChangeCount(0)
 end
 
--- Switch what the SAMPLER SHOWS. Nothing is muted, nothing changes hands:
--- the pads and the instrument are two instruments on two tracks and both keep
--- playing whatever is sent to them. Only the LIVE LISTENER follows the view
--- (see armTarget) — the keyboard has to reach one of them, not both.
+-- Switch what the SAMPLER SHOWS. Nothing is muted, nothing changes hands, and
+-- no arm state moves: the pads and the instrument are two instruments on two
+-- tracks and both keep playing whatever is sent to them. Only what YOU play
+-- follows the view — because you can only play one of them at a time.
 function Kit.SetMode(mode)
     if mode ~= "drum" and mode ~= "instrument" then return end
     local parent = Kit.Ensure()
@@ -1119,7 +1141,7 @@ function Kit.SetMode(mode)
     if mode == "instrument" then Kit.EnsureInstrument() end
     Kit.version = Kit.version + 1
     uend("Sampler: set mode " .. mode)
-    Kit.HoldArm()          -- the listener moves with the view
+    Notes.SetTrack(playTarget())   -- ce qu'on joue suit la vue
 end
 
 -- One-time separation, for projects built while the instrument was a page of
@@ -1164,7 +1186,6 @@ function Kit.SplitInstrument()
             end
         end
     end
-    local wants_input = r.GetMediaTrackInfo_Value(tr, "I_RECINPUT") ~= Kit.INPUT_ALL
     local owner = kitFolderOf(tr)
     local unmute = {}
     if Kit.mode == "instrument" then
@@ -1177,7 +1198,7 @@ function Kit.SplitInstrument()
     elseif r.GetMediaTrackInfo_Value(tr, "B_MUTE") >= 0.5 then
         unmute[1] = tr
     end
-    if not (next(feeds) or wants_input or owner or #unmute > 0) then
+    if not (next(feeds) or owner or #unmute > 0) then
         return false
     end
 
@@ -1193,13 +1214,13 @@ function Kit.SplitInstrument()
         end
     end
 
-    -- 2. its own MIDI input (arming is a choice, and the view owns it)
-    if wants_input then
-        r.SetMediaTrackInfo_Value(tr, "I_RECINPUT", Kit.INPUT_ALL)
-        r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)
-    end
+    -- L'etape « lui donner sa propre entree » a disparu d'ici. Elle posait
+    -- INPUT_ALL, c'est-a-dire toutes les entrees MIDI du systeme, et ce n'etait
+    -- une reparation que dans un monde ou s'entendre exigeait d'etre arme.
+    -- Couper l'envoi (etape 1) suffit a le rendre independant ; l'entree qu'il
+    -- ecoute est celle que REAPER lui a donnee, comme pour toute piste.
 
-    -- 3. out of the kit folder, to just before it — a sibling, at the same
+    -- 2. out of the kit folder, to just before it — a sibling, at the same
     -- level, so its audio stops flowing through the kit's fader. The closing
     -- depth it may have been carrying goes back to the child above it, which
     -- becomes the folder's last one; both cases (only child, middle child)
@@ -1230,7 +1251,7 @@ function Kit.SplitInstrument()
         end
     end
 
-    -- 4. the mode mutes go. They were how the two took turns; there are no
+    -- 3. the mode mutes go. They were how the two took turns; there are no
     -- turns any more, so what the saved mode had silenced comes back — and
     -- ONLY that: a pad the user muted by hand in drum mode is his own.
     for i = 1, #unmute do
@@ -1545,41 +1566,29 @@ function Kit.PadPeak(note)
     return a
 end
 
--- Every note the suite plays for PREVIEW — a sampler pad, an editor audition,
--- a dragged note in a piano roll — goes out on this channel, and nothing else
--- does. StuffMIDIMessage is a BROADCAST: it reaches every armed, input-
--- monitored track at once, and the suite deliberately arms two (this bus, so
--- pads sound; the looper router, so you can record what you play). Nothing in
--- the message said which of them was meant, so one pad click sounded the kit
--- AND whatever instrument the looper's armed lane routed to. The channel is
--- that missing word: the looper engine ignores it — neither monitored nor
--- captured — so a preview reaches the kit and stops there.
---
--- Chosen as the last channel because the engine spends 1..MAX_LANES on its
--- lanes; keep the two in sync if MAX_LANES ever reaches 16.
+-- LE CANAL RESERVE N'A PLUS DE RAISON D'ETRE, et il vaut la peine de dire
+-- laquelle il avait : StuffMIDIMessage etant un broadcast, une note d'apercu
+-- arrivait partout et il fallait apprendre aux autres a l'ignorer. Le canal
+-- etait ce mot manquant. Une note adressee n'a plus besoin de se signaler ;
+-- il ne survit que pour le repli sans moteur, qui reste un broadcast.
 Kit.UI_CHAN = 15                        -- MIDI channel 16, 0-based in the status byte
 
--- I_RECINPUT values for the bus. ALL is the normal state; UI_ONLY (channel 16
--- of the virtual keyboard) is what the looper narrows it to while it monitors
--- an armed lane itself — see Loop.lua. Without that, playing a keyboard while
--- a column routed HERE is armed hit the kit twice: once direct, once through
--- the router.
+-- Valeur d'entree « MIDI, toutes entrees, tous canaux ». Elle etait POSEE DE
+-- FORCE sur le bus a la creation, ce qui faisait du kit un aspirateur : toute
+-- source MIDI du systeme y entrait, sans que rien ne l'ait demande. Elle reste
+-- ici parce qu'un utilisateur peut vouloir exactement ca, et que c'est alors
+-- son choix — Kit.SetInputAll l'ecrit, sur demande.
+-- `INPUT_UI_ONLY` (canal 16 du clavier virtuel) vivait a cote. Il servait au
+-- Looper a retrecir l'entree du bus pendant qu'il monitorait lui-meme une lane,
+-- sans quoi une touche jouee atteignait le kit deux fois : en direct, et par le
+-- routeur. Le routeur n'existe plus, et personne ne l'appelait plus.
 Kit.INPUT_ALL     = 4096 + (63 << 5)            -- MIDI, any channel, any input
-Kit.INPUT_UI_ONLY = 4096 + (Kit.UI_CHAN + 1) + (62 << 5)  -- MIDI, chan 16, VKB
 
--- Pad trigger through the real engine: virtual-keyboard MIDI queue →
--- armed MIDI bus → choke JSFX → sends → pad RS5Ks.
-function Kit.StuffNote(note, on, vel)
-    r.StuffMIDIMessage(0, (on and 0x90 or 0x80) + Kit.UI_CHAN, note,
-                       on and (vel or 100) or 0)
-end
-
--- WHO HEARS THE KEYBOARD. Pad clicks travel over the VKB queue, which reaches
--- every armed track at once, so the two instruments cannot both listen: the
--- one ON SCREEN does. That is the only thing the view still decides — both
--- tracks keep sounding whatever is sent to them (items, sends, looper lanes),
--- which is what makes them usable at the same time.
-local function armTarget()
+-- OU VA CE QU'ON JOUE. Les pads et l'instrument chromatique sont deux
+-- instruments sur deux pistes ; celui qui est A L'ECRAN est celui qu'on joue.
+-- Ce n'est plus un arbitrage (les deux entendaient le meme broadcast, il en
+-- fallait un), c'est une simple adresse.
+playTarget = function()
     if Kit.mode == "instrument" then
         local t = Kit.instr and Kit.instr.track
         return valid(t) and t or nil
@@ -1587,27 +1596,51 @@ local function armTarget()
     return valid(Kit.bus) and Kit.bus or nil
 end
 
-local function idleTarget()
-    if Kit.mode == "instrument" then return valid(Kit.bus) and Kit.bus or nil end
-    local t = Kit.instr and Kit.instr.track
-    return valid(t) and t or nil
+-- Une note jouee ICI : port du moteur -> piste du kit, pre-FX -> choke JSFX ->
+-- envois -> RS5K des pads. Elle traverse donc la chaine d'effets du pad, ce qui
+-- est la seule reponse honnete a « fais-moi entendre ce pad » : ce qu'on entend
+-- au clic est ce que le pad sonne.
+function Kit.PlayNote(note, on, vel)
+    Notes.SetTrack(playTarget())
+    if on then
+        -- Le repli n'a pas d'adresse : il garde le canal reserve, qui est tout
+        -- ce qu'un broadcast peut offrir en guise de destinataire.
+        if Notes.IsTargeted() then Notes.On(note, vel)
+        else Notes.On(note, vel, Kit.UI_CHAN) end
+    else
+        if Notes.IsTargeted() then Notes.Off(note)
+        else Notes.Off(note, Kit.UI_CHAN) end
+    end
 end
 
+-- Tout relacher, et rendre la sortie. A appeler a la fermeture de la fenetre :
+-- un apercu permanent laisse sur la piste de l'utilisateur survivrait au script.
+function Kit.PlayClose() Notes.Close() end
+
+-- ---------------------------------------------------------------------------
+-- L'ARMEMENT — UNE LECTURE, PLUS UNE VOLONTE
+-- ---------------------------------------------------------------------------
+-- Il y avait ici un `Kit.arm_intent` et un `Kit.HoldArm()` appele a chaque
+-- poll, qui reecrivaient I_RECARM/I_RECMON des que REAPER les avait bouges. Ce
+-- n'etait pas de la robustesse, c'etait une competition : l'utilisateur armait
+-- une piste, REAPER desarmait la notre en changeant de selection, et nous la
+-- rearmions dans la foulee. Les deux etats du projet s'ecrasaient a tour de
+-- role et personne ne pouvait dire lequel gagnerait.
+--
+-- Ce que ca achetait : un clic de pad audible, parce que le broadcast n'atteint
+-- qu'une piste armee en monitoring. Ca ne l'achete plus — le clic a une adresse
+-- — donc l'armement redevient ce que REAPER en dit : « cette piste enregistre
+-- et se monitore ». On le LIT, et on ne l'ecrit que si on nous le demande.
 function Kit.Armed()
-    local tr = armTarget()
+    local tr = playTarget()
     if not tr then return false end
     return r.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1
        and r.GetMediaTrackInfo_Value(tr, "I_RECMON") > 0
 end
 
--- The arm is an INTENT, not just a track value. Armed is the working default
--- (pad clicks travel through StuffMIDIMessage, which only reaches an armed +
--- monitored track), and other scripts disarm tracks behind our back — CP_Looper
--- used to do it when routing a lane here, and CP_AutoArmVSTiTrack does it on
--- selection changes. Kit.HoldArm() re-asserts the intent whenever the track
--- drifted, so the sampler stops silently falling back to raw file preview.
-Kit.arm_intent = true
-
+-- Un geste, une ecriture. On ne touche PAS a l'autre instrument : desarmer une
+-- piste que l'utilisateur a armee lui-meme n'est pas de notre ressort, et il n'y
+-- a plus de raison technique de le faire.
 function Kit.SetArmed(on)
     if Kit.mode == "instrument" then
         Kit.EnsureInstrument()
@@ -1615,54 +1648,44 @@ function Kit.SetArmed(on)
         if not valid(Kit.parent) then return end
         Kit.EnsureBus()
     end
-    Kit.arm_intent = on and true or false
-    local tr = armTarget()
+    local tr = playTarget()
     if not tr then return end
     r.SetMediaTrackInfo_Value(tr, "I_RECARM", on and 1 or 0)
     r.SetMediaTrackInfo_Value(tr, "I_RECMON", on and 1 or 0)
-    local idle = on and idleTarget() or nil
-    if idle then
-        r.SetMediaTrackInfo_Value(idle, "I_RECARM", 0)
-        r.SetMediaTrackInfo_Value(idle, "I_RECMON", 0)
-    end
-    -- our own write must not look like an external project change, or the next
-    -- Poll rescans the whole kit for nothing
+    -- notre propre ecriture ne doit pas ressembler a un changement externe du
+    -- projet, sinon le prochain Poll rescanne tout le kit pour rien
     last_change = r.GetProjectStateChangeCount(0)
 end
 
--- Re-assert the intent if something moved it. Cheap: two reads, and it only
--- writes on an actual mismatch. The other instrument is pushed out of the way
--- ONLY while we claim the input — disarmed, we have no business touching a
--- track the user armed himself.
-function Kit.HoldArm()
-    local tr = armTarget()
-    if not tr then return false end
-    local want = Kit.arm_intent and 1 or 0
-    local wrote = false
-    local arm  = r.GetMediaTrackInfo_Value(tr, "I_RECARM")
-    local mon  = r.GetMediaTrackInfo_Value(tr, "I_RECMON")
-    if arm ~= want or ((want == 0) ~= (mon == 0)) then
-        r.SetMediaTrackInfo_Value(tr, "I_RECARM", want)
-        r.SetMediaTrackInfo_Value(tr, "I_RECMON", want)
-        wrote = true
-    end
-    if want == 1 then
-        local idle = idleTarget()
-        if idle and (r.GetMediaTrackInfo_Value(idle, "I_RECARM") == 1
-                  or r.GetMediaTrackInfo_Value(idle, "I_RECMON") ~= 0) then
-            r.SetMediaTrackInfo_Value(idle, "I_RECARM", 0)
-            r.SetMediaTrackInfo_Value(idle, "I_RECMON", 0)
-            wrote = true
-        end
-    end
-    if wrote then last_change = r.GetProjectStateChangeCount(0) end
-    return wrote
+-- « Ecoute tout ce qui entre », sur demande. C'etait le reglage impose ; c'est
+-- desormais un geste, et il porte son nom. Il n'a pas de reciproque : « quelle
+-- entree sinon » n'a pas de reponse par defaut, et c'est le selecteur d'entree
+-- de REAPER qui la donne — un menu de plus ici ne ferait que la redire moins
+-- bien.
+function Kit.SetInputAll()
+    local tr = playTarget()
+    if not tr then return end
+    r.SetMediaTrackInfo_Value(tr, "I_RECINPUT", Kit.INPUT_ALL)
+    r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)
+    last_change = r.GetProjectStateChangeCount(0)
 end
 
--- One-shot migration + self-heal: move a legacy choke off the folder
--- parent, drop the feedback-muted parent→pad sends, disarm parent and
--- pads (arming pads was the user workaround for the muted sends), and
--- guarantee exactly one MIDI send bus → every pad.
+function Kit.InputIsAll()
+    local tr = playTarget()
+    if not tr then return false end
+    return r.GetMediaTrackInfo_Value(tr, "I_RECINPUT") == Kit.INPUT_ALL
+end
+
+-- One-shot migration + self-heal: move a legacy choke off the folder parent,
+-- drop the feedback-muted parent→pad sends, and guarantee exactly one MIDI
+-- send bus → every pad.
+--
+-- IT NO LONGER DISARMS ANYTHING. It used to disarm the folder parent and every
+-- pad track, on the grounds that arming them had been a user workaround for
+-- the muted sends. Perhaps it was — but a repair pass that silently rewrites
+-- record-arm across a dozen tracks is exactly the behaviour this chantier is
+-- removing, and the workaround it undoes has been unnecessary since the sends
+-- were fixed. What it fixes now is routing, which is what it is for.
 function Kit.Repair()
     if not valid(Kit.parent) then return end
     ubegin()
@@ -1678,11 +1701,6 @@ function Kit.Repair()
             end
         end
         r.TrackFX_Delete(Kit.parent, pc)
-    end
-    -- never disarm the input bus: an adopted kit can have the parent and the
-    -- bus be the SAME track, and disarming it kills every pad click
-    if Kit.parent ~= bus then
-        r.SetMediaTrackInfo_Value(Kit.parent, "I_RECARM", 0)
     end
 
     for si = r.GetTrackNumSends(Kit.parent, 0) - 1, 0, -1 do
@@ -1702,9 +1720,6 @@ function Kit.Repair()
     end
     for _, pad in pairs(Kit.pads) do
         if valid(pad.track) then
-            if pad.track ~= bus then
-                r.SetMediaTrackInfo_Value(pad.track, "I_RECARM", 0)
-            end
             local _, guid = r.GetSetMediaTrackInfo_String(pad.track, "GUID", "", false)
             if not have[guid] then
                 local s = r.CreateTrackSend(bus, pad.track)
