@@ -2776,3 +2776,85 @@ break en huit cases marche), `+Scene` en Ctrl-clic, un clavier dans
 CP_Session, Ctrl+Z sur les notes d'une case et sur un Alt+clic, l'accès disque
 sorti de la boucle de dessin, et le fondu qui manquait au déchargement d'un
 son en cours.
+
+---
+
+# Session 24 — trois choses qui disaient le contraire de ce qu'elles faisaient
+
+Session courte, ouverte par un retour qu'il faut noter parce qu'il oriente la
+suite : *« le moteur audio est ouf, il est solide, fiable, ne lâche pas un seul
+temps »*. Le chantier 2 est donc réellement clos, et ce qui suit n'est plus de
+la réparation de fond mais de l'ajustement d'usage.
+
+Trois défauts, sans rapport entre eux, et une racine commune : **dans les
+trois, un mécanisme obtenait le bon résultat par un détour, et le détour
+coûtait une information.**
+
+## Le transport arrêtait l'état, pas seulement le son
+
+En mode Suivre, `followHostStop` envoyait un arrêt à chaque lane en lecture dès
+que le transport de REAPER tombait. Le son se taisait — et l'état partait avec.
+Rappuyer sur play ne relançait rien : il fallait recliquer la grille case par
+case. Or arrêter le transport veut dire **suspends**, jamais *oublie ce que je
+t'ai demandé* ; c'est la promesse de toute grille de session, et elle était
+rompue à chaque arrêt.
+
+Le moteur natif, lui, avait déjà raison : sur le front descendant de `active`
+il relâche ce qui sonne et ferme les prises, mais il **laisse** une lane en
+lecture dans son mode. Rien à corriger de ce côté — l'horloge ne bat plus, donc
+rien ne sort, et au retour la lane se raccroche à la phase du projet comme
+n'importe quelle passe suivante.
+
+Ce qui justifiait cet arrêt, c'étaient les cases **audio** : ce sont des voix
+et non des lanes, elles gardaient leur passe programmée et pouvaient sonner une
+mesure de plus. On demandait donc l'arrêt de la *lane* pour faire taire une
+*voix*, et on payait ce détour avec l'état de toute la grille. Elles se taisent
+maintenant chez elles, dans `Cells.drive`, sur la condition qui les concerne —
+`Loop.ClockRunning()`, la même que le `active` du moteur.
+
+## Un clip d'instrument s'ouvrait en rangées de batterie
+
+`rollRows` décidait : *« il y a un kit sous la cible, donc rangées de pads »*.
+C'était vrai tant qu'un instrument chromatique était autre chose qu'un kit.
+Depuis le chantier 2 il **est** un kit — d'un seul pad, sur sa propre piste —
+donc chaque clip d'instrument s'ouvrait avec une unique rangée nommée, sur
+laquelle aucune mélodie ne s'écrit.
+
+Le genre voyage maintenant dans la vue (`Loop.KitViewOfTrack` →
+`kitview.mode`), et **seulement pour un kit JSFX** : sur l'ancien moteur,
+`CP_KIT_MODE` note quelle page le Sampler affichait en dernier — un réglage de
+fenêtre posé sur la piste faute d'un meilleur endroit. Le lire comme un genre
+aurait ouvert en clavier les clips de batterie de tout projet quitté sur la
+page instrument.
+
+## La barre d'espace jouait, le bouton disait « Play »
+
+Le son partait et le bouton ne basculait pas. Deux causes empilées : les
+touches sont traitées **après** le dessin, donc un appui laisse toujours une
+image de retard ; et l'élan d'entrée, qui la rattrapait, s'épuise en 0,3 s —
+après quoi la boucle retombe à deux images par seconde et l'écran reste figé.
+
+La vraie faute est ailleurs. Le seul réveil demandé pendant une écoute venait
+du **curseur de lecture**, et il n'était demandé que si le curseur tombait
+juste : `playCursorTime` rend `nil` dès que la position n'est pas lisible, et
+alors plus rien ne réveillait la fenêtre. *Une fenêtre qui se rafraîchit parce
+qu'elle a quelque chose à dessiner s'arrête dès qu'elle n'a plus rien — et
+l'état d'un bouton, lui, doit rester vrai.* Le réveil est maintenant demandé
+sur la bonne condition, dans `pollSection`, qui interroge déjà « ça sonne ? »
+à chaque frame.
+
+## Ce qui est consigné plutôt que fait
+
+`ROADMAP_Editeur.md` est ouvert. Il tient l'inventaire complet des
+modificateurs de souris MIDI de REAPER **dans la config de Cédric** (six
+contextes, relevés d'écran), ce que CP_Editor fait en face de chaque ligne, et
+l'ordre de dépendances pour combler l'écart — à commencer par la collision
+Ctrl/Shift, qu'il faut trancher une seule fois avant tout le reste.
+
+Il tient aussi deux demandes plus larges : la **liberté de lecture** « à la
+Ableton » — dont le curseur et la sélection locaux à une case sont gratuits,
+tandis que « lire à partir d'ici » demande un champ `offset` par lane dans le
+C++ (ce qui ne casse pas le verrouillage de phase : un décalage constant reste
+un verrouillage) — et les **raccourcis configurables**, qui ne sont pas un
+chantier d'interface mais de forme : tant qu'un raccourci est un `if char ==
+113` au milieu d'une fonction, il n'y a rien à configurer.

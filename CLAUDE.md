@@ -31,6 +31,7 @@ Ailleurs, rien ne marche : les modules se chargent par
 | ou on en est face a Ableton et FL, ce qu'on refuse | `ANALYSE_Confrontation.md` — le RAISONNEMENT |
 | comment appeler le moteur natif | `API_Moteur.md` — le contrat d'ABI |
 | pourquoi le moteur est fait comme ca | `ARCHI_MoteurNatif.md` |
+| le plan de CP_Editor : modificateurs MIDI, lecture libre, raccourcis | `ROADMAP_Editeur.md` |
 | ce que font les autres DAW, verifie sur leurs manuels | `Recherche/` (+ son `README.md`) |
 
 Confondre les trois premiers fait perdre une heure a chaque reprise. Une case

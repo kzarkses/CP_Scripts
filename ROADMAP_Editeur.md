@@ -1,0 +1,347 @@
+# Roadmap — CP_Editor, égaler l'éditeur MIDI de REAPER
+
+Ouverte le 2026-08-02, à partir de la table des **modificateurs de souris de la
+config de Cédric** (Preferences → Editing Behavior → Mouse Modifiers, contextes
+MIDI). Ce document tient deux choses :
+
+1. **L'inventaire**, relevé tel quel — c'est la référence, et elle ne se
+   redevine pas ;
+2. **Ce que CP_Editor fait déjà en face**, et donc le manque exact.
+
+`ROADMAP_Chantiers.md` reste LE PLAN de la suite. Celui-ci est le plan d'**une
+fenêtre**, et il n'a pas de priorité sur les chantiers : il se pioche.
+
+Une case cochée veut dire *écrit et compilé*, jamais *joué* — c'est Cédric qui
+joue.
+
+---
+
+## 1. Ce que CP_Editor sait déjà faire
+
+Relevé dans le code le 2026-08-02, pour que le manque soit un manque et non un
+oubli de lecture.
+
+**Grille — clic gauche**
+- sur une note : sélectionne (Shift ajoute), glisse = déplace ; à 6 px du bord
+  droit = redimensionne ; la note s'auditionne à la prise ;
+- sur le vide : insère une note d'un pas de grille **dans la case sous le
+  pointeur** (le geste de FL), et garder le bouton enfoncé en glissant à droite
+  règle la longueur ;
+- **Ctrl pendant un glisser = sans magnétisme.**
+
+**Grille — clic droit** : presse = rectangle de sélection ; relâché sans avoir
+bougé sur une note = supprime cette note.
+
+**Colonne des libellés** (clavier ou pads) : clic gauche sélectionne toute la
+rangée (Shift additif), clic droit auditionne.
+
+**Molette**, sur la grille et la lane de vélocité : nue = défilement vertical,
+Shift = zoom horizontal, Alt = défilement horizontal, Ctrl = zoom vertical
+autour de la note pointée, **Ctrl+Shift sur une note = subdivision** (×2 / ÷2,
+le *trap roll*). Bouton du milieu = panoramique.
+
+**Lane de vélocité** : clic gauche prend la barre la plus proche, glisser règle
+la vélocité — de toute la sélection s'il y en a une.
+
+**Règle** (modes take et item seulement) : de vraies poignées — un bord de la
+sélection temporelle la redimensionne, son corps la déplace, le drapeau du
+curseur d'édition le déplace, un clic dans le vide pose le curseur et efface la
+sélection, un glisser dans le vide en crée une. Ctrl = sans magnétisme.
+**Inerte en mode clip** — c'est le point 5 de ce document.
+
+**Clavier** : `Space` / `Shift+Space` / `Ctrl+Shift+Space` (trois départs, ceux
+de REAPER), `Home`, `+` / `-`, `Ctrl+Z` / `Ctrl+Y`, `Ctrl+A` / `C` / `X` / `V`
+/ `D`, `Delete`, `Q` (quantifier), `Échap`, `↑`/`↓` (transposer ±1, Shift ±12,
+Ctrl dans la gamme), `←`/`→` (décaler d'un pas), `Alt`+flèches (marcher de note
+en note, avec audition), `Shift+Alt`+flèches (étendre la sélection en
+marchant).
+
+Le tout est **partagé avec CP_Looper** par `CP_Engine/Roll.lua` et
+`CP_Engine/RollUI.lua` : une opération ajoutée à `Roll` doit être câblée dans
+les deux hôtes **dans le même changement**.
+
+---
+
+## 2. L'inventaire REAPER — la config de Cédric, relevée
+
+### MIDI note — clic gauche
+
+| modificateur | comportement REAPER | CP_Editor |
+|---|---|---|
+| (aucun) | Select note and move edit cursor | sélectionne — **ne bouge pas le curseur** |
+| Shift | Add a **range** of notes to selection | ajoute **une** note |
+| Ctrl | Toggle note selection | ✗ |
+| Shift+Ctrl | Select note and move edit cursor ignoring snap | ✗ |
+| Alt | • **Erase note** | ✗ (c'est le clic droit ici) |
+| Shift+Alt | Select all notes **in measure** | ✗ |
+| Ctrl+Alt | Select note **and all later notes** | ✗ |
+| Shift+Win | • **Double note length** | ✗ |
+| Ctrl+Win | • **Halve note length** | ✗ |
+
+### MIDI note — glisser gauche
+
+| modificateur | comportement REAPER | CP_Editor |
+|---|---|---|
+| (aucun) | Move note | ✔ déplace |
+| Shift | Move note ignoring snap | ✗ (c'est **Ctrl** ici) |
+| Ctrl | **Copy note** | ✗ — Ctrl est pris par « sans magnétisme » |
+| Shift+Ctrl | Move note **on one axis only** | ✗ |
+| Alt | • **Erase notes** | ✗ |
+| Shift+Ctrl+Alt | Move note vertically ignoring scale/key | ✗ |
+| Ctrl+Win | • **Stretch note positions (arpeggiate)** | ✗ |
+| Shift+Ctrl+Win | • idem, sans magnétisme | ✗ |
+
+### MIDI note edge — glisser gauche
+
+| modificateur | comportement REAPER | CP_Editor |
+|---|---|---|
+| (aucun) | Move note edge | ✔ redimensionne |
+| Shift | Move note edge ignoring snap | ✗ (c'est **Ctrl** ici) |
+| Ctrl | Move note edge **ignoring selection** | ✗ |
+| Shift+Ctrl | idem, sans magnétisme | ✗ |
+| Alt | **Stretch notes** | ✗ |
+| Shift+Alt | Stretch notes ignoring snap | ✗ |
+| Shift+Win | • Move note edge ignoring snap | ✗ |
+
+### MIDI piano roll (le vide) — clic gauche
+
+| modificateur | comportement REAPER | CP_Editor |
+|---|---|---|
+| (aucun) | • **Insert note** | ✔ insère dans la case |
+| Ctrl | Deselect all notes and move edit cursor ignoring snap | ✗ |
+| Alt | Deselect all notes | ✗ |
+| Shift+Alt | Insert note ignoring snap | ✗ |
+| Shift+Ctrl+Alt | Insert note | ✗ |
+
+### MIDI piano roll (le vide) — glisser gauche
+
+| modificateur | comportement REAPER | CP_Editor |
+|---|---|---|
+| (aucun) | Insert note, drag to extend or change pitch | ✔ (l'extension ; **pas** le changement de hauteur) |
+| Shift | idem, sans magnétisme | ✗ |
+| Ctrl | **Copy selected notes** | ✗ |
+| Alt | **Erase notes** | ✗ |
+| Shift+Alt | Erase notes ignoring snap | ✗ |
+| Ctrl+Alt | **Paint a straight line of notes** | ✗ |
+| Shift+Ctrl+Alt | **Paint notes and chords** | ✗ |
+
+### MIDI ruler — clic gauche
+
+| modificateur | comportement REAPER | CP_Editor |
+|---|---|---|
+| (aucun) | Move edit cursor | ✔ (modes take/item) |
+| Shift | Select notes or CC **in time selection** | ✗ |
+| Ctrl | Move edit cursor ignoring snap | ✔ |
+| Alt | **Clear loop or time selection** | ✗ |
+
+### MIDI ruler — glisser gauche
+
+| modificateur | comportement REAPER | CP_Editor |
+|---|---|---|
+| (aucun) | Edit **loop points** (règle) ou **time selection** (grille) | ✔ time selection uniquement |
+| Shift | *Move* au lieu de *edit* | ✔ (par la poignée « corps ») |
+| Ctrl | idem, sans magnétisme | ✔ |
+| Shift+Ctrl | move, sans magnétisme | ✔ |
+| Alt | Edit loop point **et** time selection ensemble | ✗ (pas de loop points) |
+| Shift+Alt | Move les deux ensemble | ✗ |
+| Ctrl+Alt | Edit les deux, sans magnétisme | ✗ |
+| Shift+Ctrl+Alt | Move les deux, sans magnétisme | ✗ |
+
+---
+
+## 3. Ce qu'il faut construire, dans l'ordre où ça se tient
+
+L'ordre n'est pas celui des tableaux : il est celui des **dépendances**. Chaque
+étape rend la suivante moins chère.
+
+### 3.1 — Trancher la collision Ctrl / Shift
+
+**À faire en premier, et une seule fois.** Chez REAPER, **Shift** ignore le
+magnétisme et **Ctrl** copie. Chez CP_Editor, **Ctrl** ignore le magnétisme et
+rien ne copie. Les deux conventions ne peuvent pas coexister, et tout le reste
+du document en dépend : la moitié des lignes manquantes sont des combinaisons
+*avec* l'un ou l'autre.
+
+- [ ] Passer « sans magnétisme » sur **Shift**, libérer **Ctrl** pour la copie.
+      Shift est aujourd'hui « sélection additive » sur la grille — qui devient
+      **Ctrl**, comme chez REAPER (*Toggle note selection*).
+- [ ] Le faire **dans `RollUI` et les deux hôtes en même temps** ; un éditeur
+      qui n'obéit pas aux mêmes doigts que l'autre est pire que les deux
+      anciens.
+
+### 3.2 — Le trousseau de modificateurs
+
+- [ ] `Core.ModWin()` — le bit 32 de `mouse_cap`, que le toolkit n'expose pas
+      encore alors que quatre lignes de la config de Cédric s'en servent
+      (double/halve length, arpeggiate).
+- [ ] **Une table**, pas une cascade de `if`. Un `modmask` (ctrl|shift|alt|win)
+      calculé une fois par frame, et un dictionnaire geste → action. C'est ce
+      qui rend le point 5 de ce document possible : **on ne peut rendre
+      configurable que ce qui est déjà une donnée.**
+
+### 3.3 — La gomme, partout où REAPER la met
+
+Trois contextes, un seul mécanisme : Alt efface. Aujourd'hui il n'y a que le
+clic droit, et il ne fait pas de traînée.
+
+- [ ] Alt+clic sur une note = supprime.
+- [ ] Alt+glisser sur la grille = **gomme à la traînée** (tout ce que le
+      pointeur traverse).
+- [ ] Shift+Alt = idem, sans magnétisme.
+
+### 3.4 — Les sélections riches
+
+Ce sont les quatre lignes de « MIDI note — clic gauche » et ce sont, à l'usage,
+celles qui font gagner le plus de temps.
+
+- [ ] Shift+clic = ajoute la **plage** entre l'ancre et la note cliquée.
+- [ ] Ctrl+clic = bascule une note dans la sélection.
+- [ ] Shift+Alt = toutes les notes de la mesure.
+- [ ] Ctrl+Alt = cette note et toutes celles qui suivent.
+- [ ] Alt+clic dans le vide = tout désélectionner.
+- [ ] Sur la règle, Shift+clic = sélectionner les notes de la sélection
+      temporelle.
+
+### 3.5 — Les contraintes de déplacement
+
+- [ ] Shift+Ctrl = déplacement sur **un seul axe** (celui du plus grand
+      mouvement, verrouillé à la prise).
+- [ ] Shift+Ctrl+Alt = déplacement vertical **hors gamme** — `Roll` connaît
+      déjà la gamme (`Roll.scale_on`, `TransposeInScale`), donc c'est la
+      dérogation qui manque, pas la contrainte.
+
+### 3.6 — Les longueurs et les bords
+
+- [ ] Ctrl sur un bord = redimensionner **cette** note en ignorant la
+      sélection.
+- [ ] Alt sur un bord = **étirer** (le groupe se dilate au lieu de se
+      déplacer) ; Shift+Alt sans magnétisme.
+- [ ] Shift+Win / Ctrl+Win au clic = doubler / diviser la longueur. Deux
+      lignes, une fois `ModWin` posé.
+
+### 3.7 — Les gestes qui écrivent
+
+Les plus gros, et les seuls qui demandent de vraies fonctions dans `Roll`.
+
+- [ ] **Copier en glissant** (Ctrl) — la note, ou la sélection entière.
+- [ ] **Peindre une ligne droite** (Ctrl+Alt) — des notes régulières entre le
+      point de prise et le pointeur, au pas de la grille.
+- [ ] **Peindre notes et accords** (Shift+Ctrl+Alt) — la même chose, mais
+      l'accord de la gamme sous la hauteur pointée.
+- [ ] **Arpéger** (Ctrl+Win) — étirer les *positions* d'un groupe sans toucher
+      aux longueurs. `Roll.Reverse` et `Roll.Legato` montrent la forme :
+      une passe sur la sélection, une seule écriture.
+- [ ] Le glisser d'insertion doit aussi **changer la hauteur** en montant ou
+      descendant, pas seulement la longueur.
+
+---
+
+## 4. Le curseur d'édition dans l'éditeur
+
+Trois lignes de la config de Cédric le déplacent (clic sur une note, clic dans
+la règle, Ctrl+clic dans le vide). CP_Editor ne le déplace que depuis la règle,
+et **jamais en mode clip**.
+
+- [ ] Le clic sur une note pose le curseur à son début (mode take/item).
+- [ ] Ctrl+clic dans le vide : désélectionne **et** pose le curseur, sans
+      magnétisme.
+
+---
+
+## 5. La liberté de lecture — « à la Ableton »
+
+C'est la demande de Cédric du 2026-08-02, et elle mérite d'être découpée,
+parce que ses trois morceaux n'ont pas du tout le même coût.
+
+### 5.1 — Un curseur et une sélection **locaux** à la case — gratuit
+
+En mode clip, la règle est délibérément inerte : le commentaire dit *« edit
+cursor / time selection are project concepts; a clip has neither »*. C'est vrai
+du curseur **du projet** — pas d'un curseur **de la case**, qui est de l'état
+de fenêtre pur et ne coûte rien.
+
+- [ ] Un `state.clip_cursor` et un `state.clip_sel_a/b`, **en beats de la
+      case**, avec les mêmes poignées que la règle du mode take.
+- [ ] Ce qu'ils débloquent immédiatement : quantifier / supprimer / transposer
+      **dans la plage**, coller au curseur, sélectionner par le temps. Toutes
+      ces opérations existent déjà dans `Roll` et ne prennent pas de plage —
+      c'est le seul argument qui leur manque.
+
+### 5.2 — Lire à partir d'ici — un champ d'ABI, et une décision
+
+C'est celui qui touche le moteur. La phase d'une lane est publiée par le C++
+comme `pb mod Lb` : elle est ancrée sur le **beat zéro du projet**, jamais sur
+l'instant du lancement. C'est ce qui verrouille toutes les boucles sur la même
+grille, et c'est le fondement du moteur — on n'y touche pas.
+
+**Mais un décalage constant ne le casse pas.** `phase = (pb + off) mod Lb`
+laisse la case verrouillée à la grille, à un décalage près qui ne dérive pas.
+C'est exactement ce que fait le *legato launch* d'Ableton, et c'est ce que
+« lire à partir d'ici » veut dire.
+
+- [ ] Un champ `offset` par lane dans `cp_lanes.cpp`, ajouté **au seul endroit
+      où la phase est publiée**. `Cells` relit `Loop.Phase` à chaque frame :
+      l'audio suit sans une ligne de plus.
+- [ ] Le clic dans la règle d'une case écrit `offset = (position cliquée −
+      phase courante)`, quantifié comme un lancement.
+- [ ] ⚠️ **Une réserve à écrire dans le code** : deux cases d'une même colonne
+      partagent la colonne, pas l'offset. L'offset appartient à la LANE.
+
+### 5.3 — La zone de lecture d'une case — après le 5.1
+
+Le début et la fin de boucle **dans** la case (le *loop brace* d'Ableton), qui
+est la version musicale de « je ne veux entendre que ces deux mesures ».
+
+- [ ] Réutiliser la sélection locale du 5.1 comme zone de lecture, sur un
+      commutateur — pas automatiquement : une sélection sert d'abord à éditer.
+- [ ] Côté audio c'est **déjà là** : `loop_start` / `loop_end` en frames source
+      sont portés par la voix depuis le chantier 4a. Côté MIDI, c'est la
+      longueur de lane qui répond, donc il faut un vrai couple début/fin.
+
+---
+
+## 6. Rendre les raccourcis configurables — l'ADN de REAPER
+
+Demande de Cédric du 2026-08-02 : *« à terme, rendre configurable tous les
+raccourcis et modificateurs, dans des réglages, pour chaque module de
+CP_Scripts. REAPER style, c'est dans son ADN. »*
+
+**Ce n'est pas un chantier d'interface, c'est un chantier de forme.** Tant
+qu'un raccourci est un `if char == 113` au milieu d'une fonction, il n'y a rien
+à configurer : il faut d'abord que la liaison soit une **donnée**.
+
+- [ ] **Une table de liaisons par module**, déclarée en haut du fichier :
+      `{ id, défaut, contexte, libellé }`. Les fonctions ne testent plus un
+      code de touche mais un **identifiant d'action**.
+- [ ] **Un module partagé**, `CP_Engine/Keymap.lua` : charge les défauts,
+      applique le fichier de l'utilisateur, répond `Keymap.Action(char, mods,
+      contexte)`. Un seul endroit qui sait lire une combinaison.
+- [ ] **Le stockage dans `CP_Config/`**, comme le reste des réglages de Cédric
+      — un fichier Lua lisible, pas un ExtState opaque.
+- [ ] **Une fenêtre d'édition**, une seule pour toute la suite, qui liste les
+      contextes et capture la frappe. `CP_Toolkit/CP_KeyDetector.lua` fait déjà
+      la capture : il existe précisément pour ça.
+- [ ] **Le point d'entrée est le 3.2** de ce document. Une fois que les
+      modificateurs de souris de CP_Editor sont une table, la même mécanique
+      sert aux touches, et le premier module est fait.
+
+**Réserve honnête** : `gfx.getchar` ne rapporte pas tout. Certaines touches
+mortes et certaines combinaisons ne remontent pas, et le clavier AZERTY décale
+les codes des touches de ponctuation. La fenêtre d'édition doit donc afficher
+**ce qu'elle a reçu**, pas ce qu'elle croit avoir reçu — sinon on configure un
+raccourci qui ne se déclenchera jamais.
+
+---
+
+## 7. Ce qu'on ne copie pas
+
+- **Les onze lignes de modificateurs Win+ de REAPER.** La touche Windows sert
+  au système ; on n'en prend que les deux que Cédric utilise réellement
+  (double/halve length, arpeggiate) et on laisse le reste libre pour la
+  configuration du point 6.
+- **Les CC comme une lane par contrôleur.** La lane de vélocité couvre ce dont
+  la suite a besoin aujourd'hui ; ouvrir les CC est un chantier à part, avec
+  son propre modèle de données.
+- **Les loop points séparés de la sélection temporelle.** Quatre lignes de la
+  table de la règle les combinent ; ici la sélection *est* la zone, et un
+  second couple de bornes doublerait l'état sans doubler l'usage.

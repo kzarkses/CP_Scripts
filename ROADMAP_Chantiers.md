@@ -9,6 +9,12 @@ est le RAISONNEMENT — où on en est face à Ableton et FL, ce qu'on copie et c
 qu'on refuse. **Celui-ci est le PLAN** : ce qu'on fait ensuite, dans quel
 ordre, et à quoi on saura que c'est fini. `Recherche/` tient la matière brute.
 
+**Un quatrième, pour une seule fenêtre.** `ROADMAP_Editeur.md` tient le plan de
+CP_Editor : l'inventaire des modificateurs de souris MIDI de REAPER dans la
+config de Cédric, ce que l'éditeur fait en face, la liberté de lecture « à la
+Ableton », et le chantier des raccourcis configurables. Il se pioche ; il n'a
+pas de priorité sur ce qui suit.
+
 Une case cochée ici veut dire *écrit et compilé*, jamais *entendu* — c'est
 Cédric qui écoute.
 
@@ -262,6 +268,31 @@ parce que c'est du Lua — Ableton et FL n'ont pas ce problème.
 ## Les corrections d'une ligne
 
 Elles ne sont pas des chantiers et changent l'usage quotidien.
+
+- [x] **Le transport suspend, il n'oublie pas.** En mode Suivre, arrêter le
+      transport arrêtait *l'état* de chaque case en lecture, pas seulement son
+      son : rappuyer sur play ne relançait rien, il fallait recliquer la
+      grille. Le moteur avait déjà raison — il laisse une lane en lecture dans
+      son mode sur le front descendant. Ce qui obligeait à l'arrêt, c'étaient
+      les cases **audio**, qui sont des voix et gardaient leur passe
+      programmée ; elles se taisent maintenant d'elles-mêmes quand l'horloge ne
+      bat plus (`Cells.drive`), et `Loop.ClockRunning()` dit cette condition
+      une fois pour toutes.
+- [x] **Un clip s'ouvre dans la vue de ce qu'il joue.** « Il y a un kit sous la
+      cible » décidait des rangées de batterie — mais depuis le chantier 2 un
+      instrument chromatique **est** un kit (d'un seul pad, sur sa piste), donc
+      chaque clip d'instrument s'ouvrait avec une seule rangée nommée, sur
+      laquelle aucune mélodie ne s'écrit. Le genre voyage désormais dans la vue
+      (`Loop.KitViewOfTrack` → `kitview.mode`), et seulement pour un kit JSFX :
+      sur l'ancien moteur, `CP_KIT_MODE` note quelle page le Sampler affichait
+      en dernier, ce qui n'est pas un genre.
+- [x] **La barre d'espace et le bouton Play disaient deux choses.** Le son
+      partait, le bouton restait sur « Play » : les touches sont traitées après
+      le dessin, donc l'appui laisse toujours une image de retard — et la
+      fenêtre s'endormait avant de la rattraper, parce que le seul réveil
+      demandé pendant une écoute venait du **curseur de lecture**, qui ne se
+      dessine que si sa position est lisible. Le réveil est maintenant demandé
+      sur la bonne condition : ça sonne.
 
 - [x] **La fenêtre de tolérance de lancement.** Elle vaut désormais **un
       huitième du quantize**, plafonnée à 0,25 beat : 250 ms à Q: Bar, 62 ms à
