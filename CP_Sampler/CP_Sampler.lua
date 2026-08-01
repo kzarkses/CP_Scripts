@@ -701,10 +701,73 @@ local function kitMenu()
         if ok then
             Kit.NewKit(name)
             markDirty()
-            flash("New kit created")
+            flash("New kit created (one track, one instrument)")
         end
     end }
+    -- L'ANCIEN MOTEUR RESTE ATTEIGNABLE, et il le restera tant que des projets
+    -- en contiennent. Ce n'est pas de l'indecision : un kit existant n'a aucune
+    -- raison d'etre converti sans qu'on le demande.
+    items[#items + 1] = { label = "New kit (legacy RS5K tracks)...",
+                          action = function()
+        local ok, name = r.GetUserInputs("New kit (RS5K)", 1,
+                                         "Name:,extrawidth=140", "")
+        if ok then
+            Kit.NewKit(name, Kit.ENGINE_RS5K)
+            markDirty()
+            flash("New RS5K kit created")
+        end
+    end }
+
+    if Kit.Exists() and not Kit.IsFX() then
+        items[#items + 1] = { separator = true }
+        -- ELLE N'EFFACE RIEN. Le kit d'origine reste entier ; on entend le
+        -- nouveau, et on supprime l'ancien soi-meme. Un garde-fou qui verifie
+        -- le geste et non son resultat ne garde rien — celui-la ne detruit
+        -- simplement pas ce qu'il n'a pas encore prouve.
+        items[#items + 1] = { label = "Migrate this kit to the instrument...",
+                              action = function()
+            local rep, err = Kit.MigrateToFX()
+            if not rep then
+                flash("Migration: " .. (err or "failed"))
+            else
+                state.migration = rep
+                markDirty()
+                flash("Migrating " .. rep.asked .. " pads...")
+            end
+        end }
+    end
+
+    if Kit.IsFX() then
+        items[#items + 1] = { separator = true }
+        items[#items + 1] = { label = "Resend everything to the instrument",
+                              action = function()
+            if Kit.SyncAll() then flash("Kit resent") else flash("No gmem") end
+        end }
+    end
     UI.NativeMenu(items)
+end
+
+-- LE COMPTE-RENDU DE MIGRATION, suivi jusqu'a son verdict. Il ne conclut pas
+-- avant que le dernier pad ait recu sa matiere : « ce pad ne sonne pas »
+-- voudrait alors dire « pas encore », et confondre les deux ferait supprimer
+-- un kit qui allait tres bien.
+local function pollMigration()
+    local rep = state.migration
+    if not (rep and rep.pending) then return end
+    Kit.MigrationVerdict(rep)
+    if rep.pending then return end
+    state.migration = nil
+    local miss = #(rep.missing or {})
+    if miss == 0 then
+        flash(string.format(
+            "Migrated: %d/%d pads sound. The old kit is untouched - delete it yourself.",
+            rep.loaded, rep.asked))
+    else
+        flash(string.format(
+            "Migrated %d/%d - %d SILENT (%s). Old kit kept.",
+            rep.loaded, rep.asked, miss,
+            table.concat(rep.missing, ", ", 1, math.min(miss, 3))))
+    end
 end
 
 -- "?" overlay content (standard help affordance, one per app)
@@ -1834,6 +1897,13 @@ local function frame(theme)
         state.meta_key = nil
         UI.RequestRedraw()
     end
+    -- Une migration en cours attend que le dernier pad ait recu sa matiere ;
+    -- Kit.Poll fait avancer la file, celui-ci lit le verdict quand elle est
+    -- vide. Rien ne tourne quand aucune migration n'est en cours.
+    if state.migration then
+        pollMigration()
+        UI.RequestRedraw()
+    end
     Audition.Poll()
     -- Project tempo → synced pads (chantier 8). One poll per frame; the
     -- re-aim runs only when the tempo moved or the kit changed (scan,
@@ -1917,8 +1987,18 @@ local function frame(theme)
     -- quand un de ses termes change : elle vit dans une boucle de dessin.
     do
         local pad = state.sel and Kit.pads[state.sel] or nil
-        local src = padUsesMidi(pad) and ("RS5K/" .. Kit.PlayLabel())
+        -- LE MOTEUR DU KIT ENTRE DANS LA MEME LIGNE. « jsfx » ou
+        -- « rs5k/tracks » repond a la question qu'on se pose vraiment quand
+        -- un pad surprend : est-ce que ce que je regle est ce qui sonne.
+        -- Elle dit aussi quand un chargement est en cours ou a echoue —
+        -- l'absence d'un son doit etre lisible, pas devinable.
+        local eng = Kit.EngineLabel and Kit.EngineLabel() or "rs5k/tracks"
+        local loading = Kit.FXLoading and Kit.FXLoading() or 0
+        local src = padUsesMidi(pad)
+                    and ((Kit.IsFX() and Kit.IsFX()) and eng
+                         or ("RS5K/" .. Kit.PlayLabel()))
                     or (Audition.WillUseVoices() and "voice" or "preview")
+        if loading > 0 then src = src .. " (" .. loading .. " loading)" end
         if state.badge_src ~= src then
             state.badge_src = src
             state.badge = "engine " .. Audition.Label() .. " · pads: " .. src

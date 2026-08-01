@@ -81,6 +81,12 @@ local Voice = dofile(reaper.GetResourcePath()
 local Notes = dofile(reaper.GetResourcePath()
                      .. "/Scripts/CP_Scripts/CP_Engine/Notes.lua")
 
+-- « Un kit est un effet ». KitFX tient le contrat avec CP_KitSampler.jsfx :
+-- les index de gmem, la carte des champs d'un pad, et les courbes qui relient
+-- une position de bouton a des millisecondes. Kit ne connait rien de tout ca.
+local KitFX = dofile(reaper.GetResourcePath()
+                     .. "/Scripts/CP_Scripts/CP_Engine/KitFX.lua")
+
 Kit.BASE = 36    -- pad 0 ↔ MIDI note 36 (GM kick, FL/Ableton convention)
 Kit.MAX  = 64    -- 64 pads = 4 pages of 16
 Kit.version = 0  -- bumped on every structural change (UI cache key)
@@ -92,7 +98,31 @@ Kit.P = {
     SOFFS = 13, EOFFS = 14, TUNE = 15, MINVEL = 17, MAXVEL = 18,
     LOOPOFFS = 23, DECAY = 24, SUSTAIN = 25,
     PITCH_LO = 5, PITCH_HI = 6,   -- pitch@start/end (chromatic instrument)
+
+    -- AU-DESSUS DE 100 : CE QUE LE RS5K N'AVAIT PAS, et qui n'existe que sur
+    -- le moteur JSFX. Les numeros commencent haut pour ne jamais croiser un
+    -- index de parametre du RS5K, y compris ceux qu'une version future
+    -- ajouterait. Sur un kit RS5K, Kit.Param(note, PORTA) rend nil — et
+    -- l'interface a le droit de s'en servir pour griser le bouton.
+    PORTA = 100, ROFF = 101, ROFFMS = 102, BEND = 103,
+    MUTE = 104, SOLO = 105, OUT = 106, PROB = 107, RR = 108,
+    MINVOL = 109, MIDICHAN = 110, CHROMATIC = 111, PADROOT = 112,
+    XFADE = 113,
 }
+
+-- Les reglages qu'un preset emporte sur le moteur JSFX. Le RS5K a sa propre
+-- liste (SAVE_PIDS, tout en bas) : deux moteurs, deux jeux de reglages, et
+-- ecrire un preset de l'un avec la liste de l'autre perdrait en silence
+-- exactement ce que le nouveau moteur a de plus.
+Kit.FX_PIDS = { 0, 1, 3, 4, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 23, 24, 25,
+                100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+                112, 113 }
+
+-- Ceux du RS5K. DECLARE ICI ET NON PLUS AVEC LES PRESETS : la migration s'en
+-- sert pour relever un kit source, et elle vit plus haut dans le fichier —
+-- en Lua, une locale declaree plus bas est simplement invisible, et l'appel
+-- serait parti sur nil sans un mot.
+local SAVE_PIDS = { 0, 1, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 23, 24, 25 }
 
 -- RS5K pitch param scale: normalized 0.5 = 0 st, ±80 st across 0..1.
 local function pitchNorm(st)
@@ -137,6 +167,13 @@ local repaired = false -- one routing migration/repair pass per session
 -- corps vit avec les helpers de jeu, tout en bas.
 local playTarget
 
+-- Le moteur JSFX : declare ici, rempli plus bas. Sans ces lignes, Kit.Scan
+-- appellerait des globales nil — l'erreur silencieuse la plus couteuse de Lua.
+local fx_slot, fx_index, fx_dirty = 0, nil, false
+local findKitFX, fxEnsure, fxDeserialize, fxSave
+local fxPad, fxLoadSample, fxClearPad, fxParam, fxSetParam
+local fxQueueLoad, fxPumpLoads
+
 local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
 
 function Kit.init(reaper_api, tracks_module)
@@ -145,6 +182,7 @@ function Kit.init(reaper_api, tracks_module)
     SrcTempo.init(r)
     Voice.init(r)
     Notes.init(r, Voice, Voice.PLAY_PORT_SAMPLER)
+    KitFX.init(r)
 end
 
 -- Comment une note jouee ici atteint le kit : « targeted » (un port, une piste)
@@ -388,6 +426,29 @@ function Kit.Scan()
         end
     end
     if Kit.parent then
+        -- QUEL MOTEUR EST CE KIT. La question se pose avant tout le reste :
+        -- un kit JSFX n'a ni dossier, ni bus, ni piste par pad, donc le
+        -- balayage qui suit n'aurait rien a visiter et effacerait ses pads.
+        Kit.engine = getExt(Kit.parent, "CP_KIT_ENGINE") or Kit.ENGINE_RS5K
+        if Kit.engine == Kit.ENGINE_FX then
+            fx_slot = tonumber(getExt(Kit.parent, "CP_KIT_SLOT") or "") or 0
+            fx_index = findKitFX(Kit.parent)
+            Kit.bus, Kit.instr = nil, nil
+            choke_fx, choke_tr = nil, nil
+            Kit.mode = "drum"
+            fxDeserialize(getExt(Kit.parent, "CP_KIT_PADS"))
+            -- L'effet manque : il a ete supprime a la main, ou la piste vient
+            -- d'une migration. On le repose et on lui rend le miroir — c'est
+            -- le seul cas ou Lua ecrase l'instrument, et il est vide.
+            if not fx_index then fxEnsure(Kit.parent) end
+            for _, pad in pairs(Kit.pads) do
+                if pad.path then pad.fx = fx_index end
+                pad.track = Kit.parent
+            end
+            Kit.version = Kit.version + 1
+            last_change = r.GetProjectStateChangeCount(0)
+            return
+        end
         Kit.mode = getExt(Kit.parent, "CP_KIT_MODE") or "drum"
         folderWalk(Kit.parent, function(tr)
             if getExt(tr, "CP_KIT_MIDI") then
@@ -483,7 +544,15 @@ end
 
 -- A brand-new, empty kit next to the existing ones (multi-kit). Becomes
 -- the active kit; the pads fill it from then on.
-function Kit.NewKit(name)
+-- LE NOUVEAU MOTEUR EST LE DEFAUT, et l'ancien reste accessible. Un kit
+-- neuf n'a aucune raison de naitre en soixante-cinq pistes ; un kit existant
+-- n'a aucune raison d'etre converti sans qu'on le demande.
+function Kit.NewKit(name, engine)
+    if engine ~= Kit.ENGINE_RS5K then return Kit.NewKitFX(name) end
+    return Kit.NewKitRS5K(name)
+end
+
+function Kit.NewKitRS5K(name)
     name = (name and name ~= "") and name or "CP Kit"
     ubegin()
     local tr
@@ -517,6 +586,10 @@ end
 -- Per-frame poll: rescan when the project changed (undo, manual edits,
 -- other scripts). One native call on the fast path.
 function Kit.Poll()
+    -- La file de chargement avance ici : Poll est deja appele une fois par
+    -- passage par CP_Sampler et CP_Editor, et rien d'autre dans ce module
+    -- n'a de battement.
+    if Kit.IsFX() then fxPumpLoads() end
     local c = r.GetProjectStateChangeCount(0)
     if c == last_change then return false end
     last_change = c
@@ -641,6 +714,7 @@ function Kit.EnsurePad(note)
     if note < Kit.BASE or note >= Kit.BASE + Kit.MAX then return nil end
     local pad = Kit.Pad(note)
     if pad then return pad end
+    if Kit.IsFX() then return fxPad(note, true) end
     local parent = Kit.Ensure()
 
     ubegin()
@@ -704,6 +778,12 @@ local clearSyncState
 -- repitches the new sample against a tempo it never had.
 function Kit.LoadSample(note, path, opts)
     if not path or path == "" then return false end
+    if Kit.IsFX() then
+        ubegin()
+        local ok = fxLoadSample(note, path, opts)
+        uend("Sampler: load " .. baseName(path))
+        return ok
+    end
     ubegin()
     local pad = Kit.EnsurePad(note)
     if not pad then
@@ -746,6 +826,12 @@ end
 function Kit.ClearPad(note)
     local pad = Kit.Pad(note)
     if not pad then return end
+    if Kit.IsFX() then
+        ubegin()
+        fxClearPad(note)
+        uend("Sampler: clear pad")
+        return
+    end
     ubegin()
     if pad.fx then r.TrackFX_Delete(pad.track, pad.fx) end
     pad.fx, pad.path = nil, nil
@@ -760,6 +846,17 @@ end
 function Kit.DeletePad(note)
     local pad = Kit.Pad(note)
     if not pad then return end
+    -- Sur le JSFX il n'y a pas de piste a supprimer : effacer un pad EST le
+    -- supprimer. C'est un des trois cents gestes que le montage RS5K rendait
+    -- differents sans qu'aucune raison musicale ne le demande.
+    if Kit.IsFX() then
+        ubegin()
+        fxClearPad(note)
+        Kit.pads[note] = nil
+        fxSave()
+        uend("Sampler: delete pad")
+        return
+    end
     ubegin()
     local parent = Kit.parent
     local pad_d = r.GetMediaTrackInfo_Value(pad.track, "I_FOLDERDEPTH")
@@ -787,7 +884,45 @@ end
 -- Swap two pad SLOTS (Drum Rack drag): tracks keep their FX chains and
 -- samples, only the note assignment moves — plus the choke groups, which
 -- belong to the slot.
+-- Echanger deux pads sur le JSFX : deux enregistrements du miroir, et deux
+-- rechargements. Aucune piste ne bouge — sur le montage RS5K, cet echange
+-- etait le SEUL endroit qui deplacait des pistes, et c'est exactement le
+-- genre de geste qui a coute des echantillons le 1er aout.
+function Kit.SwapPadsFX(a, b)
+    local pa, pb = Kit.pads[a], Kit.pads[b]
+    if not (pa or pb) then return end
+    ubegin()
+    Kit.pads[a], Kit.pads[b] = pb, pa
+    for note, pad in pairs({ [a] = Kit.pads[a], [b] = Kit.pads[b] }) do
+        if pad then
+            pad.note = note
+            pad.p = pad.p or {}
+            pad.p[Kit.P.NOTE_LO] = note / 127
+            pad.p[Kit.P.NOTE_HI] = note / 127
+            pad.fmt = {}
+        end
+    end
+    for _, note in ipairs({ a, b }) do
+        local idx = note - Kit.BASE
+        local pad = Kit.pads[note]
+        if pad and pad.path then
+            fxQueueLoad(note, pad.path)
+            for pid, v in pairs(pad.p) do
+                local f = KitFX.Field(pid)
+                if f then KitFX.Set(fx_slot, idx, f, KitFX.ToFX(pid, v)) end
+            end
+            KitFX.Set(fx_slot, idx, KitFX.F.CHOKE, pad.choke or 0)
+        else
+            KitFX.Clear(fx_slot, idx)
+        end
+    end
+    fxSave()
+    Kit.version = Kit.version + 1
+    uend("Sampler: swap pads")
+end
+
 function Kit.SwapPads(a, b)
+    if Kit.IsFX() then return Kit.SwapPadsFX(a, b) end
     if a == b then return end
     local pa, pb = Kit.Pad(a), Kit.Pad(b)
     if not pa and not pb then return end
@@ -797,8 +932,13 @@ function Kit.SwapPads(a, b)
         if not pad then return end
         setExt(pad.track, "CP_KIT_NOTE", tostring(note))
         if pad.fx then
-            r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.NOTE_LO, note / 127)
-            r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.NOTE_HI, note / 127)
+            if Kit.IsFX() then
+                Kit.SetParam(note, Kit.P.NOTE_LO, note / 127)
+                Kit.SetParam(note, Kit.P.NOTE_HI, note / 127)
+            else
+                r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.NOTE_LO, note / 127)
+                r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.NOTE_HI, note / 127)
+            end
         end
         pad.note = note
         pad.fmt = {}
@@ -911,9 +1051,18 @@ local function applySync(note, pad, project_bpm)
     end
     local st = 12 * math.log(project_bpm / src, 2)
     if st > 80 then st = 80 elseif st < -80 then st = -80 end
-    local cur = plainOf(pad.track, pad.fx, Kit.P.TUNE)
+    -- PAR LES ACCESSEURS, PAS PAR LE FX. Sur un kit JSFX, pad.fx designe
+    -- l'instrument du kit et non un RS5K du pad : ecrire l'index 15 dedans
+    -- viserait un slider quelconque, donc le volume d'un autre pad. Kit.Param
+    -- et Kit.SetParamPlain savent, eux, a quel moteur ils parlent.
+    local cur = Kit.IsFX() and Kit.ParamPlain(note, Kit.P.TUNE)
+                or plainOf(pad.track, pad.fx, Kit.P.TUNE)
     if cur and math.abs(cur - st) <= 0.01 then return false end
-    plainSet(pad.track, pad.fx, Kit.P.TUNE, st)
+    if Kit.IsFX() then
+        Kit.SetParamPlain(note, Kit.P.TUNE, st)
+    else
+        plainSet(pad.track, pad.fx, Kit.P.TUNE, st)
+    end
     pad.fmt[Kit.P.TUNE] = nil
     return true
 end
@@ -937,14 +1086,19 @@ function Kit.SetPadSynced(note, on)
     local pad = Kit.Pad(note)
     if not pad or not pad.fx then return end
     if on then
-        local cur = r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.TUNE)
+        local cur = Kit.IsFX() and Kit.Param(note, Kit.P.TUNE)
+                    or r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.TUNE)
         setExt(pad.track, "CP_KIT_TUNE0", string.format("%.6f", cur))
         setExt(pad.track, "CP_KIT_SYNC", "1")
         applySync(note, pad, r.Master_GetTempo())
     else
         setExt(pad.track, "CP_KIT_SYNC", "")
         local t0 = tonumber(getExt(pad.track, "CP_KIT_TUNE0") or "")
-        r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.TUNE, t0 or 0.5)
+        if Kit.IsFX() then
+            Kit.SetParam(note, Kit.P.TUNE, t0 or 0.5)
+        else
+            r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.TUNE, t0 or 0.5)
+        end
         setExt(pad.track, "CP_KIT_TUNE0", "")
         pad.fmt[Kit.P.TUNE] = nil
     end
@@ -1334,16 +1488,345 @@ function Kit.FloatInstrRS5K()
     end
 end
 
+
+-- ===========================================================================
+-- LE MOTEUR JSFX — un kit est UNE piste portant UN effet
+-- ===========================================================================
+-- Les deux moteurs cohabitent, et ce n'est pas de l'indecision : les kits
+-- existants sont faits de RS5K sur des pistes, et les casser pour essayer le
+-- nouveau serait exactement la faute du 1er aout. Un kit dit lequel il est
+-- (P_EXT:CP_KIT_ENGINE) ; tout le reste de ce fichier demande a Kit.IsFX().
+--
+-- CE QUI EST AUTORITAIRE. Le JSFX possede l'etat qui fait le SON : reglages
+-- et chemins sont dans son @serialize, donc dans le .RPP, donc un projet
+-- rouvert sonne sans qu'aucun script tourne. Kit tient un MIROIR pour
+-- l'affichage, persiste dans P_EXT — la fenetre doit pouvoir dessiner un pad
+-- sans interroger le fil audio soixante fois par seconde. Si les deux
+-- divergent, le JSFX gagne pour le son et le miroir se refait au scan.
+Kit.ENGINE_RS5K = "rs5k"
+Kit.ENGINE_FX   = "jsfx"
+
+-- Le slot gmem de ce kit. Il vit sur la piste : deux kits d'un meme projet ne
+-- doivent jamais partager une boite aux lettres, et l'oublier ferait qu'un
+-- reglage du premier atterrit dans le second.
+-- fx_index : index de l'effet sur la piste du kit (declare plus haut)
+-- fx_dirty : le miroir a change et n'est pas encore ecrit
+
+function Kit.IsFX()
+    return Kit.engine == Kit.ENGINE_FX
+end
+
+local load_q, load_head = {}, 1
+
+function fxQueueLoad(note, path)
+    load_q[#load_q + 1] = { note = note, path = path }
+end
+
+-- Combien de pads attendent encore leur matiere. Zero veut dire « tout ce
+-- qu'on a demande est arrive » — et c'est la seule chose qu'une migration ait
+-- le droit de croire.
+function Kit.FXLoading()
+    if not Kit.IsFX() then return 0 end
+    local n = #load_q - load_head + 1
+    if n < 0 then n = 0 end
+    if n == 0 and not KitFX.LoadIdle(fx_slot) then return 1 end
+    return n
+end
+
+-- Un chargement par passage de la boucle, et seulement quand le precedent est
+-- fini. Soixante-quatre pads mettent donc une seconde a arriver — c'est aussi
+-- ce qui evite de lancer soixante-quatre lectures de disque d'un coup.
+function fxPumpLoads()
+    if load_head > #load_q then
+        if load_head > 1 then load_q, load_head = {}, 1 end
+        return
+    end
+    if not KitFX.LoadIdle(fx_slot) then return end
+    local e = load_q[load_head]
+    load_head = load_head + 1
+    if e then KitFX.Load(fx_slot, e.note - Kit.BASE, e.path) end
+end
+
+function Kit.FXReady()
+    return KitFX.Ready()
+end
+
+-- Comment l'instrument repond, en un mot, pour la zone de statut de la
+-- fenetre. Meme raison d'etre que « engine native 1.8 » dans la Session : la
+-- question qu'on se pose vraiment est « est-ce que ce que je vois est ce qui
+-- sonne ».
+function Kit.EngineLabel()
+    if not Kit.IsFX() then return "rs5k/tracks" end
+    if not KitFX.Ready() then return "jsfx (no gmem)" end
+    local st = KitFX.Status(fx_slot)
+    if st == KitFX.ST_FAILED then return "jsfx (load failed)" end
+    if st == KitFX.ST_TRUNCATED then return "jsfx (sample truncated)" end
+    if st == KitFX.ST_BUSY then return "jsfx (loading)" end
+    return "jsfx"
+end
+
+function Kit.FXSlot() return fx_slot end
+
+-- --- le miroir, persiste sur la piste ---------------------------------------
+-- Un enregistrement par pad : note, chemin, nom, puis les reglages. Les
+-- separateurs sont des caracteres de controle qu'un chemin ne peut pas
+-- contenir — un chemin Windows accepte les espaces et les accents, pas les
+-- tabulations ni les sauts de ligne.
+local function fxSerialize()
+    local out = {}
+    for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
+        local pad = Kit.pads[note]
+        if pad and pad.path then
+            local ps = {}
+            for _, pid in ipairs(Kit.FX_PIDS) do
+                local v = pad.p and pad.p[pid]
+                if v then ps[#ps + 1] = pid .. "=" .. string.format("%.6f", v) end
+            end
+            out[#out + 1] = table.concat({ note, pad.path, pad.name or "",
+                                           table.concat(ps, ",") }, "\t")
+        end
+    end
+    return table.concat(out, "\n")
+end
+
+function fxDeserialize(blob)
+    Kit.pads = {}
+    if not blob or blob == "" then return end
+    for line in blob:gmatch("[^\n]+") do
+        local note, path, name, ps = line:match("^(%d+)\t([^\t]*)\t([^\t]*)\t?(.*)$")
+        note = tonumber(note)
+        if note and path and path ~= "" then
+            local p = {}
+            for pid, v in (ps or ""):gmatch("(%d+)=([%-%d%.eE]+)") do
+                p[tonumber(pid)] = tonumber(v)
+            end
+            Kit.pads[note] = { note = note, path = path,
+                               name = (name ~= "" and name) or baseName(path),
+                               track = Kit.parent, fx = fx_index,
+                               p = p, fmt = {} }
+        end
+    end
+end
+
+function fxSave()
+    if not (Kit.IsFX() and valid(Kit.parent)) then return end
+    setExt(Kit.parent, "CP_KIT_PADS", fxSerialize())
+    fx_dirty = false
+end
+
+-- --- l'effet sur la piste ---------------------------------------------------
+function findKitFX(tr)
+    local n = r.TrackFX_GetCount(tr)
+    for i = 0, n - 1 do
+        if fxMatches(tr, i, "cp_kitsampler") then return i end
+    end
+    return nil
+end
+
+-- Rend l'index de l'effet, en le posant s'il manque. LE SLOT EST ECRIT DANS
+-- LE SLIDER a chaque fois : c'est la seule chose que le JSFX ne peut pas
+-- deviner, et un effet copie-colle d'un kit a l'autre arriverait sinon avec
+-- la boite aux lettres de son origine.
+function fxEnsure(tr)
+    if not valid(tr) then return nil end
+    local i = findKitFX(tr)
+    if not i then
+        KitFX.Install()
+        i = r.TrackFX_AddByName(tr, KitFX.ADD, false, -1000)
+        if i < 0 then return nil end
+        hideFX(tr, i)
+        -- Un effet neuf n'a rien : on lui redonne tout le miroir. C'est le
+        -- seul moment ou Lua ecrase le JSFX, et c'est justifie — il est vide.
+        fx_index = i
+        Kit.SyncAll()
+    end
+    fx_index = i
+    r.TrackFX_SetParamNormalized(tr, i, 0, fx_slot / 15)
+    return i
+end
+
+function Kit.FXIndex() return fx_index end
+
+-- Reverse tout le miroir dans l'instrument : chemins d'abord, puis reglages.
+-- Sert quand l'effet vient de naitre, et depuis le menu quand on soupconne
+-- une divergence.
+function Kit.SyncAll()
+    if not (Kit.IsFX() and KitFX.Ready()) then return false end
+    KitFX.ClearAll(fx_slot)
+    for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
+        local pad = Kit.pads[note]
+        if pad and pad.path then
+            local idx = note - Kit.BASE
+            fxQueueLoad(note, pad.path)
+            for pid, v in pairs(pad.p or {}) do
+                local f = KitFX.Field(pid)
+                if f then KitFX.Set(fx_slot, idx, f, KitFX.ToFX(pid, v)) end
+            end
+        end
+    end
+    return true
+end
+
+-- --- creation ---------------------------------------------------------------
+-- UNE PISTE. Pas de dossier, pas de bus, pas d'enfant, pas d'envoi. C'est
+-- tout le chantier 2, et il tient en dix lignes une fois que l'instrument
+-- existe — la difficulte n'a jamais ete le rangement des pistes.
+function Kit.NewKitFX(name)
+    ubegin()
+    local idx = r.CountTracks(0)
+    r.InsertTrackAtIndex(idx, true)
+    local tr = r.GetTrack(0, idx)
+    r.GetSetMediaTrackInfo_String(tr, "P_NAME", name or "CP Kit", true)
+    setExt(tr, "CP_KIT", "1")
+    setExt(tr, "CP_KIT_ENGINE", Kit.ENGINE_FX)
+    if Tracks and Tracks.Mark then Tracks.Mark(tr) end
+
+    -- Le slot libre le plus bas : seize kits par projet, ce qui est deja
+    -- au-dela de ce qu'on peut mixer.
+    local used = {}
+    for i = 0, r.CountTracks(0) - 1 do
+        local t = r.GetTrack(0, i)
+        local v = getExt(t, "CP_KIT_SLOT")
+        if v then used[tonumber(v) or -1] = true end
+    end
+    local slot = 0
+    while used[slot] and slot < KitFX.SLOTS - 1 do slot = slot + 1 end
+    setExt(tr, "CP_KIT_SLOT", tostring(slot))
+
+    Kit.parent = tr
+    Kit.engine = Kit.ENGINE_FX
+    Kit.bus = nil
+    Kit.pads = {}
+    fx_slot = slot
+    fx_index = nil
+    fxEnsure(tr)
+    Kit.SetActive(tr)
+    Kit.version = Kit.version + 1
+    uend("Sampler: new kit (jsfx)")
+    return tr
+end
+
+-- --- pads -------------------------------------------------------------------
+function fxPad(note, create)
+    local pad = Kit.pads[note]
+    if pad or not create then return pad end
+    pad = { note = note, path = nil, name = "Pad " .. note,
+            track = Kit.parent, fx = nil, p = {}, fmt = {} }
+    Kit.pads[note] = pad
+    return pad
+end
+
+function fxLoadSample(note, path, opts)
+    if not valid(Kit.parent) then return false end
+    fxEnsure(Kit.parent)
+    local pad = fxPad(note, true)
+    local idx = note - Kit.BASE
+    if not KitFX.Ready() then return false end
+    fxQueueLoad(note, path)
+    pad.path = path
+    -- « Il y a quelque chose ici ». CP_Sampler lit pad.fx a sept endroits
+    -- comme un booleen de presence ; sur le montage RS5K c'etait l'instance
+    -- du pad, ici c'est l'instrument du kit. Le laisser nil ferait dessiner
+    -- un pad vide alors qu'il sonne.
+    pad.fx = fx_index
+    pad.name = baseName(path)
+    pad.fmt = {}
+    -- Un pad neuf ne joue QUE sa note. Le RS5K s'en moquait : il etait seul
+    -- sur sa piste. Ici les soixante-quatre partagent le meme flux, et un pad
+    -- qui naitrait sur 0..127 ferait sonner le kit entier a chaque touche.
+    pad.p[Kit.P.NOTE_LO] = note / 127
+    pad.p[Kit.P.NOTE_HI] = note / 127
+    KitFX.Set(fx_slot, idx, KitFX.F.NLO, note)
+    KitFX.Set(fx_slot, idx, KitFX.F.NHI, note)
+    fx_dirty = true
+    fxSave()
+    Kit.version = Kit.version + 1
+    return true
+end
+
+function fxClearPad(note)
+    local pad = Kit.pads[note]
+    if not pad then return end
+    KitFX.Clear(fx_slot, note - Kit.BASE)
+    pad.path, pad.fx = nil, nil
+    pad.name = "Pad " .. note
+    pad.fmt = {}
+    fxSave()
+    Kit.version = Kit.version + 1
+end
+
+-- --- reglages ---------------------------------------------------------------
+function fxParam(note, pid)
+    local pad = Kit.pads[note]
+    if not (pad and pad.path) then return nil end
+    local v = pad.p and pad.p[pid]
+    if v then return v end
+    -- Jamais reglee : on rend le defaut de l'instrument plutot que nil, sinon
+    -- un bouton naitrait a zero alors que le son, lui, part du defaut.
+    return Kit.FXDefault(pid)
+end
+
+function fxSetParam(note, pid, v)
+    local pad = Kit.pads[note]
+    if not (pad and pad.path) then return end
+    local f = KitFX.Field(pid)
+    if not f then return end
+    pad.p[pid] = v
+    pad.fmt[pid] = nil
+    KitFX.Set(fx_slot, note - Kit.BASE, f, KitFX.ToFX(pid, v))
+    fx_dirty = true
+end
+
+-- Les defauts du JSFX, en positions de bouton. Ils DOIVENT dire la meme chose
+-- que pad_defaults() dans le .jsfx : c'est le seul endroit du couple ou une
+-- divergence ne se verrait pas — le son serait juste, l'affichage faux.
+local FX_DEFAULT = {
+    [0]  = nil,     -- volume : rempli plus bas (0 dB)
+    [1]  = 0.5,     -- pan centre
+    [8]  = 4 / 64,  -- 4 voix
+    [11] = 0,       -- obey note-offs : un pad est un one-shot
+    [12] = 0,       -- loop
+    [13] = 0,       -- start offset
+    [14] = 1,       -- end offset
+    [15] = 0.5,     -- tune : 0 demi-ton
+    [17] = 1 / 127, -- velocite min
+    [18] = 1,       -- velocite max
+    [23] = 0,       -- loop start offset
+    [25] = 1,       -- sustain : 0 dB
+    [100] = 0,      -- portamento
+    [101] = 0,      -- note-off release override
+    [104] = 0, [105] = 0, [106] = 0,
+    [107] = 1,      -- probabilite : toujours
+    [108] = 0,      -- round-robin : desarme
+    [110] = 0,      -- canal MIDI : tous
+    [111] = 0,      -- mode chromatique : non
+    [113] = 0,      -- xfade
+}
+
+function Kit.FXDefault(pid)
+    if pid == 0 then return KitFX.FromPlain(0, 0) end          -- 0 dB
+    if pid == 9 or pid == 10 then return KitFX.FromPlain(pid, 1) end   -- 1 ms
+    if pid == 24 then return KitFX.FromPlain(24, 250) end      -- decay 250 ms
+    if pid == 102 then return KitFX.FromPlain(102, 1) end
+    if pid == 103 then return KitFX.FromPlain(103, 2) end      -- bend 2 st
+    if pid == 109 then return KitFX.FromPlain(109, 0) end      -- min vol 0 dB
+    if pid == 112 then return 60 / 127 end
+    if pid == 3 or pid == 4 then return nil end                -- pose au chargement
+    return FX_DEFAULT[pid]
+end
+
 -- ---------------------------------------------------------------------------
 -- Params
 -- ---------------------------------------------------------------------------
 function Kit.Param(note, pid)
+    if Kit.IsFX() then return fxParam(note, pid) end
     local pad = Kit.pads[note]
     if not pad or not pad.fx then return nil end
     return r.TrackFX_GetParamNormalized(pad.track, pad.fx, pid)
 end
 
 function Kit.SetParam(note, pid, v)
+    if Kit.IsFX() then return fxSetParam(note, pid, v) end
     local pad = Kit.pads[note]
     if not pad or not pad.fx then return end
     r.TrackFX_SetParamNormalized(pad.track, pad.fx, pid, v)
@@ -1357,6 +1840,16 @@ end
 -- (the per-frame control strip must not allocate result strings).
 function Kit.ParamFmt(note, pid)
     local pad = Kit.pads[note]
+    if Kit.IsFX() then
+        if not (pad and pad.path) then return "" end
+        local v = fxParam(note, pid)
+        if not v then return "" end
+        local s = pad.fmt[pid]
+        if s then return s end
+        s = KitFX.Format(pid, v)
+        pad.fmt[pid] = s
+        return s
+    end
     if not pad or not pad.fx then return "" end
     local s = pad.fmt[pid]
     if s then return s end
@@ -1375,6 +1868,10 @@ end
 -- Choke groups
 -- ---------------------------------------------------------------------------
 function Kit.Choke(note)
+    if Kit.IsFX() then
+        local pad = Kit.pads[note]
+        return (pad and pad.choke) or 0
+    end
     if not choke_fx or not valid(choke_tr) then return 0 end
     local v = r.TrackFX_GetParamNormalized(choke_tr, choke_fx, note - Kit.BASE)
     return math.floor(v * 8 + 0.5)
@@ -1401,6 +1898,15 @@ local function refreshObey(note, pad)
 end
 
 function Kit.SetChoke(note, grp)
+    if Kit.IsFX() then
+        local pad = Kit.pads[note]
+        if not (pad and pad.path) then return end
+        pad.choke = grp
+        KitFX.Set(fx_slot, note - Kit.BASE, KitFX.F.CHOKE, grp)
+        fx_dirty = true
+        fxSave()
+        return
+    end
     if not valid(Kit.parent) then return end
     if not choke_fx or not valid(choke_tr) then
         if not ensureChokeFile() then return end
@@ -1421,6 +1927,16 @@ end
 -- loop doesn't" bug). A looped pad therefore GATES: hold it and the loop
 -- runs under the sustain stage, let go and the release fades it out.
 function Kit.SetLoop(note, on)
+    if Kit.IsFX() then
+        -- LE CONFLIT QUI EXISTAIT ICI N'EXISTE PLUS, et il vaut la peine de
+        -- dire pourquoi : sur le RS5K, boucler ET choker se disputaient le
+        -- meme « obey note-offs », parce que le choke coupait en fabriquant
+        -- une note-off. Le JSFX coupe la voix directement. Boucler ne veut
+        -- donc plus rien dire d'autre que boucler.
+        fxSetParam(note, Kit.P.LOOP, on and 1 or 0)
+        fxSave()
+        return
+    end
     local pad = Kit.Pad(note)
     if not (pad and pad.fx) then return end
     r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.LOOP, on and 1 or 0)
@@ -1501,6 +2017,10 @@ end
 -- NEVER TrackFX_GetParam here: Cockos VST raw values are normalized 0..1
 -- whatever the display says — real units go through the format API.
 function Kit.ParamPlain(note, pid)
+    if Kit.IsFX() then
+        local v = fxParam(note, pid)
+        return v and KitFX.ToPlain(pid, v) or nil
+    end
     local pad = Kit.Pad(note)
     if not (pad and pad.fx) then return nil end
     -- The parse is cached against the formatted string it came from (which
@@ -1517,6 +2037,11 @@ function Kit.ParamPlain(note, pid)
 end
 
 function Kit.SetParamPlain(note, pid, v)
+    if Kit.IsFX() then
+        local n = KitFX.FromPlain(pid, v)
+        if n then fxSetParam(note, pid, n) end
+        return
+    end
     local pad = Kit.Pad(note)
     if not (pad and pad.fx) then return end
     plainSet(pad.track, pad.fx, pid, v)   -- clamps into the real range
@@ -1528,6 +2053,7 @@ end
 -- What a knob needs when the user types "-6": the widget speaks positions,
 -- the user speaks dB.
 function Kit.NormForPlain(note, pid, v)
+    if Kit.IsFX() then return KitFX.FromPlain(pid, v) end
     local pad = Kit.Pad(note)
     if not (pad and pad.fx) then return nil end
     return plainNorm(pad.track, pad.fx, pid, v)
@@ -1536,6 +2062,12 @@ end
 -- Current shift in semitones (0 while no ReaPitch exists — nothing is
 -- created by reading).
 function Kit.PadPitch(note)
+    -- PAS ENCORE SUR LE JSFX, ET ON REND ZERO PLUTOT QUE DE MENTIR. Le pitch
+    -- a duree constante demande un etirement, que l'instrument ne fait pas :
+    -- TUNE (Kit.P.TUNE) transpose en changeant la duree, comme un vinyle.
+    -- L'etirement hors ligne existe deja ailleurs (Warp) et c'est la qu'il
+    -- faudra le brancher, pas dans le fil audio d'un PC de 2005.
+    if Kit.IsFX() then return 0 end
     local pad = Kit.Pad(note)
     if not pad then return 0 end
     local fx, pi = padReaPitch(pad, false)
@@ -1544,6 +2076,7 @@ function Kit.PadPitch(note)
 end
 
 function Kit.SetPadPitch(note, st)
+    if Kit.IsFX() then return end
     local pad = Kit.Pad(note)
     if not pad then return end
     local fx, pi = padReaPitch(pad, true)
@@ -1557,6 +2090,14 @@ end
 -- ---------------------------------------------------------------------------
 -- Pad output level (for the grid glow). Linear peak, max of both channels.
 function Kit.PadPeak(note)
+    -- Sur le JSFX, la crete vient de l'instrument lui-meme : il n'y a plus de
+    -- piste par pad dont on pourrait lire le VU. C'est le meme chiffre, pris
+    -- une case avant.
+    if Kit.IsFX() then
+        local pad = Kit.pads[note]
+        if not (pad and pad.path) then return 0 end
+        return KitFX.Peak(fx_slot, note - Kit.BASE)
+    end
     local pad = Kit.pads[note]
     if not pad or not pad.path then return 0 end
     if not valid(pad.track) then return 0 end
@@ -1589,6 +2130,12 @@ Kit.INPUT_ALL     = 4096 + (63 << 5)            -- MIDI, any channel, any input
 -- Ce n'est plus un arbitrage (les deux entendaient le meme broadcast, il en
 -- fallait un), c'est une simple adresse.
 playTarget = function()
+    -- Un kit JSFX n'a pas de bus : la piste du kit porte l'instrument, donc
+    -- c'est elle qu'on joue. C'etait le dernier endroit ou « le kit » et « la
+    -- piste qui sonne » etaient deux objets differents.
+    if Kit.IsFX() then
+        return valid(Kit.parent) and Kit.parent or nil
+    end
     if Kit.mode == "instrument" then
         local t = Kit.instr and Kit.instr.track
         return valid(t) and t or nil
@@ -1759,9 +2306,98 @@ function Kit.FirstEmpty(from)
 end
 
 -- ---------------------------------------------------------------------------
+-- Migration RS5K -> instrument
+-- ---------------------------------------------------------------------------
+-- ELLE N'EFFACE RIEN, ET C'EST LE POINT. La migration du 1er aout supprimait
+-- les pistes qu'elle croyait avoir vidées : elle verifiait que le geste avait
+-- eu lieu, pas qu'il avait marche, et des pads ont perdu leur echantillon.
+-- Celle-ci CONSTRUIT A COTE. Le kit d'origine reste entier, muet de rien, et
+-- c'est Cedric qui le supprime quand il a entendu que le nouveau sonne.
+--
+-- Elle rend un compte-rendu plutot qu'un booleen : combien de pads ont ete
+-- lus, combien PORTENT REELLEMENT de la matiere dans l'instrument, et
+-- lesquels manquent. « Le pad sonne-t-il » est la seule question qui vaille.
+function Kit.MigrateToFX()
+    if Kit.IsFX() then return nil, "ce kit est deja un instrument" end
+    if not valid(Kit.parent) then return nil, "aucun kit actif" end
+    if not KitFX.Ready() then return nil, "gmem indisponible" end
+
+    -- 1. Relever le kit source AVANT de toucher a quoi que ce soit.
+    local src = {}
+    for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
+        local pad = Kit.pads[note]
+        if pad and pad.path then
+            local p = {}
+            for _, pid in ipairs(SAVE_PIDS) do
+                local v = Kit.Param(note, pid)
+                if v then p[pid] = v end
+            end
+            src[#src + 1] = { note = note, path = pad.path, name = pad.name,
+                              p = p, choke = Kit.Choke(note) }
+        end
+    end
+    if #src == 0 then return nil, "le kit source n'a aucun pad charge" end
+
+    local _, oldname = r.GetSetMediaTrackInfo_String(Kit.parent, "P_NAME", "", false)
+    local old_guid = r.GetTrackGUID(Kit.parent)
+
+    -- 2. Construire le nouveau, A COTE.
+    ubegin()
+    local tr = Kit.NewKitFX(((oldname ~= "" and oldname) or "CP Kit") .. " (fx)")
+    for _, e in ipairs(src) do
+        fxLoadSample(e.note, e.path, { no_sync = true })
+        local pad = Kit.pads[e.note]
+        if pad then
+            pad.name = e.name or pad.name
+            for pid, v in pairs(e.p) do
+                -- Les identifiants sont les memes des deux cotes : c'est
+                -- exactement pour ce moment qu'on les a gardes.
+                if KitFX.Field(pid) then fxSetParam(e.note, pid, v) end
+            end
+            if e.choke and e.choke > 0 then
+                pad.choke = e.choke
+                KitFX.Set(fx_slot, e.note - Kit.BASE, KitFX.F.CHOKE, e.choke)
+            end
+        end
+    end
+    fxSave()
+    uend("Sampler: migrate kit to instrument")
+
+    return { track = tr, source_guid = old_guid, asked = #src,
+             pending = true, name = oldname }
+end
+
+-- Le verdict, une fois que l'instrument a eu le temps de lire les fichiers.
+-- A appeler depuis la boucle de la fenetre tant que `pending` est vrai :
+-- charger soixante-quatre echantillons prend plusieurs dixiemes de seconde,
+-- et repondre avant serait repondre sur le geste.
+function Kit.MigrationVerdict(report)
+    if not (report and Kit.IsFX() and KitFX.Ready()) then return report end
+    -- ON N'INTERROGE PAS UN TRAVAIL EN COURS. Tant qu'un pad attend sa
+    -- matiere, « ce pad ne sonne pas » voudrait dire « pas encore », et un
+    -- compte-rendu qui confond les deux ferait supprimer un kit qui allait
+    -- tres bien.
+    if Kit.FXLoading() > 0 then return report end
+    local ok, missing = 0, {}
+    for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
+        local pad = Kit.pads[note]
+        if pad and pad.path then
+            if KitFX.Loaded(fx_slot, note - Kit.BASE) then
+                ok = ok + 1
+            else
+                missing[#missing + 1] = pad.name or ("Pad " .. note)
+            end
+        end
+    end
+    report.pending = false
+    report.loaded = ok
+    report.missing = missing
+    return report
+end
+
+-- ---------------------------------------------------------------------------
 -- Kit presets (paths + params, saved as plain Lua files)
 -- ---------------------------------------------------------------------------
-local SAVE_PIDS = { 0, 1, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 23, 24, 25 }
 
 function Kit.PresetDir()
     local dir = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Config/Kits"
@@ -1778,7 +2414,11 @@ function Kit.SavePreset(filepath)
         if pad and pad.path then
             f:write(string.format("    { note = %d, path = %q, name = %q, choke = %d,\n      p = { ",
                                   note, pad.path, pad.name, Kit.Choke(note)))
-            for _, pid in ipairs(SAVE_PIDS) do
+            -- SUR LE JSFX, LA LISTE EST PLUS LONGUE — et ecrire un preset
+            -- du nouveau moteur avec la liste de l'ancien perdrait en
+            -- silence exactement ce qu'il a de plus : portamento, obey,
+            -- override du release, mute, solo, sortie.
+            for _, pid in ipairs(Kit.IsFX() and Kit.FX_PIDS or SAVE_PIDS) do
                 local v = Kit.Param(note, pid)
                 if v then f:write(string.format("[%d] = %.6f, ", pid, v)) end
             end

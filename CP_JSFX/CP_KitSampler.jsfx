@@ -131,7 +131,13 @@ NOTE_BASE = 36;         // pad 0 <-> note 36 (convention GM/FL/Ableton)
 PADS        = 1024;
 VOICES      = PADS + NPADS * PAD_SZ;
 OUTBUS      = VOICES + NVOICES * VOICE_SZ;
-SAMPLE_BASE = 8192;
+// LE CHEMIN DE CHAQUE PAD VIT DANS LE PLUGIN, en codes de caracteres. C'est
+// ce qui rend le kit auto-suffisant : rouvrir un projet le fait sonner sans
+// qu'aucun script tourne. Les garder cote Lua aurait fait d'une fenetre la
+// condition pour entendre un projet, ce qu'aucun instrument n'accepte.
+PATHS       = 8192;
+PATH_LEN    = 256;
+SAMPLE_BASE = PATHS + NPADS * PATH_LEN;
 
 // Champs d'un pad -----------------------------------------------------------
 P_LOADED=0;  P_DATA=1;    P_FRAMES=2;  P_NCH=3;     P_SRATE=4;
@@ -159,7 +165,12 @@ E_ATT=0; E_DEC=1; E_SUS=2; E_REL=3;
 
 // gmem : seize boites de mille vingt-quatre mots, une par slot de kit. Deux
 // kits d'un meme projet ne se parlent donc jamais.
-GM_SLOT_SZ = 1024;
+// LA TAILLE DE L'ANNEAU EST DIMENSIONNEE SUR LA PIRE RAFALE REELLE, pas sur
+// ce qui fait joli : charger un preset ecrit soixante-quatre pads fois une
+// vingtaine de reglages, soit environ mille cinq cents commandes en un seul
+// appel Lua. Un anneau de trente-deux en aurait perdu les neuf dixiemes, et le
+// kit serait revenu avec les reglages du precedent — silencieusement.
+GM_SLOT_SZ = 12288;
 GM_BASE    = 16;
 // DEUX CANAUX, PARCE QU'ILS N'ONT PAS LE MEME DEBIT. Les reglages passent par
 // un anneau : charger un preset de soixante-quatre pads ecrit des centaines de
@@ -169,16 +180,18 @@ GM_BASE    = 16;
 // le disque, et il est de toute facon serialise par le disque.
 MB_WPOS=0; MB_RPOS=1;                  // anneau : Lua ecrit, le JSFX lit
 MB_LSEQ=2; MB_LACK=3; MB_LPAD=4;       // chargement : poignee de main
-MB_STATUS=5;                            // 0 pret, 1 en cours, 2 echec, 3 tronque
-MB_RING=8;  RING_N=32;  RING_SZ=4;     // 8..135  (op, pad, param, valeur)
-MB_STR=136;                             // 136..391 : le chemin, en codes
-MB_PEAK=512; MB_NACT=576;
+MB_STATUS=5;                           // 0 pret, 1 en cours, 2 echec, 3 tronque
+MB_RING=16; RING_N=2048; RING_SZ=4;    // 16..8207  (op, pad, param, valeur)
+MB_STR=8208;                           // 8208..8463 : le chemin, en codes
+MB_PEAK=8464; MB_NACT=8528;            // publies vers Lua, un par pad
+MB_LOADED=8592;                        // 1 = ce pad porte de la matiere
 OP_NONE=0; OP_SET=1; OP_CLEAR=2; OP_CLEARALL=3;
 
-function pad(i)     ( PADS + i * PAD_SZ );
-function voice(i)   ( VOICES + i * VOICE_SZ );
-function pad_mem(i) ( SAMPLE_BASE + i * PAD_MEM );
-function mailbox(s) ( GM_BASE + s * GM_SLOT_SZ );
+function pad(i)      ( PADS + i * PAD_SZ );
+function voice(i)    ( VOICES + i * VOICE_SZ );
+function pad_mem(i)  ( SAMPLE_BASE + i * PAD_MEM );
+function path_mem(i) ( PATHS + i * PATH_LEN );
+function mailbox(s)  ( GM_BASE + s * GM_SLOT_SZ );
 
 // Les defauts reprennent ceux du RS5K la ou ils existent, pour qu'un kit
 // migre sans changer de son. OBEY A ZERO : un pad de batterie est un one-shot,
@@ -207,18 +220,33 @@ function pad_defaults(p, i) (
 // Lua depose le chemin dans gmem en codes de caracteres, termine par zero.
 // C'est la seule facon de passer une chaine a un JSFX, et elle est eprouvee
 // (les outils de Saike lisent leurs chemins exactement comme ca).
-function readstr_from_gmem(dest, cidx) local(offset, buf) (
+// Construit une chaine EEL depuis des codes de caracteres en memoire. Le
+// tampon `buf = #` est un temporaire du moteur ; on recopie ensuite dans la
+// vraie destination, exactement comme le font les outils de Saike.
+function readstr_from_mem(dest, cidx, maxlen) local(offset, buf) (
   offset = 0;
   buf = #;
   while (
-    gmem[cidx] ? (
-      str_setchar(buf, offset, gmem[cidx]);
+    offset < maxlen && cidx[offset] ? (
+      str_setchar(buf, offset, cidx[offset]);
       offset += 1;
-      cidx += 1;
       1;
     ) : 0;
   );
   strcpy_substr(dest, buf, 0, offset);
+  offset;
+);
+
+// gmem -> memoire locale. Le chemin arrive de Lua en codes de caracteres ;
+// on le RECOPIE dans le pad avant tout chargement, pour deux raisons : le
+// creneau gmem est reutilise par le pad suivant, et le chemin doit survivre
+// a la sauvegarde du projet pour que le kit se recharge tout seul.
+function copy_path_from_gmem(pi) local(o, dst, src) (
+  dst = path_mem(pi);
+  src = gm + MB_STR;
+  o = 0;
+  while (o < PATH_LEN - 1 && gmem[src + o] ? ( dst[o] = gmem[src + o]; o += 1; 1; ) : 0);
+  dst[o] = 0;
 );
 
 // --- chargement ------------------------------------------------------------
@@ -226,11 +254,12 @@ function readstr_from_gmem(dest, cidx) local(offset, buf) (
 // frequence du fichier ; file_avail rend le nombre d'echantillons entrelaces
 // restants. On tronque a la plage du pad plutot que de refuser : un pad qui
 // sonne cinq secondes vaut mieux qu'un pad muet, et le statut le dit.
-function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest) (
+function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest, n) (
   p = pad(pi);
-  readstr_from_gmem(#path, gm + MB_STR);
+  n = readstr_from_mem(#path, path_mem(pi), PATH_LEN - 1);
   p[P_LOADED] = 0;
   p[P_FRAMES] = 0;
+  n < 1 ? ( gm[MB_STATUS] = 0; ) : (
   h = file_open(#path);
   h >= 0 ? (
     nch = 0; sr = 0;
@@ -249,6 +278,7 @@ function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest) (
     ) : ( gm[MB_STATUS] = 2; );
     file_close(h);
   ) : ( gm[MB_STATUS] = 2; );
+  );
 );
 
 // --- voix ------------------------------------------------------------------
@@ -496,6 +526,7 @@ voice_serial = 0;
 any_solo     = 0;
 pitch_bend   = 0;
 pending_load = -1;
+reload_next  = -1;
 master_gain  = 1;
 gm           = mailbox(0);
 
@@ -511,9 +542,15 @@ gm           = mailbox(0);
 
 @serialize
 // L'ETAT DU KIT EST DANS LE PROJET, PAS DANS UN FICHIER A COTE. Un .RPP
-// emporte son kit ; seuls les chemins des echantillons pointent dehors, comme
-// n'importe quel media de REAPER. On ne serialise QUE les reglages : un
-// pointeur de matiere sauvegarde serait un pointeur mort au rechargement.
+// emporte son kit — reglages ET chemins ; seule la matiere reste dehors,
+// comme n'importe quel media de REAPER.
+//
+// ON NE SERIALISE PAS LA MATIERE : un pointeur sauvegarde serait un pointeur
+// mort au rechargement, et un .RPP de trois cents megaoctets serait un bug
+// deguise en fonctionnalite. On resauve les CHEMINS, et on recharge.
+//
+// file_avail rend une valeur negative en ecriture : c'est ainsi qu'un JSFX
+// sait dans quel sens il travaille.
 file_var(ser_version);
 i = 0;
 loop(NPADS,
@@ -522,6 +559,13 @@ loop(NPADS,
   loop(P_SAVE_HI - P_SAVE_LO + 1, file_var(p[j]); j += 1;);
   i += 1;
 );
+file_mem(0, PATHS, NPADS * PATH_LEN);
+
+// A LA LECTURE SEULEMENT : on redemande le chargement de tous les pads qui
+// ont un chemin. @gfx en prend UN par passage — soixante-quatre lectures de
+// disque d'affilee figeraient REAPER a l'ouverture du projet, et un kit qui
+// se remplit en une seconde ne derange personne.
+file_avail(0) >= 0 ? ( reload_next = 0; );
 
 @slider
 gm = mailbox(min(max(slider1, 0), 15));
@@ -621,6 +665,7 @@ while (gm[MB_RPOS] != gm[MB_WPOS]) (
 //    Un garde-fou qui verifie le geste et non son resultat ne garde rien.
 gm[MB_LSEQ] != gm[MB_LACK] && pending_load < 0 ? (
   pending_load = gm[MB_LPAD];
+  copy_path_from_gmem(pending_load);
   gm[MB_STATUS] = 1;
 );
 
@@ -659,7 +704,15 @@ loop(NVOICES,
   i += 1;
 );
 i = 0;
-loop(NPADS, gm[MB_NACT + i] = pad(i)[P_NACT]; i += 1;);
+loop(NPADS,
+  gm[MB_NACT + i]   = pad(i)[P_NACT];
+  // CE QUE LUA VERIFIE. « Le pad porte-t-il de la matiere », pas « l'ordre
+  // est-il parti » : une migration qui controle le geste et non son resultat
+  // ne garde rien, et celle du 1er aout a supprime des pistes dont les
+  // echantillons n'avaient pas suivi.
+  gm[MB_LOADED + i] = pad(i)[P_LOADED] && pad(i)[P_FRAMES] > 0;
+  i += 1;
+);
 
 @sample
 o = 0;
@@ -688,4 +741,9 @@ pending_load >= 0 ? (
   load_pad(pending_load);
   pending_load = -1;
   gm[MB_LACK] = gm[MB_LSEQ];
+) : reload_next >= 0 ? (
+  // Rechargement apres ouverture de projet, UN pad par passage.
+  path_mem(reload_next)[0] ? load_pad(reload_next);
+  reload_next += 1;
+  reload_next >= NPADS ? reload_next = -1;
 );
