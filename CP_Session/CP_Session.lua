@@ -126,6 +126,9 @@ a track only ever plays one clip.
 The row of squares under the grid stops one track (or all of them,
 the one on the left); the triangle beside a row launches that whole
 scene, and tracks with no clip in it stop, as in Ableton.
+CTRL-CLICK THE TRIANGLE to launch the scene ADDITIVELY: columns the
+scene does not fill keep playing. That is how a pad or a drone
+survives a scene change without being duplicated into all eight rows.
 
 ## Recording into a cell
 1. ARM the track — the circle in its header. That is REAPER's own
@@ -978,14 +981,20 @@ end
 
 -- A whole scene lands together: every track with a clip launches, every
 -- track without one STOPS (Ableton's default — a scene is a full picture).
-local function sceneLaunch(s)
+-- `additive` : SUPERPOSER AU LIEU DE REMPLACER. FL le dit mot pour mot —
+-- « will replace playing Clips with any new Clips on the same track in the
+-- next Scene but leave any Clips on unused tracks playing ». Sans ca, une
+-- nappe ne peut pas survivre a un changement de scene : il faut la dupliquer
+-- dans les huit lignes, ce qui n'est pas de la composition, c'est de la
+-- comptabilite. Cinq lignes, zero stockage.
+local function sceneLaunch(s, additive)
     for t = 0, TRACKS - 1 do
         -- a sound counts as a clip here: asking for the NOTES of an audio cell
         -- answers zero, and a scene holding sounds stopped those tracks
         local c = cells[t][s]
         if c and (isAudio(c) or cellNotes(c) > 0) then
             launchCell(t, s)
-        else
+        elseif not additive then
             stopTrack(t)
         end
     end
@@ -2657,7 +2666,12 @@ local function frame(theme)
                       a[1], a[2], a[3], 0.85)
         if Core.MouseInRect(x, cy, scene_w, cell_h) and not Core.HasPopup() then
             Core.DrawRect(x, cy, scene_w, cell_h, 1, 1, 1, 0.06)
-            if Core.MouseClicked(1) then sceneLaunch(s) end
+            -- Ctrl (ou Cmd) tient les colonnes que cette scene ne remplit
+            -- pas : c'est le « +Scene » de FL, et il se demande au moment du
+            -- lancement plutot que de vivre dans un reglage qu'on oublie.
+            if Core.MouseClicked(1) then
+                sceneLaunch(s, Core.ModCtrl())
+            end
         end
         for ci = 0, ncol - 1 do
             local cx = x + scene_w + gap + ci * (cell_w + gap)
