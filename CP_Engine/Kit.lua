@@ -215,6 +215,18 @@ local function trackIdx(tr)  -- 0-based
     return math.floor(r.GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")) - 1
 end
 
+-- L'IDENTITE TEMPORELLE D'UN PAD EST A CE PAD. Sur le montage RS5K, chaque
+-- pad a SA piste : une cle nue suffit. Sur l'instrument, les soixante-quatre
+-- partagent la meme, donc la cle doit porter la note — sinon « synchroniser
+-- ce pad » synchronise le kit ENTIER et le repitche selon le BPM source d'un
+-- seul, toute la batterie change de hauteur, et rien ne dit qui l'a demande.
+-- La cle nue reste celle des kits RS5K : la changer casserait les projets
+-- existants pour rien.
+local function padKey(base, note)
+    if Kit.IsFX() then return base .. "_" .. tostring(note) end
+    return base
+end
+
 local function getExt(tr, key)
     local ok, val = r.GetSetMediaTrackInfo_String(tr, "P_EXT:" .. key, "", false)
     if ok and val ~= "" then return val end
@@ -403,7 +415,11 @@ local function scanInstrument(tr)
 end
 
 function Kit.Scan()
+    -- Kit.engine AUSSI. Le laisser perime faisait parler la fenetre a un kit
+    -- neuf comme a un instrument : les reglages partaient dans une boite aux
+    -- lettres morte et n'arrivaient nulle part.
     Kit.parent, Kit.bus, Kit.instr, choke_fx = nil, nil, nil, nil
+    Kit.engine = nil
     local pads = {}
     local kits = Kit.kits
     for i = #kits, 1, -1 do kits[i] = nil end
@@ -589,7 +605,15 @@ function Kit.Poll()
     -- La file de chargement avance ici : Poll est deja appele une fois par
     -- passage par CP_Sampler et CP_Editor, et rien d'autre dans ce module
     -- n'a de battement.
-    if Kit.IsFX() then fxPumpLoads() end
+    if Kit.IsFX() then
+        fxPumpLoads()
+        -- fx_dirty ETAIT POSE ET JAMAIS LU : tourner un bouton changeait le
+        -- son et le miroir en memoire, mais rien ne l'ecrivait sur la piste.
+        -- Le premier evenement qui refaisait un scan rendait tous les boutons
+        -- a leur valeur d'avant, pendant que le pad continuait de sonner avec
+        -- les nouvelles — et le fxSave suivant gravait les PERIMEES.
+        if fx_dirty then fxSave() end
+    end
     local c = r.GetProjectStateChangeCount(0)
     if c == last_change then return false end
     last_change = c
@@ -1047,7 +1071,7 @@ end
 function Kit.PadSrcBpm(note)
     local pad = Kit.Pad(note)
     if not pad then return nil end
-    local stored = tonumber(getExt(pad.track, "CP_KIT_BPM") or "")
+    local stored = tonumber(getExt(pad.track, padKey("CP_KIT_BPM", note)) or "")
     if stored and stored > 0 then return stored end
     return (SrcTempo.FromName(pad.path))
 end
@@ -1081,12 +1105,12 @@ end
 function Kit.SetPadSrcBpm(note, bpm)
     local pad = Kit.Pad(note)
     if not pad then return end
-    setExt(pad.track, "CP_KIT_BPM", bpm and tostring(bpm) or "")
+    setExt(pad.track, padKey("CP_KIT_BPM", note), bpm and tostring(bpm) or "")
 end
 
 function Kit.PadSynced(note)
     local pad = Kit.Pad(note)
-    return pad ~= nil and getExt(pad.track, "CP_KIT_SYNC") == "1"
+    return pad ~= nil and getExt(pad.track, padKey("CP_KIT_SYNC", note)) == "1"
 end
 
 -- Turning sync ON parks the user's manual tune in P_EXT and beat-matches
@@ -1099,18 +1123,18 @@ function Kit.SetPadSynced(note, on)
     if on then
         local cur = Kit.IsFX() and Kit.Param(note, Kit.P.TUNE)
                     or r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.TUNE)
-        setExt(pad.track, "CP_KIT_TUNE0", string.format("%.6f", cur))
-        setExt(pad.track, "CP_KIT_SYNC", "1")
+        setExt(pad.track, padKey("CP_KIT_TUNE0", note), string.format("%.6f", cur))
+        setExt(pad.track, padKey("CP_KIT_SYNC", note), "1")
         applySync(note, pad, r.Master_GetTempo())
     else
-        setExt(pad.track, "CP_KIT_SYNC", "")
-        local t0 = tonumber(getExt(pad.track, "CP_KIT_TUNE0") or "")
+        setExt(pad.track, padKey("CP_KIT_SYNC", note), "")
+        local t0 = tonumber(getExt(pad.track, padKey("CP_KIT_TUNE0", note)) or "")
         if Kit.IsFX() then
             Kit.SetParam(note, Kit.P.TUNE, t0 or 0.5)
         else
             r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.TUNE, t0 or 0.5)
         end
-        setExt(pad.track, "CP_KIT_TUNE0", "")
+        setExt(pad.track, padKey("CP_KIT_TUNE0", note), "")
         pad.fmt[Kit.P.TUNE] = nil
     end
     last_change = r.GetProjectStateChangeCount(0)
@@ -1124,7 +1148,7 @@ end
 clearSyncState = function(note, pad)
     if not pad then return end
     if Kit.PadSynced(note) then Kit.SetPadSynced(note, false) end
-    setExt(pad.track, "CP_KIT_BPM", "")
+    setExt(pad.track, padKey("CP_KIT_BPM", note), "")
 end
 
 -- Re-aim every synced pad at the given tempo. Cheap enough for the host
@@ -1133,7 +1157,7 @@ function Kit.ApplyTempoSync(project_bpm)
     if not project_bpm or project_bpm <= 0 then return end
     local wrote = false
     for note, pad in pairs(Kit.pads) do
-        if pad.fx and getExt(pad.track, "CP_KIT_SYNC") == "1" then
+        if pad.fx and getExt(pad.track, padKey("CP_KIT_SYNC", note)) == "1" then
             if applySync(note, pad, project_bpm) then wrote = true end
         end
     end
@@ -1165,7 +1189,7 @@ autoSync = function(note)
     -- tempo when the file carries one. No answer means: do not touch it.
     local bpm = SrcTempo.Bpm(pad.path)
     if not bpm then return end
-    setExt(pad.track, "CP_KIT_BPM", string.format("%.3f", bpm))
+    setExt(pad.track, padKey("CP_KIT_BPM", note), string.format("%.3f", bpm))
     if Kit.PadSynced(note) then
         applySync(note, pad, ref)   -- already synced: just re-aim
     else
@@ -1612,6 +1636,13 @@ local function fxSerialize()
                 local v = pad.p and pad.p[pid]
                 if v then ps[#ps + 1] = pid .. "=" .. string.format("%.6f", v) end
             end
+            -- LE CHOKE AUSSI. Il n'est ni un Kit.P ni une entree de
+            -- Kit.FX_PIDS : il vit a part sur le pad, et il ne se serialisait
+            -- pas. Tout Kit.Scan le remettait a zero — les pads continuaient
+            -- de se couper a l'oreille pendant que le menu disait « aucun
+            -- groupe » — et le premier echange de pads le detruisait pour de
+            -- bon.
+            ps[#ps + 1] = "choke:" .. tostring(pad.choke or 0)
             out[#out + 1] = table.concat({ note, pad.path, pad.name or "",
                                            table.concat(ps, ",") }, "\t")
         end
@@ -1630,10 +1661,11 @@ function fxDeserialize(blob)
             for pid, v in (ps or ""):gmatch("(%d+)=([%-%d%.eE]+)") do
                 p[tonumber(pid)] = tonumber(v)
             end
+            local ck = tonumber((ps or ""):match("choke:(%d+)") or "") or 0
             Kit.pads[note] = { note = note, path = path,
                                name = (name ~= "" and name) or baseName(path),
                                track = Kit.parent, fx = fx_index,
-                               p = p, fmt = {} }
+                               p = p, choke = ck, fmt = {} }
         end
     end
 end
@@ -1661,9 +1693,18 @@ function fxEnsure(tr)
     if not valid(tr) then return nil end
     local i = findKitFX(tr)
     if not i then
-        KitFX.Install()
+        local ok, why = KitFX.Install()
         i = r.TrackFX_AddByName(tr, KitFX.ADD, false, -1000)
-        if i < 0 then return nil end
+        if i < 0 then
+            -- ON LE DIT. Sans instrument, le kit accepte les depots, dessine
+            -- les pads, et ne sonne jamais : le seul indice etait « 0 loaded »
+            -- dans une zone de statut. Arrive des que l'installation du .jsfx
+            -- echoue — dossier en lecture seule, source deplacee.
+            Kit.fx_error = "instrument introuvable"
+                           .. (ok and "" or (" (" .. (why or "install") .. ")"))
+            return nil
+        end
+        Kit.fx_error = nil
         hideFX(tr, i)
         -- Un effet neuf n'a rien : on lui redonne tout le miroir. C'est le
         -- seul moment ou Lua ecrase le JSFX, et c'est justifie — il est vide.
@@ -1805,7 +1846,15 @@ function Kit.NewKitFX(name)
         if v then used[tonumber(v) or -1] = true end
     end
     local slot = 0
-    while used[slot] and slot < KitFX.SLOTS - 1 do slot = slot + 1 end
+    while used[slot] and slot < KitFX.SLOTS do slot = slot + 1 end
+    if slot >= KitFX.SLOTS then
+        -- LE DIX-SEPTIEME KIT NE PARTAGE PAS LA BOITE DU SEIZIEME EN SILENCE.
+        -- Deux kits sur un meme slot, c'est un reglage de l'un qui atterrit
+        -- dans l'autre et une demande de chargement acquittee par le voisin.
+        -- Mieux vaut refuser et le dire.
+        Kit.fx_error = "seize kits par projet, c'est le maximum"
+        slot = KitFX.SLOTS - 1
+    end
     setExt(tr, "CP_KIT_SLOT", tostring(slot))
 
     fx_slot = slot
@@ -1871,6 +1920,9 @@ function fxParam(note, pid)
     if not (pad and pad.path) then return nil end
     local v = pad.p and pad.p[pid]
     if v then return v end
+    -- La racine par defaut est la note du pad : seul cet endroit connait la
+    -- note, donc c'est ici que la reponse se donne.
+    if pid == Kit.P.PADROOT then return note / 127 end
     -- Jamais reglee : on rend le defaut de l'instrument plutot que nil, sinon
     -- un bouton naitrait a zero alors que le son, lui, part du defaut.
     return Kit.FXDefault(pid)
@@ -1902,7 +1954,10 @@ local FX_DEFAULT = {
     [17] = 1 / 127, -- velocite min
     [18] = 1,       -- velocite max
     [23] = 0,       -- loop start offset
-    [25] = 1,       -- sustain : 0 dB
+    -- 0 dB, en POSITION DE BOUTON. Poser 1 ici voulait dire +12 dB, donc un
+    -- pad neuf affichait « +12.0 dB » et le sixieme haut du bouton etait
+    -- inerte : on redescendait a 0 dB sans que rien ne change dans le son.
+    [25] = (0 - (-60)) / (12 - (-60)),
     [100] = 0,      -- portamento
     [101] = 0,      -- note-off release override
     [104] = 0, [105] = 0, [106] = 0,
@@ -1919,8 +1974,11 @@ function Kit.FXDefault(pid)
     if pid == 24 then return KitFX.FromPlain(24, 250) end      -- decay 250 ms
     if pid == 102 then return KitFX.FromPlain(102, 1) end
     if pid == 103 then return KitFX.FromPlain(103, 2) end      -- bend 2 st
-    if pid == 109 then return KitFX.FromPlain(109, 0) end      -- min vol 0 dB
-    if pid == 112 then return 60 / 127 end
+    if pid == 109 then return 0 end                            -- pas de plancher
+    -- La racine d'un pad neuf est SA note, pas do central : l'instrument pose
+     -- NOTE_BASE + index, et rendre 60 pour les soixante-quatre faisait mentir
+     -- l'ecran sur l'etat du moteur.
+    if pid == 112 then return nil end
     if pid == 3 or pid == 4 then return nil end                -- pose au chargement
     return FX_DEFAULT[pid]
 end

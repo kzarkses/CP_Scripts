@@ -127,15 +127,13 @@ function KitFX.Set(slot, pad, field, value)
     return push(slot, OP_SET, pad, field, value)
 end
 
+-- Effacer, c'est l'affaire du JSFX : lui seul peut atteindre le chemin ET
+-- les reglages du pad. Lua ne fait que le demander.
 function KitFX.Clear(slot, pad)
-    -- Le chemin part aussi, sinon le pad se rechargerait a la reouverture du
-    -- projet : le JSFX relit tout pad dont le chemin n'est pas vide.
-    KitFX.SetPath(slot, pad, "")
     return push(slot, OP_CLEAR, pad, 0, 0)
 end
 
 function KitFX.ClearAll(slot)
-    for pad = 0, 63 do KitFX.SetPath(slot, pad, "") end
     return push(slot, OP_CLEARALL, 0, 0, 0)
 end
 
@@ -143,8 +141,16 @@ end
 -- Les chemins
 -- ---------------------------------------------------------------------------
 -- Un JSFX ne prend pas de parametre chaine : on depose les codes de
--- caracteres, terminés par zero, et le plugin les recopie chez lui.
-function KitFX.SetPath(slot, pad, path)
+-- caracteres, termines par zero, et le plugin les recopie chez lui.
+--
+-- IL N'Y A QU'UN TAMPON PAR SLOT, pas un par pad — c'est un CRENEAU DE
+-- TRANSIT, et le JSFX recopie son contenu dans le pad au moment ou il prend
+-- la demande. La signature portait un `pad` qu'elle n'utilisait pas, et cette
+-- promesse a rendu invisible un vrai defaut : KitFX.Clear avait l'air de
+-- vider le chemin du pad, et ne vidait qu'un tampon partage. Le pad
+-- ressuscitait a la reouverture du projet. C'est le JSFX qui efface le
+-- chemin maintenant, dans OP_CLEAR.
+function KitFX.SetPath(slot, path)
     if not attached then return false end
     local b = base(slot) + MB_STR
     path = path or ""
@@ -160,7 +166,7 @@ end
 -- compteur en dernier : le JSFX ne voit la demande qu'une fois tout ecrit.
 function KitFX.Load(slot, pad, path)
     if not attached then return false end
-    if not KitFX.SetPath(slot, pad, path) then return false end
+    if not KitFX.SetPath(slot, path) then return false end
     local b = base(slot)
     r.gmem_write(b + MB_LPAD, pad)
     r.gmem_write(b + MB_STATUS, KitFX.ST_BUSY)
@@ -328,9 +334,13 @@ KitFX.MAP = {
               norm=function(p) return clamp(p / 8, 0, 1) end,
               put=function(v) return math.floor(clamp(v, 0, 1) * 8 + 0.5) end,
               get=function(x) return clamp(x / 8, 0, 1) end },
-    [109] = { f=F.MINVOL, unit="dB", plain=normToDb, norm=dbToNorm,
-              put=function(v) return dbToLin(normToDb(v)) end,
-              get=function(x) return dbToNorm(linToDb(x)) end },
+    -- MIN VOL EST UN PLANCHER, PAS UN NIVEAU. C'est le gain a la velocite la
+    -- plus basse, et il DOIT rester entre 0 et 1 : au-dessus de 1, la rampe
+    -- de velocite s'inverse — frapper plus fort rend plus doux — et le pad
+    -- depasse le plein niveau en saturant, pendant que l'affichage annonce
+    -- sagement « +4.8 dB ». En dB il pouvait monter a +12. Il est donc
+    -- lineaire, borne par construction, et affiche en pourcentage.
+    [109] = { f=F.MINVOL, unit="%", direct=true },
     [110] = { f=F.CHAN,  unit="ch",
               plain=function(v) return math.floor(clamp(v, 0, 1) * 16 + 0.5) end,
               norm=function(p) return clamp(p / 16, 0, 1) end,

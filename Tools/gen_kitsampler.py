@@ -27,7 +27,8 @@ PINS = "\n".join(pins)
 
 # --- lecture des sliders de volume vers la table des pads ------------------
 readsl = "\n".join(
-    "  pad(%d)[P_VOL] = 10 ^ (slider%d / 20);" % (i, 9 + i)
+    "slider{s} != SL_LAST[{i}] ? ( SL_LAST[{i}] = slider{s};"
+    " pad({i})[P_VOL] = 10 ^ (slider{s} / 20); );".format(i=i, s=9 + i)
     for i in range(NPADS))
 
 # --- ecriture des sorties ---------------------------------------------------
@@ -85,6 +86,9 @@ NOTE_BASE = 36;         // pad 0 <-> note 36 (convention GM/FL/Ableton)
 // ---------------------------------------------------------------------------
 // Carte memoire. Posee une fois ; plus rien n'alloue ensuite.
 // ---------------------------------------------------------------------------
+// Derniere valeur vue de chaque slider de volume. C'est ce qui permet de ne
+// recopier QUE celui qui a bouge, au lieu des soixante-quatre a chaque appel.
+SL_LAST     = 512;
 PADS        = 1024;
 VOICES      = PADS + NPADS * PAD_SZ;
 OUTBUS      = VOICES + NVOICES * VOICE_SZ;
@@ -117,6 +121,7 @@ V_ACT=0;   V_PAD=1;   V_POS=2;   V_INC=3;   V_INCT=4;   V_PORTA=5;
 V_ENV=6;   V_STAGE=7; V_VEL=8;   V_NOTE=9;  V_CHAN=10;  V_AGE=11;
 V_HELD=12; V_AR=13;   V_DR=14;   V_SUS=15;  V_RR=16;    V_DATA=17;
 V_FRAMES=18; V_NCH=19; V_END=20; V_LP0=21;  V_LOOP=22;  V_OUT=23;
+V_WAIT=24;   // echantillons a attendre avant de sonner (offset midirecv)
 
 E_ATT=0; E_DEC=1; E_SUS=2; E_REL=3;
 
@@ -174,7 +179,12 @@ function pad_defaults(p, i) (
   p[P_ROFF]=0;    p[P_ROFFS]=0.001; p[P_LOOP]=0;  p[P_LSTART]=0;
   p[P_XFADE]=0;   p[P_SOFFS]=0;   p[P_EOFFS]=1;
   p[P_NLO]=NOTE_BASE + i;         p[P_NHI]=NOTE_BASE + i;
-  p[P_VLO]=1;     p[P_VHI]=127;   p[P_MINVOL]=1;
+  p[P_VLO]=1;     p[P_VHI]=127;
+  // ZERO, PAS UN. P_MINVOL est le gain a la velocite la plus basse : a 1, la
+  // rampe calculee au note-on est multipliee par zero et un kit neuf n'a
+  // AUCUNE dynamique — une ghost note et un accent sortent au meme niveau, et
+  // rien ne dit qu'il faut toucher un bouton pour y remedier.
+  p[P_MINVOL]=0;
   p[P_CHAN]=0;    p[P_PROB]=1;    p[P_RR]=0;      p[P_RRST]=0;
   p[P_CHOKE]=0;   p[P_MAXV]=4;    p[P_OUT]=0;     p[P_MUTE]=0;
   p[P_SOLO]=0;    p[P_PEAK]=0;    p[P_MODE]=0;    p[P_INTERP]=0;
@@ -219,7 +229,16 @@ function copy_path_from_gmem(pi) local(o, dst, src) (
 // frequence du fichier ; file_avail rend le nombre d'echantillons entrelaces
 // restants. On tronque a la plage du pad plutot que de refuser : un pad qui
 // sonne cinq secondes vaut mieux qu'un pad muet, et le statut le dit.
-function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest, n) (
+function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest, n, i) (
+  (pi < 0 || pi >= NPADS) ? ( gmem[gm + MB_STATUS] = 2; ) : (
+  // ON NE REECRIT PAS LA MATIERE SOUS UNE VOIX QUI LA LIT. file_mem remplit le
+  // tampon du pad pendant que @sample y lit encore : un echantillon depose sur
+  // un pad qui resonne craque, ou laisse deborder un morceau de l'ancien son.
+  i = 0;
+  loop(NVOICES,
+    (voice(i)[V_ACT] && voice(i)[V_PAD] == pi) ? voice(i)[V_ACT] = 0;
+    i += 1;
+  );
   p = pad(pi);
   n = readstr_from_mem(#path, path_mem(pi), PATH_LEN - 1);
   p[P_LOADED] = 0;
@@ -243,6 +262,7 @@ function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest, n) (
     ) : ( gmem[gm + MB_STATUS] = 2; );
     file_close(h);
   ) : ( gmem[gm + MB_STATUS] = 2; );
+  );
   );
 );
 
@@ -294,7 +314,7 @@ function choke_group(grp, except_pad) local(i, v, p) (
   );
 );
 
-function start_voice(pi, note, vel, ch)
+function start_voice(pi, note, vel, ch, ofs)
   local(p, vi, v, semis, ratio, span, g, s0, s1, frames) (
   p = pad(pi);
   p[P_LOADED] && p[P_FRAMES] > 0 ? (
@@ -344,13 +364,19 @@ function start_voice(pi, note, vel, ch)
     v[V_SUS] = min(max(p[P_SUS], 0), 1);
     v[V_RR] = 1 / max(p[P_REL] * srate, 1);
     v[V_ENV] = 0; v[V_STAGE] = E_ATT; v[V_HELD] = 1;
+    // LE DECALAGE DANS LE BLOC EST TENU. midirecv le rend et on le jetait :
+    // toutes les frappes tombaient donc sur la frontiere du bloc. A 1024
+    // echantillons, deux coups distants de 10 ms arrivent ensemble et un coup
+    // peut prendre 23 ms de retard — le kit sonne mou, et ca empire quand on
+    // augmente le tampon, ce qui envoie chercher au mauvais endroit.
+    v[V_WAIT] = max(ofs, 0);
     voice_serial += 1;
     v[V_AGE] = voice_serial;
     v[V_ACT] = 1;
   );
 );
 
-function note_on(note, vel, ch) local(i, p, idx) (
+function note_on(note, vel, ch, ofs) local(i, p, idx) (
   // Le pad est designe par sa note de base, et le balayage sert les pads dont
   // la PLAGE contient la note : un pad chromatique couvre le clavier, un pad
   // de batterie une seule touche, et les deux cohabitent dans le meme kit.
@@ -369,9 +395,9 @@ function note_on(note, vel, ch) local(i, p, idx) (
       // premier illisible, donc le round-robin gagne quand il est arme.
       p[P_RR] > 1.5 ? (
         p[P_RRST] = (p[P_RRST] + 1) % p[P_RR];
-        p[P_RRST] == 0 ? start_voice(i, note, vel, ch);
+        p[P_RRST] == 0 ? start_voice(i, note, vel, ch, ofs);
       ) : (
-        (p[P_PROB] >= 1 || rand(1) < p[P_PROB]) ? start_voice(i, note, vel, ch);
+        (p[P_PROB] >= 1 || rand(1) < p[P_PROB]) ? start_voice(i, note, vel, ch, ofs);
       );
     );
     i += 1;
@@ -389,7 +415,11 @@ function note_off(note, ch) local(i, v, p) (
     v[V_ACT] && v[V_NOTE] == note && v[V_CHAN] == ch && v[V_HELD] ? (
       p = pad(v[V_PAD]);
       v[V_HELD] = 0;
-      p[P_OBEY] > 0.5 ? (
+      // UNE BOUCLE REPOND TOUJOURS AU RELACHEMENT. Un one-shot qui ignore la
+      // note-off va au bout de sa matiere et meurt tout seul ; une BOUCLE n'a
+      // pas de bout. Avec obey a zero — le defaut d'un pad — elle devenait une
+      // voix immortelle qu'il fallait tuer en frappant le pad cinq fois.
+      (p[P_OBEY] > 0.5 || p[P_LOOP] > 0.5) ? (
         v[V_STAGE] = E_REL;
         p[P_ROFF] > 0.5 ? v[V_RR] = 1 / max(p[P_ROFFS] * srate, 1);
       );
@@ -429,6 +459,8 @@ function render_voice(v)
     v[V_ENV] <= 0 ? ( v[V_ENV] = 0; v[V_ACT] = 0; );
   );
 
+  // L'attente du decalage : la voix existe, elle ne sonne pas encore.
+  v[V_WAIT] > 0 ? ( v[V_WAIT] -= 1; ) :
   v[V_ACT] ? (
     // Portamento : l'increment glisse vers sa cible, il ne saute pas.
     v[V_PORTA] > 0 ? (
@@ -446,10 +478,14 @@ function render_voice(v)
     fr = v[V_POS] - ip;
 
     ip >= 0 && ip < v[V_END] - 1 ? (
+      // LE PAS EST LE NOMBRE DE CANAUX DU FICHIER, pas deux. Un wav a quatre
+      // ou six canaux (multi-micro, ambisonique) lu avec un pas de deux sort
+      // deux a trois fois trop lent, avec les micros qui passent les uns dans
+      // les autres — et c'est le fichier qu'on accuse.
       nch >= 2 ? (
-        a = d[ip * 2]; b = d[ip * 2 + 2];
+        a = d[ip * nch]; b = d[ip * nch + nch];
         l = a + (b - a) * fr;
-        a = d[ip * 2 + 1]; b = d[ip * 2 + 3];
+        a = d[ip * nch + 1]; b = d[ip * nch + nch + 1];
         r = a + (b - a) * fr;
       ) : (
         a = d[ip]; b = d[ip + 1];
@@ -493,6 +529,7 @@ pitch_bend   = 0;
 pending_load = -1;
 reload_next  = -1;
 load_wait    = 0;
+reload_wait  = 0;
 master_gain  = 1;
 gm           = mailbox(0);
 
@@ -536,6 +573,18 @@ file_avail(0) >= 0 ? ( reload_next = 0; );
 @slider
 gm = mailbox(min(max(slider1, 0), 15));
 master_gain = 10 ^ (slider2 / 20);
+
+// LE VOLUME D'UN PAD A DEUX ECRIVAINS, ET UN SEUL DOIT GAGNER A LA FOIS.
+// Lua l'ecrit par l'anneau ; @slider le recalculait pour les SOIXANTE-QUATRE
+// pads a chaque appel, c'est-a-dire au moindre changement de n'importe quel
+// slider — y compris celui du slot, pose a la creation du kit. On equilibrait
+// un kit, on deposait l'echantillon suivant, et tout revenait a 0 dB pendant
+// que les boutons affichaient toujours l'equilibre. Un seul reglage sur
+// quarante mentait, ce qui le rendait illisible.
+//
+// On ne recopie donc QUE le slider qui a bouge. Il reste un parametre
+// automatisable et reprend la main des qu'on le touche ; le reste du temps
+// c'est Lua qui parle.
 __READSL__
 
 @block
@@ -553,10 +602,16 @@ while (gmem[gm + MB_RPOS] != gmem[gm + MB_WPOS]) (
     k = gmem[gm + e + 2];
     k >= 0 && k < PAD_SZ ? pad(pi)[k] = gmem[gm + e + 3];
   ) : op == OP_CLEAR && pi >= 0 && pi < NPADS ? (
-    pad(pi)[P_LOADED] = 0; pad(pi)[P_FRAMES] = 0;
+    // LE CHEMIN PART AUSSI, ET LES REGLAGES REVIENNENT AU NEUF. Sans le
+    // chemin, @serialize le resauve et le pad RESSUSCITE a la reouverture du
+    // projet : vide a l'ecran, sonore sous les doigts. Sans les reglages, un
+    // solo oublie sur un pad supprime rend tout le kit muet sans que rien ne
+    // le dise, et un pad recycle nait mute.
+    path_mem(pi)[0] = 0;
+    pad_defaults(pad(pi), pi);
   ) : op == OP_CLEARALL ? (
     i = 0;
-    loop(NPADS, pad(i)[P_LOADED]=0; pad(i)[P_FRAMES]=0; i += 1;);
+    loop(NPADS, path_mem(i)[0] = 0; pad_defaults(pad(i), i); i += 1;);
   );
   gmem[gm + MB_RPOS] = gmem[gm + MB_RPOS] + 1;
 );
@@ -586,6 +641,20 @@ pending_load >= 0 ? (
     pending_load = -1;
     gmem[gm + MB_LACK] = gmem[gm + MB_LSEQ];
   );
+) : reload_next >= 0 ? (
+  // LE MEME FILET POUR L'OUVERTURE D'UN PROJET. Le repli ne couvrait que le
+  // chargement A LA DEMANDE ; un projet rouvert dependait entierement de
+  // @gfx. S'il ne tourne pas, tout le kit reste muet, le statut dit
+  // « 0 loaded », et il suffit d'ouvrir la fenetre de l'effet pour que tout
+  // se remplisse d'un coup — c'est-a-dire exactement l'instrument dont il
+  // faut ouvrir la fenetre pour s'entendre, que l'en-tete refuse.
+  reload_wait += 1;
+  reload_wait > 100 ? (
+    reload_wait = 0;
+    path_mem(reload_next)[0] ? load_pad(reload_next);
+    reload_next += 1;
+    reload_next >= NPADS ? reload_next = -1;
+  );
 );
 
 // Le solo vaut pour tout le kit : une fois par bloc, pas par pad et par
@@ -598,7 +667,7 @@ loop(NPADS, pad(i)[P_SOLO] > 0.5 ? any_solo = 1; i += 1;);
 while (midirecv(mofs, m1, m2, m3)) (
   st = m1 & 0xF0;
   ch = m1 & 0x0F;
-  st == 0x90 && m3 > 0 ? note_on(m2, m3, ch)
+  st == 0x90 && m3 > 0 ? note_on(m2, m3, ch, mofs)
   : (st == 0x80 || (st == 0x90 && m3 == 0)) ? note_off(m2, ch)
   : st == 0xE0 ? ( pitch_bend = (((m3 << 7) | m2) - 8192) / 8192; )
   : (st == 0xB0 && (m2 == 123 || m2 == 120)) ? all_off();
