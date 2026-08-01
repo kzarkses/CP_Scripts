@@ -108,6 +108,29 @@ end
 -- la Session — l'absence d'un moyen doit etre visible, pas devinable.
 function KitFX.Ready() return attached == true end
 
+-- ---------------------------------------------------------------------------
+-- gmem_attach EST GLOBAL AU SCRIPT, ET C'EST LE PIEGE LE PLUS COUTEUX DU LOT
+-- ---------------------------------------------------------------------------
+-- Il ne rend pas une poignee : il choisit quel bloc nomme TOUS les gmem_read
+-- et gmem_write du script touchent, jusqu'au prochain appel. CP_Sampler
+-- charge Tempo, et Tempo.Poll() se rebranche sur « CP_Tempo » a CHAQUE
+-- passage de la boucle. Attacher une fois a l'initialisation, comme on le
+-- faisait, ne vaut donc que jusqu'au premier passage : ensuite, chaque
+-- ecriture de KitFX partait dans la boite du hub de tempo, et chaque lecture
+-- en revenait. L'instrument, lui, lit « CP_Kit » : la boite est vide de son
+-- cote, et le peu qui marchait ne marchait que par la grace de l'ordre des
+-- appels dans une frame — d'ou le « des fois oui, des fois non ».
+--
+-- Tempo.lua le documente depuis la session 20, en toutes lettres : « no app
+-- loads both today; the trap is armed for the one that will ». C'est celle-ci.
+-- On reselectionne donc avant chaque acces, comme Tempo le fait, et comme
+-- Loop.Reattach le prevoit. Un gmem_attach est une ecriture de pointeur, pas
+-- une ouverture : le cout est nul devant ce qu'il evite.
+local function sel()
+    if attached then r.gmem_attach(GM_NAME) end
+    return attached
+end
+
 local function base(slot)
     return GM_BASE + (slot % KitFX.SLOTS) * GM_SLOT_SZ
 end
@@ -116,7 +139,7 @@ end
 -- memoire, et c'est la SEULE conclusion a en tirer.
 local hb = 0
 function KitFX.Heartbeat(slot)
-    if not attached then return end
+    if not sel() then return end
     hb = hb + 1
     r.gmem_write(base(slot) + MB_HB, hb)
 end
@@ -127,7 +150,7 @@ end
 -- Lua ecrit la commande PUIS avance l'index : tant que l'index n'a pas bouge,
 -- le JSFX ne lit rien, et une commande a moitie ecrite n'existe pas pour lui.
 local function push(slot, op, pad, field, value)
-    if not attached then return false end
+    if not sel() then return false end
     local b = base(slot)
     local w = r.gmem_read(b + MB_WPOS) or 0
     local e = b + MB_RING + (w % RING_N) * RING_SZ
@@ -167,7 +190,7 @@ end
 -- ressuscitait a la reouverture du projet. C'est le JSFX qui efface le
 -- chemin maintenant, dans OP_CLEAR.
 function KitFX.SetPath(slot, path)
-    if not attached then return false end
+    if not sel() then return false end
     local b = base(slot) + MB_STR
     path = path or ""
     if #path > PATH_MAX then return false end
@@ -181,7 +204,7 @@ end
 -- Demande de chargement. LE CHEMIN EST DEPOSE AVANT LE NUMERO DE PAD, et le
 -- compteur en dernier : le JSFX ne voit la demande qu'une fois tout ecrit.
 function KitFX.Load(slot, pad, path)
-    if not attached then return false end
+    if not sel() then return false end
     if not KitFX.SetPath(slot, path) then return false end
     local b = base(slot)
     r.gmem_write(b + MB_LPAD, pad)
@@ -195,13 +218,13 @@ end
 -- et elle a coute des echantillons : un garde-fou qui verifie le geste et non
 -- son resultat ne garde rien.
 function KitFX.LoadIdle(slot)
-    if not attached then return true end
+    if not sel() then return true end
     local b = base(slot)
     return (r.gmem_read(b + MB_LSEQ) or 0) == (r.gmem_read(b + MB_LACK) or 0)
 end
 
 function KitFX.Status(slot)
-    if not attached then return KitFX.ST_READY end
+    if not sel() then return KitFX.ST_READY end
     return r.gmem_read(base(slot) + MB_STATUS) or KitFX.ST_READY
 end
 
@@ -212,7 +235,7 @@ end
 -- facon de savoir si une ecriture est PARTIE, par opposition a « on a appele
 -- la fonction qui ecrit ».
 function KitFX.Raw(slot)
-    if not attached then return nil end
+    if not sel() then return nil end
     local b = base(slot)
     return {
         base = b,
@@ -228,7 +251,7 @@ function KitFX.Raw(slot)
 end
 
 function KitFX.Peak(slot, pad)
-    if not attached then return 0 end
+    if not sel() then return 0 end
     return r.gmem_read(base(slot) + MB_PEAK + pad) or 0
 end
 
@@ -236,7 +259,7 @@ end
 -- poser, et la seule qui compte : l'instrument ne repond oui qu'apres avoir
 -- lu le fichier et compte ses images.
 function KitFX.Loaded(slot, pad)
-    if not attached then return false end
+    if not sel() then return false end
     return (r.gmem_read(base(slot) + MB_LOADED + pad) or 0) > 0.5
 end
 
@@ -245,12 +268,12 @@ end
 -- veut dire que rien n'est charge, et le probleme est le chargement ; un
 -- chiffre juste veut dire que le probleme est le routage MIDI ou la sortie.
 function KitFX.LoadedCount(slot)
-    if not attached then return -1 end
+    if not sel() then return -1 end
     return r.gmem_read(base(slot) + MB_NLOADED) or 0
 end
 
 function KitFX.Active(slot, pad)
-    if not attached then return 0 end
+    if not sel() then return 0 end
     return r.gmem_read(base(slot) + MB_NACT + pad) or 0
 end
 
@@ -279,10 +302,16 @@ local function dbToNorm(d) return clamp((d - DB_LO) / (DB_HI - DB_LO), 0, 1) end
 local function dbToLin(d) return (d <= DB_LO) and 0 or 10 ^ (d / 20) end
 local function linToDb(v) return (v <= 0) and DB_LO or 20 * math.log(v, 10) end
 
--- La hauteur : la meme echelle que le RS5K (0,5 = 0 st, ±80 st), pour qu'un
--- kit migre sans que le bouton saute.
-local function normToSt(n) return (clamp(n, 0, 1) - 0.5) * 160 end
-local function stToNorm(s) return clamp(0.5 + s / 160, 0, 1) end
+-- LA HAUTEUR : PLUS OR MOINS VINGT-QUATRE DEMI-TONS, PAS QUATRE-VINGTS.
+-- Le RS5K couvre ±80 st parce que son parametre le couvre ; recopier cette
+-- echelle rendait le bouton inutilisable — deux pixels valaient une octave,
+-- et pousser Tune au bout mettait l'echantillon a +80 st, soit cent fois trop
+-- vite : trente mille images passent en sept millisecondes, et le pad devient
+-- inaudible sans qu'aucun message ne le dise. Deux octaves dans chaque sens
+-- couvrent tout ce qu'on fait musicalement d'un echantillon.
+local ST_RANGE = 24
+local function normToSt(n) return (clamp(n, 0, 1) - 0.5) * (ST_RANGE * 2) end
+local function stToNorm(s) return clamp(0.5 + s / (ST_RANGE * 2), 0, 1) end
 
 -- ---------------------------------------------------------------------------
 -- La table : un identifiant de parametre -> un champ du JSFX + ses courbes

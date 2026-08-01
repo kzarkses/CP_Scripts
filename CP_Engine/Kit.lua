@@ -2640,9 +2640,17 @@ function Kit.SelfTest()
         local before = KitFX.Raw(fx_slot)
         KitLog.Line("cible note=%d  wpos avant=%d", target,
                     before and before.wpos or -1)
-        for _, pid in ipairs({ Kit.P.VOL, Kit.P.PAN, Kit.P.TUNE,
-                               Kit.P.ATTACK, Kit.P.DECAY }) do
+        -- IL REMET CE QU IL A PRIS. La premiere version ecrivait 0,42
+        -- partout et s en allait : elle a mis le pad a -30 dB et -12,8
+        -- demi-tons, puis on a cherche pendant une heure pourquoi plus rien
+        -- ne sonnait. Une mesure qui abime ce qu elle mesure ne mesure rien —
+        -- elle fabrique le defaut suivant.
+        local keep = {}
+        local pids = { Kit.P.VOL, Kit.P.PAN, Kit.P.TUNE,
+                       Kit.P.ATTACK, Kit.P.DECAY }
+        for _, pid in ipairs(pids) do
             local cur = Kit.Param(target, pid)
+            keep[pid] = cur
             KitLog.Line("  pid=%d lu=%s champ=%s",
                         pid, tostring(cur), tostring(KitFX.Field(pid)))
             Kit.SetParam(target, pid, 0.42)
@@ -2650,6 +2658,10 @@ function Kit.SelfTest()
         local after = KitFX.Raw(fx_slot)
         KitLog.Line("wpos apres=%d  (ecarts attendus : 5)",
                     after and after.wpos or -1)
+        for _, pid in ipairs(pids) do
+            if keep[pid] then Kit.SetParam(target, pid, keep[pid]) end
+        end
+        KitLog.Line("valeurs d origine reposees")
     end
 
     KitLog.Section("fin")

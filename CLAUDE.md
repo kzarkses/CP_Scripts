@@ -123,6 +123,23 @@ marche.
 cours de traitement ». Le moteur compte les echantillons **produits** : il
 s'ancre sur le second. Apparier le mauvais a coute 28 ms de retard constant.
 
+**`gmem_attach` est GLOBAL au script Lua.** Il ne rend pas une poignee : il
+choisit quel bloc nomme *tous* les `gmem_read`/`gmem_write` du script touchent,
+jusqu'au prochain appel. `Tempo.Poll()` se rebranche sur `CP_Tempo` a **chaque
+passage de boucle** ; toute autre module qui lit gmem doit donc **reselectionner
+son bloc avant chaque acces** (`KitFX` le fait, `Loop.Reattach` existe pour ca).
+Attacher une fois a l'initialisation ne vaut que jusqu'au premier passage.
+Le symptome est le pire qui soit : ca marche par intermittence, selon l'ordre
+des appels dans une frame. Le piege etait ecrit dans l'en-tete de `Tempo.lua`
+depuis la session 20 — « the trap is armed for the one that will » — et il a
+quand meme coute trois soirees, parce qu'il etait documente a cote de celui qui
+le pose et non a cote de celui qui tombe dedans.
+
+**Une mesure ne doit pas abimer ce qu'elle mesure.** Le premier auto-test du
+sampler ecrivait une valeur connue dans cinq parametres et s'en allait : il a
+mis un pad a -30 dB et -12,8 demi-tons, et on a cherche une heure pourquoi plus
+rien ne sonnait. Il repose ce qu'il a pris.
+
 **Les parametres VST Cockos sont normalises.** `TrackFX_GetParam` sur un RS5K
 ou un ReaPitch rend 0..1, jamais des ms, des dB ou des demi-tons. Les unites
 reelles n'existent qu'a travers l'API de formatage (`plainOf` / `plainSet`).
