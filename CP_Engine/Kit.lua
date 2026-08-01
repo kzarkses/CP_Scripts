@@ -1910,6 +1910,7 @@ end
 -- kit dans cette vue ; s'il en existe plusieurs, le premier gagne, et les
 -- autres restent joignables depuis la grille.
 local INSTR_DEFAULT_NOTE = 60          -- do central, quand la place est libre
+local fxInstrSlot                      -- rempli plus bas, appele par le refresh
 
 local function fxInstrNote()
     for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
@@ -1924,7 +1925,22 @@ end
 -- memes pour que CP_Sampler n'ait pas a savoir lequel des deux il regarde.
 fxRefreshInstr = function()
     local note = fxInstrNote()
-    if not note then Kit.instr = nil return nil end
+    -- LA VUE EXISTE MEME QUAND L'INSTRUMENT N'EXISTE PAS ENCORE. Le panneau
+    -- sait deja dessiner un instrument vide — il teste instr.path — mais il
+    -- lui faut l'OBJET pour le faire. Sur le montage RS5K, EnsureInstrument
+    -- creait une piste, donc Kit.instr etait toujours la ; ici on ne cree
+    -- rien tant qu'il n'y a pas de matiere, et rendre nil faisait planter la
+    -- premiere bascule vers la vue Piano. On publie donc un emplacement :
+    -- la note qui accueillera l'echantillon, et pas de chemin.
+    if not note then
+        local slot = fxInstrSlot()
+        Kit.instr = {
+            note = slot, track = Kit.parent, fx = fx_index,
+            path = nil, name = "Instrument",
+            root = slot or 60, fmt = {},
+        }
+        return nil
+    end
     local pad = Kit.pads[note]
     local root = Kit.ParamPlain(note, Kit.P.PADROOT) or note
     Kit.instr = {
@@ -1941,7 +1957,7 @@ Kit.RefreshInstr = fxRefreshInstr
 -- s'il est libre, sinon le premier creneau vide. On ne prend JAMAIS un pad
 -- occupe — remplacer un son que l'utilisateur n'a pas designe est exactement
 -- le genre de geste qu'on a passe la semaine a supprimer.
-local function fxInstrSlot()
+fxInstrSlot = function()
     local n = fxInstrNote()
     if n then return n end
     if not Kit.pads[INSTR_DEFAULT_NOTE] then return INSTR_DEFAULT_NOTE end

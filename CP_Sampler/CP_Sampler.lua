@@ -1739,7 +1739,13 @@ end
 
 -- Waveform + draggable region over the instrument sample.
 local function instrWave(theme, x, y, w, h)
+    -- Kit.instr peut manquer : sur le moteur RS5K tant qu'aucune piste
+    -- d'instrument n'existe, et une fraction de seconde apres un changement
+    -- de kit avant le balayage suivant. Dessiner un panneau vide vaut mieux
+    -- que planter — c'est litteralement ce qui est arrive a la premiere
+    -- bascule vers la vue Piano.
     local instr = Kit.instr
+    if not instr then return end
     local col_bg   = theme.colors.list_bg or theme.colors.window_bg
     local col_acc  = theme.colors.accent
     local col_bord = theme.colors.border
@@ -1855,6 +1861,7 @@ for i = 1, KB_NW do KB_WIDX[KB_WHITES[i]] = i - 1 end
 -- plays chromatically, the root note is outlined.
 local function instrKeyboard(theme, x, y, w, h)
     local instr = Kit.instr
+    if not instr then return end
     local col_acc  = theme.colors.accent
     local col_mute = theme.colors.text_mute or theme.colors.text_disabled
     local nw = KB_NW
@@ -1928,6 +1935,16 @@ end
 local function drawInstrument(theme, avail_h)
     local instr = Kit.instr
     if not instr then Kit.EnsureInstrument() instr = Kit.instr end
+    if not instr then
+        UI.SetFontH2()
+        UI.Text("Instrument")
+        UI.SetFontCaption()
+        UI.SameLine(10)
+        UI.Text("create a kit first, then drop a sample here",
+                { disabled = true })
+        UI.SetFontBody()
+        return
+    end
 
     UI.SetFontH2()
     UI.Text(instr.path and instr.name or "Instrument")
