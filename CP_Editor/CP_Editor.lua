@@ -2480,11 +2480,21 @@ local function rowLabel(rows, p, kv, w)
 end
 
 local function rollRows()
-    -- A kit under the target means drum rows (one row per loaded pad); a synth
-    -- means the melodic window. The user's explicit toggle still wins.
+    -- LE CLIP S'OUVRE DANS LA VUE DE CE QU'IL JOUE. Une batterie se regarde en
+    -- rangees de pads, un instrument chromatique en clavier — et « il y a un
+    -- kit sous la cible » ne suffisait pas a les distinguer, puisqu'un
+    -- instrument EST un kit depuis le chantier 2 (un kit d'un seul pad, sur sa
+    -- propre piste). On ouvrait donc chaque clip d'instrument avec une seule
+    -- rangee nommee, sur laquelle aucune melodie ne s'ecrit.
+    --
+    -- Le genre se lit sur la piste du kit (P_EXT:CP_KIT_MODE) et voyage dans
+    -- la vue. Le bouton Drum reste le dernier mot : ce qui change ici, c'est
+    -- ce qu'on trouve en ouvrant, pas ce qu'on a le droit de demander.
     local kit = clipKit()
     local drum = state.drum_mode
-    if drum == nil then drum = kit ~= nil end
+    if drum == nil then
+        drum = kit ~= nil and kit.mode ~= "instrument"
+    end
     -- the row model itself is shared with CP_Looper (Engine/Rows), so drum
     -- rows and the melodic window behave identically in both editors
     local m = Rows.Build(mrows, {

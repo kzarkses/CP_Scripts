@@ -383,7 +383,13 @@ end
 -- Kit view: the pads of the CP kit a lane is routed to, shaped like the Kit
 -- module's surface so Rows.Build / Rows.Label can consume either.
 -- ---------------------------------------------------------------------------
-local kitview = { BASE = 0, MAX = 128, pads = {}, version = 0, n = 0 }
+-- `mode` dit CE QU'EST le kit — « drum » ou « instrument ». Un editeur qui
+-- ouvre un clip a besoin de le savoir : un kit de batterie se regarde en
+-- rangees de pads, un instrument chromatique en clavier. Le champ voyage avec
+-- les pads parce que c'est la meme question posee a la meme piste, et que
+-- l'aller-retour est deja paye.
+local kitview = { BASE = 0, MAX = 128, pads = {}, version = 0, n = 0,
+                  mode = "drum" }
 local kv_change, kv_lane = -1, -1
 
 local function kitParentOf(tr)
@@ -405,6 +411,7 @@ function Loop.KitViewOfTrack(tr)
     kv_change, kv_lane = c, tr
     local pads, n = kitview.pads, 0
     for k in pairs(pads) do pads[k] = nil end
+    kitview.mode = "drum"
     local parent = kitParentOf(tr)
     -- UN KIT JSFX N'A PAS D'ENFANTS. Ses pads vivent dans le miroir que Kit
     -- persiste sur la piste elle-meme (P_EXT:CP_KIT_PADS, un enregistrement
@@ -414,7 +421,15 @@ function Loop.KitViewOfTrack(tr)
     if parent then
         local _, eng = r.GetSetMediaTrackInfo_String(parent,
                            "P_EXT:CP_KIT_ENGINE", "", false)
+        -- SEUL UN KIT JSFX A UN GENRE. Sur l'ancien moteur, CP_KIT_MODE note
+        -- quelle VUE le Sampler affichait en dernier — un reglage de fenetre,
+        -- pose sur la piste faute d'un meilleur endroit. Le lire comme un genre
+        -- ferait ouvrir en clavier les clips de batterie de tout projet qu'on a
+        -- quitte sur la page instrument.
         if eng == "jsfx" then
+            local _, md = r.GetSetMediaTrackInfo_String(parent,
+                              "P_EXT:CP_KIT_MODE", "", false)
+            if md == "instrument" then kitview.mode = "instrument" end
             local _, blob = r.GetSetMediaTrackInfo_String(parent,
                                 "P_EXT:CP_KIT_PADS", "", false)
             for line in (blob or ""):gmatch("[^\n]+") do
