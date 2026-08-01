@@ -211,8 +211,12 @@ local function startPreview(src, path, opts)
     -- would fight, so the native one is only asked for when there is no
     -- section to respect.
     local section = opts and opts.end_s
-    local want_loop = (opts and opts.loop) or (opts == nil and Preview.loop)
-    if opts and opts.loop == nil then want_loop = Preview.loop end
+    -- The caller's `loop` when it stated one, the module's setting otherwise.
+    -- `opts.loop == false` has to survive as false, which is why this is not an
+    -- `or` chain: the browser sets it once and never passes it, the editor
+    -- states it on every press.
+    local want_loop = Preview.loop
+    if opts and opts.loop ~= nil then want_loop = opts.loop end
     r.CF_Preview_SetValue(preview, "B_LOOP",
                           (want_loop and not section) and 1 or 0)
     if start > 0 then
