@@ -281,7 +281,13 @@ end
 local track_name = {}   -- [t] = { tr = ptr|false, s = "name" }
 local bars_lbl   = {}   -- [bars] = "N bars"
 local cell_lbl   = {}   -- [t*SCENES+s] = { src = "name", w = width, s = "cut" }
-for t = 0, TRACKS - 1 do track_name[t] = { tr = false, s = "Track " .. (t + 1) } end
+-- Primed with the ANSWER FOR AN UNROUTED COLUMN, not with a guess. It used to
+-- be primed with "Track N", and since the cache only recomputes when the
+-- destination CHANGES, an unrouted column kept printing a name for a track it
+-- had never been connected to — false > false is never true, so the branch that
+-- would have said "no track" never ran. The header lied exactly where its own
+-- comment says it must not.
+for t = 0, TRACKS - 1 do track_name[t] = { tr = nil, known = false, s = "no track" } end
 
 -- A column is a LANE, and a lane plays into whatever track it is routed to
 -- (CP_Looper's routing, shared). Saying "Track 1" when nothing is routed
@@ -289,8 +295,12 @@ for t = 0, TRACKS - 1 do track_name[t] = { tr = false, s = "Track " .. (t + 1) }
 -- has to admit it.
 local function trackName(t)
     local c = track_name[t]
-    local tr = Loop.GetLaneDest(t) or false
-    if tr ~= c.tr then
+    local tr = Loop.GetLaneDest(t)
+    -- `known` is what closes the hole: without it, the very first computation
+    -- is skipped whenever the answer happens to equal the primed value, and the
+    -- primed value is precisely the one we have not verified yet.
+    if not c.known or tr ~= c.tr then
+        c.known = true
         c.tr = tr
         if tr then
             local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
@@ -325,7 +335,7 @@ local function trackMenu(t)
                 checked = (tr == cur_tr),
                 action = function()
                     Loop.SetLaneDest(t, tr)      -- routes BOTH halves of the pair
-                    track_name[t].tr = false     -- force the cached name to refresh
+                    track_name[t].known = false  -- force the cached name to refresh
                 end,
             }
         end
@@ -333,16 +343,35 @@ local function trackMenu(t)
     if #items > 0 then items[#items + 1] = { separator = true } end
     items[#items + 1] = { label = "New track for this column", action = function()
         Loop.NewDestTrack(t)
-        track_name[t].tr = false
+        track_name[t].known = false
     end }
-    if cur_tr then
-        items[#items + 1] = { label = "Unroute", action = function()
+    -- "Unroute" is gone, and its absence is the point: it manufactured exactly
+    -- the state the window now refuses to show — a column wired to nothing.
+    -- What replaces it says what someone actually wants: keep the track, stop
+    -- giving it a column. The mark travels in the project, so the choice
+    -- survives closing the window.
+    if cur_tr and Tracks and Tracks.Mark then
+        items[#items + 1] = { label = "Hide this column", action = function()
+            Tracks.Mark(cur_tr, "session", "hidden")
             Loop.SetLaneDest(t, nil)
-            track_name[t].tr = false
+            track_name[t].known = false
         end }
     end
     UI.NativeMenu(items)
 end
+
+-- QUI FAIT LE SON, EN CLAIR ET EN PERMANENCE.
+--
+-- « Impossible de savoir si c'est le nouveau moteur ou pas » : c'etait vrai.
+-- Voice.Backend(), Voice.Diag(), Audition.Backend() et Audition.Diag()
+-- existaient et n'etaient appelees nulle part, et le seul affichage de la suite
+-- etait garde par `if ENGINE_OK` — donc muet exactement dans le cas qu'on
+-- cherchait a detecter.
+--
+-- Construite une fois : elle part dans une boucle de dessin.
+local ENGINE_BADGE = "engine " .. Voice.Label() .. " · cells: "
+                     .. (ENGINE_OK and "voices" or "silent")
+local function engineBadge() return ENGINE_BADGE end
 
 local function barsLabel(bars)
     local s = bars_lbl[bars]
@@ -518,6 +547,49 @@ end
 
 local function isAudio(c) return c and c.kind == "audio" and c.path end
 
+-- Pass lengths a musical loop lands on. A file that misses all of them by more
+-- than 6 % is not a loop at this tempo, whatever its name claims.
+local BAR_GRID = { 0.5, 1, 2, 4, 8, 16, 32 }
+
+-- HOW LONG A SOUND'S PASS IS — read from the FILE, not from a default.
+--
+-- This was the defect behind "it plays the kick, then lasts some length I do
+-- not understand": nothing ever wrote `bars` on a sound. Bus.TakeDrop builds an
+-- audio clip carrying only its path, and cellBars answers 4 for anything
+-- without one. Four bars is sixteen beats — eight seconds at 120 — so a 0.4 s
+-- kick played once and went quiet for 7.6 s, forever, on a period nothing in
+-- the interface named.
+--
+-- The rule has three answers, in this order:
+--   1. DECLARED — the cell already carries a length (edited, or reloaded from a
+--      saved project). Nothing to guess.
+--   2. A MUSICAL LOOP — SrcTempo believes a tempo AND the file is long enough
+--      to BE a loop at it. SrcTempo's own guard is two beats, which is enough
+--      to trust a name and not enough to fill a bar; here it is one bar.
+--   3. A ONE-SHOT — the pass stays one bar, because a lane is a grid and a
+--      sub-bar lane pollutes the phase, the countdown and the display. It is
+--      the MATERIAL that loops inside the voice (see Cells.playAt).
+--
+-- Costly: SrcTempo opens the source. Called once when a cell is filled, never
+-- per frame.
+local function soundBars(c)
+    local len = SrcTempo.Length(c.path)
+    local tsn = Loop.TsNum() or 4
+    if not len or len <= 0 then return 1 end
+    local mode = c.tempo_mode or "repitch"
+    local bpm = (mode ~= "none") and SrcTempo.Bpm(c.path, c.src_bpm) or nil
+    if bpm and bpm > 0 and len >= (60 / bpm) * tsn * 0.9 then
+        local bars = (len * bpm / 60) / tsn
+        for i = 1, #BAR_GRID do
+            local g = BAR_GRID[i]
+            if bars >= g * 0.94 and bars <= g * 1.06 then return g end
+        end
+        local w = floor(bars + 0.5)
+        return (w >= 1) and w or 1
+    end
+    return 1
+end
+
 -- What a sound cell says under its name. A stretch has to be rendered before
 -- it can be played, and a render that is queued or running is the one moment
 -- where the cell is not yet what the menu says it is — so it says so. Five
@@ -537,10 +609,24 @@ local function audioSub(c)
                                r.Master_GetTempo() or 120)] or WARP_SUB.none
 end
 
+-- A length in BARS, and fractions are legitimate: half a bar is a real loop,
+-- and the engine goes down to an eighth. Rounding to whole bars here is what
+-- used to turn a two-beat loop into a four-bar one.
 local function cellBars(c)
     local b = c and c.bars or 4
-    if not b or b < 1 then b = 4 end
-    return floor(b + 0.5)
+    if not b or b <= 0 then b = 4 end
+    if b < 0.125 then b = 0.125 end
+    return b
+end
+
+-- A sound cell whose length was never established gets one, once. Called from
+-- the two places a cell is FILLED, plus a safety net at arm time for projects
+-- saved before this existed.
+local function ensureBars(c)
+    if c and c.kind == "audio" and c.path and not c.bars then
+        c.bars = soundBars(c)
+    end
+    return c
 end
 
 local function cellNotes(c)
@@ -675,6 +761,9 @@ end
 local function armLane(lane, c, t, s)
     local audio = isAudio(c)
     if audio then
+        -- The safety net: a project saved before sounds carried a length gets
+        -- one here, at the last moment where asking is still free.
+        ensureBars(c)
         local path, rate = soundFor(c)
         local ok, why = Cells.Arm(t, lane, path, rate)
         if not ok then
@@ -1155,6 +1244,7 @@ for i = 1, 4 do
                     local c = Clip.new("audio")
                     c.path = p
                     c.name = p:match("([^/\\]+)$") or p
+                    ensureBars(c)
                     cells[t][s] = c
                     break
                 end
@@ -1199,15 +1289,23 @@ local function busConsume()
     if not g then return end
     local cx, cy = Core.ScreenToClient(sx, sy)
     if cx < g.x0 or cy < g.y0 then return end
-    local t = floor((cx - g.x0) / (g.cw + g.gap))
+    -- The x position gives a DRAW index; only the column list turns it into a
+    -- slot. Reading it as a slot directly was fine while the two were the same
+    -- number, and would drop clips into the wrong column the moment they are
+    -- not.
+    local t = Loop.ColumnAt(floor((cx - g.x0) / (g.cw + g.gap)) + 1)
     local s = floor((cy - g.y0) / (g.ch + g.gap))
-    if t < 0 or t >= TRACKS or s < 0 or s >= SCENES then return end
+    if not t or s < 0 or s >= SCENES then return end
     if not ((clip.kind == "audio" and clip.path)
             or (clip.kind == "midi" and clip.notes)) then
         return
     end
     if cur[t] == s then stopTrack(t) end   -- replacing what plays there
     clip.cell = t .. "," .. s
+    -- The moment a sound enters the grid is the moment to ask how long it is.
+    -- Anywhere later and the answer arrives after the first launch has already
+    -- been heard on the wrong length.
+    ensureBars(clip)
     cells[t][s] = clip
     saveGrid()
     flash((clip.kind == "audio" and "Sound -> " or "Clip -> ")
@@ -2132,6 +2230,22 @@ local function frame(theme)
     UI.BarRight()
     if UI.BarIcon("help", "Help", "Help") then UI.ShowHelp("help", HELP_TEXT) end
     UI.BarSep()
+    -- THE WAY BACK. "Hide this column" writes a mark on the track, and a
+    -- setting you can turn on but not off is a trap — the more so here, because
+    -- hiding the last column leaves no header to right-click on.
+    if UI.BarIcon("unhide", "Eye", "Show every hidden column again") then
+        local n = 0
+        for i = 0, r.CountTracks(0) - 1 do
+            local tr = r.GetTrack(0, i)
+            local app, role = Tracks.MarkOf(tr)
+            if app == "session" and role == "hidden" then
+                r.GetSetMediaTrackInfo_String(tr, "P_EXT:CP", "", true)
+                n = n + 1
+            end
+        end
+        Loop.RefreshDests()
+        flash(n > 0 and (n .. " column(s) back") or "No column is hidden")
+    end
     -- A view toggle, so it sits with the meta controls at the right end. The
     -- strip costs 28 px of height permanently, which on a short window is the
     -- last row of the grid: showing it has to stay a choice.
@@ -2247,14 +2361,30 @@ local function frame(theme)
     local gap = 3
     local scene_w = 24
     local head_h = 18
-    local cell_w = floor((w - scene_w - gap * TRACKS) / TRACKS)
     local cell_h = 30
+
+    -- A COLUMN IS A TRACK, so the project decides how many there are and in
+    -- what order. An empty project draws no grid at all — which is the honest
+    -- picture, and a great deal less confusing than four columns wired to
+    -- nothing.
+    local ncol = Loop.ColumnCount()
+    if ncol < 1 then
+        local mc = C.text_mute or C.text_disabled
+        Core.DrawText("Add a track in REAPER — a column is a track",
+                      x + 2, y + 4, mc[1], mc[2], mc[3], 0.7)
+        UI.Layout.AdvanceCursor(w, 24)
+        UI.AppStatus(engineBadge())
+        return
+    end
+    local cell_w = floor((w - scene_w - gap * ncol) / ncol)
+    if cell_w < 24 then cell_w = 24 end
 
     -- ---- track headers: name + record arm (the engine monitors ONE track
     -- at a time, so arming is exclusive — clicking the lit one disarms)
     UI.SetFontCaption()
-    for t = 0, TRACKS - 1 do
-        local cx = x + scene_w + gap + t * (cell_w + gap)
+    for ci = 0, ncol - 1 do
+        local t = Loop.ColumnAt(ci + 1)
+        local cx = x + scene_w + gap + ci * (cell_w + gap)
         local mc = C.text_mute or C.text_disabled
         local routed = Loop.GetLaneDest(t) ~= nil
         Core.DrawText(cellLabel(t, SCENES, trackName(t), cell_w - 22), cx + 2, y + 2,
@@ -2297,9 +2427,9 @@ local function frame(theme)
             Core.DrawRect(x, cy, scene_w, cell_h, 1, 1, 1, 0.06)
             if Core.MouseClicked(1) then sceneLaunch(s) end
         end
-        for t = 0, TRACKS - 1 do
-            local cx = x + scene_w + gap + t * (cell_w + gap)
-            drawCell(theme, t, s, cx, cy, cell_w, cell_h)
+        for ci = 0, ncol - 1 do
+            local cx = x + scene_w + gap + ci * (cell_w + gap)
+            drawCell(theme, Loop.ColumnAt(ci + 1), s, cx, cy, cell_w, cell_h)
         end
     end
 
@@ -2308,9 +2438,9 @@ local function frame(theme)
     if cdrag and not Core.MouseDown(1) then
         local src = cells[cdrag.t] and cells[cdrag.t][cdrag.s]
         local mx, my = Core.GetMousePos()
-        local dt = floor((mx - (x + scene_w + gap)) / (cell_w + gap))
+        local dt = Loop.ColumnAt(floor((mx - (x + scene_w + gap)) / (cell_w + gap)) + 1)
         local ds = floor((my - gy) / (cell_h + gap))
-        if src and dt >= 0 and dt < TRACKS and ds >= 0 and ds < SCENES
+        if src and dt and ds >= 0 and ds < SCENES
            and not (dt == cdrag.t and ds == cdrag.s) then
             pasteCell(dt, ds, src)
             flash("Copied to " .. trackName(dt) .. " / scene " .. (ds + 1))
@@ -2331,8 +2461,9 @@ local function frame(theme)
             Core.DrawRect(x, sy, scene_w, sh, 1, 1, 1, 0.06)
             if Core.MouseClicked(1) then stopAll() end
         end
-        for t = 0, TRACKS - 1 do
-            local cx = x + scene_w + gap + t * (cell_w + gap)
+        for ci = 0, ncol - 1 do
+            local t = Loop.ColumnAt(ci + 1)
+            local cx = x + scene_w + gap + ci * (cell_w + gap)
             local running = isRunning(liveLane(t))
             Core.DrawRoundRectFilled(cx, sy, cell_w, sh, theme.rounding_small or 0,
                                      0.17, 0.17, 0.19, 1)
@@ -2393,9 +2524,10 @@ local function frame(theme)
         end
 
         UI.SetFontCaption()
-        for t = 0, TRACKS - 1 do
-            local cx = x + scene_w + gap + t * (cell_w + gap)
-            drawMix(theme, t, cx, zy + MIX_PAD, cell_w, mix_h - MIX_PAD * 2)
+        for ci = 0, ncol - 1 do
+            local cx = x + scene_w + gap + ci * (cell_w + gap)
+            drawMix(theme, Loop.ColumnAt(ci + 1), cx, zy + MIX_PAD,
+                    cell_w, mix_h - MIX_PAD * 2)
         end
         UI.SetFontBody()
         pollMixDrag()
@@ -2413,12 +2545,13 @@ local function frame(theme)
         end
     end
     if not msg then msg = statusLine() end
-    -- Ce que le moteur de son fait vraiment, en clair. Une case muette sans
-    -- explication est le pire diagnostic possible : ici on lit combien de
-    -- moities portent un fichier, combien sonnent, et si le moteur natif est
-    -- meme de la partie.
+    -- Ce que le moteur de son fait vraiment, en clair. Le BACKEND est dit en
+    -- permanence — il l'etait sous deux gardes, dont l'une le taisait
+    -- precisement quand le moteur manquait. Le detail chiffre, lui, n'apparait
+    -- que quand il y a quelque chose a compter.
+    msg = (msg ~= "" and (msg .. "   ·   ") or "") .. engineBadge()
     if ENGINE_OK and Cells.Armed() then
-        msg = (msg ~= "" and msg or "") .. "   ·   " .. Cells.Diag()
+        msg = msg .. "   ·   " .. Cells.Diag()
     end
     UI.AppStatus(msg)
 

@@ -59,6 +59,15 @@ local ABI_MIN = 1.5
 -- personne ne touche la reglette.
 local PLAYRATE_FN = nil
 
+-- CE QU'UNE FENETRE AFFICHE POUR DIRE QUI FAIT LE SON.
+--
+-- Construite UNE fois, a l'init, et pour deux raisons : elle part dans une
+-- boucle de dessin (aucune concatenation par frame), et surtout elle doit dire
+-- la VERSION du binaire charge. « le moteur est la » ne suffit pas quand la
+-- question qu'on se pose est « est-ce que REAPER a bien repris la DLL que je
+-- viens de construire ».
+local LABEL = "off"
+
 local NULL = 4294967295       -- kNullVoice cote moteur
 
 Voice.NONE   = NULL
@@ -115,7 +124,10 @@ function Voice.init(reaper_api, preview_module)
     NATIVE = false
     if r.APIExists and r.APIExists("CP_EngineABI") then
         local ok, abi = pcall(r.CP_EngineABI)
-        NATIVE = (ok and abi and abi >= ABI_MIN) or false
+        if ok and abi and abi >= ABI_MIN then
+            NATIVE = true
+            LABEL = "native " .. string.format("%.1f", abi)
+        end
     end
     PLAYRATE_FN = (NATIVE and r.APIExists and r.APIExists("CP_PlayRate"))
                   and r.CP_PlayRate or nil
@@ -139,6 +151,9 @@ end
 function Voice.Backend()
     return NATIVE and "native" or "preview"
 end
+
+-- « native 1.7 » ou « off ». Courte, stable, prete a etre affichee.
+function Voice.Label() return LABEL end
 
 -- Peut-on placer un depart a un instant PRECIS du projet, exact a
 -- l'echantillon ? C'est la question qui separe une audition d'un lancement.

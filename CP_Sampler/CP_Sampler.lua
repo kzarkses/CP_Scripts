@@ -225,12 +225,20 @@ end
 -- ---------------------------------------------------------------------------
 -- Audition (press = sound, FL/MPC style — pads are an instrument)
 -- ---------------------------------------------------------------------------
+-- WHICH OF THE THREE PRODUCERS THIS CLICK GOES TO. Extracted so the status
+-- line and the trigger read the SAME expression: a badge that keeps its own
+-- copy of this rule is a badge that will eventually lie, and a lying badge is
+-- worse than none — it is what you check when you already doubt the sound.
+local function padUsesMidi(pad)
+    return opts.audition == "midi"
+        or (opts.audition == "auto" and Kit.Armed())
+        or not (pad and pad.path)   -- no readable file → only MIDI can play it
+end
+
 local function padOn(note)
     local pad = Kit.pads[note]
     if not pad or not pad.fx then return end
-    local use_midi = opts.audition == "midi"
-        or (opts.audition == "auto" and Kit.Armed())
-        or not pad.path             -- no readable file → only MIDI can play it
+    local use_midi = padUsesMidi(pad)
     if use_midi then
         Kit.StuffNote(note, true, opts.velocity)
         state.press_midi = note
@@ -1879,6 +1887,21 @@ local function frame(theme)
             state.flash_msg = ""
         end
     end
+    -- QUI FERA LE SON AU PROCHAIN CLIC. Le meme clic part vers l'un de TROIS
+    -- producteurs selon un etat invisible : le RS5K du pad, une voix du moteur,
+    -- ou CF_Preview. Sans cette ligne, « impossible de savoir si c'est le
+    -- nouveau moteur ou pas » etait litteralement vrai. Reconstruite seulement
+    -- quand un de ses termes change : elle vit dans une boucle de dessin.
+    do
+        local pad = state.sel and Kit.pads[state.sel] or nil
+        local src = padUsesMidi(pad) and "RS5K"
+                    or (Audition.WillUseVoices() and "voice" or "preview")
+        if state.badge_src ~= src then
+            state.badge_src = src
+            state.badge = "engine " .. Audition.Label() .. " · pads: " .. src
+        end
+    end
+
     if not msg then
         if not Kit.Exists() then
             msg = "no kit bus yet — create one to start dropping samples"
@@ -1890,7 +1913,7 @@ local function frame(theme)
             msg = "drop a file or an arrange item on a pad · right-click for the pad menu"
         end
     end
-    UI.AppStatus(msg)
+    UI.AppStatus((msg ~= "" and (msg .. "   ·   ") or "") .. (state.badge or ""))
 
     if state.cfg_dirty and not Core_tk.MouseDown(1) then
         persistConfig()

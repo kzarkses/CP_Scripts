@@ -135,6 +135,19 @@ end
 -- ---------------------------------------------------------------------------
 function Audition.Backend() return backend end
 
+-- L'ETIQUETTE DU MOTEUR, en passe-plat.
+--
+-- Une fenetre qui veut afficher « quel moteur » ne doit PAS charger Voice
+-- elle-meme : dofile ne met rien en cache, donc elle obtiendrait une seconde
+-- instance du module, jamais initialisee, dont NATIVE vaut false — et son
+-- badge annoncerait « off » sur une machine ou le moteur tourne parfaitement.
+-- Celle-ci passe par l'instance que ce module a deja initialisee.
+--
+-- Et NE PAS utiliser Backend() pour ca : il vaut « none » jusqu'au premier
+-- Play, donc il mentirait a l'ouverture de la fenetre — au seul moment ou on
+-- le regarde.
+function Audition.Label() return Voice.Label() end
+
 function Audition.Diag()
     local n = 0
     for _ in pairs(clips) do n = n + 1 end
@@ -148,6 +161,11 @@ end
 local function voicesUsable()
     return Voice.Available() and Voice.CanScheduleExact() and Voice.MaxVoices() > 1
 end
+
+-- La meme question, posee de l'exterieur. Une fenetre qui affiche « ce que va
+-- faire le prochain clic » doit lire l'EXPRESSION qui decide, pas un drapeau
+-- pose a cote d'elle qui finira par diverger.
+function Audition.WillUseVoices() return voicesUsable() end
 
 -- ---------------------------------------------------------------------------
 -- Sortie

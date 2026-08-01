@@ -185,10 +185,103 @@ local function bindPort(t, track, force)
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- A COLUMN IS A TRACK — and until now nothing said so.
+--
+-- A column used to exist whether or not anything was behind it: four of them,
+-- always drawn, bound to nothing until someone opened a menu and routed them
+-- by hand. Drop a sample into one and no sound came out, with no visible
+-- reason. That is not a missing feature, it is a missing RELATION: the window
+-- showed slots where the user reads tracks.
+--
+-- So the relation is stated. A column ADOPTS a project track, and remembers it
+-- by GUID — the same `dest<lane>` key that already existed, because the storage
+-- was never the problem. What is new is that an empty slot goes looking.
+--
+-- ADOPTION IS BY SLOT, DISPLAY IS BY TRACK ORDER. Two different things, and
+-- keeping them apart is what makes this safe: a slot is a lane, it owns clips
+-- and a port binding, so it must NOT move when the user reorders their tracks.
+-- Only the drawing order follows the project. Reorder and nothing is cut;
+-- delete a track and its slot is freed, the others keep their clips.
+--
+-- ELIGIBLE = a TOP-LEVEL track carrying no CP mark. A folder parent qualifies:
+-- it has a fader, a chain and a meter, which is everything a destination needs.
+-- A folder CHILD does not — it is that destination's internals, and audioDest
+-- creates children itself, so accepting them would grow a column every time a
+-- column played a sound. The suite's own infrastructure is excluded by its
+-- mark, which Engine/Tracks declares the sole discovery authority.
+-- ---------------------------------------------------------------------------
+local order = {}          -- [i] = slot, sorted by project track order
+local norder = 0
+
+local function eligible(tr)
+    if r.GetParentTrack(tr) ~= nil then return false end
+    if Tracks and Tracks.MarkOf and Tracks.MarkOf(tr) then return false end
+    return true
+end
+
+-- Rebuilt in place, every refresh. No table is created here: this runs behind a
+-- half-second debounce, but it runs for the life of the window.
+local claimed = {}
+local function syncColumns()
+    local n = Loop.TRACKS
+    for k in pairs(claimed) do claimed[k] = nil end
+    for t = 0, n - 1 do
+        local tr = Loop.dest[t]
+        if tr then claimed[tr] = t end
+    end
+
+    -- Fill free slots, lowest first, with unclaimed eligible tracks in project
+    -- order. A track already held by a slot keeps it — that is the whole point.
+    local slot = 0
+    for i = 0, r.CountTracks(0) - 1 do
+        local tr = r.GetTrack(0, i)
+        if not claimed[tr] and eligible(tr) then
+            while slot < n and Loop.dest[slot] do slot = slot + 1 end
+            if slot >= n then break end
+            local guid = r.GetTrackGUID(tr)
+            setDestGUID(slot, guid)
+            setDestGUID(slot + n, guid)
+            Loop.dest[slot] = tr
+            Loop.dest[slot + n] = tr
+            claimed[tr] = slot
+        end
+    end
+
+    -- The drawing order: occupied slots, sorted the way the project reads.
+    -- Built from the SLOTS and not from the tracks, so that two columns
+    -- deliberately pointed at the same instrument both keep a place — walking
+    -- the tracks would have silently dropped one of them.
+    norder = 0
+    for t = 0, n - 1 do
+        if Loop.dest[t] then norder = norder + 1 order[norder] = t end
+    end
+    -- Insertion sort: at most a handful of columns, behind a half-second
+    -- debounce. Anything cleverer would cost more to read than it saves.
+    for a = 2, norder do
+        local v  = order[a]
+        local kv = r.GetMediaTrackInfo_Value(Loop.dest[v], "IP_TRACKNUMBER")
+        local b  = a - 1
+        while b >= 1
+              and r.GetMediaTrackInfo_Value(Loop.dest[order[b]], "IP_TRACKNUMBER") > kv do
+            order[b + 1] = order[b]
+            b = b - 1
+        end
+        order[b + 1] = v
+    end
+end
+
+-- How many columns to draw, and which slot each one is. A window iterates
+-- 1..ColumnCount() and asks ColumnAt(i) for the slot — the slot is what every
+-- other call still takes, so nothing downstream learns a second vocabulary.
+function Loop.ColumnCount() return norder end
+function Loop.ColumnAt(i) return order[i] end
+
 function Loop.RefreshDests()
     for lane = 0, Loop.MAX_LANES - 1 do
         Loop.dest[lane] = resolveGUID(getDestGUID(lane))
     end
+    syncColumns()
     for t = 0, Loop.TRACKS - 1 do bindPort(t, Loop.dest[t]) end
 end
 
@@ -379,13 +472,11 @@ function Loop.Setup()
                     .. ABI_MIN .. ")."
     end
     Loop.MigrateLegacy()
+    -- "Point every unrouted column at the selected track" used to live here. It
+    -- is now the opposite of the rule: a free column adopts a project track by
+    -- itself, in project order, and pouring four of them into whichever track
+    -- happened to be selected would undo that on the first setup.
     Loop.RefreshDests()
-    local sel = r.GetSelectedTrack(0, 0)
-    if valid(sel) then
-        for t = 0, Loop.TRACKS - 1 do
-            if not valid(Loop.dest[t]) then Loop.SetLaneDest(t, sel) end
-        end
-    end
     Loop.SetFreeRun(true)
     Loop.SetArmedLane(nil)   -- nothing monitors until you arm something
     -- One bar, as in Ableton, and for the same reason: the launch quantize is
