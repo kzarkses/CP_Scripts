@@ -26,6 +26,16 @@ REM /GR-     pas de RTTI
 REM PAS de /arch: ? baseline x64 = SSE2, ce qui est exactement la cible.
 REM /external:  les en-tetes du SDK sont bruyants en /W4 et ce n'est pas notre
 REM             code. On les traite en W0 au lieu de baisser notre propre garde.
+REM Les defstrings ReaScript avant toute chose : une chaine mal formee
+REM compile parfaitement et se fait refuser au CHARGEMENT de REAPER, avec un
+REM message qui ne dit ni ou ni pourquoi. Deux secondes de python valent mieux
+REM que sept boites de dialogue au demarrage.
+where python >nul 2>&1
+if not errorlevel 1 (
+  python tools\check_defs.py
+  if errorlevel 1 exit /b 4
+)
+
 cl /nologo /std:c++17 /O2 /Oi /Gy /EHsc /GR- /MT /W4 /wd4324 /Zc:__cplusplus ^
    /external:I "%SDK%" /external:W0 ^
    /I "%SDK%" /Fo:build\ /Fd:build\ ^
