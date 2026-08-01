@@ -1831,9 +1831,17 @@ Cinq phases dans une session, de la 2 à la 6. Ce qui suit dit ce qui a changé 
 
 ### Le résultat, en une phrase
 
-**Il n'y a plus aucune piste que la suite crée dans le projet de quelqu'un.**
-Ni routeur, ni dossier CP, ni enfant sampler pour une colonne qui ne joue que
-des sons. Un binaire, du Lua, et REAPER.
+**Il n'y a plus aucune piste d'INFRASTRUCTURE que la suite crée dans le projet
+de quelqu'un.** Ni routeur, ni dossier CP, ni enfant « … smp » pour une colonne
+qui ne joue que des sons. Un binaire, du Lua, et REAPER.
+
+La portée compte, et la première rédaction ne la disait pas : **le kit de
+CP_Sampler reste des pistes, et c'est voulu.** Ce sont des pistes
+d'INSTRUMENT — un pad a son ADSR, son groupe de choke, sa chaîne d'effets, sa
+tranche de mixer, son VU, et il survit à la fermeture du script. Le moteur joue
+des voix ; un pad est un instrument. Lue sans cette borne, la phrase ci-dessus
+est démentie à la seconde où on ouvre le sampler, et c'est exactement ce qui
+s'est passé au premier test.
 
 ### Phase 2 — l'identité
 
@@ -1967,6 +1975,7 @@ on s'entend jouer sans latence ajoutée.
 |---|---|---|---|
 | **SWS `CF_Preview`** | MediaExplorer, Editor, Sampler | voix CP_Native | **par capacité** — il reste le repli pour ce que le moteur ne sait pas faire (transposer, lire un long fichier depuis le disque, jouer une `PCM_source` sans fichier) |
 | **RS5K** | CP_Session (cases audio) | voix CP_Native | **fait** (session 19) |
+| **RS5K** | CP_Sampler (pads du kit) | *rien* | **conservé par décision** — 13 des 17 paramètres utilisés n'ont aucun équivalent moteur (ADSR complet, choke exact à l'échantillon, zones de vélocité, polyphonie par pad, chaîne FX et VU par pad, ReaPitch à durée constante, enregistrement, survie sans script). Un tableau de migration qui omet le seul usage restant fabrique le doute qu'on a eu au test |
 | **`CP_MidiLooper.jsfx`** | Session, Looper, Editor | `cp_lanes.*` | **fait** (session 20) |
 | **piste routeur + envois filtrés** | tout le MIDI | un port par colonne | **fait** — et l'ancienne piste est supprimée à l'ouverture |
 | **gmem comme protocole** | Loop.lua ↔ JSFX | ABI 1.6 | **fait** |

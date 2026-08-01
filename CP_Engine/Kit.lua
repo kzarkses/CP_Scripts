@@ -1,4 +1,17 @@
 -- CP_Sampler — Kit
+--
+-- THIS IS NOT A LEFTOVER. The suite moved its clip playback to a native engine
+-- and deleted every infrastructure track it used to create; the question "why
+-- does the sampler still make tracks with an RS5K in them" is therefore fair,
+-- and the answer is that a PAD IS NOT A CLIP. The engine plays voices: a
+-- position, a rate, a gain, two linear fades. A pad is an instrument — full
+-- ADSR, choke groups resolved in the audio thread, velocity zones, per-pad
+-- polyphony, its own FX chain and mixer strip and meter, constant-duration
+-- pitch through ReaPitch, and it keeps sounding when this script is closed and
+-- when the extension is absent. Thirteen of the seventeen parameters used here
+-- have no equivalent in the engine. Migrating would be a net loss, not a
+-- simplification.
+--
 -- The sampler engine: a folder track ("CP Kit") with one child track per pad,
 -- each hosting a hidden ReaSamplOmatic5000. RS5K is the audio engine — its
 -- window is never shown; the CP_Sampler grid is the only interface.

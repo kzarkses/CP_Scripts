@@ -214,9 +214,21 @@ end
 local order = {}          -- [i] = slot, sorted by project track order
 local norder = 0
 
+-- The suite's own tracks, for the ones that predate the shared mark. Engine
+-- /Tracks is the discovery authority for everything born since, but a kit
+-- built before it existed — or by a caller that had no Tracks module — is a
+-- top-level, unmarked folder head, and it would walk straight into the grid as
+-- a column. Three string reads per track, behind the same half-second debounce
+-- as the rest of this.
+local LEGACY_OWN = { "P_EXT:CP_KIT", "P_EXT:CP_KIT_INSTR", "P_EXT:" .. LEGACY_TAG }
+
 local function eligible(tr)
     if r.GetParentTrack(tr) ~= nil then return false end
     if Tracks and Tracks.MarkOf and Tracks.MarkOf(tr) then return false end
+    for i = 1, #LEGACY_OWN do
+        local ok, v = r.GetSetMediaTrackInfo_String(tr, LEGACY_OWN[i], "", false)
+        if ok and v ~= "" then return false end
+    end
     return true
 end
 

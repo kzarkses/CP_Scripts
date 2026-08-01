@@ -296,12 +296,21 @@ for t = 0, TRACKS - 1 do track_name[t] = { tr = nil, known = false, s = "no trac
 local function trackName(t)
     local c = track_name[t]
     local tr = Loop.GetLaneDest(t)
-    -- `known` is what closes the hole: without it, the very first computation
-    -- is skipped whenever the answer happens to equal the primed value, and the
-    -- primed value is precisely the one we have not verified yet.
-    if not c.known or tr ~= c.tr then
+    -- Three symptoms, one cause, and the gate has to close all three:
+    --   · `known` — without it the very first computation is skipped whenever
+    --     the answer happens to equal the primed value, and the primed value is
+    --     precisely the one we have not verified yet;
+    --   · the pointer — a column routed somewhere else;
+    --   · the project's change count — RENAMING the track changes neither of
+    --     the first two, so the header kept the old name until something else
+    --     happened to invalidate it.
+    -- The count is one integer read per column per frame, and it is what every
+    -- other cache in this window watches.
+    local chg = r.GetProjectStateChangeCount(0)
+    if not c.known or tr ~= c.tr or chg ~= c.chg then
         c.known = true
         c.tr = tr
+        c.chg = chg
         if tr then
             local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
             if nm and nm ~= "" then
