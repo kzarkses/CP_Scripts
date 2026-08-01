@@ -488,7 +488,12 @@ end
 function Voice.Stop(h, fade)
     if h == nil then return end
     if NATIVE then
-        r.CP_VoiceStopAtSample(h, r.CP_ClockNow(), fade or 0.005)
+        -- -1 = MAINTENANT, et ce n'est pas un synonyme de « au frame courant ».
+        -- Passer l'horloge lue ici donnait une date DEJA PASSEE quand le fil
+        -- audio la lisait : le fondu n'avait nulle part ou tenir et la coupure
+        -- redevenait nette. Ce module promet 5 ms depuis toujours ; il les tient
+        -- depuis l'ABI 1.7.
+        r.CP_VoiceStopAtSample(h, -1, fade or 0.005)
         vst[h] = Voice.STOPPING
         return
     end

@@ -355,6 +355,17 @@ bool CP_VoicePlayAtSample(double h, double clip, double atSample, int mode,
   return g_eng->post(p, c);
 }
 
+// « MAINTENANT » ET « AU FRAME N » NE SONT PAS LA MEME DEMANDE, et le seul moyen
+// de les distinguer etait un sentinel que Lua n'avait aucun moyen d'ecrire.
+//
+// Un appelant qui veut couper tout de suite en douceur passait l'horloge
+// courante — donc une date, donc le chemin DATE, qui fait tomber la voix
+// exactement la. Or cette date est deja passee quand le fil audio la lit : le
+// fondu n'a nulle part ou tenir et la coupure est nette. Voice.Stop promettait
+// « 5 ms, assez pour avaler la coupure » et rendait un clic.
+//
+// Un atSample negatif veut dire « maintenant », parce qu'aucun frame absolu ne
+// l'est jamais : l'horloge part de zero et ne recule pas.
 bool CP_VoiceStopAtSample(double h, double atSample, double fade) {
   if (!g_eng) return false;
   const voice_h v = (voice_h)h;
@@ -363,7 +374,7 @@ bool CP_VoiceStopAtSample(double h, double atSample, double fade) {
   Cmd c; memset(&c, 0, sizeof(c));
   c.type = kCmdVoiceStop;
   c.voice = v;
-  c.at = (frame_t)atSample;
+  c.at = (atSample < 0.0) ? kNow : (frame_t)atSample;
   c.a = fade;
   return g_eng->post(p, c);
 }

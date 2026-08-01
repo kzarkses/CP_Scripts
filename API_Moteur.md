@@ -268,7 +268,7 @@ décodage a réellement coûté sur **cette** machine.
 
 ```lua
 if not reaper.APIExists("CP_EngineABI") then return end
-if reaper.CP_EngineABI() < 1.6 then return end   -- un MINIMUM, pas une égalité
+if reaper.CP_EngineABI() < 1.7 then return end   -- un MINIMUM, pas une égalité
 ```
 
 **ReaPack n'a aucun mécanisme de dépendance** — mesuré : 89 index, 5993 paquets,
@@ -296,18 +296,51 @@ sinon chaque ajout casse tout le monde.
 | `CP_VoiceAlloc(port)` | handle, ou 4294967295 |
 | `CP_VoiceRelease(v)` | — |
 | `CP_VoicePlayAtSample(v, clip, at, mode, rate, gain)` | bool |
-| `CP_VoiceStopAtSample(v, at, fade)` | bool |
+| `CP_VoiceStopAtSample(v, at, fade)` | bool — `at < 0` = **maintenant**, en fondu ; sinon la coupure tombe exactement à `at` |
 | `CP_VoiceSet(v, param, value)` | bool |
 | `CP_VoiceQueueNext(v, next, xfade)` | bool |
 | `CP_VoiceState(v)` | ok, pos, état |
 | `CP_VoiceStartedAt(v)` | frame, ou −1 |
 | `CP_ClockNow()` | frame absolu |
 | `CP_ClockSync()` | frame ; prend l'ancre |
+| `CP_ClockPos()` | **1.7** — la position projet que cette ancre a retenue |
+| `CP_PlayRate()` | **1.7** — la vitesse de lecture que cette ancre a retenue |
 | `CP_TimeToSample(t)` | frame **fractionnaire** — arrondir |
 | `CP_Panic()` | — |
 | `CP_Diag()` | état en une ligne |
 
 `mode` : 0 = une fois, 1 = boucle.
+
+#### L'ancre, et les deux erreurs qu'elle a coûtées (ABI 1.7)
+
+L'horloge du moteur compte les échantillons **déjà produits** : elle avance dans
+le hook audio, au passage POST. Elle doit donc être appariée à une position sur
+la **même ligne de temps**, et c'est `GetPlayPosition2` — « position of next
+audio block being processed ». `GetPlayPosition`, lui, est documenté par REAPER
+comme la position *latency-compensated actual-what-you-hear* : l'apparier à
+l'horloge décale tout ce qui est daté ensuite de la **latence de sortie du
+périphérique**. Mesuré sur un clip de quatre noires : jusqu'à 28 ms de retard,
+constant, sans dérive. Le JSFX n'avait pas ce défaut parce qu'il n'avait pas
+d'ancre — il vivait dans la chaîne audio, où le temps de traitement est le seul
+qui existe.
+
+Deuxième moitié : les deux lectures se font sur le fil principal pendant que le
+fil audio tourne, donc un bloc peut tomber entre elles — 5,8 ms à 256
+échantillons. `take_anchor()` encadre la lecture de position par deux lectures
+d'horloge et recommence si elle a bougé. Un seqlock côté lecteur.
+
+**Conséquence pour un appelant** : ne jamais relire `GetPlayPosition*`
+soi-même pour publier quelque chose sur la ligne de temps du moteur. Appeler
+`CP_ClockSync()`, puis lire `CP_ClockPos()`. C'est ce que fait `Loop.Poll()`,
+et `CP_TransportSync` se raccroche à la paire déjà validée plutôt que de relire
+l'horloge.
+
+**Et la vitesse de lecture fait partie de l'ancre.** Une seconde de projet ne
+vaut pas une seconde d'échantillons dès que la réglette n'est pas à 1.0 :
+`CP_TimeToSample` divise par le taux, et `CP_TransportSync` le transmet aux
+lanes, qui avancent leur beat au tempo **fois** le taux. L'horloge **libre**,
+elle, ne le suit pas : c'est le transport de la session, et la vitesse de
+lecture est une propriété du transport de l'hôte.
 
 ### 3.3 Les lanes MIDI (ABI 1.6)
 

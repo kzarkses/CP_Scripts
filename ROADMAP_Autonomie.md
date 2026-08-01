@@ -2215,3 +2215,194 @@ moteur :
       session 20 — ouvrir la fenêtre n'insère plus de piste du tout — mais un
       enfant sampler naît encore sans bloc d'annulation quand une colonne porte
       un instrument. Le modèle existe déjà à `Bake.lua:170-186`.
+
+---
+
+## Session 21 (2026-08-01) — six retours de test, et l'ancre qui écoutait le mauvais instant
+
+Premier test réel du moteur natif complet. Six symptômes rapportés, six causes
+trouvées, et aucune n'était celle qu'on aurait devinée en lisant le symptôme.
+
+### Le retard de 28 ms — le seul qui touchait tout le monde
+
+Un clip de quatre noires sortait jusqu'à 28 ms derrière le métronome. Retard
+constant, sans dérive : ce n'est pas une horloge qui glisse, c'est une horloge
+qui part d'ailleurs.
+
+L'ancre appariait `clock_now()` — les échantillons **déjà produits**, avancés au
+passage POST du hook audio — avec `GetPlayPosition()`, que la documentation de
+REAPER définit comme la position *latency-compensated actual-what-you-hear*.
+Deux instants qui ne sont pas le même, séparés par exactement la latence de
+sortie du périphérique. `GetPlayPosition2` rend « position of next audio block
+being processed » : la même ligne de temps que l'horloge.
+
+**La leçon dépasse ce bug.** Le JSFX n'avait pas ce défaut parce qu'il n'avait
+pas d'ancre — il vivait *dans* la chaîne audio, où le temps de traitement est le
+seul qui existe. Le défaut est apparu avec le portage, pas avec un portage mal
+fait. Chaque fois qu'on sort une pièce du fil audio, on hérite de la question
+« à quel instant appartient cette valeur », et il faut y répondre explicitement.
+
+Deuxième moitié, plus discrète : les deux lectures se font sur le fil principal
+pendant que le fil audio tourne, et rien n'empêchait un bloc de tomber entre
+elles — 5,8 ms à 256 échantillons. `take_anchor()` est maintenant un seqlock
+côté lecteur.
+
+ABI **1.7** : `CP_ClockPos`, `CP_PlayRate`, et `CP_VoiceStopAtSample(v, at < 0)`
+qui veut dire « maintenant ».
+
+### La vitesse de lecture n'existait pas pour le moteur
+
+Vérifié : zéro occurrence de `Master_GetPlayRate` dans tout `CP_Engine` et tout
+`CP_Native`. Ce n'est pas un facteur de tempo — le tempo ne bouge pas, c'est la
+ligne de temps entière qui défile plus vite. Trois conséquences distinctes, et
+il fallait les séparer : une durée de projet vaut moins d'échantillons
+(`CP_TimeToSample` divise), un beat dure moins d'échantillons (`Lanes::tick`
+multiplie), un son déjà lancé doit accélérer (`Cells` compose les deux taux).
+
+Et une distinction qui compte : **l'horloge libre ne suit pas la réglette.**
+Elle est le transport de la session ; la vitesse de lecture est une propriété du
+transport de l'hôte, et il n'y en a pas quand on tourne libre.
+
+Non traité, et écrit plutôt que sous-entendu : une passe qui sonne déjà garde sa
+date de fin, calculée à l'ancienne vitesse. Ce qui était en file sans encore
+sonner est annulé et reprogrammé — une passe pas encore audible s'annule sans
+bruit, c'est le seul moment où c'est gratuit.
+
+### « Il fait le kick et dure une durée que je ne comprends pas »
+
+Rien n'écrivait jamais la longueur d'une case audio. `Bus.TakeDrop` fabrique un
+clip qui ne porte que son chemin, et `cellBars` répondait **4** pour tout clip
+sans longueur : quatre mesures, seize temps, huit secondes à 120. D'où un kick
+de 0,4 s suivi de 7,6 s de silence, sur une période que rien dans l'interface ne
+nommait — et qui changeait avec le tempo, ce qui achevait de la rendre
+inexplicable.
+
+La longueur se lit maintenant dans le fichier, avec trois réponses dans l'ordre :
+déclarée, boucle musicale (`SrcTempo` croit un tempo **et** le fichier est assez
+long pour *être* une boucle à ce tempo — son garde-fou vaut deux temps, ici
+c'est une mesure), sinon one-shot. Un one-shot garde une passe d'**une mesure** :
+une lane est une grille, et une lane sous-mesure pollue la phase, le compte à
+rebours et l'affichage. C'est la **matière** qui boucle, dans la voix.
+
+La porte de 97 % ne s'applique plus à une matière qui boucle : elle n'a rien à
+laisser finir, et lui retirer 3 % ouvrait un trou de 60 ms à chaque frontière.
+
+`GetTempoMatchPlayRate` reçoit au passage le même garde-fou que le nom de
+fichier : il déclarait volontiers un tempo pour un kick de 0,4 s, ce qui le
+repitchait — la faute même que l'en-tête de `SrcTempo` dit vouloir empêcher.
+
+### L'attaque mangée n'était pas un fondu
+
+C'est pourquoi on ne la trouvait pas du côté des fondus. Le moteur lance parfois
+une lane immédiatement — quantize à zéro, premier lancement d'une session
+silencieuse, juste après une frontière. Aucune cible en attente n'est alors
+publiée, donc Lua ne l'apprend qu'à la frame suivante et passe par le
+rattrapage, qui entre dans la matière **à la phase courante** : 16 à 40 ms après
+le début du fichier. Exactement l'attaque d'un son percussif.
+
+En dessous de deux frames de defer, ce départ-là a bel et bien commencé à zéro :
+on ne l'a su qu'après. La phase est rabattue, et seulement sur ce chemin — les
+deux autres partent d'une date que le moteur a choisie.
+
+### Deux fondus qui n'existaient que sur le papier
+
+`kCmdVoiceStop` posait `stop_at` et `fade_out_len` sans passer la voix en
+`kVoiceStopping` : le rendu tronquait au rendez-vous et la branche de fondu ne
+s'exécutait jamais. Coupure nette au milieu de la forme d'onde. Ça ne
+s'entendait pas tant que la matière mourait d'elle-même avant la porte ; dès
+qu'elle boucle, ça clique à chaque frontière. Le fondu **commence** maintenant
+assez tôt pour atteindre zéro au rendez-vous — une comparaison par bloc, aucune
+par échantillon.
+
+Et `Voice.Stop` passait l'horloge courante comme date : une date déjà passée
+quand le fil audio la lisait, donc là encore une coupure nette. Un `at` négatif
+veut dire « maintenant », parce qu'aucun frame absolu ne l'est jamais.
+
+### Une colonne est une piste
+
+Ce n'était pas une fonction manquante mais une **relation** manquante : la
+fenêtre montrait des emplacements là où l'utilisateur lit des pistes. Une
+colonne libre adopte désormais une piste du projet, en ordre de projet, et la
+retient par GUID — la même clé qu'avant, parce que le stockage n'avait jamais
+été le problème. Projet vide : aucune colonne, et la grille le dit.
+
+L'adoption est **par emplacement**, l'affichage **par ordre de piste** — deux
+choses différentes, et c'est ce qui rend l'ensemble sûr : un emplacement est une
+lane, il possède des clips et un branchement de port, donc il ne doit pas bouger
+quand l'utilisateur réordonne ses pistes. Seul le dessin suit le projet.
+Réordonner ne coupe rien ; supprimer une piste libère son emplacement et les
+autres gardent leurs clips.
+
+Éligible = piste de **premier niveau** sans marque CP. Une piste dossier
+qualifie — elle a un fader, une chaîne et un VU. Une piste enfant non : c'est
+l'intérieur de cette destination, et `audioDest` en crée lui-même, donc les
+accepter ferait pousser une colonne chaque fois qu'une colonne joue un son.
+
+« Unroute » disparaît, et son absence est le sujet : il fabriquait exactement
+l'état que la fenêtre refuse désormais de montrer. « Hide this column » le
+remplace, et une icône de la barre les fait toutes revenir — un réglage qu'on
+peut allumer sans pouvoir l'éteindre est un piège, d'autant plus ici que cacher
+la dernière colonne ne laisse plus d'en-tête à cliquer.
+
+Le mensonge de l'en-tête, trouvé en chemin : le cache des noms était amorcé avec
+« Track N » et ne se recalculait qu'au changement de pointeur. Pour une colonne
+non reliée, les deux côtés valaient `false` — la branche qui aurait dit « no
+track » n'a jamais tourné. Trois symptômes d'une seule cause : colonne non
+reliée, déroutage, et **renommage**.
+
+- [ ] **Le nombre de colonnes reste plafonné à quatre.** Le monter est une
+      DÉCISION, pas un correctif : le pas de la paire (`lane = t` ou
+      `t + TRACKS`) déplace toutes les lanes jumelles, donc il casse le format
+      de session, `dest<lane>`, la lane armée persistée et le blob ordonné par
+      lane. Plafond dur : 15 colonnes, parce que `PORT_BASE + t` doit rester
+      sous l'audition (port 31). Et à 12 colonnes dans une fenêtre de 580 px,
+      il faut d'abord une largeur minimale de cellule ou un défilement
+      horizontal. Ça t'appartient.
+
+### « Impossible de savoir si c'est le nouveau moteur ou pas »
+
+C'était littéralement vrai : `Voice.Backend`, `Voice.Diag`, `Audition.Backend`
+et `Audition.Diag` existaient et n'étaient appelées **nulle part**, et le seul
+affichage de la suite était gardé par `if ENGINE_OK` — donc muet exactement dans
+le cas qu'on cherchait à détecter.
+
+CP_Session et CP_Sampler affichent maintenant en permanence
+`engine native 1.7 · cells: voices` et `engine native 1.7 · pads: RS5K`. La
+version en fait partie : la question qu'on se pose vraiment est souvent
+« REAPER a-t-il repris la DLL que je viens de construire ».
+
+Le badge du sampler lit l'**expression** qui décide (`padUsesMidi`, extraite de
+`padOn` et partagée avec elle). Un badge qui garde sa propre copie de la règle
+finira par mentir, et un badge qui ment est pire que pas de badge : c'est ce
+qu'on regarde quand on doute déjà du son.
+
+`Audition.Label` est un passe-plat volontaire : `dofile` ne met rien en cache,
+donc une fenêtre qui chargerait `Voice` elle-même obtiendrait une seconde
+instance, jamais initialisée, qui annoncerait « off » sur une machine où le
+moteur tourne parfaitement.
+
+### Le RS5K du sampler n'est pas un reliquat
+
+Tranché, et écrit dans `Kit.lua` : le moteur joue des **voix**, un pad est un
+**instrument**. Treize des dix-sept paramètres utilisés n'ont aucun équivalent —
+ADSR complet, choke exact à l'échantillon dans le fil audio, zones de vélocité,
+polyphonie par pad, chaîne FX et VU par pad, ReaPitch à durée constante,
+enregistrement, survie sans le script et sans l'extension. Migrer serait une
+perte nette de fonctionnalités, pas une simplification.
+
+C'est la **documentation** qui avait fabriqué le doute : « plus aucune piste » au
+lieu de « plus aucune piste d'infrastructure », et un tableau de migration qui
+omettait le seul usage restant du RS5K. Les deux sont corrigés.
+
+### Méthode
+
+Les six diagnostics ont été posés par des agents en parallèle, puis **réfutés**
+par une seconde passe adverse. Elle a trouvé un troisième symptôme du cache de
+noms (le renommage), un trou dans la règle d'éligibilité (les branches de repli
+de `Kit.lua` créent une piste non marquée de premier niveau — mortes
+aujourd'hui, mais un kit ancien porte cette forme), et a correctement requalifié
+« une colonne est une piste » en changement de conception plutôt qu'en
+correction de régression. Les trois sont intégrés.
+
+**141 assertions** au harnais, zéro avertissement, zéro allocation dans le fil
+audio, 48 defstrings sans anomalie.
