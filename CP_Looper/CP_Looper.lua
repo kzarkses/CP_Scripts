@@ -51,9 +51,11 @@ local Rows = dofile(cp_root .. "CP_Engine/Rows.lua")
 -- Clip + Bus: the lane ↔ CP_Editor round trip — open a lane over there,
 -- hear its edits come back live (editor:apply).
 local Clip = dofile(cp_root .. "CP_Engine/Clip.lua")
+local Ident = dofile(cp_root .. "CP_Engine/Ident.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Bus = dofile(cp_root .. "CP_Engine/Bus.lua")
 DragBus.init(r)
+Ident.init(r, Clip)
 Bus.init(r, DragBus, Clip)
 
 -- ---------------------------------------------------------------------------
@@ -1635,7 +1637,11 @@ local function frame(theme)
                 -- lane 5 has always meant track 1). The edit goes to the half
                 -- actually HOLDING the clip, so it never lands on the twin.
                 local st = Loop.TrackOfLane(ln)
-                local el = Loop.LaneOfTag(st, Clip.CellTag(ac.cell))
+                -- The clip's identity when it carries one (Engine/Ident), its
+                -- positional tag when it comes from an older project — one
+                -- call decides, so the edit lands in the lane holding THAT
+                -- clip and not in whatever sits at those coordinates now.
+                local el = Loop.LaneOfTag(st, Ident.TagOf(ac))
                 if el and st < LANES and Loop.ApplyClip(el, ac) then
                     ev[st].ver = -1
                     roll_ver = -1

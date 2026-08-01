@@ -29,6 +29,7 @@ local UI     = dofile(cp_root .. "CP_Toolkit/CP_Toolkit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 local Loop   = dofile(cp_root .. "CP_Engine/Loop.lua")
 local Clip   = dofile(cp_root .. "CP_Engine/Clip.lua")
+local Ident  = dofile(cp_root .. "CP_Engine/Ident.lua")
 local Mix    = dofile(cp_root .. "CP_Engine/Mix.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Bus    = dofile(cp_root .. "CP_Engine/Bus.lua")
@@ -43,6 +44,7 @@ local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
 local Voice  = dofile(cp_root .. "CP_Engine/Voice.lua")
 local Cells  = dofile(cp_root .. "CP_Engine/Cells.lua")
 Tracks.init(r)
+Ident.init(r, Clip)
 Loop.init(r, Tracks)
 Mix.init(r)
 DragBus.init(r)
@@ -237,15 +239,28 @@ local twinLane  = Loop.TwinLane
 local isRunning = Loop.IsRunning
 
 -- Every cell carries a numeric identity, so the lane holding it can say so
--- and any window can find that clip again after the halves swapped. Numeric
--- form: no allocation, callable per cell per frame.
-local cellTag = Clip.CellTag
+-- and any window can find that clip again after the halves swapped.
+--
+-- The identity belongs to the CLIP now (Engine/Ident), not to the coordinates
+-- it happens to sit at. That is what makes a clip survive being moved, and
+-- what stops a lane still holding last week's clip from answering yes when
+-- asked whether it holds the one that took its place.
+--
+-- An empty cell has nothing to name, so it answers 0 — "untagged" — exactly
+-- as an unrecorded slot always did. Recording is the one gesture that needs a
+-- name BEFORE there is a clip; recCell reserves one.
+local function cellTag(t, s)
+    local c = cells[t] and cells[t][s]
+    if not c then return 0 end
+    return Ident.Of(c)
+end
 
 -- Which scene of track t a lane is holding, straight from the engine's tag.
 -- This is how the grid follows a launch fired from CP_Looper or CP_Editor
--- instead of arguing with it.
+-- instead of arguing with it. Ident.CellOf reads both number spaces, so a
+-- project written before identities existed still resolves.
 local function sceneOfLane(lane, t)
-    local tt, ss = Clip.CellOfTag(Loop.GetLaneTag(lane))
+    local tt, ss = Ident.CellOf(Loop.GetLaneTag(lane))
     if tt ~= t then return nil end
     return ss
 end
@@ -435,7 +450,10 @@ local function loadGrid()
         t, s = tonumber(t), tonumber(s)
         if t and s and t < TRACKS and s < SCENES and body then
             local c = Clip.deserialize(body)
-            if c then cells[t][s] = c end
+            -- Register the identity the descriptor carries: a lane that was
+            -- already holding this clip when the project closed comes back
+            -- tagged with a number, and nothing would resolve it otherwise.
+            if c then cells[t][s] = c; Ident.Bind(c) end
         end
     end
 end
@@ -784,7 +802,12 @@ local function applyEdit(ac)
     if ac.cell then t, s = ac.cell:match("^(%d+),(%d+)$") end
     t, s = tonumber(t), tonumber(s)
     if t and s and t < TRACKS and s < SCENES then
+        -- The edited descriptor came back through the bus with its identity in
+        -- it, so it replaces the clip it IS rather than the clip that happens
+        -- to sit at those coordinates. Re-binding points the registry at the
+        -- new table under the same number.
         cells[t][s] = ac
+        Ident.Bind(ac)
         saveGrid()
         -- refresh the lane that HOLDS this cell — playing or merely staged —
         -- and not whatever the track happens to be playing right now
@@ -843,12 +866,17 @@ local function recCell(t, s)
     if Loop.Pending(other) == 1 then Loop.StopClip(other) end
     local busy = isRunning(live) or Loop.Pending(live) == 1
     local lane = busy and twinLane(t) or live
+    -- A take needs a NAME before it has a clip: the lane has to be tagged now,
+    -- and the thing it names does not exist until the capture ends. So the
+    -- identity is minted here and stamped onto whatever comes out — the one
+    -- place where a clip's number precedes the clip.
+    local id = Ident.NewId()
     Loop.SetArmedLane(lane)                 -- monitor the half that captures
-    Loop.SetLaneTag(lane, cellTag(t, s))    -- the take lands in THIS cell
+    Loop.SetLaneTag(lane, id)               -- the take lands in THIS cell
     Loop.SetLengthBars(lane, rec_bars)      -- stated, not inherited from the lane
     Loop.Rec(lane)                          -- quantized; auto-stops on the length
     if busy then Loop.StopClip(live) end    -- outgoing clip leaves on that boundary
-    rec = { t = t, s = s, lane = lane, seen = false, t0 = r.time_precise() }
+    rec = { t = t, s = s, lane = lane, id = id, seen = false, t0 = r.time_precise() }
     cur[t] = s
 end
 
@@ -895,6 +923,8 @@ local function pollRec()
     if c then
         c.cell = rec.t .. "," .. rec.s
         c.name = trackName(rec.t) .. " · " .. (rec.s + 1)
+        c.id = rec.id                       -- the number the lane already wears
+        Ident.Bind(c)
         cells[rec.t][rec.s] = c
         saveGrid()
         flash("Captured into " .. c.name)
@@ -924,6 +954,7 @@ local function clearCell(t, s)
     -- empty the lane that holds it too (and only that one), or the engine
     -- would keep playing a clip the grid no longer has
     local lane = Loop.LaneOfTag(t, cellTag(t, s))
+    Ident.Forget(cells[t][s].id)
     cells[t][s] = nil
     saveGrid()
     if lane then Loop.Clear(lane) end
@@ -946,6 +977,11 @@ local function copyCell(c)
         d.notes = { s = s, l = l, p = p, v = v }
     end
     d.cell, d.origin = nil, nil   -- it belongs to wherever it lands, not here
+    -- A COPY IS ANOTHER CLIP. Carrying the identity across would give two
+    -- clips one name — worse than the positional tag it replaced, because
+    -- they would then be indistinguishable everywhere instead of only in one
+    -- grid. It gets its own the first time something asks.
+    Ident.Clear(d)
     return d
 end
 

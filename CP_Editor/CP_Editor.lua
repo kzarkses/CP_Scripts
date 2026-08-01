@@ -35,6 +35,7 @@ local Audio = dofile(cp_root .. "CP_Toolkit/Audio.lua")
 local Insert = dofile(cp_root .. "CP_Engine/Insert.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Clip  = dofile(cp_root .. "CP_Engine/Clip.lua")
+local Ident = dofile(cp_root .. "CP_Engine/Ident.lua")
 local Bus   = dofile(cp_root .. "CP_Engine/Bus.lua")
 local Loop  = dofile(cp_root .. "CP_Engine/Loop.lua")
 
@@ -46,6 +47,7 @@ Kit.init(r, Tracks)
 Audio.init(r)
 Insert.init(r)
 DragBus.init(r)
+Ident.init(r, Clip)
 Bus.init(r, DragBus, Clip)
 
 -- Loop (the live-lane link for clips born in the Looper/Session) is armed
@@ -658,7 +660,10 @@ local function setClip(c)
         -- old descriptors stored a raw lane (0..7); lane 5 has always meant
         -- track 1, so the migration is free
         state.clip_track = Loop.TrackOfLane(tonumber(ln))
-        state.clip_tag   = Clip.CellTag(c.cell)
+        -- The clip's own identity when it has one, the positional tag when it
+        -- comes from a project written before identities existed. One call,
+        -- and this window stops needing to know which era it is looking at.
+        state.clip_tag   = Ident.TagOf(c)
         state.clip_lane  = Loop.LaneOfTag(state.clip_track, state.clip_tag)
     end
     c.notes = c.notes or { s = {}, l = {}, p = {}, v = {} }

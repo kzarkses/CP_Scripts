@@ -78,13 +78,19 @@ function Clip.ColorOf(c)
     return p[1], p[2], p[3]
 end
 
--- Numeric identity for a grid cell, so an engine lane can record WHICH clip
--- it is holding in a single gmem slot — no strings on a channel two scripts
--- poll every frame. 0 = untagged (a plain Looper loop, which belongs to its
--- track rather than to any cell).
--- Takes either the stored "track,scene" string or the two numbers directly;
--- the numeric form allocates nothing, which is why the grid can call it per
--- cell per frame. ONE formula, so the two ends always agree.
+-- ---------------------------------------------------------------------------
+-- POSITIONAL TAG — the legacy view. Engine/Ident is the current one.
+--
+-- This was identity-by-address: a cell's name derived from WHERE it sits, so
+-- moving a clip renamed it and two clips that ever shared a cell shared a
+-- name. Engine/Ident replaced it with a number the clip owns (`c.id`), and
+-- `Ident.TagOf` is the single place that answers with one or the other.
+--
+-- These two stay, and are still correct, because projects written before the
+-- identity existed have positional tags in their lanes and must keep opening.
+-- The two number spaces do not overlap: a positional tag is below
+-- `Ident.BASE`, an identity is at or above it. New code calls Ident.
+-- ---------------------------------------------------------------------------
 function Clip.CellTag(cell, scene)
     local t, s = cell, scene
     if type(cell) ~= "number" then
@@ -140,6 +146,12 @@ local FIELDS = {
     -- session grid coordinates ("track,scene") when the clip lives in a
     -- cell: origin says which lane PLAYS it, cell says where it is STORED
     { "cell", "s" },
+    -- STABLE IDENTITY (Engine/Ident). Allocated once, never reused, and it
+    -- travels with the descriptor — which is what makes a clip findable after
+    -- it moves, and distinguishable from the one that used to sit where it
+    -- sits now. Absent in projects written before phase 2, and absent is a
+    -- legitimate value: Ident.TagOf falls back to the positional tag.
+    { "id", "n" },
 }
 local FIELD_KIND = {}
 for _, f in ipairs(FIELDS) do FIELD_KIND[f[1]] = f[2] end
