@@ -660,8 +660,16 @@ function Kit.Ensure()
         return Kit.parent
     end
 
+    -- AUCUN KIT : ON EN FAIT UN, ET C'EST UN INSTRUMENT. Glisser un
+    -- echantillon sur un pad passe par ici, et cette fonction fabriquait
+    -- l'ancien montage : un dossier, un bus, une piste par pad. On retombait
+    -- donc sur le moteur RS5K en croyant essayer le nouveau, sans que rien ne
+    -- le dise. Un kit neuf nait sur le nouveau moteur, comme dans le menu.
+    local tr = Kit.NewKitFX("CP Kit")
+    if tr then return tr end
+
+    -- Repli : sans gmem ni instrument, un kit RS5K vaut mieux que rien.
     ubegin()
-    local tr
     if Tracks then
         -- Born inside the shared CP folder, with the common ownership mark.
         tr = Tracks.NewChild("sampler", "kit", "CP Kit")
@@ -673,6 +681,7 @@ function Kit.Ensure()
     end
     setExt(tr, "CP_KIT", "1")
     Kit.parent = tr
+    Kit.engine = Kit.ENGINE_RS5K
     Kit.version = Kit.version + 1
     uend("Sampler: create kit")
     return tr
@@ -749,8 +758,12 @@ function Kit.EnsurePad(note)
     if note < Kit.BASE or note >= Kit.BASE + Kit.MAX then return nil end
     local pad = Kit.Pad(note)
     if pad then return pad end
-    if Kit.IsFX() then return fxPad(note, true) end
+    -- LE KIT D'ABORD, LE MOTEUR ENSUITE. Kit.Ensure peut CREER le kit — et
+    -- depuis qu'il en cree un instrument, demander « suis-je un instrument »
+    -- avant lui repondait non, puis on rebatissait l'ancien montage dans la
+    -- piste qu'on venait de faire. L'ordre est la moitie de la correction.
     local parent = Kit.Ensure()
+    if Kit.IsFX() then return fxPad(note, true) end
 
     ubegin()
     local bus = Kit.EnsureBus()
@@ -813,6 +826,10 @@ local clearSyncState
 -- repitches the new sample against a tempo it never had.
 function Kit.LoadSample(note, path, opts)
     if not path or path == "" then return false end
+    -- MEME ORDRE QU'AILLEURS : le kit peut naitre ici, et depuis qu'il nait
+    -- instrument, tester le moteur avant Kit.Ensure faisait poser un RS5K
+    -- dans la chaine du kit-instrument qu'on venait de creer.
+    Kit.Ensure()
     if Kit.IsFX() then
         ubegin()
         local ok = fxLoadSample(note, path, opts)
@@ -1858,10 +1875,14 @@ function Kit.NewKitFX(name)
     setExt(tr, "CP_KIT_SLOT", tostring(slot))
 
     fx_slot = slot
-    fxEnsure(tr)
+    local fi = fxEnsure(tr)
     Kit.SetActive(tr)
     Kit.version = Kit.version + 1
     uend("Sampler: new kit (jsfx)")
+    -- L'INSTRUMENT N'A PAS PU ETRE POSE : la piste existe et porte les
+    -- marques, mais elle ne sonnera jamais. Mieux vaut le dire tout de suite
+    -- que laisser deposer soixante-quatre echantillons dedans.
+    if not fi then return nil end
     return tr
 end
 

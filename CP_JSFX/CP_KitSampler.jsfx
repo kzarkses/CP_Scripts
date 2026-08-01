@@ -11,6 +11,17 @@ desc:CP Kit Sampler
 // reglage que le RS5K n'a pas. Ici ce sont des PARAMETRES : on en tourne un,
 // il change. C'est tout l'ecart, et il est structurel.
 //
+// IL AJOUTE, IL NE REMPLACE PAS. C'est la regle d'un instrument dans REAPER,
+// et un RS5K la respecte : on peut faire passer de l'audio dans une piste qui
+// en porte un. Ecrire spl0 = ... au lieu de spl0 += ... rendait la piste
+// MUETTE des que l'effet y entrait — tout ce qui arrivait avant etait remplace
+// par le silence de l'instrument, et un second instrument pose apres n'y
+// changeait rien. Le symptome se lit comme un probleme de routage alors que
+// c'est une affectation.
+//
+// D'ou aussi les huit paires d'ENTREE : sans elles, REAPER ne remet rien dans
+// spl0..spl15 et le « += » n'aurait rien a quoi s'ajouter.
+//
 // TROIS FILS, TROIS METIERS, ET ILS NE SE MELANGENT PAS :
 //   @gfx    charge les echantillons. gfx_idle=1 le fait tourner fenetre
 //           fermee. C'est le SEUL endroit qui touche au disque.
@@ -30,7 +41,22 @@ desc:CP Kit Sampler
 // -----------------------------------------------------------------------------
 options:gmem=CP_Kit, maxmem=33554432, gfx_idle=1
 
-in_pin:none
+in_pin:in 1 L
+in_pin:in 1 R
+in_pin:in 2 L
+in_pin:in 2 R
+in_pin:in 3 L
+in_pin:in 3 R
+in_pin:in 4 L
+in_pin:in 4 R
+in_pin:in 5 L
+in_pin:in 5 R
+in_pin:in 6 L
+in_pin:in 6 R
+in_pin:in 7 L
+in_pin:in 7 R
+in_pin:in 8 L
+in_pin:in 8 R
 out_pin:out 1 L
 out_pin:out 1 R
 out_pin:out 2 L
@@ -820,14 +846,14 @@ loop(NVOICES,
   vi += 1;
 );
 
-spl0 = OUTBUS[0] * master_gain;  spl1 = OUTBUS[1] * master_gain;
-spl2 = OUTBUS[2] * master_gain;  spl3 = OUTBUS[3] * master_gain;
-spl4 = OUTBUS[4] * master_gain;  spl5 = OUTBUS[5] * master_gain;
-spl6 = OUTBUS[6] * master_gain;  spl7 = OUTBUS[7] * master_gain;
-spl8 = OUTBUS[8] * master_gain;  spl9 = OUTBUS[9] * master_gain;
-spl10 = OUTBUS[10] * master_gain;  spl11 = OUTBUS[11] * master_gain;
-spl12 = OUTBUS[12] * master_gain;  spl13 = OUTBUS[13] * master_gain;
-spl14 = OUTBUS[14] * master_gain;  spl15 = OUTBUS[15] * master_gain;
+spl0 += OUTBUS[0] * master_gain;  spl1 += OUTBUS[1] * master_gain;
+spl2 += OUTBUS[2] * master_gain;  spl3 += OUTBUS[3] * master_gain;
+spl4 += OUTBUS[4] * master_gain;  spl5 += OUTBUS[5] * master_gain;
+spl6 += OUTBUS[6] * master_gain;  spl7 += OUTBUS[7] * master_gain;
+spl8 += OUTBUS[8] * master_gain;  spl9 += OUTBUS[9] * master_gain;
+spl10 += OUTBUS[10] * master_gain;  spl11 += OUTBUS[11] * master_gain;
+spl12 += OUTBUS[12] * master_gain;  spl13 += OUTBUS[13] * master_gain;
+spl14 += OUTBUS[14] * master_gain;  spl15 += OUTBUS[15] * master_gain;
 
 @gfx
 // LE DISQUE EST ICI, ET NULLE PART AILLEURS. gfx_idle=1 fait tourner cette

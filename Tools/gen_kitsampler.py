@@ -21,6 +21,9 @@ SLIDERS = "\n".join(sliders)
 # --- pins : huit paires stereo ---------------------------------------------
 pins = []
 for i in range(8):
+    pins.append("in_pin:in %d L" % (i + 1))
+    pins.append("in_pin:in %d R" % (i + 1))
+for i in range(8):
     pins.append("out_pin:out %d L" % (i + 1))
     pins.append("out_pin:out %d R" % (i + 1))
 PINS = "\n".join(pins)
@@ -33,7 +36,7 @@ readsl = "\n".join(
 
 # --- ecriture des sorties ---------------------------------------------------
 spl = "\n".join(
-    "spl%d = OUTBUS[%d] * master_gain;  spl%d = OUTBUS[%d] * master_gain;"
+    "spl%d += OUTBUS[%d] * master_gain;  spl%d += OUTBUS[%d] * master_gain;"
     % (2 * i, 2 * i, 2 * i + 1, 2 * i + 1) for i in range(8))
 
 SRC = r'''desc:CP Kit Sampler
@@ -48,6 +51,17 @@ SRC = r'''desc:CP Kit Sampler
 // echantillon — et il coutait une restructuration de chaine d'effets a chaque
 // reglage que le RS5K n'a pas. Ici ce sont des PARAMETRES : on en tourne un,
 // il change. C'est tout l'ecart, et il est structurel.
+//
+// IL AJOUTE, IL NE REMPLACE PAS. C'est la regle d'un instrument dans REAPER,
+// et un RS5K la respecte : on peut faire passer de l'audio dans une piste qui
+// en porte un. Ecrire spl0 = ... au lieu de spl0 += ... rendait la piste
+// MUETTE des que l'effet y entrait — tout ce qui arrivait avant etait remplace
+// par le silence de l'instrument, et un second instrument pose apres n'y
+// changeait rien. Le symptome se lit comme un probleme de routage alors que
+// c'est une affectation.
+//
+// D'ou aussi les huit paires d'ENTREE : sans elles, REAPER ne remet rien dans
+// spl0..spl15 et le « += » n'aurait rien a quoi s'ajouter.
 //
 // TROIS FILS, TROIS METIERS, ET ILS NE SE MELANGENT PAS :
 //   @gfx    charge les echantillons. gfx_idle=1 le fait tourner fenetre
@@ -68,7 +82,6 @@ SRC = r'''desc:CP Kit Sampler
 // -----------------------------------------------------------------------------
 options:gmem=CP_Kit, maxmem=33554432, gfx_idle=1
 
-in_pin:none
 __PINS__
 
 __SLIDERS__
