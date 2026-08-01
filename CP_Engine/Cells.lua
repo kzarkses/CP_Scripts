@@ -102,6 +102,7 @@ local function newSlot()
     return {
         path = nil, clip = nil,
         rate = 1.0,
+        loop = false,       -- la matiere se repete-t-elle dans sa passe
         v = { nil, nil }, vi = 1,
         armed = false,      -- une passe est deja armee pour la frontiere qui vient
         dated = false,      -- ce depart-la a ete date : ne pas le rattraper
@@ -234,7 +235,12 @@ end
 -- ---------------------------------------------------------------------------
 -- Appelee a chaque armement, donc IDEMPOTENTE et silencieuse : le fichier n'est
 -- relu que lorsqu'il change reellement.
-function Cells.Arm(t, lane, path, rate)
+-- `loop` : la matiere se repete-t-elle pour remplir sa passe ? Faux par defaut,
+-- parce que le defaut d'un fichier depose est d'etre joue une fois. Une vraie
+-- boucle musicale n'a pas besoin du drapeau — elle remplit sa passe toute
+-- seule ; le drapeau sert a celle qui est plus COURTE que sa passe et qui doit
+-- quand meme tourner (un shaker d'un temps sous une case d'une mesure).
+function Cells.Arm(t, lane, path, rate, loop)
     -- Chaque echec rend SA raison. « pas de son » sans raison coute une soiree ;
     -- la raison coute une chaine de caracteres.
     if not NATIVE or t < 0 or t >= TRACKS then return false, "no_engine" end
@@ -250,6 +256,7 @@ function Cells.Arm(t, lane, path, rate)
         slot.armed = false
     end
     slot.rate = (rate and rate > 0.05 and rate < 20) and rate or 1.0
+    slot.loop = loop and true or false
     return true
 end
 
@@ -323,17 +330,25 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
     -- pour que la passe garde sa longueur entiere.
     if snap and phase > 0 and phase * spb < CATCHUP_SNAP_S then phase = 0 end
 
-    -- LA MATIERE REMPLIT-ELLE SA PASSE ?
+    -- BOUCLE OU ONE-SHOT — et par defaut, ONE-SHOT.
     --
-    -- Une boucle musicale la remplit par construction. Un one-shot ne la
-    -- remplit pas, et jouer la passe une seule fois donne un kick suivi d'un
-    -- long silence — c'est le defaut le plus visible de tout ce module. Dans ce
-    -- cas c'est la MATIERE qui boucle, dans la voix : le moteur replie sa
-    -- position a la fin du fichier, a l'echantillon, sans reveil par frame et
-    -- sans derive (cp_voice.cpp, repli fractionnaire exact).
-    local mat_s  = slot.clip.frames / (slot.clip.srate * slot.rate)
-    local pass_s = len_beats * spb
-    local loop_m = mat_s < pass_s * 0.98
+    -- Ce module a essaye les deux mauvaises reponses avant celle-ci. Jouer la
+    -- passe une seule fois donnait un kick suivi d'un long silence, parce que
+    -- la passe durait quatre mesures ; faire boucler la MATIERE pour combler ce
+    -- silence a remplace un trou par une mitraillette — un kick de 0,4 s sort
+    -- cinq fois par mesure, a la duree du fichier, hors de toute grille. Un
+    -- crash, un riser, un stab : inutilisables.
+    --
+    -- La bonne reponse n'etait ni l'une ni l'autre : c'est que la LONGUEUR DE
+    -- PASSE doit venir du fichier (elle en vient depuis ce matin) et que le
+    -- contenu doit dire s'il se repete. Un one-shot joue une fois par passe,
+    -- point — et c'est ce que fait Ableton d'un clip dont la boucle est
+    -- desactivee : « An unlooped clip will play from its start point to its end
+    -- point or until it is stopped. »
+    --
+    -- `slot.loop` vient de la case (Clip.lmode, un champ qui existait dans le
+    -- format depuis toujours et que personne ne lisait).
+    local loop_m = slot.loop and true or false
 
     -- Ce qu'il reste a jouer avant la porte. La porte existe pour la meme raison
     -- qu'avec le RS5K : le son doit finir avant la passe suivante, sinon la voix
@@ -357,11 +372,16 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
     opts.rate = slot.rate * prate
     opts.gain = 1.0
     opts.loop = loop_m
-    if loop_m then
-        -- Une matiere qui tourne sur elle-meme n'a pas de phase musicale :
-        -- entrer au milieu du fichier ne voudrait rien dire.
-        opts.offset = nil
-    elseif phase > 0 then
+    -- ENTRER EN COURS DE PASSE N'A DE SENS QUE POUR UNE BOUCLE.
+    --
+    -- Une boucle de quatre mesures lancee a la mesure 2 doit entrer a sa
+    -- deuxieme mesure : c'est ce qui verrouille toutes les boucles sur la meme
+    -- grille. Un ONE-SHOT n'a pas de phase — on ne rejoint pas un kick au
+    -- milieu. Et surtout : le calcul suivant sortait au-dela du fichier et la
+    -- fonction rendait la main SANS RIEN JOUER. C'est le « le clip ne demarre
+    -- pas » d'un lancement rejoint en retard sur un son court, et ca dependait
+    -- du sample — ce qui le rendait incomprehensible.
+    if loop_m and phase > 0 then
         -- La position dans la MATIERE, pas dans le temps. Et le taux du PROJET
         -- n'entre pas ici : `phase * spb` est deja une duree de projet, et une
         -- seconde de projet consomme toujours `srate_clip * slot.rate`
@@ -370,7 +390,11 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
         -- trop loin a vitesse 2 — l'erreur qui ressemble le plus a un bug de
         -- phase alors qu'elle est de conversion.
         opts.offset = math.floor(phase * spb * slot.clip.srate * slot.rate + 0.5)
-        if opts.offset >= slot.clip.frames then return end
+        -- Au-dela de la matiere, on replie plutot que de se taire : une boucle
+        -- rejointe passe sa fin, elle ne disparait pas.
+        if opts.offset >= slot.clip.frames then
+            opts.offset = opts.offset % slot.clip.frames
+        end
     else
         opts.offset = nil                   -- la table est reutilisee : effacer
     end

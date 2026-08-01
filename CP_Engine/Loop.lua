@@ -1008,6 +1008,40 @@ end
 -- Per-frame pump — the ONE call every host makes before reading anything
 -- ---------------------------------------------------------------------------
 local dest_chg, dest_t = -1, 0
+local was_playing = false
+
+-- THE HOST'S TRANSPORT IS THE MASTER — when we have chosen to follow it.
+--
+-- A launch and a stop asked for FROM the grid wait for the quantize: that is
+-- the whole point of a quantize. The transport's own stop is not one of those.
+-- Pressing stop means stop, and until now it meant "carry on to the end of the
+-- pass" — the note flush happened in the audio thread but the audio cells kept
+-- their scheduled pass, so a bar could go by. Nobody presses stop and means
+-- "in a bar".
+--
+-- The queued stop is the right instrument even so: `stop_target` already
+-- returns NOW when no clock runs (cp_lanes.cpp, "rien ne sonne, donc il ne
+-- reste rien a finir"), and by this point the transport has stopped, so
+-- `active` is false. One command per playing lane, on the frame the transport
+-- falls, and Cells stops its voices on the next one when it sees mode 2.
+--
+-- In FREE RUN nothing happens here, and that is the point of free run: the
+-- session is its own transport and REAPER's has no authority over it.
+local function followHostStop()
+    if Loop.GetFreeRun() then was_playing = false return end
+    local playing = Loop.Playing()
+    if was_playing and not playing then
+        for lane = 0, Loop.MAX_LANES - 1 do
+            -- Playing and overdub only. A take in progress is already closed by
+            -- the engine on the same falling edge (cp_lanes.cpp, "le transport
+            -- s'arrete : une prise en cours se ferme sur ce qu'elle a"), and a
+            -- queued stop would not have handled it anyway.
+            local m = math.floor((Loop.Mode(lane) or 0) + 0.5)
+            if m == 3 or m == 5 then Loop.StopClip(lane) end
+        end
+    end
+    was_playing = playing
+end
 
 function Loop.Poll()
     if not NATIVE then return end
@@ -1027,6 +1061,9 @@ function Loop.Poll()
     r.CP_TransportSync(Loop.Tempo(), r.TimeMap2_timeToQN(0, pos),
                        Loop.Playing() and 1 or 0, Loop.TsNum())
     resolveLive()
+    -- AFTER the anchor and resolveLive, BEFORE anything reads a mode: the stop
+    -- must be visible to the same frame that draws.
+    followHostStop()
     pollCapture()
     local c = r.GetProjectStateChangeCount(0)
     if c ~= dest_chg then

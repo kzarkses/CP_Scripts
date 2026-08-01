@@ -774,7 +774,7 @@ local function armLane(lane, c, t, s)
         -- one here, at the last moment where asking is still free.
         ensureBars(c)
         local path, rate = soundFor(c)
-        local ok, why = Cells.Arm(t, lane, path, rate)
+        local ok, why = Cells.Arm(t, lane, path, rate, c.lmode == "loop")
         if not ok then
             -- Say WHICH of the four things was missing. "no sound" with no
             -- reason costs an evening; the reason costs a string.
@@ -795,6 +795,20 @@ local function armLane(lane, c, t, s)
     -- column's instrument is on another one entirely. Not a convention to keep:
     -- two wires that never meet.
     Loop.ApplyClip(lane, audio and audioClip(c, lane) or c)
+    -- AND THE LANE MUST NOT BE HEARD WHEN IT CARRIES A SOUND.
+    --
+    -- The comment below used to say nobody hears this one-note clip. That was
+    -- true of the AUDIO — a sound cell is a voice on port t, the column's
+    -- instrument is on another. It was never true of the MIDI: the lane still
+    -- speaks on PORT_BASE + t, which is attached to the column's destination
+    -- track. On a column that holds both an instrument and sound cells — the
+    -- exact case audioDest builds a child for — the instrument was getting a
+    -- middle C on every pass.
+    --
+    -- Muting is the right instrument and it already existed: run_gate emits
+    -- nothing for a muted lane while keeping it PLAYING, so the state machine,
+    -- the phase and the countdown all carry on untouched.
+    Loop.SetMute(lane, audio)
     Loop.SetLengthBars(lane, cellBars(c))
     -- stamp WHICH cell this lane now holds: it is how CP_Editor finds the
     -- clip again after a swap moved it to the other half, and how it knows
@@ -1179,7 +1193,10 @@ local function retune(t, s, c)
     -- rate: a cooked clip is another sample on disk. Arm handles both — it
     -- reloads only when the path really moved — so this stays one call, and
     -- a mode change that resolves to the same file still costs one number.
-    Cells.Arm(t, lane, soundFor(c))
+    -- soundFor rend DEUX valeurs : les nommer, sinon un argument place apres
+    -- elle la tronque a la premiere et le taux devient le drapeau de boucle.
+    local path, rate = soundFor(c)
+    Cells.Arm(t, lane, path, rate, c.lmode == "loop")
 end
 
 local function setCellTempoMode(t, s, mode)
@@ -1189,6 +1206,17 @@ local function setCellTempoMode(t, s, mode)
     saveGrid()
     -- A sound already playing takes the new rate at once — it is one parameter
     -- on the sampler, not a reload and not a relaunch.
+    if isAudio(c) then retune(t, s, c) end
+end
+
+-- One-shot / loop. Stored as `lmode`, which the CPC1 format has always carried
+-- and nothing has ever written. nil means one-shot, so an existing project
+-- keeps the behaviour a dropped file should have had from the start.
+local function setCellLoop(t, s, on)
+    local c = cells[t][s]
+    if not c then return end
+    c.lmode = on and "loop" or nil
+    saveGrid()
     if isAudio(c) then retune(t, s, c) end
 end
 
@@ -1215,12 +1243,26 @@ local function cellMenu(t, s)
         { label = "Don't follow the tempo", checked = (tm == "none"),
           action = function() setCellTempoMode(t, s, "none") end },
     } or nil
+    -- ONE-SHOT OU BOUCLE — le champ `lmode` existe dans le format CPC1 depuis le
+    -- premier jour et n'avait jamais eu de lecteur. Un fichier depose joue une
+    -- fois par passe ; une matiere plus COURTE que sa passe qu'on veut voir
+    -- tourner (un shaker d'un temps sous une mesure) demande la boucle. C'est le
+    -- seul reglage qui distingue un crash d'un shaker, et il n'existait pas.
+    local lmodes = snd and {
+        { label = "One-shot (plays once per pass)",
+          checked = ((c.lmode or "oneshot") ~= "loop"),
+          action = function() setCellLoop(t, s, false) end },
+        { label = "Loop the material inside the pass",
+          checked = (c.lmode == "loop"),
+          action = function() setCellLoop(t, s, true) end },
+    } or nil
     UI.NativeMenu({
         { label = "Edit in CP_Editor", action = function() editCell(t, s) end },
         { label = "Rename clip…", disabled = not has,
           action = function() renameCell(t, s) end },
         { label = "Color", disabled = not has, children = cols },
         { label = "Tempo", disabled = not snd, children = tmodes },
+        { label = "Playback", disabled = not snd, children = lmodes },
         { label = "Stop this track", action = function() stopTrack(t) end },
         { separator = true },
         { label = "Clear cell", disabled = not has,
@@ -2222,7 +2264,10 @@ local function frame(theme)
             local audio = sc and isAudio(cells[t][sc]) or false
             if audio then
                 local cc = cells[t][sc]
-                Cells.Arm(t, lane, soundFor(cc))
+                ensureBars(cc)
+                local path, rate = soundFor(cc)
+                Cells.Arm(t, lane, path, rate, cc.lmode == "loop")
+                Loop.SetMute(lane, true)
             end
         end
         -- Adopt what was just recalled, and ARM THE AUTOSAVE. Until this
