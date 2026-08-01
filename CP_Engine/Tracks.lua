@@ -111,4 +111,26 @@ function Tracks.Ensure(app, role, name)
     return Tracks.NewChild(app, role, name), true
 end
 
+-- ---------------------------------------------------------------------------
+-- THE FOLDER GOES AWAY WHEN NOTHING NEEDS IT (roadmap phase 6)
+--
+-- The suite used to need infrastructure tracks: a router carrying the MIDI
+-- engine, a sampler child under every column. Both are gone — the engine is a
+-- binary and a sound cell is a voice — so the folder that held them is an
+-- empty box in the user's track list, and an empty box is not "harmless", it
+-- is a thing they have to look at and wonder about.
+--
+-- Removed only when it has NO children. A folder that still holds something is
+-- still doing its job, and deleting a track a user might have put there would
+-- be exactly the kind of helpfulness nobody asked for.
+-- ---------------------------------------------------------------------------
+function Tracks.DropFolderIfEmpty()
+    local folder = Tracks.Find("engine", "folder")
+    if not valid(folder) then return false end
+    local depth = r.GetMediaTrackInfo_Value(folder, "I_FOLDERDEPTH")
+    if depth > 0 then return false end          -- it still has children
+    r.DeleteTrack(folder)
+    return true
+end
+
 return Tracks

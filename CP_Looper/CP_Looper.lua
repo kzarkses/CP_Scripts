@@ -94,10 +94,12 @@ local state = {
 -- Editor rows (host-owned; Rows.Build re-keys it on version/window change)
 local erows = { list = {}, map = {}, n = 0, drum = false, key = nil }
 
--- Audition through the edited lane's routed instrument: the router track is
--- armed on all MIDI inputs, so the VKB queue reaches it and the JSFX
--- re-channels the note onto the armed lane (enterEdit arms the edited one).
--- Same deferred-note-off scheme as CP_Editor.
+-- Audition through the edited lane's routed instrument. This used to travel a
+-- long way — the virtual-keyboard queue reached the armed router, the JSFX
+-- re-channelled the note onto the armed lane, a filtered send carried it to the
+-- instrument. There is no router: arming a lane arms its DESTINATION track, so
+-- the same StuffMIDIMessage now lands on that instrument directly, with one
+-- fewer hop and nothing to keep in sync. Same deferred note-off as CP_Editor.
 local function auditionNote(pitch, vel)
     if state.aud_note then r.StuffMIDIMessage(0, 0x80, state.aud_note, 0) end
     r.StuffMIDIMessage(0, 0x90, pitch, vel or state.vel or 100)
@@ -270,7 +272,6 @@ end
 -- (only on click — not a hot-path allocation concern). No separators, so the
 -- returned 1-based index maps straight onto the parallel action list.
 local function pickLaneDest(lane)
-    local router = Loop.track
     local menu, acts = {}, {}
     local function push(label, fn) menu[#menu + 1] = label; acts[#acts + 1] = fn end
     local cur = Loop.GetLaneDest(lane)
@@ -279,7 +280,9 @@ local function pickLaneDest(lane)
     local cnt = r.CountTracks(0)
     for i = 0, cnt - 1 do
         local tr = r.GetTrack(0, i)
-        if tr ~= router then
+        -- Every project track is offerable: there is no router in the list to
+        -- filter out any more.
+        do
             local _, nm = r.GetTrackName(tr)
             local disp = (nm ~= "" and nm or "Track " .. (i + 1))
             push(((cur == tr) and "!" or "") .. (i + 1) .. ": " .. menuSafe(disp),
@@ -687,10 +690,11 @@ local function drawToolbar(attached, theme)
     end
     UI.BarSep()
 
-    -- The router is armed on ALL MIDI inputs and fans your playing to each
-    -- lane's instrument through sends — and a send ignores the destination's
-    -- arm state, so those tracks sound even unarmed. This is the off switch:
-    -- turn it off and the keyboard is free for whatever track you armed.
+    -- Monitoring is REAPER's own now: arming a lane arms its destination track,
+    -- so you hear it with no added latency and no defer frame in the way. This
+    -- is the off switch — it disarms, and the keyboard is yours again.
+    -- CAPTURE does not depend on it: takes read the global input history, so a
+    -- REC records whether or not anything is armed.
     local listen = Loop.GetListen()
     if UI.BarToggle("listen", "VolumeUp", "VolumeOff", listen,
                     listen and "Listening: your playing reaches the routed lanes"
@@ -705,7 +709,7 @@ local function drawToolbar(attached, theme)
     end
     if UI.BarIcon("allsel", "Target", "Route every lane to the selected track") then
         local sel = r.GetSelectedTrack(0, 0)
-        if sel and sel ~= Loop.track then
+        if sel then
             for l = 0, LANES - 1 do Loop.SetLaneDest(l, sel) end
             local _, nm = r.GetTrackName(sel)
             flash("All lanes → " .. (nm ~= "" and nm or "track"))
@@ -715,11 +719,6 @@ local function drawToolbar(attached, theme)
     end
     UI.BarSep()
 
-    if UI.BarIcon("reload", "Refresh", "Reload the engine (loops are kept)") then
-        -- no longer destructive: the loops live in gmem and survive the
-        -- engine's @init (that is exactly the bug this replaced)
-        Loop.ReloadEngine(); flash("Engine reloaded (loops kept)")
-    end
     -- Explicit recall: the automatic one refuses to overwrite lanes that
     -- already hold notes, so this is how you get the project's copy back
     -- over a live set.
@@ -752,10 +751,10 @@ local function drawUnattached()
     UI.Text("2.  Click \"Create looper engine\" above.")
     UI.Spacing(6)
     UI.SetFontCaption()
-    UI.Text("A \"CP Looper\" router track is created and armed for MIDI. Select it and", { disabled = true })
-    UI.Text("play (virtual keyboard or a device). Route each lane to its own instrument", { disabled = true })
-    UI.Text("track (FL/Ableton style) with the lane's \"→ track\" button, then REC a lane", { disabled = true })
-    UI.Text("to capture a phrase — it loops on the beat grid (and to an external clock).", { disabled = true })
+    UI.Text("No track is created: the lanes live in the CP engine and each writes", { disabled = true })
+    UI.Text("straight into its own instrument track. Route a lane with its \"→ track\"", { disabled = true })
+    UI.Text("button, arm it to hear yourself play, then REC to capture a phrase — it", { disabled = true })
+    UI.Text("loops on the beat grid, and to an external clock when REAPER is slaved.", { disabled = true })
     UI.SetFontBody()
 end
 
@@ -1542,23 +1541,21 @@ end
 -- ---------------------------------------------------------------------------
 local last_init = -1     -- engine reset counter, watched to invalidate caches
 
--- Session recall. Loops live in gmem (REAPER-session scoped); this mirrors them
--- into the router track's P_EXT so they are saved inside the project. Written on
--- a trailing debounce so a note drag doesn't rewrite the blob every frame.
+-- Session recall. The loops live in this script's own note store and are
+-- mirrored into ProjExtState, so they are saved inside the .rpp. Written on a
+-- trailing debounce so a note drag doesn't rewrite the blob every frame.
 local recalled  = false  -- one auto-recall per attach
 local force_recall = false
 
 local function pollPersist(attached)
     if not attached then recalled = false; return end
 
-    -- gmem is REAPER-session scoped, so switching project inside one session
-    -- leaves the PREVIOUS project's loops loaded. Noticing the router change is
-    -- what makes recall feel automatic instead of "why are these not mine?".
-    -- Forced, because those lanes are full of the other project's take — whose
-    -- own copy is safe in its own .rpp. Never forced on the first attach: there
-    -- the engine may legitimately hold a live set the user just recorded.
-    -- The detection lives in Loop now: CP_Session writes lane state too, and it
-    -- needs exactly the same guard.
+    -- This used to detect a hazard that no longer exists. The loops lived in
+    -- gmem, which belongs to the REAPER session and not to the project, so
+    -- switching projects left the PREVIOUS project's loops loaded — and an
+    -- autosave would then have written one project's set into another's file.
+    -- The notes are per-script and per-project now, and ProjExtState is the
+    -- project's own; there is nothing left to detect, and this answers false.
     if Loop.RouterChanged() then recalled = false; force_recall = true end
 
     -- Recall once. Non-forced it only fills an engine that holds nothing, which
@@ -1592,33 +1589,30 @@ local function pollPersist(attached)
 end
 
 local function frame(theme)
-    if not (Loop.track and r.ValidatePtr2(0, Loop.track, "MediaTrack*")) then
-        Loop.reconnect()
-    end
     local attached = Loop.IsAttached()
-    -- Once per window: an engine loaded before this build silently drops
-    -- every command aimed at the lanes it does not scan. The loops live in
-    -- gmem and survive the refresh.
+    -- Once per window: is the binary here, and does it speak our language.
     if attached and not state.engine_checked then
         state.engine_checked = true
         local _, note = Loop.Ensure(false)
         if note then flash(note) end
     end
-    -- one call: gmem re-selected, one queued command out, and the live half
-    -- of each lane pair re-derived. Everything below reads one picture — the
-    -- same one the Session grid and CP_Editor read.
+    -- ONE call: the transport anchor posted, the live half of each lane pair
+    -- re-derived, live input drained into whatever is capturing. Everything
+    -- below reads one picture — the same one the Session grid and CP_Editor
+    -- read.
     Loop.Poll()
 
-    -- The engine resets more often than it looks (REAPER re-inits a JSFX on
-    -- transport start, samplerate change, FX reload). The loops now survive it,
-    -- but every per-instance cache on this side must be re-read — and saying so
-    -- out loud is what makes a reset visible instead of mysterious.
+    -- The engine used to be a JSFX, which REAPER re-inits on transport start,
+    -- samplerate change and FX reload — so every per-instance cache here had to
+    -- be re-read, and saying so out loud was what made a reset visible instead
+    -- of mysterious. A binary loaded once has no such event, and InitCount
+    -- answers 0 forever. Kept as a no-op rather than removed: it is the one
+    -- line that says the class of bug is gone.
     local ic = Loop.InitCount()
     if ic ~= last_init then
         if last_init >= 0 then
             for l = 0, LANES - 1 do ev[l].ver = -1 end
             roll_ver = -1
-            flash("Engine reset — loops kept")
         end
         last_init = ic
     end
@@ -1653,7 +1647,7 @@ local function frame(theme)
     -- leaving a valid attachment (or losing it) drops out of the editor
     if state.edit_lane ~= nil and not attached then exitEdit() end
 
-    -- deferred audition note-off (editor clicks through the router's live thru)
+    -- deferred audition note-off (editor clicks reach the armed destination)
     if state.aud_note and r.time_precise() >= state.aud_off_t then
         r.StuffMIDIMessage(0, 0x80, state.aud_note, 0)
         state.aud_note = nil

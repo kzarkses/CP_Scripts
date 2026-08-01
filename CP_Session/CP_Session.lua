@@ -7,7 +7,7 @@
 --   whatever that track was playing, which is the whole feel of a session
 --   view (see ANALYSE_Ableton_Session.md).
 --
---   The engine (gmem CP_MidiLooper) is untouched: each track owns TWO lanes,
+--   The engine (CP_Native, ABI 1.6) is untouched: each track owns TWO lanes,
 --   a playing one and a silent twin. Launching writes the clip into the twin
 --   (inaudible, so timing doesn't matter) then asks the engine for Play+Stop
 --   — both quantized — so the swap lands exactly on the boundary.
@@ -315,9 +315,10 @@ local function trackMenu(t)
     local cur_tr = Loop.GetLaneDest(t)
     for i = 0, n - 1 do
         local tr = r.GetTrack(0, i)
-        -- the router hosts the engine and sends nothing to itself: offering
-        -- it would look like a choice and silently unroute the column
-        if tr ~= Loop.track then
+        -- Every project track is offerable now. The router used to be in this
+        -- list and had to be filtered out — it hosted the engine and sent
+        -- nothing to itself, so choosing it silently unrouted the column.
+        do
             local _, nm = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
             items[#items + 1] = {
                 label = (i + 1) .. ": " .. ((nm and nm ~= "") and nm or "(unnamed)"),
@@ -685,22 +686,16 @@ local function armLane(lane, c, t, s)
                   or "No track for this column — click its name to route it")
             return false
         end
-        -- Cut the router's sound send for this column. A project converted from
-        -- the RS5K wiring still has those samplers sitting in its child track,
-        -- and the lane still speaks its trigger note: without this they would
-        -- answer it and you would hear the file twice.
-        Loop.WireAudio(t, nil)
     else
         -- This half stopped carrying a sound. Say so, or its voice keeps
         -- answering the lane's passes with a file nobody asked for.
         Cells.Disarm(t, lane)
     end
-    -- The lane still speaks its one-note clip on the column's SOUND channel, and
-    -- nothing listens to it — no send, no sampler. That is the point: the clip
-    -- is the state machine, and what must never happen is its trigger note
-    -- reaching the column's instrument.
-    Loop.SetLaneAudio(t, audio and true or false)
-    Loop.SetLaneAudio(t + TRACKS, audio and true or false)
+    -- The lane still speaks its one-note clip — the clip IS the state machine —
+    -- and now nobody hears it at all. The sound channel and its filtered send
+    -- went with the router; a sound cell is a CP voice on its own port, and the
+    -- column's instrument is on another one entirely. Not a convention to keep:
+    -- two wires that never meet.
     Loop.ApplyClip(lane, audio and audioClip(c, lane) or c)
     Loop.SetLengthBars(lane, cellBars(c))
     -- stamp WHICH cell this lane now holds: it is how CP_Editor finds the
@@ -2088,20 +2083,18 @@ end
 
 local function frame(theme)
     local C = theme.colors
-    if not (Loop.track and r.ValidatePtr2(0, Loop.track, "MediaTrack*")) then
-        Loop.reconnect()
-    end
     local attached = Loop.IsAttached()
 
     -- one-shot recall: if this window comes up first in the REAPER session
     -- and the engine is empty, pull the project's saved set (the Looper
     -- does the same; the recall never overwrites a live set)
     --
-    -- Recalled AGAIN, and forced, when the router track changes: gmem belongs
-    -- to the REAPER session, so switching projects leaves the previous one's
-    -- loops loaded. Reading them was merely confusing; now that this window
-    -- also WRITES lane state back, keeping them would put one project's set
-    -- into another project's file.
+    -- The forced re-recall below guarded a hazard that is GONE rather than
+    -- fixed: the loops used to live in gmem, which belongs to the REAPER
+    -- session and not to the project, so switching projects left the previous
+    -- one's loops loaded — and since this window also WRITES lane state back,
+    -- keeping them would have put one project's set into another's file. The
+    -- notes are per-script and per-project now. RouterChanged answers false.
     local switched = Loop.RouterChanged()
     if attached and (not state.recalled or switched) then
         state.recalled = true
@@ -2111,18 +2104,15 @@ local function frame(theme)
         end
         if switched then Loop.LoadState(true)
         elseif empty and Loop.HasSavedState() then Loop.LoadState(false) end
-        -- RE-STAMP THE SOUND FLAG BEFORE ANYTHING CAN SOUND. It lives in gmem,
-        -- which belongs to the REAPER session and not to the project, while the
-        -- recall restores a lane that was PLAYING straight back to playing. A
-        -- project reopened cold would therefore fire a trigger note, at velocity
-        -- 127, into whatever instrument the column is routed to. The grid knows
-        -- which cell each lane holds, so it says so first.
+        -- RE-ARM THE SOUND CELLS BEFORE ANYTHING CAN SOUND. The recall puts a
+        -- lane that was PLAYING straight back to playing, and a sound cell's
+        -- voice does not survive the script — so the file has to be back in it
+        -- before the first pass, or the column plays a silence it cannot
+        -- explain. The grid knows which cell each lane holds; it says so first.
         for t = 0, TRACKS - 1 do
             local lane = Loop.LaneOfTag(t, Loop.GetLaneTag(liveLane(t)))
             local sc = lane and sceneOfLane(lane, t) or nil
             local audio = sc and isAudio(cells[t][sc]) or false
-            Loop.SetLaneAudio(t, audio)
-            Loop.SetLaneAudio(t + TRACKS, audio)
             if audio then
                 local cc = cells[t][sc]
                 Cells.Arm(t, lane, soundFor(cc))
@@ -2200,13 +2190,11 @@ local function frame(theme)
         end
     end
 
-    -- An engine loaded before the lanes grew DROPS every command aimed at the
-    -- upper half — a clip swap would stop the outgoing clip and never start
-    -- the incoming one, which looks exactly like "the column stops". Ensure
-    -- refreshes it; the loops live in gmem and survive the swap.
-    -- Once per window, never on a retry loop: if the refresh did not take,
-    -- reloading the engine on every frame would be far worse than the banner
-    -- below, which says so plainly and leaves the user in charge.
+    -- Once per window: is the binary here, and does it speak our language.
+    -- There is nothing to install, nothing to refresh and no plugin instance
+    -- that can be out of date with the script driving it — the whole class of
+    -- "the engine in this project is older than this build" went away with the
+    -- JSFX.
     if not state.engine_checked then
         state.engine_checked = true
         local _, note = Loop.Ensure(false)
@@ -2214,13 +2202,14 @@ local function frame(theme)
     end
     if not Loop.EngineCurrent() then
         UI.SetFontCaption()
-        UI.TextWrapped("This project's looper engine is out of date and it would not refresh — open CP_Looper and click \"Reload engine\".")
+        UI.TextWrapped("The CP engine extension is missing — MIDI lanes and sound cells both need it.")
         UI.SetFontBody()
         UI.Spacing(2)
     end
 
-    -- one call: gmem re-selected, live halves re-derived. Everything below
-    -- reads a coherent picture.
+    -- ONE call: the transport anchor posted, live halves re-derived, live
+    -- input drained into whatever is capturing. Everything below reads a
+    -- coherent picture.
     Loop.Poll()
     -- Mirror lane state back into the project on a trailing debounce. The
     -- mechanism lives in Loop, so both windows get it from one call.

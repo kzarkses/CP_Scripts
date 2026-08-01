@@ -1,7 +1,17 @@
-desc: CP_MidiLooper
+desc: CP_MidiLooper (SUPERSEDED — kept as the parity reference)
 author: Cedric Pamalio
 version: 0.8
 
+// SUPERSEDED BY CP_Native (roadmap phase 6, ABI 1.6). NOTHING INSTALLS THIS
+// ANY MORE, and CP_Engine/Loop.lua no longer speaks to it: the lanes live in
+// the extension, each writes into its own port, and the router track that
+// carried this plugin is deleted from any project that still has one.
+//
+// It stays in the repo for one reason — it is what the port was measured
+// against. Every rule below (where a launch lands, what a stop waits for, why
+// the free clock sits at zero, how the block gate reconciles) was carried over
+// deliberately, and this is the text those decisions were read from.
+//
 // MIDI looper engine for CP_Looper. The CP_Toolkit UI drives it over gmem.
 //
 // Phase-locked to the host beat grid: the loop boundary for a lane sits at
