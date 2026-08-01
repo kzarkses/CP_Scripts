@@ -699,6 +699,16 @@ function Loop.GetLengthBars(lane)
     local b = r.CP_LaneGet(lane, "bars")
     return (b and b > 0) and b or 1
 end
+-- ATTENTION EN TOUCHANT A CECI. `mute` ne parle qu'au moteur de LANES : il
+-- coupe le MIDI et laisse sonner la case AUDIO de la meme colonne, qui est une
+-- voix et non une lane. Le defaut « une lane mutee dans le Looper coupe son
+-- MIDI mais pas sa case audio » est donc reel — mais il ne se corrige PAS en
+-- branchant les voix ici, parce que CP_Session se sert deja de ce meme mute
+-- pour un autre sens : une case audio arme une lane d'une seule note et la
+-- MUTE pour que cette note ne parte pas dans l'instrument de la colonne
+-- (`Loop.SetMute(lane, audio)`). Taire la voix sur mute rendrait donc TOUTE
+-- case audio silencieuse. Il faudra distinguer les deux intentions avant de
+-- corriger — c'est note au registre, et non fait.
 function Loop.SetMute(lane, on)
     if NATIVE then r.CP_LaneSet(lane, "mute", on and 1 or 0) end
 end
@@ -797,8 +807,14 @@ end
 -- that clip at all. Nil is the honest answer and the safe one: a window that
 -- believed otherwise would draw a playhead for someone else's clip and, far
 -- worse, write its edits over the clip that IS playing.
+-- QUELLE LANE TIENT CE CLIP. Rend nil quand plus personne ne le tient — et
+-- c'est le contrat, ecrit dans le commentaire d'origine, que le code ne tenait
+-- pas : un tag 0 (« pas d'identite ») rendait la moitie VIVANTE de la paire.
+-- L'edition d'un clip sans identite atterrissait donc dans la lane jumelle,
+-- par-dessus les notes d'un autre clip. Zero n'est pas une identite, c'est
+-- l'absence d'identite, et la reponse honnete est « je ne sais pas ».
 function Loop.LaneOfTag(t, tag)
-    if not tag or tag == 0 then return Loop.LiveLane(t) end
+    if not tag or tag == 0 then return nil end
     local n = Loop.TRACKS
     if Loop.GetLaneTag(t) == tag then return t end
     if Loop.GetLaneTag(t + n) == tag then return t + n end
@@ -1131,13 +1147,25 @@ end
 -- ---------------------------------------------------------------------------
 -- Clip adapters — a lane IS a MIDI clip
 -- ---------------------------------------------------------------------------
+-- UN CLIP SANS IDENTITE N'EN EST PAS UN. Le descripteur partait sans `id` ni
+-- `cell` : cote editeur `Ident.TagOf` rendait 0, et l'edition ne savait plus
+-- revenir a sa lane. On lui donne le tag que la lane porte deja — et on en pose
+-- un si elle n'en avait pas, ce qui est le seul moment ou on le peut.
 function Loop.LaneToClip(lane)
     local n = Loop.NoteCount(lane)
     if n <= 0 then return nil end
     local s, l, p, v = {}, {}, {}, {}
     Loop.ReadNotes(lane, s, l, p, v)
+    local tag = math.floor(Loop.GetLaneTag(lane) or 0)
+    if tag == 0 then
+        -- Un identifiant qui ne peut collisionner avec aucun autre de la grille
+        -- (ceux-ci viennent d'Ident) : le numero de lane, decale tres haut.
+        tag = 1000000 + lane
+        Loop.SetLaneTag(lane, tag)
+    end
     return {
         kind  = "midi",
+        id    = tag,
         name  = "Lane " .. (lane + 1),
         notes = { s = s, l = l, p = p, v = v },
         bars  = Loop.GetLengthBars(lane),
@@ -1193,12 +1221,21 @@ end
 local function num(v) return string.format("%.6g", v or 0) end
 
 local function migrateQ(ver, q)
-    if ver ~= "4" and ver ~= "5" and (q or 0) <= 0 then return Loop.TsNum() end
+    if (tonumber(ver) or 0) < 4 and (q or 0) <= 0 then return Loop.TsNum() end
     return q or 0
 end
 
 function Loop.Serialize()
-    local out = { "5",
+    -- FORMAT 6 : le TAG DE LANE entre dans le bloc de chaque lane.
+    --
+    -- Il n'etait pas serialise, et c'etait une perte silencieuse : le tag est
+    -- ce qui relie une case de la grille au clip que le moteur tient. Apres
+    -- reouverture, les lanes rejouaient et la grille montrait tout arrete,
+    -- parce que plus personne ne savait quelle case correspondait a quelle
+    -- lane. Un lecteur ancien ignore le champ (les champs inconnus sont
+    -- ignores), un lecteur neuf sur un projet ancien lit 0 — ce qui est
+    -- exactement ce que le tag valait avant.
+    local out = { "6",
                   (Loop.GetFreeRun() and "1" or "0") .. "|"
                   .. (Loop.GetArmedLane() or -1) .. "|" .. num(Loop.GetLaunchQ()) }
     for lane = 0, Loop.MAX_LANES - 1 do
@@ -1209,7 +1246,9 @@ function Loop.Serialize()
         if m == 1 or m == 4 or m == 5 then m = (n > 0) and 3 or 0 end
         local parts = { num(Loop.GetLengthBars(lane)),
                         Loop.GetMute(lane) and "1" or "0",
-                        tostring(m), tostring(n) }
+                        tostring(m),
+                        string.format("%d", math.floor(Loop.GetLaneTag(lane) or 0)),
+                        tostring(n) }
         for i = 0, n - 1 do
             local s, l, p, v = Loop.GetNote(lane, i)
             parts[#parts + 1] = num(s) .. "," .. num(l) .. ","
@@ -1226,7 +1265,7 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if not ver or not ver:match("^[1-5]$") then return false end
+    if not ver or not ver:match("^[1-6]$") then return false end
     local v2 = (ver ~= "1")
 
     local base = v2 and 2 or 1
@@ -1239,7 +1278,7 @@ function Loop.Deserialize(str)
             -- lane, so EVERY older save carries 0 whether or not anyone armed
             -- anything. Restoring it would re-arm lane 0 in every existing
             -- project, so it is dropped.
-            local a = (ver == "4" or ver == "5") and math.floor(tonumber(arm) or -1) or -1
+            local a = ((tonumber(ver) or 0) >= 4) and math.floor(tonumber(arm) or -1) or -1
             -- ADOPTE, n'arme pas. Restaurer un etat n'est pas un geste de
             -- l'utilisateur : ouvrir un projet ne doit armer aucune piste.
             Loop.AdoptArmedLane(a >= 0 and a or nil)
@@ -1256,7 +1295,12 @@ function Loop.Deserialize(str)
             local bars  = tonumber(t[1]) or 1
             local muted = t[2] == "1"
             local mode  = v2 and math.floor(tonumber(t[3]) or 0) or nil
-            local hdr   = v2 and 4 or 3
+            -- v6 glisse le TAG entre le mode et le nombre de notes. Avant lui,
+            -- le tag n'etait nulle part : zero est donc la reponse juste pour
+            -- un projet ancien, et c'est ce que la lane valait deja.
+            local v6   = (ver == "6")
+            local tag  = v6 and math.floor(tonumber(t[4]) or 0) or 0
+            local hdr  = v6 and 5 or (v2 and 4 or 3)
             local n     = math.floor(tonumber(t[hdr]) or 0)
             if n > Loop.MAX_NOTES then n = Loop.MAX_NOTES end
             local written = 0
@@ -1274,6 +1318,7 @@ function Loop.Deserialize(str)
             end
             Loop.SetLengthBars(lane, bars)
             Loop.SetMute(lane, muted)
+            Loop.SetLaneTag(lane, tag)            -- qui joue quoi, apres reouverture
             Loop.SetNoteCount(lane, written)      -- publishes
             -- mode last: it is what makes the lane sound, so nothing may be
             -- playing off a half-written note list
@@ -1305,7 +1350,13 @@ function Loop.SavedState()
     return ""
 end
 
+-- SANS LE MOTEUR, ON N'ECRIT PAS. Serialize interroge le moteur pour chaque
+-- lane ; sans lui il rend huit lanes vides, et les ecrire par-dessus l'etat du
+-- projet EFFACE le travail de l'utilisateur — a la fermeture de la fenetre,
+-- sans un mot. `Deserialize` refusait deja quand `not NATIVE` : la lecture
+-- etait protegee, l'ecriture ne l'etait pas. Trois lignes.
 function Loop.SaveState()
+    if not NATIVE then return false end
     r.SetProjExtState(0, EXT_SEC, DATA_KEY, Loop.Serialize())
     return true
 end
@@ -1337,7 +1388,7 @@ function Loop.LoadGlobals()
     if not fr then fr, arm = fields[2]:match("^([^|]*)|([^|]*)$") end
     if not fr then return false end
     Loop.SetFreeRun(fr == "1")
-    local a = (fields[1] == "4" or fields[1] == "5")
+    local a = ((tonumber(fields[1]) or 0) >= 4)
               and math.floor(tonumber(arm) or -1) or -1
     Loop.AdoptArmedLane(a >= 0 and a or nil)
     if lq then Loop.SetLaunchQ(migrateQ(fields[1], tonumber(lq))) end

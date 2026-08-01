@@ -104,15 +104,26 @@ end
 -- answers with a RATE, so the tempo it implies is the project's divided by
 -- it. Guarded the way the browser always guarded it: a rate outside 0.05..20
 -- is not a musical answer.
+-- LE SECOND RETOUR DE getSource DIT « c'est a toi de la detruire », et il
+-- etait ignore ici : chaque appel laissait une PCM_source derriere lui. Invisible
+-- depuis CP_Session, qui injecte un cache de sources et ne possede donc jamais
+-- celle qu'il rend ; bien reelle depuis Kit.lua, qui n'en injecte pas — un kit
+-- de soixante-quatre pads en fuyait soixante-quatre au chargement.
+--
+-- Un seul point de sortie, parce que la fonction rend a quatre endroits et
+-- qu'il en manquait quatre.
 function SrcTempo.FromAnalysis(path)
     if not r.GetTempoMatchPlayRate then return nil end
-    local src = getSource(path)
+    local src, owned = getSource(path)
     if not src then return nil end
+    local bpm = nil
     local ok, retval, rate = pcall(r.GetTempoMatchPlayRate, src, 1.0, 0, 1.0)
-    if not (ok and retval and rate and rate > 0.05 and rate < 20) then return nil end
-    local pb = r.Master_GetTempo()
-    if not pb or pb <= 0 then return nil end
-    return pb / rate
+    if ok and retval and rate and rate > 0.05 and rate < 20 then
+        local pb = r.Master_GetTempo()
+        if pb and pb > 0 then bpm = pb / rate end
+    end
+    if owned then r.PCM_Source_Destroy(src) end
+    return bpm
 end
 
 -- From the length alone. Returns nil unless exactly one plausible bar count

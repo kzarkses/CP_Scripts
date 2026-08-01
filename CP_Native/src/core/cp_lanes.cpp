@@ -137,13 +137,36 @@ double Lanes::lane_len_beats(int li, double ts_num) const {
   return b * ((ts_num >= 1.0) ? ts_num : 4.0);
 }
 
+// LA FENETRE DE TOLERANCE — une fraction du quantize, et pas une constante.
+//
+// Elle valait 0,05 beat, en dur. A 120 BPM cela fait 25 ms, et UNE MAIN HUMAINE
+// EST EN RETARD DE 40 A 120 ms : le clic qui « visait » la frontiere tombait
+// derriere elle et partait une mesure plus tard. Le musicien voyait sa case
+// attendre alors qu'il avait joue juste — ou plutot, juste a l'echelle de ce
+// qu'un doigt sait faire.
+//
+// Un huitieme de Q est la meme idee, exprimee dans l'unite qui compte : a
+// Q: Bar et 120 BPM, 250 ms ; a Q: Beat, 62 ms ; a Q: 1/4 de beat, 15 ms. La
+// tolerance suit donc la finesse demandee — serrer le quantize resserre la
+// fenetre, ce qui est exactement ce qu'on veut dire en le serrant. C'est le
+// « tolerant trigger sync » de FL, et la fraction est la sienne.
+//
+// Le plafond de 0,25 beat existe pour le cas ou quelqu'un met Q a 32 mesures :
+// une fenetre de seize mesures ferait partir « tout de suite » un lancement
+// qu'on voulait a la fin.
+static inline double launch_tolerance(double q) {
+  double t = q * 0.125;
+  if (t > 0.25) t = 0.25;
+  return t;
+}
+
 // OU TOMBE UN DEPART. Deux reponses, et seulement deux :
 //   pas d'horloge -> kWaitClock : il en attend une. Un depart sans temps fort
 //                    n'est pas un depart ; on lui donnera une vraie frontiere
 //                    des qu'une horloge existera.
-//   une horloge   -> la prochaine frontiere de quantize. Une position a moins
-//                    de 0,05 beat APRES une frontiere compte comme etant
-//                    DESSUS, pour qu'un lancement arrive d'un bloc en retard
+//   une horloge   -> la prochaine frontiere de quantize. Une position dans la
+//                    fenetre de tolerance APRES une frontiere compte comme
+//                    etant DESSUS, pour qu'un lancement arrive en retard
 //                    appartienne encore a celle qu'il visait.
 //
 // Ce que cela ne fait PAS : traiter le premier bloc de l'horloge comme une
@@ -155,7 +178,7 @@ double Lanes::launch_target(double pb, bool active) const {
   const double q = launch_q();
   if (q <= 0.001) return pb;
   const double ph = pb - std::floor(pb / q) * q;
-  return (ph < 0.05) ? (pb - ph) : (pb - ph + q);
+  return (ph < launch_tolerance(q)) ? (pb - ph) : (pb - ph + q);
 }
 
 // OU TOMBE UN ARRET. La meme frontiere tant qu'une horloge tourne — un clip
@@ -165,7 +188,7 @@ double Lanes::stop_target(double pb, bool active) const {
   const double q = launch_q();
   if (!active || q <= 0.001) return pb;
   const double ph = pb - std::floor(pb / q) * q;
-  return (ph < 0.05) ? (pb - ph) : (pb - ph + q);
+  return (ph < launch_tolerance(q)) ? (pb - ph) : (pb - ph + q);
 }
 
 void Lanes::emit(int port, frame_t at, unsigned char s, unsigned char d1,

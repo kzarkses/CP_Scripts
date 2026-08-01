@@ -2454,13 +2454,22 @@ local function frame(theme)
                         free and "Free run: the session is its own clock — the first launch starts it"
                               or "Following the host transport: a launch waits for it, then starts with it") then
             Loop.SetFreeRun(not free)
+            Loop.MarkDirty()   -- meme raison que Q : c'est de l'etat
         end
         -- Q says WHEN a take starts, Rec says how long it runs. Together they
         -- are the whole answer to "will it start where I mean it to". Both are
         -- choices among a handful, so both are combos: the wheel walks them and
         -- the current setting is readable without clicking.
         local qch, qi = UI.BarCombo("q", qIndex(), Q_ITEMS, false, Q_OPTS)
-        if qch then setQIndex(qi) end
+        if qch then
+            setQIndex(qi)
+            -- Q EST DE L'ETAT DE SESSION, donc il se sauve. `AutoSave` ne
+            -- surveille que la version des notes et le mode par lane : sans ce
+            -- marquage, le quantize ne survivait qu'a une fermeture propre de
+            -- la fenetre — et CP_Looper, lui, marquait deja. Deux fenetres,
+            -- deux comportements pour le meme reglage.
+            Loop.MarkDirty()
+        end
         local rch, ri = UI.BarCombo("recbars", recBarsIndex(), REC_ITEMS, false, Q_OPTS)
         if rch then setRecBarsIndex(ri) end
         UI.BarSep()

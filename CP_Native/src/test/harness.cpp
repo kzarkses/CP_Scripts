@@ -851,9 +851,13 @@ static void test_lane_launch_quantize() {
   L.post(1, kLcSetMode, (double)kLaneStopped);
   e.tick(512);
 
-  for (int i = 0; i < 20; ++i) e.tick(512);   // s'eloigner de la frontiere
+  // S'ELOIGNER DE LA FRONTIERE — et de la FENETRE DE TOLERANCE, qui vaut un
+  // huitieme du quantize, donc un demi-beat a Q: Bar. Vingt blocs n'en
+  // sortaient pas (0,45 beat) : le test passait parce que la fenetre valait
+  // 0,05 beat en dur, et il aurait mesure autre chose que ce qu'il annonce.
+  for (int i = 0; i < 60; ++i) e.tick(512);
   const double pb = L.engine_beat();
-  check(pb > 0.05 && pb < 4.0, "on est au milieu de la mesure");
+  check(pb > 0.5 && pb < 4.0, "on est au milieu de la mesure");
 
   L.post(1, kLcPlay, 0.0);
   e.tick(512);
@@ -872,6 +876,33 @@ static void test_lane_launch_quantize() {
   check(fired == 1, "il part");
   check_near(L.engine_beat(), 4.0, 0.06,
              "et il part A la frontiere, pas une mesure plus loin");
+
+  // LA FENETRE DE TOLERANCE, mesuree.
+  //
+  // Une main humaine est en retard de 40 a 120 ms. Avec 0,05 beat en dur (25 ms
+  // a 120 BPM), un clic qui VISAIT le temps fort tombait derriere lui et
+  // partait une mesure plus tard : la case attendait alors que le musicien
+  // avait joue juste. La fenetre vaut maintenant un huitieme du quantize, donc
+  // un demi-beat a Q: Bar — et un lancement pose a 0,2 beat apres la frontiere
+  // appartient encore a celle-ci.
+  Lane& l2 = L.lane(2);
+  l2.port.store(2, std::memory_order_relaxed);
+  l2.bars.store(1.0, std::memory_order_relaxed);
+  lane_note(L, 2, 0, 0.0, 0.5, 72, 100);
+  L.publish_notes(2, 1);
+  L.post(2, kLcSetMode, (double)kLaneStopped);
+  e.tick(512);
+
+  // se placer juste APRES la frontiere de la mesure 8 : deux blocs valent
+  // 0,043 beat, on en prend cinq pour etre a ~0,1 beat.
+  while (L.engine_beat() < 8.0) e.tick(512);
+  const double after = L.engine_beat() - 8.0;
+  check(after >= 0.0 && after < 0.5, "on est dans la fenetre de tolerance");
+
+  L.post(2, kLcPlay, 0.0);
+  e.tick(512);
+  check_eq(L.lane(2).mode.load(std::memory_order_relaxed), kLanePlaying,
+           "un lancement dans la fenetre part TOUT DE SUITE, pas une mesure plus loin");
 }
 
 static void test_lane_loop_and_bounds() {

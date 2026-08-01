@@ -292,12 +292,15 @@ parce que c'est du Lua — Ableton et FL n'ont pas ce problème.
 
 Elles ne sont pas des chantiers et changent l'usage quotidien.
 
-- [ ] **La fenêtre de tolérance de lancement.** Le moteur a déjà la bonne
-      sémantique — un clic dans les 0,05 beat *après* une frontière part
-      immédiatement, exactement comme le *tolerant trigger sync* de FL. Mais
-      0,05 beat = **25 ms** à 120 BPM, et une main humaine est en retard de 40 à
-      120 ms. Passer à une fraction de Q (1/8 = 250 ms à Q: Bar) : une ligne de
-      C++ et une recompilation. **Meilleur rapport effet/effort du document.**
+- [x] **La fenêtre de tolérance de lancement.** Elle vaut désormais **un
+      huitième du quantize**, plafonnée à 0,25 beat : 250 ms à Q: Bar, 62 ms à
+      Q: Beat, 15 ms à Q: 1/4. Elle suit donc la finesse demandée — serrer le
+      quantize resserre la fenêtre, ce qui est exactement ce qu'on veut dire en
+      le serrant. Le plafond existe pour Q: 32 mesures, où un huitième ferait
+      partir « tout de suite » un lancement qu'on voulait à la fin.
+      **Deux assertions de plus au harnais** — dont une qui mesure la fenêtre
+      elle-même, parce que l'ancien test passait à 0,45 beat de la frontière et
+      aurait donc mesuré autre chose que ce qu'il annonçait.
 - [ ] **Huit colonnes.** `Loop.MAX_LANES = 16`. Le calcul de ports que personne
       n'avait fait : audio prend le port `t`, le MIDI `PORT_BASE + lane`,
       l'audition le 31 — donc huit colonnes tiennent **sans rien d'autre**
@@ -317,10 +320,9 @@ matin ; le fond tient.
 
 ### Perte de données ou mauvais son
 
-- [ ] **`Loop.SaveState` n'a aucun garde `NATIVE`.** Sans l'extension, la
-      sérialisation produit huit lanes vides et les écrit par-dessus l'état du
-      projet, à la fermeture de la fenêtre. `Deserialize`, lui, refuse quand
-      `not NATIVE` : la lecture est protégée, l'écriture non. **Trois lignes.**
+- [x] **`Loop.SaveState` n'a aucun garde `NATIVE`.** Corrigé — une ligne de
+      garde. Sans l'extension, la sérialisation produisait huit lanes vides et
+      les écrivait par-dessus l'état du projet, à la fermeture de la fenêtre.
 - [ ] **Aucune annulation sur l'édition de notes d'une case.** Le contrat de
       `Roll` prévoit `be.undo` et l'appelle à chaque geste structurel ; le
       backend take le branche sur `Undo_OnStateChange`, le backend **clip** le
@@ -328,17 +330,18 @@ matin ; le fond tient.
       Euclidean ou une suppression dans une case sont **définitifs**. Et
       Ctrl+Z est explicitement réservé au mode take.
 - [ ] **Alt+clic efface une case sans confirmation ni annulation.**
-- [ ] **Le tag de lane n'est pas sérialisé.** Après réouverture du projet, la
-      grille et le moteur ne parlent plus du même clip : les lanes jouent, la
-      grille montre tout arrêté, aucune case audio n'est réarmée. Un champ de
-      plus dans le format, plus la persistance de `cur`.
-- [ ] **Une lane du Looper ouverte dans l'éditeur n'a aucune identité.**
-      `Loop.LaneToClip` construit un descripteur sans `id` ni `cell` ; côté
-      éditeur `Ident.TagOf` rend 0, et `Loop.LaneOfTag(t, 0)` — dont le
-      commentaire promet « nil quand le moteur ne tient plus ce clip » — rend
-      **la moitié vivante**. L'édition peut atterrir dans la jumelle,
-      par-dessus les notes de l'autre clip. Correction : `Ident.Of` dans
-      `LaneToClip`, et `LaneOfTag(t, 0)` doit rendre `nil`.
+- [x] **Le tag de lane n'est pas sérialisé.** **Format 6** : le tag entre dans
+      le bloc de chaque lane, entre le mode et le nombre de notes. Un lecteur
+      ancien ignore le champ, un lecteur neuf sur un projet ancien lit 0 — ce
+      que le tag valait déjà. Les gardes de version acceptent v6 et comparent
+      des NOMBRES, pas des chaînes : `"10" < "4"` aurait cassé silencieusement
+      à la version dix.
+- [x] **Une lane du Looper ouverte dans l'éditeur n'a aucune identité.**
+      `LaneOfTag(t, 0)` rend `nil` — zéro n'est pas une identité, c'est
+      l'absence d'identité, et le commentaire d'origine promettait déjà cette
+      réponse. `LaneToClip` porte le tag de la lane, et lui en pose un
+      (`1000000 + lane`, hors de portée des identités de la grille) quand elle
+      n'en avait pas : c'est le seul moment où on peut le faire.
 - [ ] **Un slot libéré est réattribué avec ses clips.** Supprimer la piste de la
       colonne 1 libère le slot ; la piste suivante l'adopte et arrive avec les
       huit clips de l'ancienne. Le mécanisme d'adoption a été écrit pour que les
@@ -359,10 +362,16 @@ matin ; le fond tient.
       obtient `nullptr` et meurt sans fondu. Le garde-fou du pool est du code
       mort — `Clip::refs` n'est incrémenté nulle part.
 - [ ] **Une lane mutée dans le Looper coupe son MIDI mais pas sa case audio.**
-- [ ] **Fuite de `PCM_source` dans `SrcTempo.FromAnalysis`** — le second retour
-      de `getSource` (« owned ») est ignoré, donc rien n'est détruit. Invisible
-      dans CP_Session, qui injecte un cache ; réel dans `Kit.lua`, qui n'en
-      injecte pas.
+      ⚠️ **Ne pas corriger en branchant les voix sur `Loop.SetMute`** : la
+      Session se sert du même `mute` pour un autre sens — une case audio arme
+      une lane d'une seule note et la mute pour que cette note ne parte pas
+      dans l'instrument de la colonne. Taire la voix sur mute rendrait donc
+      **toute** case audio silencieuse. Il faut d'abord séparer les deux
+      intentions. C'est écrit dans `Loop.SetMute`, au-dessus du code.
+- [x] **Fuite de `PCM_source` dans `SrcTempo.FromAnalysis`.** Un seul point de
+      sortie, parce que la fonction rendait à quatre endroits et qu'il en
+      manquait quatre. Un kit de soixante-quatre pads en fuyait soixante-quatre
+      au chargement.
 
 ### Ce qui trompe
 
@@ -376,11 +385,9 @@ matin ; le fond tient.
       part change la longueur de toutes les lanes quand le transport la
       traverse, alors que les notes sont en beats absolus. Il n'existe nulle
       part de signature **du clip** ; Ableton en a une.
-- [ ] **Q et le mode d'horloge ne survivent qu'à une fermeture propre** :
-      `setQIndex` et la bascule Clock n'appellent pas `Loop.MarkDirty()`, et
-      `AutoSave` ne surveille que la version de notes et le mode par lane.
-      CP_Looper, lui, appelle `MarkDirty` sur les deux — deux fenêtres, deux
-      comportements pour le même réglage.
+- [x] **Q et le mode d'horloge ne survivent qu'à une fermeture propre.** Les
+      deux appellent `Loop.MarkDirty()` maintenant, comme CP_Looper le faisait
+      déjà.
 - [ ] **`Mix.SendCreate` annonce « Send → X » sur un envoi déjà existant.**
 - [ ] **`Cells.LastOnsetError`** — l'écart mesuré entre la passe demandée et la
       passe réellement jouée, construit exprès et **jamais appelé**. C'est
