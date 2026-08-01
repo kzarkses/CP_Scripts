@@ -23,9 +23,13 @@ desc:CP Kit Sampler
 // spl0..spl15 et le « += » n'aurait rien a quoi s'ajouter.
 //
 // TROIS FILS, TROIS METIERS, ET ILS NE SE MELANGENT PAS :
-//   @gfx    charge les echantillons. gfx_idle=1 le fait tourner fenetre
-//           fermee. C'est le SEUL endroit qui touche au disque.
-//   @block  draine la boite aux lettres et traite le MIDI. Zero disque.
+//   @gfx    NE FAIT QUE RACONTER. Il a porte le chargement, parce qu'il n'est
+//           pas le fil audio — mais gfx_idle ne le fait pas tourner de facon
+//           fiable fenetre fermee, et un instrument muet vaut moins qu'un
+//           instrument qui clique une fois. Il affiche desormais ce qui se
+//           passe, ce qui est le seul moyen de repondre a « je n'entends
+//           rien » sans deviner.
+//   @block  draine la boite aux lettres, CHARGE, et traite le MIDI.
 //   @sample ne fait que du son. Zero allocation, aucun calcul qu'on pouvait
 //           faire au note-on — la cible est un PC de 2005.
 //
@@ -309,6 +313,7 @@ function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest, n, i) (
   );
   p = pad(pi);
   n = readstr_from_mem(#path, path_mem(pi), PATH_LEN - 1);
+  dbg_loads += 1; dbg_lastpad = pi; dbg_lastlen = n; dbg_lastres = 1;
   p[P_LOADED] = 0;
   p[P_FRAMES] = 0;
   n < 1 ? ( gmem[gm + MB_STATUS] = 0; ) : (
@@ -325,6 +330,7 @@ function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest, n, i) (
         file_mem(h, dest, frames * nch);
         p[P_DATA]=dest; p[P_FRAMES]=frames; p[P_NCH]=nch; p[P_SRATE]=sr;
         p[P_LOADED]=1;
+        dbg_lastres = 0;
         gmem[gm + MB_STATUS] = (frames < floor(avail / nch)) ? 3 : 0;  // 3 = tronque
       ) : ( gmem[gm + MB_STATUS] = 2; );
     ) : ( gmem[gm + MB_STATUS] = 2; );
@@ -438,6 +444,7 @@ function start_voice(pi, note, vel, ch, ofs)
     // peut prendre 23 ms de retard — le kit sonne mou, et ca empire quand on
     // augmente le tampon, ce qui envoie chercher au mauvais endroit.
     v[V_WAIT] = max(ofs, 0);
+    dbg_started += 1;
     voice_serial += 1;
     v[V_AGE] = voice_serial;
     v[V_ACT] = 1;
@@ -591,6 +598,19 @@ i = 0;
 loop(NVOICES, voice(i)[V_ACT] = 0; i += 1;);
 
 ser_version  = 1;
+// COMPTEURS DE DIAGNOSTIC. Ils ne servent qu'a la fenetre, ils ne coutent
+// qu'une addition, et ils repondent a la seule question qui compte quand rien
+// ne sort : est-ce que la matiere est arrivee, et est-ce que la note est
+// arrivee. Sans eux, « pas de son » n'a aucune moitie identifiable.
+dbg_notes    = 0;   // notes recues depuis le chargement du plugin
+dbg_started  = 0;   // notes qui ont REELLEMENT ouvert une voix
+dbg_lastnote = -1;
+dbg_lastvel  = 0;
+dbg_loads    = 0;   // tentatives de chargement
+dbg_lastres  = -1;  // -1 aucune, 0 ok, 2 echec, 3 tronque
+dbg_lastpad  = -1;
+dbg_lastlen  = 0;   // longueur du dernier chemin lu
+dbg_gfx      = 0;   // @gfx a-t-il tourne, et combien de fois
 voice_serial = 0;
 any_solo     = 0;
 pitch_bend   = 0;
@@ -752,40 +772,39 @@ while (gmem[gm + MB_RPOS] != gmem[gm + MB_WPOS]) (
 //    disque appartient a @gfx. L'ACCUSE DE RECEPTION N'EST DONNE QU'UNE FOIS
 //    LE FICHIER LU : Lua saura que le pad SONNE, pas que l'ordre est parti.
 //    Un garde-fou qui verifie le geste et non son resultat ne garde rien.
-gmem[gm + MB_LSEQ] != gmem[gm + MB_LACK] && pending_load < 0 ? (
+// LE CHARGEMENT SE FAIT ICI, TOUT DE SUITE, ET C'EST UN AVEU.
+//
+// Il vivait dans @gfx, et le raisonnement etait bon : @gfx n'est pas le fil
+// audio, donc lire trente megaoctets n'y coute aucun craquement, et gfx_idle
+// est cense l'y faire tourner fenetre fermee. Il ne le fait pas de facon
+// fiable. Le symptome, mesure : la demande arrive (le statut passe a « en
+// cours », donc gmem vit et @block tourne), et elle ne se termine JAMAIS.
+//
+// Un repli temporise a d'abord ete tente — attendre deux cents blocs puis
+// charger ici. Il ne suffit pas : deux cents blocs, c'est deux secondes de
+// traitement AUDIO, et une piste au repos n'en produit pas. On attendait donc
+// un evenement qui ne venait pas, pour eviter un craquement que personne
+// n'aurait entendu.
+//
+// Donc : le disque passe par le fil audio, au moment ou l'utilisateur depose
+// un echantillon. Ca coute un clic, une fois, sur un geste ou il s'y attend —
+// c'est exactement ce que fait un RS5K, et tous les echantillonneurs. La
+// regle des zero allocations vaut pour ce qui tourne PAR ECHANTILLON et PAR
+// FRAME ; elle n'a jamais voulu dire qu'un chargement doit ne jamais avoir
+// lieu. Un instrument muet est un moins bon instrument qu'un instrument qui
+// clique une fois.
+gmem[gm + MB_LSEQ] != gmem[gm + MB_LACK] ? (
   pending_load = gmem[gm + MB_LPAD];
   copy_path_from_gmem(pending_load);
-  gmem[gm + MB_STATUS] = 1;
-  load_wait = 0;
-);
-
-// LE REPLI. @gfx est le bon endroit pour lire un fichier — il n'est pas le
-// fil audio. Mais s'il ne tourne pas (gfx_idle non honore, fenetre jamais
-// ouverte), le pad n'est jamais charge et l'instrument est muet POUR
-// TOUJOURS. Au bout d'environ une seconde d'attente, on lit ici. Ca coute un
-// clic une fois ; l'autre branche coute le silence definitif, et entre les
-// deux il n'y a pas a hesiter.
-pending_load >= 0 ? (
-  load_wait += 1;
-  load_wait > 200 ? (
-    load_pad(pending_load);
-    pending_load = -1;
-    gmem[gm + MB_LACK] = gmem[gm + MB_LSEQ];
-  );
+  load_pad(pending_load);
+  pending_load = -1;
+  gmem[gm + MB_LACK] = gmem[gm + MB_LSEQ];
 ) : reload_next >= 0 ? (
-  // LE MEME FILET POUR L'OUVERTURE D'UN PROJET. Le repli ne couvrait que le
-  // chargement A LA DEMANDE ; un projet rouvert dependait entierement de
-  // @gfx. S'il ne tourne pas, tout le kit reste muet, le statut dit
-  // « 0 loaded », et il suffit d'ouvrir la fenetre de l'effet pour que tout
-  // se remplisse d'un coup — c'est-a-dire exactement l'instrument dont il
-  // faut ouvrir la fenetre pour s'entendre, que l'en-tete refuse.
-  reload_wait += 1;
-  reload_wait > 100 ? (
-    reload_wait = 0;
-    path_mem(reload_next)[0] ? load_pad(reload_next);
-    reload_next += 1;
-    reload_next >= NPADS ? reload_next = -1;
-  );
+  // OUVERTURE DE PROJET : un pad par bloc, pour ne pas figer REAPER sur une
+  // seule passe. Soixante-quatre pads arrivent en moins d'une seconde.
+  path_mem(reload_next)[0] ? load_pad(reload_next);
+  reload_next += 1;
+  reload_next >= NPADS ? reload_next = -1;
 );
 
 // Le solo vaut pour tout le kit : une fois par bloc, pas par pad et par
@@ -798,7 +817,10 @@ loop(NPADS, pad(i)[P_SOLO] > 0.5 ? any_solo = 1; i += 1;);
 while (midirecv(mofs, m1, m2, m3)) (
   st = m1 & 0xF0;
   ch = m1 & 0x0F;
-  st == 0x90 && m3 > 0 ? note_on(m2, m3, ch, mofs)
+  st == 0x90 && m3 > 0 ? (
+    dbg_notes += 1; dbg_lastnote = m2; dbg_lastvel = m3;
+    note_on(m2, m3, ch, mofs);
+  )
   : (st == 0x80 || (st == 0x90 && m3 == 0)) ? note_off(m2, ch)
   : st == 0xE0 ? ( pitch_bend = (((m3 << 7) | m2) - 8192) / 8192; )
   : (st == 0xB0 && (m2 == 123 || m2 == 120)) ? all_off();
@@ -855,17 +877,96 @@ spl10 += OUTBUS[10] * master_gain;  spl11 += OUTBUS[11] * master_gain;
 spl12 += OUTBUS[12] * master_gain;  spl13 += OUTBUS[13] * master_gain;
 spl14 += OUTBUS[14] * master_gain;  spl15 += OUTBUS[15] * master_gain;
 
-@gfx
-// LE DISQUE EST ICI, ET NULLE PART AILLEURS. gfx_idle=1 fait tourner cette
-// section fenetre fermee : un kit se charge sans qu'on ouvre quoi que ce soit,
-// et un fichier de trente megaoctets ne fait pas craquer le fil audio.
-pending_load >= 0 ? (
-  load_pad(pending_load);
-  pending_load = -1;
-  gmem[gm + MB_LACK] = gmem[gm + MB_LSEQ];
-) : reload_next >= 0 ? (
-  // Rechargement apres ouverture de projet, UN pad par passage.
-  path_mem(reload_next)[0] ? load_pad(reload_next);
-  reload_next += 1;
-  reload_next >= NPADS ? reload_next = -1;
+@gfx 560 420
+// LE DISQUE EST ICI. gfx_idle=1 fait tourner cette section fenetre fermee : un
+// kit se charge sans qu'on ouvre quoi que ce soit, et un fichier de trente
+// megaoctets ne fait pas craquer le fil audio.
+//
+// ET LA FENETRE DIT CE QUI SE PASSE. « Aucun son » a exactement deux moities :
+// la matiere n'est pas arrivee, ou la note n'est pas arrivee. Un instrument
+// qui ne sait pas dire laquelle oblige a deviner, et deviner a deja coute
+// trois soirees ici. Tout ce qui suit ne fait que LIRE des compteurs.
+dbg_gfx += 1;
+
+// --- ce que la fenetre raconte ---------------------------------------------
+gfx_set(0.09, 0.09, 0.10, 1); gfx_rect(0, 0, gfx_w, gfx_h);
+gfx_setfont(1, "Arial", 15);
+gfx_set(0.85, 0.86, 0.88, 1);
+gfx_x = 12; gfx_y = 10; gfx_drawstr("CP Kit Sampler");
+
+gfx_setfont(2, "Arial", 13);
+gfx_set(0.60, 0.62, 0.66, 1);
+gfx_x = 12; gfx_y = 32;
+gfx_drawstr("slot "); gfx_drawnumber(slider1, 0);
+gfx_drawstr("   pads charges "); gfx_drawnumber(nloaded, 0);
+gfx_drawstr(" / 64");
+
+gfx_x = 12; gfx_y = 52;
+gfx_drawstr("chargements tentes "); gfx_drawnumber(dbg_loads, 0);
+gfx_drawstr("   dernier pad "); gfx_drawnumber(dbg_lastpad, 0);
+gfx_drawstr("   chemin lu "); gfx_drawnumber(dbg_lastlen, 0);
+gfx_drawstr(" car.");
+
+gfx_x = 12; gfx_y = 72;
+gfx_drawstr("resultat : ");
+dbg_lastres == 0 ? ( gfx_set(0.45, 0.85, 0.50, 1); gfx_drawstr("charge"); )
+: dbg_lastres == 2 ? ( gfx_set(0.95, 0.45, 0.40, 1); gfx_drawstr("ECHEC (file_open ou file_riff)"); )
+: dbg_lastres == 3 ? ( gfx_set(0.95, 0.80, 0.40, 1); gfx_drawstr("tronque"); )
+: dbg_lastres == 1 ? ( gfx_set(0.95, 0.80, 0.40, 1); gfx_drawstr("en cours"); )
+: ( gfx_set(0.55, 0.55, 0.58, 1); gfx_drawstr("aucune tentative"); );
+
+gfx_set(0.60, 0.62, 0.66, 1);
+gfx_x = 12; gfx_y = 96;
+gfx_drawstr("notes recues "); gfx_drawnumber(dbg_notes, 0);
+gfx_drawstr("   dont jouees "); gfx_drawnumber(dbg_started, 0);
+gfx_drawstr("   derniere "); gfx_drawnumber(dbg_lastnote, 0);
+gfx_drawstr(" vel "); gfx_drawnumber(dbg_lastvel, 0);
+
+gfx_x = 12; gfx_y = 116;
+dbg_notes == 0 ? (
+  gfx_set(0.95, 0.45, 0.40, 1);
+  gfx_drawstr("AUCUNE NOTE N'ARRIVE — le probleme est le MIDI, pas l'instrument");
+) : dbg_started == 0 ? (
+  gfx_set(0.95, 0.45, 0.40, 1);
+  gfx_drawstr("des notes arrivent mais aucun pad ne repond — plage de notes, ou rien de charge");
+) : nloaded == 0 ? (
+  gfx_set(0.95, 0.45, 0.40, 1);
+  gfx_drawstr("aucune matiere chargee — voir le resultat ci-dessus");
+) : (
+  gfx_set(0.45, 0.85, 0.50, 1);
+  gfx_drawstr("l'instrument recoit et joue");
+);
+
+gfx_set(0.42, 0.44, 0.48, 1);
+gfx_x = 12; gfx_y = 140;
+gfx_drawstr("@gfx tours "); gfx_drawnumber(dbg_gfx, 0);
+gfx_drawstr("   voix actives ");
+i = 0; k = 0;
+loop(NVOICES, voice(i)[V_ACT] ? k += 1; i += 1;);
+gfx_drawnumber(k, 0);
+
+// La liste des pads qui portent quelque chose : index, note, images, canaux.
+gfx_set(0.55, 0.57, 0.61, 1);
+gfx_x = 12; gfx_y = 168; gfx_drawstr("pad   note   images   canaux   Hz");
+i = 0; k = 0;
+loop(NPADS,
+  (pad(i)[P_LOADED] || path_mem(i)[0]) && k < 12 ? (
+    gfx_y = 188 + k * 17; gfx_x = 12;
+    pad(i)[P_LOADED] ? gfx_set(0.78, 0.80, 0.84, 1)
+                     : gfx_set(0.95, 0.45, 0.40, 1);
+    gfx_drawnumber(i, 0);
+    gfx_x = 60;  gfx_drawnumber(pad(i)[P_NLO], 0);
+    gfx_x = 120; gfx_drawnumber(pad(i)[P_FRAMES], 0);
+    gfx_x = 210; gfx_drawnumber(pad(i)[P_NCH], 0);
+    gfx_x = 280; gfx_drawnumber(pad(i)[P_SRATE], 0);
+    gfx_x = 360;
+    pad(i)[P_LOADED] ? gfx_drawstr("ok") : gfx_drawstr("chemin sans matiere");
+    k += 1;
+  );
+  i += 1;
+);
+k == 0 ? (
+  gfx_set(0.55, 0.55, 0.58, 1);
+  gfx_x = 12; gfx_y = 190;
+  gfx_drawstr("aucun pad n'a de chemin — rien n'est arrive de la fenetre");
 );

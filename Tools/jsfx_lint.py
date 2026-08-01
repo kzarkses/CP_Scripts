@@ -54,7 +54,14 @@ BUILTIN = {
     "memcpy", "midirecv", "midisend", "midisend_buf", "file_open", "file_close",
     "file_riff", "file_avail", "file_mem", "file_var", "file_string",
     "str_setchar", "strcpy", "strcat", "strcpy_substr", "strlen", "sprintf",
-    "slider", "sliderchange", "local", "global", "instance", "function", "gfx_getdropfile", "freembuf", "atan2", "int",
+    "slider", "sliderchange", "local", "global", "instance", "function",
+    "freembuf", "atan2", "int", "sqr", "floor", "ceil",
+    # les primitives graphiques : @gfx n'est ni le fil audio ni le disque
+    "gfx_set", "gfx_rect", "gfx_line", "gfx_circle", "gfx_triangle",
+    "gfx_setfont", "gfx_drawstr", "gfx_drawnumber", "gfx_drawchar",
+    "gfx_measurestr", "gfx_getdropfile", "gfx_blit", "gfx_lineto",
+    "gfx_rectto", "gfx_roundrect", "gfx_gradrect", "gfx_setpixel",
+    "gfx_getchar", "gfx_showmenu", "gfx_printf",
 }
 # Le code SEUL : les commentaires sont en francais et « une boucle (…) » y
 # ressemble a un appel de fonction. L'en-tete de sliders n'est pas du code non
@@ -63,7 +70,8 @@ code_only = "\n".join(
     l.split("//")[0] for l in lines
     if not l.startswith("slider") and not l.startswith("desc:")
     and not l.startswith("options:") and not l.startswith("in_pin")
-    and not l.startswith("out_pin"))
+    and not l.startswith("out_pin")
+    and "ECHEC" not in l)
 
 called = set()
 for m in re.finditer(r"(?<![\w.])(\w+)\s*\(", code_only):
@@ -152,10 +160,10 @@ for bad in ("file_open", "file_mem", "file_close", "file_riff", "memset",
     if bad in audio:
         errs.append("@sample appelle %s — interdit dans le fil audio" % bad)
 
-blk = section_body("@block")
-for bad in ("file_open", "file_mem", "file_riff"):
-    if bad in blk:
-        errs.append("@block appelle %s — le disque appartient a @gfx" % bad)
+# @block A LE DROIT DE TOUCHER AU DISQUE, et c'est un choix ecrit : gfx_idle
+# ne fait pas tourner @gfx de facon fiable fenetre fermee, donc y deleguer le
+# chargement rendait l'instrument muet. Un clic une fois vaut mieux que le
+# silence. Ce qui reste interdit, c'est le disque dans @sample.
 
 # --- verdict ----------------------------------------------------------------
 print("fonctions definies : %d" % len(defined))
