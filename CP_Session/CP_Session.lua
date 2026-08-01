@@ -39,6 +39,10 @@ local Bus    = dofile(cp_root .. "CP_Engine/Bus.lua")
 local Preview = dofile(cp_root .. "CP_Engine/Preview.lua")
 -- « A quelle vitesse va ce fichier » — une seule reponse pour toute la suite.
 local SrcTempo = dofile(cp_root .. "CP_Engine/SrcTempo.lua")
+-- La cuisson du warp : un etirement se rend une fois dans un fichier, il ne
+-- se calcule pas a chaque bloc dans le fil audio.
+local Bake   = dofile(cp_root .. "CP_Engine/Bake.lua")
+local Warp   = dofile(cp_root .. "CP_Engine/Warp.lua")
 -- The engine that makes a SOUND cell sound. With the CP extension installed it
 -- is a CP voice, dated on the engine's own launch boundary and entering the
 -- column pre-FX — no child track unless the column also holds an instrument,
@@ -53,6 +57,8 @@ DragBus.init(r)
 Bus.init(r, DragBus, Clip)
 Preview.init(r)
 SrcTempo.init(r, Preview)   -- le cache de PCM_source, pour ne pas rouvrir le disque
+Bake.init(r)
+Warp.init(r, Bake)
 Voice.init(r, Preview)
 
 local Core = UI.Core
@@ -491,7 +497,44 @@ local function rateFor(c)
     return rt, (mode == "stretch")
 end
 
+-- WHAT to play, and AT WHAT RATE — the two halves of the same answer.
+--
+-- A repitch reads the file faster and the key moves with it: nothing to
+-- prepare, and the rate goes straight to the voice. A STRETCH keeps the key,
+-- and REAPER's live stretcher costs 2.3 % of the audio thread per voice plus
+-- 85 to 139 ms before its first sample comes out — a clip that has to land on
+-- the boundary cannot spend a tenth of a second thinking. So the stretch is
+-- COOKED once to a file (Engine/Warp) and played back at 1.0, which costs
+-- what any other sample costs.
+--
+-- Until the cooked file exists the cell plays as a repitch: in time, which is
+-- what the launch was for, with only the key wrong and only for one pass.
+-- Silence would have been purer and useless.
+local function soundFor(c)
+    local rate, stretch = rateFor(c)
+    return Warp.Resolve(c, rate, stretch)
+end
+
 local function isAudio(c) return c and c.kind == "audio" and c.path end
+
+-- What a sound cell says under its name. A stretch has to be rendered before
+-- it can be played, and a render that is queued or running is the one moment
+-- where the cell is not yet what the menu says it is — so it says so. Five
+-- fixed strings, chosen from per frame: no allocation on a draw path.
+local WARP_SUB = {
+    none    = "audio",
+    ready   = "audio · warped",
+    queued  = "audio · baking",
+    baking  = "audio · baking",
+    failed  = "audio · warp failed",
+}
+local function audioSub(c)
+    local mode = c.tempo_mode
+    if mode ~= "stretch" then return WARP_SUB.none end
+    local s0 = c.offs or 0
+    return WARP_SUB[Warp.State(c.path, s0, c.len and (s0 + c.len) or 0,
+                               r.Master_GetTempo() or 120)] or WARP_SUB.none
+end
 
 local function cellBars(c)
     local b = c and c.bars or 4
@@ -631,7 +674,8 @@ end
 local function armLane(lane, c, t, s)
     local audio = isAudio(c)
     if audio then
-        local ok, why = Cells.Arm(t, lane, c.path, (rateFor(c)))
+        local path, rate = soundFor(c)
+        local ok, why = Cells.Arm(t, lane, path, rate)
         if not ok then
             -- Say WHICH of the four things was missing. "no sound" with no
             -- reason costs an evening; the reason costs a string.
@@ -1038,7 +1082,11 @@ end
 local function retune(t, s, c)
     local lane = Loop.LaneOfTag(t, cellTag(t, s))
     if not lane then return end
-    Cells.Retune(t, lane, (rateFor(c)))
+    -- Switching between repitch and stretch changes the FILE, not only the
+    -- rate: a cooked clip is another sample on disk. Arm handles both — it
+    -- reloads only when the path really moved — so this stays one call, and
+    -- a mode change that resolves to the same file still costs one number.
+    Cells.Arm(t, lane, soundFor(c))
 end
 
 local function setCellTempoMode(t, s, mode)
@@ -1355,7 +1403,7 @@ local function drawCell(theme, t, s, x, y, w, h)
             Core.DrawText("waiting for the transport",
                           x + bw + 2, y + h - 13, pc[1], pc[2], pc[3], 0.9)
         else
-            Core.DrawText(audio and "audio" or barsLabel(cellBars(c)),
+            Core.DrawText(audio and audioSub(c) or barsLabel(cellBars(c)),
                           x + bw + 2, y + h - 13, mc[1], mc[2], mc[3], 0.85)
         end
         UI.SetFontBody()
@@ -2077,7 +2125,7 @@ local function frame(theme)
             Loop.SetLaneAudio(t + TRACKS, audio)
             if audio then
                 local cc = cells[t][sc]
-                Cells.Arm(t, lane, cc.path, (rateFor(cc)))
+                Cells.Arm(t, lane, soundFor(cc))
             end
         end
         -- Adopt what was just recalled, and ARM THE AUTOSAVE. Until this
@@ -2181,6 +2229,12 @@ local function frame(theme)
     -- boundary and its lane phase, and dates every pass to the sample. Inert
     -- when the extension is absent.
     Cells.Tick(AUDIO_GATE)
+    -- Cook at most one stretch per frame. The frame that renders DOES hitch —
+    -- a four-bar loop is on the order of a tenth of a second — which is why
+    -- the cell says "baking" first: a window that freezes without saying why
+    -- is a window that looks broken. Every other frame this is a length test
+    -- on an empty queue.
+    Warp.Tick()
     -- Follow the engine rather than argue with it: a launch fired from
     -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
     -- know. Sound cells included: they are lanes like any other now.

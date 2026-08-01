@@ -157,7 +157,25 @@ end
 -- Render [s0, s1) of an audio FILE (seconds into the file) to dstpath —
 -- the "drag region out" primitive. The file is parked on a throwaway track
 -- for the read; the project is left exactly as found, in one undo step.
+-- opts adds, on top of RegionToWav's bits/srate/nch:
+--   rate      D_PLAYRATE for the take — 1.0 leaves the region alone
+--   preserve  keep the KEY while the rate changes (B_PPITCH). Default true
+--             when a rate is given, because a rate that moves the pitch is a
+--             repitch, and a repitch does not need a render at all: the
+--             engine does it for free by reading faster.
+--   pitchmode I_PITCHMODE — REAPER's stretching algorithm, as (mode<<16)|sub.
+--             nil / -1 = the project's own default, which is the right answer
+--             unless the caller has a reason.
+--
+-- THE STRETCH IS PRINTED BY THE ACCESSOR, not by us: RegionToWav reads the
+-- take AS IT PLAYS, so a playrate with preserve-pitch on is already the
+-- stretched signal by the time it reaches the writer. That is why this costs
+-- three lines rather than a resampler.
+--
+-- The rendered length is the region divided by the rate: at 1.25x the take
+-- consumes four seconds of source in 3.2 seconds of project time.
 function Bake.FileRegionToWav(srcpath, s0, s1, dstpath, opts)
+    opts = opts or {}
     local psrc = r.PCM_Source_CreateFromFile(srcpath)
     if not psrc then return nil, "cannot open " .. srcpath end
     local slen = r.GetMediaSourceLength(psrc)
@@ -167,6 +185,10 @@ function Bake.FileRegionToWav(srcpath, s0, s1, dstpath, opts)
         r.PCM_Source_Destroy(psrc)
         return nil, "empty range"
     end
+    local rate = opts.rate or 1.0
+    if not (rate > 0.01 and rate < 100) then rate = 1.0 end
+    local out_len = (s1 - s0) / rate
+
     r.PreventUIRefresh(1)
     r.Undo_BeginBlock2(0)
     local idx = r.CountTracks(0)
@@ -175,9 +197,17 @@ function Bake.FileRegionToWav(srcpath, s0, s1, dstpath, opts)
     local item = r.AddMediaItemToTrack(tr)
     local take = r.AddTakeToMediaItem(item)
     r.SetMediaItemTake_Source(take, psrc)          -- the take owns psrc now
-    r.SetMediaItemInfo_Value(item, "D_LENGTH", s1 - s0)
+    r.SetMediaItemInfo_Value(item, "D_LENGTH", out_len)
     r.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", s0)
-    local frames, err = Bake.RegionToWav(take, 0, s1 - s0, dstpath, opts)
+    if rate ~= 1.0 then
+        r.SetMediaItemTakeInfo_Value(take, "D_PLAYRATE", rate)
+        local preserve = (opts.preserve ~= false)
+        r.SetMediaItemTakeInfo_Value(take, "B_PPITCH", preserve and 1 or 0)
+        if opts.pitchmode then
+            r.SetMediaItemTakeInfo_Value(take, "I_PITCHMODE", opts.pitchmode)
+        end
+    end
+    local frames, err = Bake.RegionToWav(take, 0, out_len, dstpath, opts)
     r.DeleteTrack(tr)
     r.Undo_EndBlock2(0, "Bake: render sample region", -1)
     r.PreventUIRefresh(-1)
