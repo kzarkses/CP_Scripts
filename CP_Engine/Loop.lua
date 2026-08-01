@@ -146,14 +146,10 @@ local function setDestGUID(lane, guid)
     r.SetProjExtState(0, EXT_SEC, destKey(lane), guid or "")
 end
 
-local function resolveGUID(guid)
-    if not guid or guid == "" then return nil end
-    for i = 0, r.CountTracks(0) - 1 do
-        local tr = r.GetTrack(0, i)
-        if r.GetTrackGUID(tr) == guid then return tr end
-    end
-    return nil
-end
+-- resolveGUID vivait ici et parcourait tout le projet pour UN identifiant.
+-- Appele une fois par lane, il faisait seize balayages complets a chaque
+-- rafraichissement. Loop.RefreshDests construit desormais la carte une fois et
+-- lit dedans — meme resultat, un balayage.
 
 -- What each column's port is CURRENTLY bound to. Not a cache for speed: a
 -- rebind detaches the preview, which cuts whatever it was carrying. Rebinding
@@ -289,9 +285,21 @@ end
 function Loop.ColumnCount() return norder end
 function Loop.ColumnAt(i) return order[i] end
 
+-- ONE PASS OVER THE PROJECT, NOT ONE PER LANE. resolveGUID walks every track
+-- looking for one GUID; calling it for each of sixteen lanes made this
+-- sixteen full sweeps, and it runs twice a second on a project the user is
+-- editing. Building the map once turns 16xN into N.
+local byguid = {}
+
 function Loop.RefreshDests()
+    for k in pairs(byguid) do byguid[k] = nil end
+    for i = 0, r.CountTracks(0) - 1 do
+        local tr = r.GetTrack(0, i)
+        byguid[r.GetTrackGUID(tr)] = tr
+    end
     for lane = 0, Loop.MAX_LANES - 1 do
-        Loop.dest[lane] = resolveGUID(getDestGUID(lane))
+        local g = getDestGUID(lane)
+        Loop.dest[lane] = (g ~= "") and byguid[g] or nil
     end
     syncColumns()
     for t = 0, Loop.TRACKS - 1 do bindPort(t, Loop.dest[t]) end
