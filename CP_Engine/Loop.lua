@@ -220,6 +220,14 @@ local LEGACY_OWN = { "P_EXT:CP_KIT", "P_EXT:CP_KIT_INSTR", "P_EXT:" .. LEGACY_TA
 
 local function eligible(tr)
     if r.GetParentTrack(tr) ~= nil then return false end
+    -- UN KIT-INSTRUMENT EST UNE COLONNE COMME UNE AUTRE, et c'est tout le
+    -- chantier 2 : il est devenu une piste ordinaire qui recoit du MIDI et
+    -- fait du son. Il etait exclu parce qu'un kit-DOSSIER ne peut pas etre une
+    -- colonne — le MIDI verse dans le parent n'atteint pas les pistes des
+    -- pads. Cette raison a disparu avec les pistes des pads.
+    local eok, eng = r.GetSetMediaTrackInfo_String(tr, "P_EXT:CP_KIT_ENGINE",
+                                                   "", false)
+    if eok and eng == "jsfx" then return true end
     if Tracks and Tracks.MarkOf and Tracks.MarkOf(tr) then return false end
     for i = 1, #LEGACY_OWN do
         local ok, v = r.GetSetMediaTrackInfo_String(tr, LEGACY_OWN[i], "", false)

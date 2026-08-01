@@ -547,15 +547,34 @@ local function openPadMenu(note)
                 Kit.version = Kit.version + 1
             end
         end }
-        items[#items + 1] = { label = "Show RS5K UI", action = function()
+        items[#items + 1] = { label = Kit.IsFX() and "Show the instrument"
+                                                 or "Show RS5K UI",
+                              action = function()
             Kit.FloatRS5K(note)
         end }
+        -- CHROMATIQUE EST UNE PROPRIETE DU PAD, plus un mode de la fenetre.
+        -- C'etait une piste, un singleton et trois chemins de code ; ce sont
+        -- deux champs. Personne ne modelise « un kit » et « un instrument »
+        -- comme deux objets differents — ni Ableton, ou un pad de Drum Rack
+        -- contient un Simpler, ni FL, ou l'objet kit n'existe pas.
+        if Kit.IsFX() then
+            local chrom = Kit.PadChromatic(note)
+            items[#items + 1] = { label = "Chromatic (play across the keyboard)",
+                                  checked = chrom, action = function()
+                Kit.SetPadChromatic(note, not chrom, note)
+                flash(chrom and "Pad back to a single note"
+                             or "Pad plays across the keyboard")
+                markDirty()
+            end }
+        end
         items[#items + 1] = { separator = true }
-        items[#items + 1] = { label = "Clear pad (keep track FX)", action = function()
+        items[#items + 1] = { label = Kit.IsFX() and "Clear pad"
+                                                 or "Clear pad (keep track FX)",
+                              action = function()
             Kit.ClearPad(note)
         end }
     end
-    if pad then
+    if pad and not Kit.IsFX() then
         items[#items + 1] = { label = "Delete pad track", action = function()
             Kit.DeletePad(note)
         end }
@@ -773,20 +792,32 @@ end
 -- "?" overlay content (standard help affordance, one per app)
 local HELP_TEXT = [[
 ## CP Sampler
-Pads are an instrument: a click plays through the real engine (one
-RS5K per pad). ONE kit listens at a time — the toolbar kit button
-picks it; the other kits still play from the Looper's lanes. Drop
-files from the Media Explorer or drag an item from the arrange onto
-a pad.
+A kit is ONE track carrying ONE instrument. Sixty-four pads, sixty-four
+voices, everything inside it. Drop files from the Media Explorer or
+drag an item from the arrange onto a pad. ONE kit listens at a time —
+the toolbar kit button picks it.
 
-## Two instruments, two tracks
-DRUM (the pads) and INSTRUMENT (one sample across the keyboard) are
-two separate instruments on two separate tracks: both keep playing
-whatever is sent to them, and each has its own output to mix. The
-toolbar's Drum/Piano pair only says which one you are LOOKING at —
-and, with it, which one hears your keyboard and your clicks, since
-only one of them can (a click is a broadcast). Record arms the one
-on screen.
+The status line says which engine is answering and how many pads
+actually hold audio: "jsfx/targeted 4 loaded". Zero loaded points at
+loading; a right count with no sound points at routing.
+
+## Chromatic is a property of a pad
+A pad normally answers one note. Right-click it and choose Chromatic
+and it plays across the keyboard from its own root — that is what used
+to be a separate INSTRUMENT track, and it is now two fields on a pad.
+
+## The internal mixer, and breaking out
+Vol, Pan, Mute and Solo are per pad, inside the instrument. A pad that
+really needs its own mixer strip gets Out set to a channel pair, then
+"Break out to a new track" from the same menu: fader, mute, solo and VU
+come back, for that pad only.
+
+## Older kits (RS5K on tracks)
+Kits made before the instrument still work: one RS5K per pad, one track
+per pad, and the Drum/Piano pair for the chromatic instrument. The kit
+menu can migrate one to the instrument — it BUILDS ALONGSIDE and never
+deletes: it reports how many pads sound, and you remove the old kit
+yourself once you have heard it.
 
 The POINTER button says whether clicking a pad plays it. Off, a click
 only selects — the useful mode while a loop is running — and Enter
@@ -1401,6 +1432,43 @@ local CHOKE_OPTS = { on = false,
     tip = "Choke group — pads in the same group cut each other (click: choose, wheel: step)" }
 local LOOP_OPTS = { tip = "Loop the sample while the pad is held; release fades out" }
 
+-- Les reglages qui n'existent que sur l'instrument. Meme boite de 34 px que
+-- Choke et Loop : la rangee reste une rangee.
+local OBEY_OPTS = { tip = "Obey note-offs — off, the pad is a one-shot and a released key does not cut it" }
+local MUTE_OPTS = { tip = "Mute this pad" }
+local SOLO_OPTS = { tip = "Solo — while any pad is soloed, only soloed pads sound" }
+local OUT_OPTS  = { on = false,
+    tip = "Output — Mix is the kit's internal mixer; 1..7 send this pad to its own channel pair, to break out to a track (click: choose, wheel: step)" }
+local OUT_LBL = { [0] = "Mix", "1", "2", "3", "4", "5", "6", "7" }
+
+-- « Eclater ce pad vers une piste ». Le pad cesse de passer par le mixer
+-- interne et sort sur sa propre paire de canaux ; l'envoi vers une piste, lui,
+-- est un geste explicite du menu — creer une piste dans le dos de quelqu'un
+-- est precisement ce qu'on a passe la journee a supprimer.
+local function outMenuItems(note, cur)
+    local items = {}
+    for i = 0, 7 do
+        local lbl = (i == 0) and "Mix (internal)" or ("Channel pair " .. i)
+        items[#items + 1] = { label = lbl, checked = i == cur,
+                              action = function()
+            Kit.SetParamPlain(note, Kit.P.OUT, i)
+            flash(i == 0 and "Pad returns to the internal mix"
+                          or ("Pad on channel pair " .. i))
+        end }
+    end
+    if cur > 0 then
+        items[#items + 1] = { separator = true }
+        items[#items + 1] = { label = "Break out to a new track",
+                              action = function()
+            local tr, err = Kit.BreakoutPad(note)
+            flash(tr and "Track created for this pad"
+                      or ("Break out: " .. (err or "failed")))
+            markDirty()
+        end }
+    end
+    return items
+end
+
 local function drawControls(theme, avail_h)
     local note = state.sel
     local pad = note and Kit.pads[note]
@@ -1477,6 +1545,58 @@ local function drawControls(theme, avail_h)
     -- SetLoop, not SetParam: loop gates (obey note-offs) so the ADSR applies
     -- to every hit instead of only the first pass of an endless voice
     if live and ltog then Kit.SetLoop(live, lon) end
+
+    -- LA SECONDE RANGEE N'EXISTE QUE SUR L'INSTRUMENT, et pas par gout de la
+    -- separation : ces reglages n'ont aucun equivalent dans un RS5K, et les
+    -- dessiner grises sur un kit ancien promettrait ce qu'on ne peut pas
+    -- tenir. Un panneau qui montre un bouton mort est pire qu'un panneau qui
+    -- n'a pas le bouton.
+    if Kit.IsFX() then
+        UI.Spacing(2)
+        knob("k_porta", "Porta", live, Kit.P.PORTA, 0)
+        knob("k_bend",  "Bend",  live, Kit.P.BEND, Kit.FXDefault(Kit.P.BEND))
+        knob("k_minv",  "MinV",  live, Kit.P.MINVOL, Kit.FXDefault(Kit.P.MINVOL))
+
+        -- Obey note-offs. A l'arret, le pad est un one-shot : la touche
+        -- relachee ne le coupe pas, ce qui est ce qu'on veut d'une caisse
+        -- claire. Arme, il devient une note tenue.
+        local ov = live and (Kit.Param(live, Kit.P.OBEY) or 0) or 0
+        OBEY_OPTS.disabled = not live
+        local otog, oon = UI.KnobToggle("k_obey", "Obey", "Note-off",
+                                        ov >= 0.5, OBEY_OPTS)
+        if live and otog then Kit.SetParam(live, Kit.P.OBEY, oon and 1 or 0) end
+        UI.SameLine()
+
+        local mv = live and (Kit.Param(live, Kit.P.MUTE) or 0) or 0
+        MUTE_OPTS.disabled = not live
+        local mtog, mon = UI.KnobToggle("k_mute", "Mute", "Off", mv >= 0.5, MUTE_OPTS)
+        if live and mtog then Kit.SetParam(live, Kit.P.MUTE, mon and 1 or 0) end
+        UI.SameLine()
+
+        local sv = live and (Kit.Param(live, Kit.P.SOLO) or 0) or 0
+        SOLO_OPTS.disabled = not live
+        local stog, son = UI.KnobToggle("k_solo", "Solo", "Only", sv >= 0.5, SOLO_OPTS)
+        if live and stog then Kit.SetParam(live, Kit.P.SOLO, son and 1 or 0) end
+        UI.SameLine()
+
+        -- LA SORTIE. Zero = le mixer interne du kit, un a huit = une paire de
+        -- canaux qu'on peut renvoyer vers une piste. C'est la reponse au pad
+        -- qui veut vraiment sa tranche de mixer, sans que les soixante-trois
+        -- autres en aient une.
+        local outv = live and (Kit.ParamPlain(live, Kit.P.OUT) or 0) or 0
+        outv = math.floor(outv + 0.5)
+        OUT_OPTS.on = outv > 0
+        OUT_OPTS.disabled = not live
+        local ok2, od = UI.KnobChip("k_out", "Out",
+                                    OUT_LBL[outv] or "Mix", OUT_OPTS)
+        if live and od ~= 0 then
+            local nv = outv + od
+            if nv < 0 then nv = 0 elseif nv > 7 then nv = 7 end
+            if nv ~= outv then Kit.SetParamPlain(live, Kit.P.OUT, nv) end
+        elseif live and ok2 then
+            UI.NativeMenu(outMenuItems(live, outv))
+        end
+    end
 
     -- Sample region (RS5K start/end offsets). It takes ALL the height the
     -- control strip has left instead of a fixed 44 px with a dead band under

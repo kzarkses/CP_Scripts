@@ -1299,6 +1299,11 @@ end
 -- follows the view — because you can only play one of them at a time.
 function Kit.SetMode(mode)
     if mode ~= "drum" and mode ~= "instrument" then return end
+    -- SUR L'INSTRUMENT, LE MODE N'A PLUS D'OBJET. « Chromatique » est devenu
+    -- une propriete d'un PAD (Kit.SetPadChromatic), pas une seconde piste avec
+    -- son propre RS5K. Laisser passer ici referait naitre exactement la piste
+    -- que le chantier 2 supprime.
+    if Kit.IsFX() then return end
     local parent = Kit.Ensure()
     ubegin()
     setExt(parent, "CP_KIT_MODE", mode)
@@ -1690,6 +1695,79 @@ function Kit.SyncAll()
         end
     end
     return true
+end
+
+-- --- eclater un pad vers une piste -----------------------------------------
+-- LA REPONSE AU PAD QUI VEUT VRAIMENT SA TRANCHE DE MIXER. Le pad sort sur sa
+-- paire de canaux, un envoi la porte vers une piste, et cette piste a son
+-- fader, son mute, son solo et son VU — tout ce que le montage RS5K donnait
+-- d'office aux soixante-quatre, rendu a la demande a celui qui en a besoin.
+--
+-- On ne cree la piste QUE si on est appele : creer une piste dans le dos de
+-- quelqu'un est precisement ce qu'on a passe la journee a supprimer.
+function Kit.BreakoutPad(note)
+    if not Kit.IsFX() then return nil, "moteur RS5K" end
+    local pad = Kit.pads[note]
+    if not (pad and pad.path) then return nil, "pad vide" end
+    local out = math.floor((Kit.ParamPlain(note, Kit.P.OUT) or 0) + 0.5)
+    if out < 1 then return nil, "ce pad sort dans le mixer interne" end
+    if not valid(Kit.parent) then return nil, "aucun kit" end
+
+    ubegin()
+    -- La piste du kit doit porter assez de canaux pour la paire demandee.
+    -- Deux par sortie, et REAPER veut un nombre pair.
+    local want = (out + 1) * 2
+    if r.GetMediaTrackInfo_Value(Kit.parent, "I_NCHAN") < want then
+        r.SetMediaTrackInfo_Value(Kit.parent, "I_NCHAN", want)
+    end
+
+    local idx = trackIdx(Kit.parent) + 1
+    r.InsertTrackAtIndex(idx, true)
+    local tr = r.GetTrack(0, idx)
+    r.GetSetMediaTrackInfo_String(tr, "P_NAME", pad.name or ("Pad " .. note), true)
+    setExt(tr, "CP_KIT_BREAKOUT", tostring(note))
+
+    local si = r.CreateTrackSend(Kit.parent, tr)
+    if si >= 0 then
+        r.SetTrackSendInfo_Value(Kit.parent, 0, si, "I_SRCCHAN", out * 2)
+        r.SetTrackSendInfo_Value(Kit.parent, 0, si, "I_DSTCHAN", 0)
+        r.SetTrackSendInfo_Value(Kit.parent, 0, si, "I_MIDIFLAGS", 1 << 22)
+    end
+    Kit.version = Kit.version + 1
+    uend("Sampler: break out pad to a track")
+    return tr
+end
+
+-- --- le pad chromatique -----------------------------------------------------
+-- L'INSTRUMENT CHROMATIQUE N'EST PLUS UN OBJET A PART, c'est un pad dont la
+-- plage couvre le clavier. C'etait une piste, un singleton, un mode de fenetre
+-- et trois chemins de code ; c'est desormais deux champs. Personne ne modelise
+-- « un kit » et « un instrument » comme deux objets differents — ni Ableton,
+-- ou un pad de Drum Rack contient un Simpler, ni FL, ou l'objet kit n'existe
+-- pas.
+function Kit.PadChromatic(note)
+    if not Kit.IsFX() then return false end
+    local v = Kit.Param(note, Kit.P.CHROMATIC)
+    return v ~= nil and v >= 0.5
+end
+
+function Kit.SetPadChromatic(note, on, root)
+    if not Kit.IsFX() then return end
+    local pad = Kit.pads[note]
+    if not (pad and pad.path) then return end
+    ubegin()
+    fxSetParam(note, Kit.P.CHROMATIC, on and 1 or 0)
+    if on then
+        fxSetParam(note, Kit.P.PADROOT, (root or note) / 127)
+        fxSetParam(note, Kit.P.NOTE_LO, 0)
+        fxSetParam(note, Kit.P.NOTE_HI, 1)
+    else
+        fxSetParam(note, Kit.P.NOTE_LO, note / 127)
+        fxSetParam(note, Kit.P.NOTE_HI, note / 127)
+    end
+    fxSave()
+    Kit.version = Kit.version + 1
+    uend("Sampler: pad chromatic")
 end
 
 -- --- creation ---------------------------------------------------------------
@@ -2319,6 +2397,14 @@ function Kit.Repair()
 end
 
 function Kit.FloatRS5K(note)
+    -- Sur l'instrument il n'y a qu'un effet, et c'est lui qu'on ouvre : le pad
+    -- n'a plus de fenetre a lui parce qu'il n'a plus d'effet a lui.
+    if Kit.IsFX() then
+        if valid(Kit.parent) and fx_index then
+            r.TrackFX_Show(Kit.parent, fx_index, 3)
+        end
+        return
+    end
     local pad = Kit.Pad(note)
     if pad and pad.fx then r.TrackFX_Show(pad.track, pad.fx, 3) end
 end
