@@ -58,11 +58,24 @@ Voice.NONE   = NULL
 Voice.ONCE   = 0
 Voice.LOOP   = 1
 
--- Le port reserve a l'AUDITION, partage par toute la suite. Une audition est
--- une capacite commune : le navigateur, l'editeur et le sampler ecoutent le
--- meme fichier de la meme facon, et il n'y a aucune raison qu'ils s'ouvrent
--- chacun une sortie. Les colonnes d'une session prennent les ports 0 et
--- au-dela ; celui-ci est le dernier, pour qu'ils ne se rencontrent jamais.
+-- ---------------------------------------------------------------------------
+-- LA CARTE DES PORTS — ecrite ICI, en un seul endroit
+--
+-- Un port est une sortie : un apercu permanent verse dans une piste (ou dans
+-- la sortie materielle), pre-FX. Il y en a 32, et trois consommateurs se les
+-- partagent. Deux qui se croiraient seuls se voleraient une sortie en silence,
+-- alors la repartition est enoncee plutot que decouverte :
+--
+--   0 .. 7    LES SONS d'une colonne de session (CP_Engine/Cells : port = t)
+--   8 .. 15   LE MIDI d'une colonne (CP_Engine/Loop : port = PORT_BASE + t) —
+--             les DEUX moities d'une paire partagent le meme, parce qu'une
+--             paire est une seule piste musicale
+--   16 .. 30  libres
+--   31        L'AUDITION, partagee par toute la suite. Une audition est une
+--             capacite commune : le navigateur, l'editeur et le sampler
+--             ecoutent le meme fichier de la meme facon, et il n'y a aucune
+--             raison qu'ils s'ouvrent chacun une sortie.
+-- ---------------------------------------------------------------------------
 Voice.AUDITION_PORT = 31
 
 -- Etats, alignes sur le moteur (cp_types.h)
