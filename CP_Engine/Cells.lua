@@ -240,7 +240,15 @@ end
 -- boucle musicale n'a pas besoin du drapeau — elle remplit sa passe toute
 -- seule ; le drapeau sert a celle qui est plus COURTE que sa passe et qui doit
 -- quand meme tourner (un shaker d'un temps sous une case d'une mesure).
-function Cells.Arm(t, lane, path, rate, loop)
+-- `offs`, `len`, `gain` : LA REGION ET LE NIVEAU, enfin lus. Ils voyagent dans
+-- le format depuis le debut et n'avaient AUCUN consommateur — une selection de
+-- deux mesures glissee depuis l'editeur jouait le fichier entier, et
+-- l'aller-retour editeur/case mentait. Tout existait pourtant dessous : le
+-- moteur porte loop_start / loop_end / pos / gain en frames source.
+-- offs et len sont en SECONDES DE SOURCE (le contrat de Clip.lua) ; la
+-- conversion en frames se fait au lancement, ou la frequence du fichier est
+-- connue.
+function Cells.Arm(t, lane, path, rate, loop, offs, len, gain)
     -- Chaque echec rend SA raison. « pas de son » sans raison coute une soiree ;
     -- la raison coute une chaine de caracteres.
     if not NATIVE or t < 0 or t >= TRACKS then return false, "no_engine" end
@@ -257,7 +265,20 @@ function Cells.Arm(t, lane, path, rate, loop)
     end
     slot.rate = (rate and rate > 0.05 and rate < 20) and rate or 1.0
     slot.loop = loop and true or false
+    slot.offs = (offs and offs > 0) and offs or 0
+    slot.len  = (len and len > 0) and len or nil
+    slot.gain = (gain and gain > 0) and gain or 1.0
     return true
+end
+
+-- La region se change a la volee, comme le taux : redecouper une case ne doit
+-- pas couter un rechargement de la matiere.
+function Cells.Region(t, lane, offs, len, gain)
+    if not NATIVE or t < 0 or t >= TRACKS then return end
+    local slot = col[t].half[(lane >= TRACKS) and 1 or 0]
+    slot.offs = (offs and offs > 0) and offs or 0
+    slot.len  = (len and len > 0) and len or nil
+    slot.gain = (gain and gain > 0) and gain or 1.0
 end
 
 -- Le taux se change a la volee : le tempo du projet peut avoir bouge depuis le
@@ -380,8 +401,23 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
     -- qu'ils disent la meme chose a deux echelles : « joue ce materiau plus
     -- vite ».
     opts.rate = slot.rate * prate
-    opts.gain = 1.0
+    opts.gain = slot.gain or 1.0
     opts.loop = loop_m
+
+    -- LA REGION, EN FRAMES SOURCE. Le moteur boucle entre loop_start et
+    -- loop_end ; sans eux il boucle sur le fichier entier, ce qu'il a fait
+    -- jusqu'ici. Les bornes sont calculees ici et non a l'armement parce que
+    -- c'est ici qu'on tient la frequence du fichier.
+    local sr = slot.clip.srate or Voice.Srate()
+    local f0 = math.floor((slot.offs or 0) * sr + 0.5)
+    if f0 < 0 then f0 = 0 elseif f0 >= slot.clip.frames then f0 = 0 end
+    local f1 = slot.len and math.floor(f0 + slot.len * sr + 0.5)
+                        or slot.clip.frames
+    if f1 > slot.clip.frames then f1 = slot.clip.frames end
+    if f1 <= f0 then f1 = slot.clip.frames end
+    opts.loop_start = f0
+    opts.loop_end   = f1
+    local reglen = f1 - f0
     -- ENTRER EN COURS DE PASSE N'A DE SENS QUE POUR UNE BOUCLE.
     --
     -- Une boucle de quatre mesures lancee a la mesure 2 doit entrer a sa
@@ -399,14 +435,19 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
         -- passe. Multiplier par prate aurait fait entrer la boucle deux fois
         -- trop loin a vitesse 2 — l'erreur qui ressemble le plus a un bug de
         -- phase alors qu'elle est de conversion.
-        opts.offset = math.floor(phase * spb * slot.clip.srate * slot.rate + 0.5)
+        local o = math.floor(phase * spb * sr * slot.rate + 0.5)
         -- Au-dela de la matiere, on replie plutot que de se taire : une boucle
-        -- rejointe passe sa fin, elle ne disparait pas.
-        if opts.offset >= slot.clip.frames then
-            opts.offset = opts.offset % slot.clip.frames
-        end
+        -- rejointe passe sa fin, elle ne disparait pas. Le repli se fait sur la
+        -- REGION et non sur le fichier — c'est toute la difference entre une
+        -- tranche de break qui tourne sur elle-meme et une qui repart au debut
+        -- du fichier.
+        if reglen > 0 then o = o % reglen end
+        opts.offset = f0 + o
     else
-        opts.offset = nil                   -- la table est reutilisee : effacer
+        -- UN ONE-SHOT AUSSI COMMENCE A SA REGION. Laisser l'offset a nil le
+        -- faisait partir a zero, donc jouer le debut du fichier au lieu de la
+        -- tranche demandee : c'est precisement le defaut qu'on ferme.
+        opts.offset = (f0 > 0) and f0 or nil
     end
 
     if Voice.PlayAtSample(h, slot.clip.id, at, opts) then

@@ -605,6 +605,17 @@ local function soundBars(c)
     local len = SrcTempo.Length(c.path)
     local tsn = Loop.TsNum() or 4
     if not len or len <= 0 then return 1 end
+    -- LA REGION, PAS LE FICHIER. Une tranche de deux temps prise dans un break
+    -- de quatre mesures fait deux temps, pas quatre mesures — et c'est la
+    -- longueur de la REGION qui decide de la passe. Mesurer le fichier faisait
+    -- qu'une case decoupee occupait la place de son fichier entier, ce qui est
+    -- exactement ce qui rendait le decoupage inutilisable.
+    if c.len and c.len > 0 then
+        len = c.len
+    elseif c.offs and c.offs > 0 then
+        len = len - c.offs
+        if len <= 0 then return 1 end
+    end
     local mode = c.tempo_mode or "repitch"
     local bpm = (mode ~= "none") and SrcTempo.Bpm(c.path, c.src_bpm) or nil
     if bpm and bpm > 0 and len >= (60 / bpm) * tsn * 0.9 then
@@ -846,7 +857,8 @@ local function armLane(lane, c, t, s)
         -- one here, at the last moment where asking is still free.
         ensureBars(c)
         local path, rate = soundFor(c)
-        local ok, why = Cells.Arm(t, lane, path, rate, c.lmode == "loop")
+        local ok, why = Cells.Arm(t, lane, path, rate, c.lmode == "loop",
+                                  c.offs, c.len, c.gain)
         if not ok then
             -- Say WHICH of the four things was missing. "no sound" with no
             -- reason costs an evening; the reason costs a string.
@@ -1268,7 +1280,7 @@ local function retune(t, s, c)
     -- soundFor rend DEUX valeurs : les nommer, sinon un argument place apres
     -- elle la tronque a la premiere et le taux devient le drapeau de boucle.
     local path, rate = soundFor(c)
-    Cells.Arm(t, lane, path, rate, c.lmode == "loop")
+    Cells.Arm(t, lane, path, rate, c.lmode == "loop", c.offs, c.len, c.gain)
 end
 
 local function setCellTempoMode(t, s, mode)
@@ -2402,7 +2414,8 @@ local function frame(theme)
                 local cc = cells[t][sc]
                 ensureBars(cc)
                 local path, rate = soundFor(cc)
-                Cells.Arm(t, lane, path, rate, cc.lmode == "loop")
+                Cells.Arm(t, lane, path, rate, cc.lmode == "loop",
+                          cc.offs, cc.len, cc.gain)
                 Loop.SetMute(lane, true)
             end
         end
