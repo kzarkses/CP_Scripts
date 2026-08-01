@@ -122,6 +122,33 @@ void PortSource::GetSamples(PCM_source_transfer_t* block) {
   if (block->midi_events) midi_list_seen_ = true;
 
   if (block_start >= 0) {
+    // LES LANES D'ABORD. Le moteur de lanes a date ses evenements pour CE
+    // bloc pendant le tick precedent ; ils sont deja dans la file du port, et
+    // les prendre ici est ce qui remplace la piste routeur, ses envois filtres
+    // par canal et le plafond de seize.
+    {
+      const frame_t bend = block_start + want;
+      frame_t       lat[64];
+      unsigned char lmsg[64][3];
+      const int n = eng_->lanes().drain_midi(port_, block_start, bend,
+                                             lat, lmsg, 64);
+      if (block->midi_events) {
+        for (int i = 0; i < n; ++i) {
+          MIDI_event_t ev;
+          ev.frame_offset = (int)(lat[i] - block_start);
+          if (ev.frame_offset < 0) ev.frame_offset = 0;
+          if (ev.frame_offset >= want) ev.frame_offset = want - 1;
+          ev.size = 3;
+          ev.midi_message[0] = lmsg[i][0];
+          ev.midi_message[1] = lmsg[i][1];
+          ev.midi_message[2] = lmsg[i][2];
+          ev.midi_message[3] = 0;
+          block->midi_events->AddItem(&ev);
+          ++midi_out_;
+        }
+      }
+    }
+
     // Drainer la file d'entree vers le tableau local. Ce tableau n'appartient
     // qu'au fil audio, ce qui evite d'avoir besoin d'une file capable de
     // regarder son premier element sans le retirer.

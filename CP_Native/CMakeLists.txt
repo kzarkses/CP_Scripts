@@ -17,7 +17,8 @@ set(REAPER_SDK "${CMAKE_CURRENT_SOURCE_DIR}/../reaper-sdk/sdk"
 add_library(cp_core STATIC
   src/core/cp_engine.cpp
   src/core/cp_voice.cpp
-  src/core/cp_pool.cpp)
+  src/core/cp_pool.cpp
+  src/core/cp_lanes.cpp)
 target_include_directories(cp_core PUBLIC src/core)
 
 # --- le harnais hors-ligne --------------------------------------------------

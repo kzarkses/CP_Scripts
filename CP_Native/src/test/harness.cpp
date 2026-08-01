@@ -731,6 +731,263 @@ static void test_clock() {
   check(e2.clock_now() > 0, "l'horloge avance sans hook materiel");
 }
 
+
+// ---------------------------------------------------------------------------
+// LE MOTEUR DE LANES MIDI
+//
+// Ce que ces tests verifient n'est pas « ca sonne » mais l'exactitude a
+// l'echantillon de chaque transition, et surtout LA REGLE D'ATTENTE : un
+// lancement quantifie tombe sur SA frontiere, ni avant, ni au multiple suivant.
+// C'est precisement la faute que le portage Lua des cases audio avait faite, et
+// elle avait mis une session entiere a se voir.
+// ---------------------------------------------------------------------------
+static void lane_note(Lanes& L, int li, int k, double start, double len,
+                      int pitch, int vel) {
+  LaneNote* b = L.write_buf(li);
+  b[k].start = (float)start;
+  b[k].len   = (float)len;
+  b[k].pitch = (unsigned char)pitch;
+  b[k].vel   = (unsigned char)vel;
+}
+
+// Le harnais joue le role de PortSource : il vient chercher les evenements du
+// bloc que le tick vient de preparer.
+struct LaneCap {
+  frame_t       at[64];
+  unsigned char msg[64][3];
+  int           n;
+};
+static void lane_pull(Lanes& L, int port, frame_t from, int frames, LaneCap* c) {
+  c->n = L.drain_midi(port, from, from + frames, c->at, c->msg, 64);
+}
+
+static void test_lane_gate() {
+  group("lanes : la porte rend les notes du clip");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(0.0);
+
+  // 120 BPM, 4/4 : un beat = 24000 frames, une mesure = 96000.
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.channel.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);
+  lane_note(L, 0, 0, 0.0, 1.0, 60, 100);   // beat 0, un beat de long
+  lane_note(L, 0, 1, 2.0, 1.0, 64, 90);    // beat 2
+  L.publish_notes(0, 2);
+  L.post(0, kLcSetMode, (double)kLanePlaying);
+
+  LaneCap cap;
+  const int B = 512;
+  // LE TICK PREPARE LE BLOC SUIVANT. C'est voulu — c'est ce qui permet de dater
+  // un evenement a l'echantillon au lieu de le poser a l'offset zero — donc le
+  // harnais joue PortSource avec un bloc de decalage, exactement comme REAPER.
+  frame_t clk = B;
+
+  e.tick(B);                       // la commande est drainee, la porte ouvre
+  lane_pull(L, 0, clk, B, &cap);
+  clk += B;
+  check_eq(cap.n, 1, "un evenement au premier bloc");
+  check_eq(cap.msg[0][0], 0x90, "et c'est une attaque");
+  check_eq(cap.msg[0][1], 60, "sur la note ecrite");
+  const frame_t on_at = cap.at[0];
+
+  int off_seen = 0;
+  for (int i = 0; i < 80 && !off_seen; ++i) {
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      if (cap.msg[k][0] == 0x80 && cap.msg[k][1] == 60) {
+        // CE QU'ON MESURE EST LA DUREE, pas une date absolue : l'horloge libre
+        // ne part qu'au bloc ou quelque chose devient occupe, donc l'attaque
+        // elle-meme n'est pas a zero. Un beat a 120 BPM vaut 24000 frames, et
+        // la coupure doit tomber la — a l'echantillon, pas a la frontiere du
+        // bloc, ce que le JSFX ne pouvait pas faire.
+        check_near((double)(cap.at[k] - on_at), 24000.0, 2.0,
+                   "la note dure exactement un beat, a l'echantillon");
+        off_seen = 1;
+      }
+    }
+    clk += B;
+  }
+  check(off_seen == 1, "la note se coupe d'elle-meme");
+}
+
+static void test_lane_launch_quantize() {
+  group("lanes : un lancement attend SA frontiere");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+  L.set_launch_q(4.0);                    // une mesure
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);
+  lane_note(L, 0, 0, 0.0, 0.5, 60, 100);
+  L.publish_notes(0, 1);
+  L.post(0, kLcSetMode, (double)kLaneStopped);
+  e.tick(512);
+
+  // Rien ne tourne : l'horloge libre est tenue a zero, donc le PREMIER
+  // lancement d'une session silencieuse part tout de suite et EST le temps
+  // fort. Ce n'est pas un defaut, c'est la regle — et c'est ce qui expliquait
+  // le « il demarre tout de suite quoi qu'il arrive » de la session 19.
+  L.post(0, kLcPlay, 0.0);
+  e.tick(512);
+  check_eq(L.lane(0).mode.load(std::memory_order_relaxed), kLanePlaying,
+           "le premier lancement d'une session silencieuse part tout de suite");
+
+  Lane& l1 = L.lane(1);
+  l1.port.store(1, std::memory_order_relaxed);
+  l1.bars.store(1.0, std::memory_order_relaxed);
+  lane_note(L, 1, 0, 0.0, 0.5, 67, 100);
+  L.publish_notes(1, 1);
+  L.post(1, kLcSetMode, (double)kLaneStopped);
+  e.tick(512);
+
+  for (int i = 0; i < 20; ++i) e.tick(512);   // s'eloigner de la frontiere
+  const double pb = L.engine_beat();
+  check(pb > 0.05 && pb < 4.0, "on est au milieu de la mesure");
+
+  L.post(1, kLcPlay, 0.0);
+  e.tick(512);
+  check_eq(L.lane(1).pending.load(std::memory_order_relaxed), kPendPlay,
+           "le second lancement se met en file");
+  check_near(L.lane(1).pend_target.load(std::memory_order_relaxed), 4.0, 1e-6,
+             "et vise la frontiere de mesure, pas la suivante");
+  check_eq(L.lane(1).mode.load(std::memory_order_relaxed), kLaneStopped,
+           "il ne joue pas encore");
+
+  int fired = 0;
+  for (int i = 0; i < 500 && !fired; ++i) {
+    e.tick(512);
+    if (L.lane(1).mode.load(std::memory_order_relaxed) == kLanePlaying) fired = 1;
+  }
+  check(fired == 1, "il part");
+  check_near(L.engine_beat(), 4.0, 0.06,
+             "et il part A la frontiere, pas une mesure plus loin");
+}
+
+static void test_lane_loop_and_bounds() {
+  group("lanes : boucle, hors-bornes, mute");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(0.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);     // 4 beats
+  lane_note(L, 0, 0, 0.0, 0.5, 60, 100);
+  // Une note qui COMMENCE au-dela de la fin de boucle reste stockee —
+  // raccourcir une boucle ne doit jamais detruire ce qu'on a ecrit — mais elle
+  // ne sonne pas. C'est le repliement qui posait les mesures 2, 3 et 4 sur la
+  // premiere.
+  lane_note(L, 0, 1, 6.0, 0.5, 72, 100);
+  L.publish_notes(0, 2);
+  L.post(0, kLcSetMode, (double)kLanePlaying);
+
+  LaneCap cap;
+  const int B = 512;
+  frame_t clk = B;                 // le tick prepare le bloc suivant
+  int ons60 = 0, ons72 = 0;
+  // deux tours pleins et pas trois : 8 beats a 120 BPM = 192000 frames, soit
+  // 375 blocs de 512. On s'arrete juste avant le troisieme temps fort.
+  for (int i = 0; i < 370; ++i) {
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      if (cap.msg[k][0] == 0x90 && cap.msg[k][1] == 60) ++ons60;
+      if (cap.msg[k][0] == 0x90 && cap.msg[k][1] == 72) ++ons72;
+    }
+    clk += B;
+  }
+  check_eq(ons60, 2, "la note reboucle une fois par tour");
+  check_eq(ons72, 0, "une note hors bornes est gardee mais ne sonne pas");
+
+  l0.muted.store(1, std::memory_order_relaxed);
+  for (int i = 0; i < 100; ++i) { e.tick(B); lane_pull(L, 0, clk, B, &cap); clk += B; }
+  int on_after = 0;
+  for (int i = 0; i < 300; ++i) {
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) if (cap.msg[k][0] == 0x90) ++on_after;
+    clk += B;
+  }
+  check_eq(on_after, 0, "rien ne repart tant que la lane est muette");
+}
+
+static void test_lane_no_alloc() {
+  group("lanes : zero allocation dans le fil audio");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(4.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+  for (int li = 0; li < 8; ++li) {
+    Lane& l = L.lane(li);
+    l.port.store(li, std::memory_order_relaxed);
+    l.bars.store(1.0, std::memory_order_relaxed);
+    for (int k = 0; k < 64; ++k) lane_note(L, li, k, k * 0.0625, 0.05, 40 + k, 100);
+    L.publish_notes(li, 64);
+    L.post(li, kLcSetMode, (double)kLanePlaying);
+  }
+  const int before = g_alloc_in_audio.load();
+  LaneCap cap;
+  frame_t clk = 0;
+  g_in_audio = true;
+  for (int i = 0; i < 2000; ++i) {
+    e.tick(64);
+    for (int p = 0; p < 8; ++p) lane_pull(L, p, clk, 64, &cap);
+    clk += 64;
+  }
+  g_in_audio = false;
+  check_eq(g_alloc_in_audio.load() - before, 0,
+           "2000 blocs, 8 lanes, 512 notes : aucune allocation");
+}
+
+static void test_lane_panic_and_clear() {
+  group("lanes : panique et vidage ne laissent aucune note tenue");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(0.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);
+  lane_note(L, 0, 0, 0.0, 4.0, 60, 100);      // tenue toute la boucle
+  L.publish_notes(0, 1);
+  L.post(0, kLcSetMode, (double)kLanePlaying);
+
+  LaneCap cap;
+  const int B = 512;
+  frame_t clk = B;                 // le tick prepare le bloc suivant
+  e.tick(B); lane_pull(L, 0, clk, B, &cap); clk += B;
+  check_eq(cap.n, 1, "la note tenue attaque");
+
+  L.post(0, kLcPanic, 0.0);
+  e.tick(B);
+  lane_pull(L, 0, clk, B, &cap);
+  clk += B;
+  int offs = 0;
+  for (int k = 0; k < cap.n; ++k) if (cap.msg[k][0] == 0x80) ++offs;
+  check_eq(offs, 1, "la panique relache ce qui sonnait");
+  check_eq(L.lane(0).mode.load(std::memory_order_relaxed), kLaneStopped,
+           "et arrete la lane sans effacer ses notes");
+}
+
 int main() {
   std::printf("CP_Native — harnais hors-ligne du coeur (aucun REAPER requis)\n");
   test_ring();
@@ -749,6 +1006,11 @@ int main() {
   test_seek_and_live_loop();
   test_two_threads();
   test_clock();
+  test_lane_gate();
+  test_lane_launch_quantize();
+  test_lane_loop_and_bounds();
+  test_lane_panic_and_clear();
+  test_lane_no_alloc();
 
   std::printf("\n=====================================\n");
   std::printf("  reussis : %d\n  echecs  : %d\n", g_pass, g_fail);

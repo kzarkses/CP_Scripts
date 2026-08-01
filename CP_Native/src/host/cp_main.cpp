@@ -33,10 +33,16 @@ using namespace cp;
 // signature leverait la majeure. Les scripts exigent un MINIMUM, pas une egalite
 // — sinon chaque ajout casserait tout le monde.
 // 1.4 : CP_WarpProbe — la mesure de l'etireur de REAPER.
+// 1.6 : LES LANES MIDI. Le moteur ne joue plus seulement des echantillons, il
+//       tient les boucles : modes, quantize de lancement, horloge libre, porte
+//       par bloc. Avec elles disparaissent CP_MidiLooper.jsfx, la piste
+//       routeur, ses envois filtres par canal, gmem comme protocole, et le
+//       plafond de quatre colonnes — qui ne venait pas d'un MAX_LANES mais du
+//       budget de seize canaux MIDI d'une seule piste.
 // 1.5 : CP_PortAttachOut (sortie materielle, sans piste), parametres de voix
 //       « pos » et « loop », CP_ClipLoad refuse au-dela du plafond au lieu de
 //       tronquer en silence, CP_VoiceAlloc refuse sur un port sans sortie.
-static const double kEngineABI = 1.5;
+static const double kEngineABI = 1.6;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -725,6 +731,148 @@ const char* CP_Diag() {
   return buf;
 }
 
+
+// ---------------------------------------------------------------------------
+// LES LANES MIDI (ABI 1.6)
+//
+// C'est la surface qui remplace gmem. Le JSFX et Lua se parlaient par un bloc
+// de memoire partagee dont les deux cotes recopiaient la carte a la main : une
+// constante fausse d'un cote et le symptome ressemblait a un bug de Lua. Ici la
+// forme est verifiee par le compilateur d'un cote et par le nom de la fonction
+// de l'autre.
+//
+// LES NOTES S'ECRIVENT EN ENTIER, PUIS SE PUBLIENT. Le moteur tient deux
+// tampons par lane et n'en lit qu'un ; CP_LaneSetNote remplit celui qui dort,
+// CP_LanePublish echange les deux. Consequence a ne pas oublier : le tampon qui
+// dort contient l'avant-derniere version, donc un appelant qui n'ecrirait que
+// la note modifiee publierait la liste d'avant avec une note neuve dedans.
+// On ecrit tout, on publie une fois — c'est ce que fait un editeur de toute
+// facon, et c'est ce qui rend la publication atomique pour le fil audio.
+// ---------------------------------------------------------------------------
+
+static bool lane_ok(int lane) { return g_eng && lane >= 0 && lane < kMaxLanes; }
+
+int CP_LaneCount() { return g_eng ? kMaxLanes : 0; }
+
+// Ou parle cette lane. `port` est un port du moteur — le meme objet qu'une
+// case audio verse dans une piste — et c'est ce qui fait disparaitre la piste
+// routeur : chaque lane ecrit dans SA destination, pre-FX, sans envoi filtre
+// et sans budget de seize canaux a partager.
+bool CP_LaneBind(int lane, int port, int channel) {
+  if (!lane_ok(lane)) return false;
+  Lane& L = g_eng->lanes().lane(lane);
+  L.port.store((port >= 0 && port < kMaxPorts) ? port : -1,
+               std::memory_order_relaxed);
+  L.channel.store(channel & 0x0F, std::memory_order_relaxed);
+  return true;
+}
+
+// param : bars | mute | tag
+bool CP_LaneSet(int lane, const char* param, double value) {
+  if (!lane_ok(lane) || !param) return false;
+  Lane& L = g_eng->lanes().lane(lane);
+  if (!strcmp(param, "bars"))  { L.bars.store(value > 0.0 ? value : 1.0, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "mute"))  { L.muted.store(value != 0.0 ? 1 : 0, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "tag"))   { L.tag.store(value, std::memory_order_relaxed); return true; }
+  return false;
+}
+
+// param : mode | pending | target | phase | lenbeats | tag | nev | recgen
+double CP_LaneGet(int lane, const char* param) {
+  if (!lane_ok(lane) || !param) return 0.0;
+  const Lane& L = g_eng->lanes().lane(lane);
+  if (!strcmp(param, "mode"))     return (double)L.mode.load(std::memory_order_relaxed);
+  if (!strcmp(param, "pending"))  return (double)L.pending.load(std::memory_order_relaxed);
+  if (!strcmp(param, "target"))   return L.pend_target.load(std::memory_order_relaxed);
+  if (!strcmp(param, "phase"))    return L.phase.load(std::memory_order_relaxed);
+  if (!strcmp(param, "lenbeats")) return L.len_beats.load(std::memory_order_relaxed);
+  if (!strcmp(param, "tag"))      return L.tag.load(std::memory_order_relaxed);
+  if (!strcmp(param, "nev"))      return (double)g_eng->lanes().note_count(lane);
+  if (!strcmp(param, "recgen"))   return (double)L.rec_gen.load(std::memory_order_relaxed);
+  if (!strcmp(param, "bars"))     return L.bars.load(std::memory_order_relaxed);
+  if (!strcmp(param, "mute"))     return L.muted.load(std::memory_order_relaxed) ? 1.0 : 0.0;
+  if (!strcmp(param, "port"))     return (double)L.port.load(std::memory_order_relaxed);
+  return 0.0;
+}
+
+// 1 rec · 2 stop-rec · 3 clear · 4 panic · 5 play · 6 stop · 7 clear-all ·
+// 8 overdub · 9 set-mode (arg = le mode). Tout ce qui est ecrit avant le bloc
+// suivant est draine ENSEMBLE : un geste est un bloc, et un echange de clip ou
+// une scene entiere tombent du meme cote de la frontiere de quantize.
+bool CP_LaneCmd(int lane, int cmd, double arg) {
+  if (!g_eng) return false;
+  return g_eng->lanes().post(lane, cmd, arg);
+}
+
+bool CP_LaneSetNote(int lane, int i, double start, double len,
+                           int pitch, int vel) {
+  if (!lane_ok(lane) || i < 0 || i >= kMaxLaneNotes) return false;
+  LaneNote* b = g_eng->lanes().write_buf(lane);
+  if (!b) return false;
+  b[i].start = (float)(start > 0.0 ? start : 0.0);
+  b[i].len   = (float)(len > 0.0 ? len : 0.0);
+  b[i].pitch = (unsigned char)(pitch < 0 ? 0 : (pitch > 127 ? 127 : pitch));
+  b[i].vel   = (unsigned char)(vel < 1 ? 1 : (vel > 127 ? 127 : vel));
+  return true;
+}
+
+bool CP_LanePublish(int lane, int count) {
+  if (!lane_ok(lane)) return false;
+  g_eng->lanes().publish_notes(lane, count);
+  return true;
+}
+
+bool CP_LaneGetNote(int lane, int i, double* startOut, double* lenOut,
+                           double* pitchOut, double* velOut) {
+  if (!lane_ok(lane) || i < 0) return false;
+  const LaneNote* b = g_eng->lanes().read_buf(lane);
+  if (!b || i >= g_eng->lanes().note_count(lane)) return false;
+  if (startOut) *startOut = b[i].start;
+  if (lenOut)   *lenOut   = b[i].len;
+  if (pitchOut) *pitchOut = b[i].pitch;
+  if (velOut)   *velOut   = b[i].vel;
+  return true;
+}
+
+// L'ANCRE DE TRANSPORT. A poser une fois par frame, comme CP_ClockSync — et
+// pour la meme raison : le fil audio ne demande jamais l'heure, il compte ses
+// echantillons et cette ancre lui dit une fois ou il en est. Les deux lectures
+// (position et horloge) sont collees l'une a l'autre, donc l'erreur vaut le
+// temps entre elles, pas une frame de defer.
+void CP_TransportSync(double tempo, double beat, int playing,
+                             double tsNum) {
+  if (!g_eng) return;
+  g_eng->lanes().publish_transport(tempo, beat, playing, tsNum,
+                                   g_eng->clock_now());
+}
+
+void   CP_SetFreeRun(bool on) { if (g_eng) g_eng->lanes().set_freerun(on); }
+bool   CP_GetFreeRun()        { return g_eng && g_eng->lanes().freerun(); }
+void   CP_SetLaunchQ(double beats) { if (g_eng) g_eng->lanes().set_launch_q(beats); }
+double CP_GetLaunchQ()        { return g_eng ? g_eng->lanes().launch_q() : 0.0; }
+void   CP_SetAudioRun(bool on) { if (g_eng) g_eng->lanes().set_audio_run(on); }
+double CP_EngineBeat()        { return g_eng ? g_eng->lanes().engine_beat() : 0.0; }
+bool   CP_ClockRunning()      { return g_eng && g_eng->lanes().clock_running(); }
+void   CP_LanesPanic()        { if (g_eng) g_eng->lanes().post(0, kLcPanic, 0.0); }
+
+const char* CP_LanesDiag() {
+  static char buf[256];
+  if (!g_eng) { snprintf(buf, sizeof(buf), "moteur absent"); return buf; }
+  Lanes& L = g_eng->lanes();
+  int playing = 0, rec = 0;
+  for (int i = 0; i < kMaxLanes; ++i) {
+    const int m = L.lane(i).mode.load(std::memory_order_relaxed);
+    if (m == kLanePlaying || m == kLaneOverdub) ++playing;
+    if (m == kLaneRec) ++rec;
+  }
+  snprintf(buf, sizeof(buf),
+           "lanes=%d jouent=%d capturent=%d beat=%.3f horloge=%s q=%.3f perdues=%u",
+           (int)kMaxLanes, playing, rec, L.engine_beat(),
+           L.clock_running() ? "oui" : "non", L.launch_q(),
+           (unsigned)L.dropped_commands());
+  return buf;
+}
+
 } // extern "C"
 
 // ---------------------------------------------------------------------------
@@ -795,6 +943,28 @@ VA(CP_LoadDiag)  { (void)arg; (void)narg; return (void*)CP_LoadDiag(); }
 VA(CP_WarpProbe) { return (void*)CP_WarpProbe(argd(arg, narg, 0), argi(arg, narg, 1)); }
 VA(CP_Diag) { (void)arg; (void)narg; return (void*)CP_Diag(); }
 
+// --- lanes MIDI ---
+VA(CP_LaneCount)   { (void)arg; (void)narg; return retd(CP_LaneCount()); }
+VA(CP_LaneBind)    { return retb(CP_LaneBind(argi(arg, narg, 0), argi(arg, narg, 1), argi(arg, narg, 2))); }
+VA(CP_LaneSet)     { return retb(CP_LaneSet(argi(arg, narg, 0), (const char*)argp(arg, narg, 1), argd(arg, narg, 2))); }
+VA(CP_LaneGet)     { return retd(CP_LaneGet(argi(arg, narg, 0), (const char*)argp(arg, narg, 1))); }
+VA(CP_LaneCmd)     { return retb(CP_LaneCmd(argi(arg, narg, 0), argi(arg, narg, 1), argd(arg, narg, 2))); }
+VA(CP_LaneSetNote) { return retb(CP_LaneSetNote(argi(arg, narg, 0), argi(arg, narg, 1), argd(arg, narg, 2), argd(arg, narg, 3), argi(arg, narg, 4), argi(arg, narg, 5))); }
+VA(CP_LanePublish) { return retb(CP_LanePublish(argi(arg, narg, 0), argi(arg, narg, 1))); }
+VA(CP_LaneGetNote) { return retb(CP_LaneGetNote(argi(arg, narg, 0), argi(arg, narg, 1), (double*)argp(arg, narg, 2), (double*)argp(arg, narg, 3), (double*)argp(arg, narg, 4), (double*)argp(arg, narg, 5))); }
+VA(CP_TransportSync) { CP_TransportSync(argd(arg, narg, 0), argd(arg, narg, 1), argi(arg, narg, 2), argd(arg, narg, 3)); return nullptr; }
+VA(CP_SetFreeRun)  { CP_SetFreeRun(argi(arg, narg, 0) != 0); return nullptr; }
+VA(CP_GetFreeRun)  { (void)arg; (void)narg; return retb(CP_GetFreeRun()); }
+VA(CP_SetLaunchQ)  { CP_SetLaunchQ(argd(arg, narg, 0)); return nullptr; }
+VA(CP_GetLaunchQ)  { (void)arg; (void)narg; return retd(CP_GetLaunchQ()); }
+VA(CP_SetAudioRun) { CP_SetAudioRun(argi(arg, narg, 0) != 0); return nullptr; }
+VA(CP_EngineBeat)  { (void)arg; (void)narg; return retd(CP_EngineBeat()); }
+VA(CP_ClockRunning){ (void)arg; (void)narg; return retb(CP_ClockRunning()); }
+VA(CP_LanesPanic)  { (void)arg; (void)narg; CP_LanesPanic(); return nullptr; }
+VA(CP_LanesDiag)   { (void)arg; (void)narg; return (void*)CP_LanesDiag(); }
+
+
+
 // ---------------------------------------------------------------------------
 // Enregistrement
 // ---------------------------------------------------------------------------
@@ -836,6 +1006,24 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_TestMidiDiag, "const char*\0\0\0EXPERIMENTAL: REAPER fournit-il un midi_events, combien d'evenements remis, exacts, en retard.");
   REG(CP_LoadReset, "void\0\0\0Remet a zero les compteurs de charge (temps fil audio, ratios par port).");
   REG(CP_LoadDiag, "const char*\0\0\0Montee en charge: ports, voix, ratio minimum, part du fil audio consommee.");
+  REG(CP_LaneCount, "int   Nombre de lanes MIDI que ce binaire sert.");
+  REG(CP_LaneBind, "bool int,int,int lane,port,channel Ou parle cette lane : un port du moteur, et un canal MIDI. port -1 = nulle part.");
+  REG(CP_LaneSet, "bool int,const char*,double lane,param,value param: bars mute tag.");
+  REG(CP_LaneGet, "double int,const char* lane,param param: mode pending target phase lenbeats tag nev recgen bars mute port.");
+  REG(CP_LaneCmd, "bool int,int,double lane,cmd,arg rec 2 stop-rec 3 clear 4 panic 5 play 6 stop 7 clear-all 8 overdub 9 set-mode(arg). Tout ce qui est ecrit avant le bloc suivant est draine ensemble.");
+  REG(CP_LaneSetNote, "bool int,int,double,double,int,int lane,i,start,len,pitch,vel Ecrit dans le tampon qui dort. Ecrire TOUTE la liste, puis CP_LanePublish.");
+  REG(CP_LanePublish, "bool int,int lane,count Echange les deux tampons : la liste devient visible du fil audio d'un seul coup.");
+  REG(CP_LaneGetNote, "bool int,int,double*,double*,double*,double* lane,i,startOut,lenOut,pitchOut,velOut Lit la liste PUBLIEE.");
+  REG(CP_TransportSync, "void double,double,int,double tempo,beat,playing,tsNum Ancre de transport. A appeler une fois par frame, comme CP_ClockSync.");
+  REG(CP_SetFreeRun, "void int on Horloge libre (1) ou transport de l'hote (0).");
+  REG(CP_GetFreeRun, "bool   ");
+  REG(CP_SetLaunchQ, "void double beats Quantize de lancement en beats. 0 = agir tout de suite.");
+  REG(CP_GetLaunchQ, "double   ");
+  REG(CP_SetAudioRun, "void int on Une case audio de Lua sonne : l'horloge libre est le transport de la SESSION.");
+  REG(CP_EngineBeat, "double   Position de l'horloge sur laquelle le moteur travaille. Les cibles en attente sont sur cette ligne de temps.");
+  REG(CP_ClockRunning, "bool   Y a-t-il une horloge du tout.");
+  REG(CP_LanesPanic, "void   Arrete toutes les lanes et relache toutes leurs notes.");
+  REG(CP_LanesDiag, "const char*   Etat des lanes en une ligne.");
   REG(CP_WarpProbe, "const char*\0double,int\0tempoRatio,nvoices\0Mesure la latence de l'etireur de REAPER (par impulsion) et son cout par voix. Fil principal.");
 }
 
@@ -849,6 +1037,12 @@ static void unregister_all(reaper_plugin_info_t* rec) {
   UNREG(CP_ClockNow);    UNREG(CP_ClockSync);        UNREG(CP_TimeToSample);
   UNREG(CP_Panic);       UNREG(CP_Diag);             UNREG(CP_VoiceStartedAt);
   UNREG(CP_TestMidiAt);  UNREG(CP_TestMidiDiag);
+  UNREG(CP_LaneCount);   UNREG(CP_LaneBind);      UNREG(CP_LaneSet);
+  UNREG(CP_LaneGet);     UNREG(CP_LaneCmd);       UNREG(CP_LaneSetNote);
+  UNREG(CP_LanePublish); UNREG(CP_LaneGetNote);   UNREG(CP_TransportSync);
+  UNREG(CP_SetFreeRun);  UNREG(CP_GetFreeRun);    UNREG(CP_SetLaunchQ);
+  UNREG(CP_GetLaunchQ);  UNREG(CP_SetAudioRun);   UNREG(CP_EngineBeat);
+  UNREG(CP_ClockRunning);UNREG(CP_LanesPanic);    UNREG(CP_LanesDiag);
   UNREG(CP_LoadReset);   UNREG(CP_LoadDiag);        UNREG(CP_WarpProbe);
 }
 

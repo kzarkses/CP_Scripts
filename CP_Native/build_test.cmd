@@ -16,7 +16,7 @@ REM ancienne, avec un plantage au chargement et pas un message.
 REM /wd4324  le remplissage par alignas(64) est VOULU : il separe les curseurs
 REM          producteur et consommateur sur deux lignes de cache.
 cl /nologo /std:c++17 /O2 /EHsc /GR- /MT /W4 /wd4324 /Zc:__cplusplus /Fo:build\ ^
-   src\test\harness.cpp src\core\cp_engine.cpp src\core\cp_voice.cpp src\core\cp_pool.cpp ^
+   src\test\harness.cpp src\core\cp_engine.cpp src\core\cp_voice.cpp src\core\cp_pool.cpp src\core\cp_lanes.cpp ^
    /Fe:build\cp_test.exe
 if errorlevel 1 exit /b 1
 echo.

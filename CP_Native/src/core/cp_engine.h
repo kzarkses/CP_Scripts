@@ -22,6 +22,7 @@
 #include "cp_ring.h"
 #include "cp_pool.h"
 #include "cp_voice.h"
+#include "cp_lanes.h"
 
 namespace cp {
 
@@ -106,6 +107,14 @@ class Engine {
 
   void panic();
 
+  // Le moteur de lanes MIDI. Il vit ICI plutot qu'a cote parce qu'il a besoin
+  // d'exactement deux choses que l'Engine possede deja : le battement par bloc
+  // (tick) et l'horloge en echantillons. Lui donner sa propre pulsation aurait
+  // fait deux horloges dans un moteur dont tout le dossier dit qu'il n'en a
+  // qu'une.
+  Lanes& lanes() { return lanes_; }
+  const Lanes& lanes() const { return lanes_; }
+
   // Rend au port toutes ses voix, immediatement et sans passer par l'anneau.
   //
   // A n'appeler QUE lorsque le port ne rend plus — c'est-a-dire apres que
@@ -155,6 +164,7 @@ class Engine {
   void port_attach_voice(int port, int index);
 
   Pool       pool_;
+  Lanes      lanes_;
   Voice      voices_[kMaxVoices];
   PortState  ports_[kMaxPorts];
 

@@ -30,7 +30,7 @@ cl /nologo /std:c++17 /O2 /Oi /Gy /EHsc /GR- /MT /W4 /wd4324 /Zc:__cplusplus ^
    /external:I "%SDK%" /external:W0 ^
    /I "%SDK%" /Fo:build\ /Fd:build\ ^
    src\host\cp_main.cpp src\host\cp_source.cpp ^
-   src\core\cp_engine.cpp src\core\cp_voice.cpp src\core\cp_pool.cpp ^
+   src\core\cp_engine.cpp src\core\cp_voice.cpp src\core\cp_pool.cpp src\core\cp_lanes.cpp ^
    /LD /Fe:build\reaper_cpclip.dll ^
    /link /OPT:REF /OPT:ICF
 if errorlevel 1 exit /b 1

@@ -18,6 +18,7 @@ Engine::Engine()
 
 void Engine::init(double srate) {
   srate_ = (srate > 1.0) ? srate : 48000.0;
+  lanes_.init(srate_);
   clock_.store(0, std::memory_order_release);
   blocks_.store(0, std::memory_order_release);
   dropped_.store(0, std::memory_order_relaxed);
@@ -41,6 +42,7 @@ void Engine::init(double srate) {
 }
 
 void Engine::set_srate(double srate) {
+  lanes_.set_srate(srate);
   // Le taux est une ENTREE PAR BLOC, pas une constante d'initialisation : REAPER
   // peut changer de peripherique sous nos pieds. Les longueurs deja calculees en
   // frames (fondus) restent valides en frames, ce qui est le comportement
@@ -220,8 +222,16 @@ void Engine::tick(int frames) {
   if (frames <= 0) return;
   clock_external_ = true;
   last_tick_.store(frames, std::memory_order_relaxed);
-  clock_.fetch_add((frame_t)frames, std::memory_order_acq_rel);
+  const frame_t before = clock_.fetch_add((frame_t)frames, std::memory_order_acq_rel);
   blocks_.fetch_add(1, std::memory_order_acq_rel);
+
+  // LES LANES TRAVAILLENT SUR LE BLOC A VENIR, PAS SUR CELUI QUI VIENT DE
+  // PASSER. `before + frames` est le frame du prochain echantillon a produire,
+  // donc le debut du bloc que PortSource servira ensuite : les evenements y
+  // sont dates a l'avance et tombent a l'offset exact au lieu d'arriver en
+  // retard d'un tampon. C'est la meme lecon que le tick lui-meme — appeler
+  // avant etiquetterait chaque bloc avec l'heure de sa fin.
+  lanes_.tick(before + (frame_t)frames, frames);
 }
 
 void Engine::port_reset(int port) {
