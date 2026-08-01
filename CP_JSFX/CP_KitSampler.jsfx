@@ -1,0 +1,691 @@
+desc:CP Kit Sampler
+//tags: instrument sampler
+//author: Cedric Pamalio
+// -----------------------------------------------------------------------------
+// UN KIT EST UN EFFET, SUR UNE PISTE.
+//
+// Ce qu'il remplace : un dossier « CP Kit », une piste MIDI, et jusqu'a
+// soixante-quatre pistes enfants portant chacune un RS5K, plus un envoi MIDI
+// filtre par pad. Tout ce montage existait parce qu'un RS5K ne tient qu'un
+// echantillon — et il coutait une restructuration de chaine d'effets a chaque
+// reglage que le RS5K n'a pas. Ici ce sont des PARAMETRES : on en tourne un,
+// il change. C'est tout l'ecart, et il est structurel.
+//
+// TROIS FILS, TROIS METIERS, ET ILS NE SE MELANGENT PAS :
+//   @gfx    charge les echantillons. gfx_idle=1 le fait tourner fenetre
+//           fermee. C'est le SEUL endroit qui touche au disque.
+//   @block  draine la boite aux lettres et traite le MIDI. Zero disque.
+//   @sample ne fait que du son. Zero allocation, aucun calcul qu'on pouvait
+//           faire au note-on — la cible est un PC de 2005.
+//
+// ext_noinit garde la matiere quand le transport repart : sans lui REAPER
+// relance @init et le kit se vide au premier play.
+//
+// LA MEMOIRE EST DECOUPEE UNE FOIS, PAS ALLOUEE. Chaque pad possede sa plage
+// et ne peut donc ni fragmenter, ni deborder sur son voisin, ni fuir quand on
+// recharge le meme pad vingt fois. Le prix est un plafond : PAD_MEM slots par
+// pad, soit environ six secondes de stereo a 44,1 kHz. Un pad de batterie n'en
+// approche pas ; une nappe de trente secondes n'est pas un pad, c'est une case
+// de Session, et le moteur natif la joue deja.
+// -----------------------------------------------------------------------------
+options:gmem=CP_Kit, maxmem=33554432, gfx_idle=1
+
+in_pin:none
+out_pin:out 1 L
+out_pin:out 1 R
+out_pin:out 2 L
+out_pin:out 2 R
+out_pin:out 3 L
+out_pin:out 3 R
+out_pin:out 4 L
+out_pin:out 4 R
+out_pin:out 5 L
+out_pin:out 5 R
+out_pin:out 6 L
+out_pin:out 6 R
+out_pin:out 7 L
+out_pin:out 7 R
+out_pin:out 8 L
+out_pin:out 8 R
+
+slider1:0<0,15,1>Kit slot
+slider2:0<-60,12,0.1>Master (dB)
+slider9:0<-60,12,0.1>-Pad 1 volume
+slider10:0<-60,12,0.1>-Pad 2 volume
+slider11:0<-60,12,0.1>-Pad 3 volume
+slider12:0<-60,12,0.1>-Pad 4 volume
+slider13:0<-60,12,0.1>-Pad 5 volume
+slider14:0<-60,12,0.1>-Pad 6 volume
+slider15:0<-60,12,0.1>-Pad 7 volume
+slider16:0<-60,12,0.1>-Pad 8 volume
+slider17:0<-60,12,0.1>-Pad 9 volume
+slider18:0<-60,12,0.1>-Pad 10 volume
+slider19:0<-60,12,0.1>-Pad 11 volume
+slider20:0<-60,12,0.1>-Pad 12 volume
+slider21:0<-60,12,0.1>-Pad 13 volume
+slider22:0<-60,12,0.1>-Pad 14 volume
+slider23:0<-60,12,0.1>-Pad 15 volume
+slider24:0<-60,12,0.1>-Pad 16 volume
+slider25:0<-60,12,0.1>-Pad 17 volume
+slider26:0<-60,12,0.1>-Pad 18 volume
+slider27:0<-60,12,0.1>-Pad 19 volume
+slider28:0<-60,12,0.1>-Pad 20 volume
+slider29:0<-60,12,0.1>-Pad 21 volume
+slider30:0<-60,12,0.1>-Pad 22 volume
+slider31:0<-60,12,0.1>-Pad 23 volume
+slider32:0<-60,12,0.1>-Pad 24 volume
+slider33:0<-60,12,0.1>-Pad 25 volume
+slider34:0<-60,12,0.1>-Pad 26 volume
+slider35:0<-60,12,0.1>-Pad 27 volume
+slider36:0<-60,12,0.1>-Pad 28 volume
+slider37:0<-60,12,0.1>-Pad 29 volume
+slider38:0<-60,12,0.1>-Pad 30 volume
+slider39:0<-60,12,0.1>-Pad 31 volume
+slider40:0<-60,12,0.1>-Pad 32 volume
+slider41:0<-60,12,0.1>-Pad 33 volume
+slider42:0<-60,12,0.1>-Pad 34 volume
+slider43:0<-60,12,0.1>-Pad 35 volume
+slider44:0<-60,12,0.1>-Pad 36 volume
+slider45:0<-60,12,0.1>-Pad 37 volume
+slider46:0<-60,12,0.1>-Pad 38 volume
+slider47:0<-60,12,0.1>-Pad 39 volume
+slider48:0<-60,12,0.1>-Pad 40 volume
+slider49:0<-60,12,0.1>-Pad 41 volume
+slider50:0<-60,12,0.1>-Pad 42 volume
+slider51:0<-60,12,0.1>-Pad 43 volume
+slider52:0<-60,12,0.1>-Pad 44 volume
+slider53:0<-60,12,0.1>-Pad 45 volume
+slider54:0<-60,12,0.1>-Pad 46 volume
+slider55:0<-60,12,0.1>-Pad 47 volume
+slider56:0<-60,12,0.1>-Pad 48 volume
+slider57:0<-60,12,0.1>-Pad 49 volume
+slider58:0<-60,12,0.1>-Pad 50 volume
+slider59:0<-60,12,0.1>-Pad 51 volume
+slider60:0<-60,12,0.1>-Pad 52 volume
+slider61:0<-60,12,0.1>-Pad 53 volume
+slider62:0<-60,12,0.1>-Pad 54 volume
+slider63:0<-60,12,0.1>-Pad 55 volume
+slider64:0<-60,12,0.1>-Pad 56 volume
+slider65:0<-60,12,0.1>-Pad 57 volume
+slider66:0<-60,12,0.1>-Pad 58 volume
+slider67:0<-60,12,0.1>-Pad 59 volume
+slider68:0<-60,12,0.1>-Pad 60 volume
+slider69:0<-60,12,0.1>-Pad 61 volume
+slider70:0<-60,12,0.1>-Pad 62 volume
+slider71:0<-60,12,0.1>-Pad 63 volume
+slider72:0<-60,12,0.1>-Pad 64 volume
+
+@init
+ext_noinit = 1;
+
+NPADS    = 64;
+NVOICES  = 64;
+PAD_SZ   = 64;
+VOICE_SZ = 32;
+PAD_MEM  = 512000;      // slots par pad — voir l'en-tete
+NOTE_BASE = 36;         // pad 0 <-> note 36 (convention GM/FL/Ableton)
+
+// ---------------------------------------------------------------------------
+// Carte memoire. Posee une fois ; plus rien n'alloue ensuite.
+// ---------------------------------------------------------------------------
+PADS        = 1024;
+VOICES      = PADS + NPADS * PAD_SZ;
+OUTBUS      = VOICES + NVOICES * VOICE_SZ;
+SAMPLE_BASE = 8192;
+
+// Champs d'un pad -----------------------------------------------------------
+P_LOADED=0;  P_DATA=1;    P_FRAMES=2;  P_NCH=3;     P_SRATE=4;
+P_VOL=5;     P_PAN=6;     P_TUNE=7;    P_PLO=8;     P_PHI=9;
+P_BEND=10;   P_PORTA=11;  P_ATT=12;    P_DEC=13;    P_SUS=14;
+P_REL=15;    P_OBEY=16;   P_ROFF=17;   P_ROFFS=18;  P_LOOP=19;
+P_LSTART=20; P_XFADE=21;  P_SOFFS=22;  P_EOFFS=23;  P_NLO=24;
+P_NHI=25;    P_VLO=26;    P_VHI=27;    P_MINVOL=28; P_CHAN=29;
+P_PROB=30;   P_RR=31;     P_RRST=32;   P_CHOKE=33;  P_MAXV=34;
+P_OUT=35;    P_MUTE=36;   P_SOLO=37;   P_PEAK=38;   P_MODE=39;
+P_INTERP=40; P_NACT=41;   P_LASTINC=42; P_ROOT=43;
+
+// Le bloc sauvegarde va de P_VOL a P_ROOT : tout ce qui est un REGLAGE. Ce
+// qui est au-dessus (pointeur, longueur, canaux) decrit la matiere en RAM et
+// se reconstruit au chargement — le serialiser rendrait un pointeur mort.
+P_SAVE_LO=5; P_SAVE_HI=43;
+
+// Champs d'une voix ---------------------------------------------------------
+V_ACT=0;   V_PAD=1;   V_POS=2;   V_INC=3;   V_INCT=4;   V_PORTA=5;
+V_ENV=6;   V_STAGE=7; V_VEL=8;   V_NOTE=9;  V_CHAN=10;  V_AGE=11;
+V_HELD=12; V_AR=13;   V_DR=14;   V_SUS=15;  V_RR=16;    V_DATA=17;
+V_FRAMES=18; V_NCH=19; V_END=20; V_LP0=21;  V_LOOP=22;  V_OUT=23;
+
+E_ATT=0; E_DEC=1; E_SUS=2; E_REL=3;
+
+// gmem : seize boites de mille vingt-quatre mots, une par slot de kit. Deux
+// kits d'un meme projet ne se parlent donc jamais.
+GM_SLOT_SZ = 1024;
+GM_BASE    = 16;
+// DEUX CANAUX, PARCE QU'ILS N'ONT PAS LE MEME DEBIT. Les reglages passent par
+// un anneau : charger un preset de soixante-quatre pads ecrit des centaines de
+// valeurs d'affilee, et attendre un accuse de reception par valeur mettrait
+// plusieurs secondes a soixante hertz. Le chargement d'un echantillon, lui,
+// reste une poignee de main a un seul creneau : il porte une chaine, il touche
+// le disque, et il est de toute facon serialise par le disque.
+MB_WPOS=0; MB_RPOS=1;                  // anneau : Lua ecrit, le JSFX lit
+MB_LSEQ=2; MB_LACK=3; MB_LPAD=4;       // chargement : poignee de main
+MB_STATUS=5;                            // 0 pret, 1 en cours, 2 echec, 3 tronque
+MB_RING=8;  RING_N=32;  RING_SZ=4;     // 8..135  (op, pad, param, valeur)
+MB_STR=136;                             // 136..391 : le chemin, en codes
+MB_PEAK=512; MB_NACT=576;
+OP_NONE=0; OP_SET=1; OP_CLEAR=2; OP_CLEARALL=3;
+
+function pad(i)     ( PADS + i * PAD_SZ );
+function voice(i)   ( VOICES + i * VOICE_SZ );
+function pad_mem(i) ( SAMPLE_BASE + i * PAD_MEM );
+function mailbox(s) ( GM_BASE + s * GM_SLOT_SZ );
+
+// Les defauts reprennent ceux du RS5K la ou ils existent, pour qu'un kit
+// migre sans changer de son. OBEY A ZERO : un pad de batterie est un one-shot,
+// une touche relachee ne doit pas le couper.
+// LA PLAGE DE NOTES PAR DEFAUT EST LA NOTE DU PAD, PAS TOUT LE CLAVIER. Un
+// pad neuf couvrant 0..127 ferait sonner le kit entier a chaque note — c'est
+// le RS5K qui a ce defaut-la, et il n'existe que parce que chez lui un pad est
+// seul sur sa piste. Ici les soixante-quatre partagent le meme flux.
+function pad_defaults(p, i) (
+  p[P_LOADED]=0;  p[P_DATA]=0;    p[P_FRAMES]=0;  p[P_NCH]=0;
+  p[P_SRATE]=srate;
+  p[P_VOL]=1;     p[P_PAN]=0;     p[P_TUNE]=0;    p[P_PLO]=0;
+  p[P_PHI]=0;     p[P_BEND]=2;    p[P_PORTA]=0;   p[P_ATT]=0.001;
+  p[P_DEC]=0.25;  p[P_SUS]=1;     p[P_REL]=0.001; p[P_OBEY]=0;
+  p[P_ROFF]=0;    p[P_ROFFS]=0.001; p[P_LOOP]=0;  p[P_LSTART]=0;
+  p[P_XFADE]=0;   p[P_SOFFS]=0;   p[P_EOFFS]=1;
+  p[P_NLO]=NOTE_BASE + i;         p[P_NHI]=NOTE_BASE + i;
+  p[P_VLO]=1;     p[P_VHI]=127;   p[P_MINVOL]=1;
+  p[P_CHAN]=0;    p[P_PROB]=1;    p[P_RR]=0;      p[P_RRST]=0;
+  p[P_CHOKE]=0;   p[P_MAXV]=4;    p[P_OUT]=0;     p[P_MUTE]=0;
+  p[P_SOLO]=0;    p[P_PEAK]=0;    p[P_MODE]=0;    p[P_INTERP]=0;
+  p[P_NACT]=0;    p[P_LASTINC]=0; p[P_ROOT]=NOTE_BASE + i;
+);
+
+// --- chaines ---------------------------------------------------------------
+// Lua depose le chemin dans gmem en codes de caracteres, termine par zero.
+// C'est la seule facon de passer une chaine a un JSFX, et elle est eprouvee
+// (les outils de Saike lisent leurs chemins exactement comme ca).
+function readstr_from_gmem(dest, cidx) local(offset, buf) (
+  offset = 0;
+  buf = #;
+  while (
+    gmem[cidx] ? (
+      str_setchar(buf, offset, gmem[cidx]);
+      offset += 1;
+      cidx += 1;
+      1;
+    ) : 0;
+  );
+  strcpy_substr(dest, buf, 0, offset);
+);
+
+// --- chargement ------------------------------------------------------------
+// Appele depuis @gfx UNIQUEMENT. file_riff rend le nombre de canaux et la
+// frequence du fichier ; file_avail rend le nombre d'echantillons entrelaces
+// restants. On tronque a la plage du pad plutot que de refuser : un pad qui
+// sonne cinq secondes vaut mieux qu'un pad muet, et le statut le dit.
+function load_pad(pi) local(p, h, nch, sr, avail, frames, cap, dest) (
+  p = pad(pi);
+  readstr_from_gmem(#path, gm + MB_STR);
+  p[P_LOADED] = 0;
+  p[P_FRAMES] = 0;
+  h = file_open(#path);
+  h >= 0 ? (
+    nch = 0; sr = 0;
+    file_riff(h, nch, sr);
+    nch > 0 && sr > 0 ? (
+      avail = file_avail(h);
+      cap = floor(PAD_MEM / nch);
+      frames = min(floor(avail / nch), cap);
+      dest = pad_mem(pi);
+      frames > 0 ? (
+        file_mem(h, dest, frames * nch);
+        p[P_DATA]=dest; p[P_FRAMES]=frames; p[P_NCH]=nch; p[P_SRATE]=sr;
+        p[P_LOADED]=1;
+        gm[MB_STATUS] = (frames < floor(avail / nch)) ? 3 : 0;  // 3 = tronque
+      ) : ( gm[MB_STATUS] = 2; );
+    ) : ( gm[MB_STATUS] = 2; );
+    file_close(h);
+  ) : ( gm[MB_STATUS] = 2; );
+);
+
+// --- voix ------------------------------------------------------------------
+// Vol de voix : la plus vieille du MEME pad d'abord (c'est ce que « max
+// voices » veut dire), et seulement ensuite la plus vieille du kit. Un pad
+// sature ne doit pas manger la reverbe d'un autre.
+function find_voice(pi)
+  local(i, v, free, cnt, oldest, oldage, anyold, anyage) (
+  free = -1; cnt = 0; oldest = -1; oldage = 0; anyold = -1; anyage = 0;
+  i = 0;
+  loop(NVOICES,
+    v = voice(i);
+    !v[V_ACT] ? ( free < 0 ? free = i; ) : (
+      v[V_PAD] == pi ? (
+        cnt += 1;
+        (oldest < 0 || v[V_AGE] < oldage) ? ( oldest = i; oldage = v[V_AGE]; );
+      );
+      (anyold < 0 || v[V_AGE] < anyage) ? ( anyold = i; anyage = v[V_AGE]; );
+    );
+    i += 1;
+  );
+  // Le pad a atteint son quota : on lui reprend SA plus vieille voix. Sinon on
+  // prend une libre. En dernier ressort seulement, la plus vieille du kit —
+  // et jamais la voix zero par defaut, qui volerait toujours le meme pad.
+  cnt >= max(pad(pi)[P_MAXV], 1) && oldest >= 0 ? oldest :
+    free >= 0 ? free :
+      anyold >= 0 ? anyold : 0;
+);
+
+// Coupe les autres membres du groupe de choke. Un choke n'est pas un release :
+// il doit trancher vite sans claquer, d'ou une rampe de 5 ms plutot qu'un
+// arret sec ou le release du pad, qui peut durer une seconde.
+function choke_group(grp, except_pad) local(i, v, p) (
+  grp > 0 ? (
+    i = 0;
+    loop(NVOICES,
+      v = voice(i);
+      v[V_ACT] ? (
+        p = pad(v[V_PAD]);
+        (p[P_CHOKE] == grp && v[V_PAD] != except_pad) ? (
+          v[V_STAGE] = E_REL;
+          v[V_RR] = 1 / max(0.005 * srate, 1);
+          v[V_HELD] = 0;
+        );
+      );
+      i += 1;
+    );
+  );
+);
+
+function start_voice(pi, note, vel, ch)
+  local(p, vi, v, semis, ratio, span, g, s0, s1, frames) (
+  p = pad(pi);
+  p[P_LOADED] && p[P_FRAMES] > 0 ? (
+    choke_group(p[P_CHOKE], pi);
+    vi = find_voice(pi);
+    v = voice(vi);
+
+    frames = p[P_FRAMES];
+    s0 = floor(min(max(p[P_SOFFS], 0), 1) * frames);
+    s1 = floor(min(max(p[P_EOFFS], 0), 1) * frames);
+    s1 <= s0 ? s1 = frames;
+
+    // HAUTEUR. Mode 0 : la note ne joue pas sur la hauteur (le « Sample
+    // (ignores MIDI note) » du RS5K) — un kit de batterie. Mode 1 : la note
+    // transpose depuis la racine, et c'est l'instrument chromatique, qui
+    // devient donc un pad comme un autre au lieu d'un objet a part.
+    semis = p[P_TUNE] + pitch_bend * p[P_BEND];
+    p[P_MODE] >= 1 ? semis += (note - p[P_ROOT]);
+    ratio = (2 ^ (semis / 12)) * (p[P_SRATE] / srate);
+
+    v[V_PAD]=pi; v[V_POS]=s0; v[V_NOTE]=note; v[V_CHAN]=ch;
+    v[V_END]=s1; v[V_DATA]=p[P_DATA]; v[V_NCH]=p[P_NCH];
+    v[V_FRAMES]=frames; v[V_OUT]=min(max(p[P_OUT], 0), 7);
+    v[V_LOOP]=p[P_LOOP];
+    v[V_LP0]=s0 + floor(min(max(p[P_LSTART], 0), 1) * (s1 - s0));
+
+    // PORTAMENTO. Il glisse depuis la derniere hauteur JOUEE PAR CE PAD, ce
+    // qui est le seul sens qu'il ait sur un instrument polyphonique : glisser
+    // depuis « la derniere note du kit » ferait chanter le charley au depart
+    // de la caisse claire.
+    v[V_INCT] = ratio;
+    (p[P_PORTA] > 0 && p[P_LASTINC] > 0) ? (
+      v[V_INC] = p[P_LASTINC];
+      v[V_PORTA] = 1 / max(p[P_PORTA] * srate, 1);
+    ) : ( v[V_INC] = ratio; v[V_PORTA] = 0; );
+    p[P_LASTINC] = ratio;
+
+    // VELOCITE. « Min vol » du RS5K : le gain a la velocite la plus basse.
+    // Entre les deux, une droite — c'est ce que fait le RS5K, et une courbe
+    // ici surprendrait un kit migre.
+    span = max(p[P_VHI] - p[P_VLO], 1);
+    g = min(max((vel - p[P_VLO]) / span, 0), 1);
+    v[V_VEL] = p[P_MINVOL] + (1 - p[P_MINVOL]) * g;
+
+    v[V_AR] = 1 / max(p[P_ATT] * srate, 1);
+    v[V_DR] = 1 / max(p[P_DEC] * srate, 1);
+    v[V_SUS] = min(max(p[P_SUS], 0), 1);
+    v[V_RR] = 1 / max(p[P_REL] * srate, 1);
+    v[V_ENV] = 0; v[V_STAGE] = E_ATT; v[V_HELD] = 1;
+    voice_serial += 1;
+    v[V_AGE] = voice_serial;
+    v[V_ACT] = 1;
+  );
+);
+
+function note_on(note, vel, ch) local(i, p, idx) (
+  // Le pad est designe par sa note de base, et le balayage sert les pads dont
+  // la PLAGE contient la note : un pad chromatique couvre le clavier, un pad
+  // de batterie une seule touche, et les deux cohabitent dans le meme kit.
+  i = 0;
+  loop(NPADS,
+    p = pad(i);
+    p[P_LOADED] &&
+    note >= p[P_NLO] && note <= p[P_NHI] &&
+    vel  >= p[P_VLO] && vel  <= p[P_VHI] &&
+    (p[P_CHAN] == 0 || p[P_CHAN] == ch + 1) &&
+    !(p[P_MUTE] > 0.5) && (!any_solo || p[P_SOLO] > 0.5) ? (
+      // Deux facons de ne pas jouer a chaque fois, et elles ne se melangent
+      // pas. Le round-robin est DETERMINISTE — un declenchement sur N, le
+      // compteur vit dans le pad et survit d'un coup a l'autre. La
+      // probabilite est un tirage. Demander les deux au meme pad rendrait le
+      // premier illisible, donc le round-robin gagne quand il est arme.
+      p[P_RR] > 1.5 ? (
+        p[P_RRST] = (p[P_RRST] + 1) % p[P_RR];
+        p[P_RRST] == 0 ? start_voice(i, note, vel, ch);
+      ) : (
+        (p[P_PROB] >= 1 || rand(1) < p[P_PROB]) ? start_voice(i, note, vel, ch);
+      );
+    );
+    i += 1;
+  );
+);
+
+// OBEY NOTE-OFFS. A zero (le defaut d'un pad de batterie) la note-off est
+// ignoree : le one-shot va au bout. A un, elle ouvre le release — et si
+// « note-off release override » est arme, c'est SA duree qui s'applique, pas
+// celle du release, exactement comme le RS5K.
+function note_off(note, ch) local(i, v, p) (
+  i = 0;
+  loop(NVOICES,
+    v = voice(i);
+    v[V_ACT] && v[V_NOTE] == note && v[V_CHAN] == ch && v[V_HELD] ? (
+      p = pad(v[V_PAD]);
+      v[V_HELD] = 0;
+      p[P_OBEY] > 0.5 ? (
+        v[V_STAGE] = E_REL;
+        p[P_ROFF] > 0.5 ? v[V_RR] = 1 / max(p[P_ROFFS] * srate, 1);
+      );
+    );
+    i += 1;
+  );
+);
+
+function all_off() local(i) (
+  i = 0;
+  loop(NVOICES,
+    voice(i)[V_ACT] ? (
+      voice(i)[V_STAGE] = E_REL;
+      voice(i)[V_RR] = 1 / max(0.005 * srate, 1);
+      voice(i)[V_HELD] = 0;
+    );
+    i += 1;
+  );
+);
+
+// --- rendu -----------------------------------------------------------------
+// Le corps chaud. Rien ici ne divise, rien n'appelle file_*, rien n'alloue.
+function render_voice(v)
+  local(p, d, nch, ip, fr, a, b, l, r, e, st, o, gl, gr, g, pan) (
+  p = pad(v[V_PAD]);
+
+  // Enveloppe. Une addition et une comparaison par echantillon.
+  st = v[V_STAGE];
+  st == E_ATT ? (
+    v[V_ENV] += v[V_AR];
+    v[V_ENV] >= 1 ? ( v[V_ENV] = 1; v[V_STAGE] = E_DEC; );
+  ) : st == E_DEC ? (
+    v[V_ENV] -= v[V_DR] * (1 - v[V_SUS]);
+    v[V_ENV] <= v[V_SUS] ? ( v[V_ENV] = v[V_SUS]; v[V_STAGE] = E_SUS; );
+  ) : st == E_REL ? (
+    v[V_ENV] -= v[V_RR];
+    v[V_ENV] <= 0 ? ( v[V_ENV] = 0; v[V_ACT] = 0; );
+  );
+
+  v[V_ACT] ? (
+    // Portamento : l'increment glisse vers sa cible, il ne saute pas.
+    v[V_PORTA] > 0 ? (
+      v[V_INC] < v[V_INCT] ? (
+        v[V_INC] += (v[V_INCT] - v[V_INC]) * v[V_PORTA] * 8;
+        v[V_INC] >= v[V_INCT] ? ( v[V_INC]=v[V_INCT]; v[V_PORTA]=0; );
+      ) : (
+        v[V_INC] -= (v[V_INC] - v[V_INCT]) * v[V_PORTA] * 8;
+        v[V_INC] <= v[V_INCT] ? ( v[V_INC]=v[V_INCT]; v[V_PORTA]=0; );
+      );
+    );
+
+    d = v[V_DATA]; nch = v[V_NCH];
+    ip = floor(v[V_POS]);
+    fr = v[V_POS] - ip;
+
+    ip >= 0 && ip < v[V_END] - 1 ? (
+      nch >= 2 ? (
+        a = d[ip * 2]; b = d[ip * 2 + 2];
+        l = a + (b - a) * fr;
+        a = d[ip * 2 + 1]; b = d[ip * 2 + 3];
+        r = a + (b - a) * fr;
+      ) : (
+        a = d[ip]; b = d[ip + 1];
+        l = a + (b - a) * fr;
+        r = l;
+      );
+    ) : ( l = 0; r = 0; );
+
+    v[V_POS] += v[V_INC];
+    v[V_POS] >= v[V_END] - 1 ? (
+      v[V_LOOP] > 0.5 ? v[V_POS] = v[V_LP0] : ( v[V_ACT] = 0; );
+    );
+
+    e = v[V_ENV] * v[V_VEL] * p[P_VOL];
+    // Panoramique a puissance constante approchee : deux multiplications, pas
+    // de sinus. Sur un PC de 2005 la difference s'entend au compteur, pas a
+    // l'oreille.
+    pan = min(max(p[P_PAN], -1), 1);
+    gl = e * (1 - max(pan, 0));
+    gr = e * (1 + min(pan, 0));
+
+    o = v[V_OUT] * 2;
+    OUTBUS[o]     += l * gl;
+    OUTBUS[o + 1] += r * gr;
+
+    g = abs(l * gl) + abs(r * gr);
+    g > p[P_PEAK] ? p[P_PEAK] = g;
+  );
+);
+
+// --- etat initial ----------------------------------------------------------
+i = 0;
+loop(NPADS, pad_defaults(pad(i), i); i += 1;);
+i = 0;
+loop(NVOICES, voice(i)[V_ACT] = 0; i += 1;);
+
+ser_version  = 1;
+voice_serial = 0;
+any_solo     = 0;
+pitch_bend   = 0;
+pending_load = -1;
+master_gain  = 1;
+gm           = mailbox(0);
+
+// RESERVES, ET ON LE DIT PLUTOT QUE DE LAISSER CROIRE. Ces quatre champs
+// existent dans la table et se serialisent deja — rien ne les lit encore :
+//   P_XFADE   fondu de boucle (le « Xfade » du RS5K)
+//   P_INTERP  qualite de reechantillonnage (on est en lineaire)
+//   P_PLO/PHI pitch@start / pitch@end — le mode chromatique passe pour
+//             l'instant par P_ROOT, qui dit la meme chose plus simplement
+// Sept champs morts voyageaient deja dans chaque .RPP de la Session et c'est
+// au registre des defauts sous « ce qui trompe » : un format qui promet un
+// modele que rien n'implemente se paie plus tard.
+
+@serialize
+// L'ETAT DU KIT EST DANS LE PROJET, PAS DANS UN FICHIER A COTE. Un .RPP
+// emporte son kit ; seuls les chemins des echantillons pointent dehors, comme
+// n'importe quel media de REAPER. On ne serialise QUE les reglages : un
+// pointeur de matiere sauvegarde serait un pointeur mort au rechargement.
+file_var(ser_version);
+i = 0;
+loop(NPADS,
+  p = pad(i);
+  j = P_SAVE_LO;
+  loop(P_SAVE_HI - P_SAVE_LO + 1, file_var(p[j]); j += 1;);
+  i += 1;
+);
+
+@slider
+gm = mailbox(min(max(slider1, 0), 15));
+master_gain = 10 ^ (slider2 / 20);
+  pad(0)[P_VOL] = 10 ^ (slider9 / 20);
+  pad(1)[P_VOL] = 10 ^ (slider10 / 20);
+  pad(2)[P_VOL] = 10 ^ (slider11 / 20);
+  pad(3)[P_VOL] = 10 ^ (slider12 / 20);
+  pad(4)[P_VOL] = 10 ^ (slider13 / 20);
+  pad(5)[P_VOL] = 10 ^ (slider14 / 20);
+  pad(6)[P_VOL] = 10 ^ (slider15 / 20);
+  pad(7)[P_VOL] = 10 ^ (slider16 / 20);
+  pad(8)[P_VOL] = 10 ^ (slider17 / 20);
+  pad(9)[P_VOL] = 10 ^ (slider18 / 20);
+  pad(10)[P_VOL] = 10 ^ (slider19 / 20);
+  pad(11)[P_VOL] = 10 ^ (slider20 / 20);
+  pad(12)[P_VOL] = 10 ^ (slider21 / 20);
+  pad(13)[P_VOL] = 10 ^ (slider22 / 20);
+  pad(14)[P_VOL] = 10 ^ (slider23 / 20);
+  pad(15)[P_VOL] = 10 ^ (slider24 / 20);
+  pad(16)[P_VOL] = 10 ^ (slider25 / 20);
+  pad(17)[P_VOL] = 10 ^ (slider26 / 20);
+  pad(18)[P_VOL] = 10 ^ (slider27 / 20);
+  pad(19)[P_VOL] = 10 ^ (slider28 / 20);
+  pad(20)[P_VOL] = 10 ^ (slider29 / 20);
+  pad(21)[P_VOL] = 10 ^ (slider30 / 20);
+  pad(22)[P_VOL] = 10 ^ (slider31 / 20);
+  pad(23)[P_VOL] = 10 ^ (slider32 / 20);
+  pad(24)[P_VOL] = 10 ^ (slider33 / 20);
+  pad(25)[P_VOL] = 10 ^ (slider34 / 20);
+  pad(26)[P_VOL] = 10 ^ (slider35 / 20);
+  pad(27)[P_VOL] = 10 ^ (slider36 / 20);
+  pad(28)[P_VOL] = 10 ^ (slider37 / 20);
+  pad(29)[P_VOL] = 10 ^ (slider38 / 20);
+  pad(30)[P_VOL] = 10 ^ (slider39 / 20);
+  pad(31)[P_VOL] = 10 ^ (slider40 / 20);
+  pad(32)[P_VOL] = 10 ^ (slider41 / 20);
+  pad(33)[P_VOL] = 10 ^ (slider42 / 20);
+  pad(34)[P_VOL] = 10 ^ (slider43 / 20);
+  pad(35)[P_VOL] = 10 ^ (slider44 / 20);
+  pad(36)[P_VOL] = 10 ^ (slider45 / 20);
+  pad(37)[P_VOL] = 10 ^ (slider46 / 20);
+  pad(38)[P_VOL] = 10 ^ (slider47 / 20);
+  pad(39)[P_VOL] = 10 ^ (slider48 / 20);
+  pad(40)[P_VOL] = 10 ^ (slider49 / 20);
+  pad(41)[P_VOL] = 10 ^ (slider50 / 20);
+  pad(42)[P_VOL] = 10 ^ (slider51 / 20);
+  pad(43)[P_VOL] = 10 ^ (slider52 / 20);
+  pad(44)[P_VOL] = 10 ^ (slider53 / 20);
+  pad(45)[P_VOL] = 10 ^ (slider54 / 20);
+  pad(46)[P_VOL] = 10 ^ (slider55 / 20);
+  pad(47)[P_VOL] = 10 ^ (slider56 / 20);
+  pad(48)[P_VOL] = 10 ^ (slider57 / 20);
+  pad(49)[P_VOL] = 10 ^ (slider58 / 20);
+  pad(50)[P_VOL] = 10 ^ (slider59 / 20);
+  pad(51)[P_VOL] = 10 ^ (slider60 / 20);
+  pad(52)[P_VOL] = 10 ^ (slider61 / 20);
+  pad(53)[P_VOL] = 10 ^ (slider62 / 20);
+  pad(54)[P_VOL] = 10 ^ (slider63 / 20);
+  pad(55)[P_VOL] = 10 ^ (slider64 / 20);
+  pad(56)[P_VOL] = 10 ^ (slider65 / 20);
+  pad(57)[P_VOL] = 10 ^ (slider66 / 20);
+  pad(58)[P_VOL] = 10 ^ (slider67 / 20);
+  pad(59)[P_VOL] = 10 ^ (slider68 / 20);
+  pad(60)[P_VOL] = 10 ^ (slider69 / 20);
+  pad(61)[P_VOL] = 10 ^ (slider70 / 20);
+  pad(62)[P_VOL] = 10 ^ (slider71 / 20);
+  pad(63)[P_VOL] = 10 ^ (slider72 / 20);
+
+@block
+// 1. L'anneau des reglages. On draine TOUT ce qui est arrive depuis le bloc
+//    precedent : c'est de l'ecriture en memoire, ca ne coute rien, et ca evite
+//    qu'un preset de soixante-quatre pads s'etale sur plusieurs secondes.
+//    L'anneau peut deborder si Lua ecrit plus de trente-deux commandes entre
+//    deux blocs — il ne le fait pas, et s'il le faisait la perte serait un
+//    reglage en retard d'un bloc, pas un son faux.
+while (gm[MB_RPOS] != gm[MB_WPOS]) (
+  e = MB_RING + (gm[MB_RPOS] % RING_N) * RING_SZ;
+  op = gm[e];
+  pi = gm[e + 1];
+  op == OP_SET && pi >= 0 && pi < NPADS ? (
+    k = gm[e + 2];
+    k >= 0 && k < PAD_SZ ? pad(pi)[k] = gm[e + 3];
+  ) : op == OP_CLEAR && pi >= 0 && pi < NPADS ? (
+    pad(pi)[P_LOADED] = 0; pad(pi)[P_FRAMES] = 0;
+  ) : op == OP_CLEARALL ? (
+    i = 0;
+    loop(NPADS, pad(i)[P_LOADED]=0; pad(i)[P_FRAMES]=0; i += 1;);
+  );
+  gm[MB_RPOS] = gm[MB_RPOS] + 1;
+);
+
+// 2. Le chargement, qui est une poignee de main a un seul creneau : il porte
+//    une chaine et il touche le disque. On ne fait que poser le drapeau — le
+//    disque appartient a @gfx. L'ACCUSE DE RECEPTION N'EST DONNE QU'UNE FOIS
+//    LE FICHIER LU : Lua saura que le pad SONNE, pas que l'ordre est parti.
+//    Un garde-fou qui verifie le geste et non son resultat ne garde rien.
+gm[MB_LSEQ] != gm[MB_LACK] && pending_load < 0 ? (
+  pending_load = gm[MB_LPAD];
+  gm[MB_STATUS] = 1;
+);
+
+// Le solo vaut pour tout le kit : une fois par bloc, pas par pad et par
+// echantillon.
+any_solo = 0;
+i = 0;
+loop(NPADS, pad(i)[P_SOLO] > 0.5 ? any_solo = 1; i += 1;);
+
+// 2. Le MIDI.
+while (midirecv(mofs, m1, m2, m3)) (
+  st = m1 & 0xF0;
+  ch = m1 & 0x0F;
+  st == 0x90 && m3 > 0 ? note_on(m2, m3, ch)
+  : (st == 0x80 || (st == 0x90 && m3 == 0)) ? note_off(m2, ch)
+  : st == 0xE0 ? ( pitch_bend = (((m3 << 7) | m2) - 8192) / 8192; )
+  : (st == 0xB0 && (m2 == 123 || m2 == 120)) ? all_off();
+  // ON NE REPASSE PAS LA NOTE. L'instrument l'a consommee ; la renvoyer la
+  // ferait jouer deux fois par le prochain effet de la chaine. Le « remove
+  // played notes from FX chain » du RS5K disparait donc comme reglage : il
+  // est devenu le comportement.
+);
+
+// 3. Les cretes et le compte de voix, pour les VU de la fenetre. Une fois par
+//    bloc : un VU n'a pas besoin de mieux que soixante hertz.
+i = 0;
+loop(NPADS,
+  gm[MB_PEAK + i] = pad(i)[P_PEAK];
+  pad(i)[P_PEAK] *= 0.55;
+  pad(i)[P_NACT] = 0;
+  i += 1;
+);
+i = 0;
+loop(NVOICES,
+  voice(i)[V_ACT] ? pad(voice(i)[V_PAD])[P_NACT] += 1;
+  i += 1;
+);
+i = 0;
+loop(NPADS, gm[MB_NACT + i] = pad(i)[P_NACT]; i += 1;);
+
+@sample
+o = 0;
+loop(16, OUTBUS[o] = 0; o += 1;);
+
+vi = 0;
+loop(NVOICES,
+  voice(vi)[V_ACT] ? render_voice(voice(vi));
+  vi += 1;
+);
+
+spl0 = OUTBUS[0] * master_gain;  spl1 = OUTBUS[1] * master_gain;
+spl2 = OUTBUS[2] * master_gain;  spl3 = OUTBUS[3] * master_gain;
+spl4 = OUTBUS[4] * master_gain;  spl5 = OUTBUS[5] * master_gain;
+spl6 = OUTBUS[6] * master_gain;  spl7 = OUTBUS[7] * master_gain;
+spl8 = OUTBUS[8] * master_gain;  spl9 = OUTBUS[9] * master_gain;
+spl10 = OUTBUS[10] * master_gain;  spl11 = OUTBUS[11] * master_gain;
+spl12 = OUTBUS[12] * master_gain;  spl13 = OUTBUS[13] * master_gain;
+spl14 = OUTBUS[14] * master_gain;  spl15 = OUTBUS[15] * master_gain;
+
+@gfx 0 0
+// LE DISQUE EST ICI, ET NULLE PART AILLEURS. gfx_idle=1 fait tourner cette
+// section fenetre fermee : un kit se charge sans qu'on ouvre quoi que ce soit,
+// et un fichier de trente megaoctets ne fait pas craquer le fil audio.
+pending_load >= 0 ? (
+  load_pad(pending_load);
+  pending_load = -1;
+  gm[MB_LACK] = gm[MB_LSEQ];
+);
