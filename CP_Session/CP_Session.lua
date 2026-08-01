@@ -87,6 +87,13 @@ local ENGINE_OK = Cells.init(r, Voice, Loop, TRACKS)
 local cells = {}     -- [t][s] = clip descriptor or nil
 local cur   = {}     -- [t] = scene whose clip is loaded, or nil
 local cdrag = nil    -- { t, s } source cell while a Ctrl-drag copy is in flight
+-- La derniere case effacee, et ou la reposer. UNE seule, pas une pile : ce
+-- geste se fait une fois et on le regrette tout de suite ; une pile aurait
+-- fait croire a une annulation generale de la grille, qui elle n'existe pas.
+local erased = nil   -- { t, s, clip }
+-- La case selectionnee, pour le clavier. Elle ne remplace aucun clic : elle
+-- suit le dernier, et les fleches la deplacent.
+local sel = { t = 0, s = 0 }
 -- Geometry of each mixer strip as it was last drawn. Declared up here because
 -- the drop consumer runs before the strips do: what lands on a strip has to be
 -- resolved against where that strip WAS, which is the only place it can be.
@@ -129,6 +136,13 @@ scene, and tracks with no clip in it stop, as in Ableton.
 CTRL-CLICK THE TRIANGLE to launch the scene ADDITIVELY: columns the
 scene does not fill keep playing. That is how a pad or a drone
 survives a scene change without being duplicated into all eight rows.
+
+## Keyboard
+Arrows move the selection, ENTER launches it (an empty cell stops that
+column), DELETE erases it. CTRL+Z puts back the last cell you erased —
+Alt-click and Delete are one-handed shortcuts that destroy, so they
+have their way back. The selection follows your last click, so the
+mouse and the keyboard never disagree about where you are.
 
 ## Recording into a cell
 1. ARM the track — the circle in its header. That is REAPER's own
@@ -665,13 +679,31 @@ local WHY_SHORT = {
 local sub_txt = setmetatable({}, { __mode = "k" })
 local sub_key = setmetatable({}, { __mode = "k" })
 
+-- L'ETAT DE CUISSON NE SE REDEMANDE PAS PAR FRAME. Warp.State ouvre un
+-- fichier (PathFor puis io.open) : c'est un acces DISQUE dans une boucle de
+-- dessin, pour chaque case en stretch, soixante fois par seconde. Il ne change
+-- qu'a la fin d'une cuisson, et Warp.Version() dit exactement quand — c'est
+-- pour ca qu'elle existe. On le relit donc quand la version bouge, et jamais
+-- entre deux.
+local st_cache = setmetatable({}, { __mode = "k" })
+local st_ver   = -1
+
 local function audioSub(c)
     local mode = c.tempo_mode or "repitch"
     local st = "none"
+    local wv = Warp.Version and Warp.Version() or 0
+    if wv ~= st_ver then
+        st_ver = wv
+        st_cache = setmetatable({}, { __mode = "k" })
+    end
     if mode == "stretch" then
         local s0 = c.offs or 0
-        st = Warp.State(c.path, s0, c.len and (s0 + c.len) or 0,
-                        r.Master_GetTempo() or 120) or "none"
+        st = st_cache[c]
+        if st == nil then
+            st = Warp.State(c.path, s0, c.len and (s0 + c.len) or 0,
+                            r.Master_GetTempo() or 120) or "none"
+            st_cache[c] = st
+        end
     end
     local bpm = c.bpm_seen
     local key = mode .. st .. (bpm and string.format("%.2f", bpm) or "-")
@@ -1758,10 +1790,20 @@ local function drawCell(theme, t, s, x, y, w, h)
     end
 
     if Core.MouseInRect(x, y, w, h) and not Core.HasPopup() then
-        -- Alt+click deletes, anywhere on the cell. It is destructive but
-        -- unambiguous, and the modifier keeps it out of the way of the two
-        -- plain clicks (launch on the strip, edit on the content).
+        -- Alt+clic efface, n'importe ou sur la case. Le modificateur le tient
+        -- a l'ecart des deux clics simples (lancer sur la bande, editer sur le
+        -- contenu) — mais il restait SANS RETOUR : une case pleine de notes
+        -- disparaissait sur un raccourci a une main, et rien ne la ramenait.
+        -- Le dernier efface est garde ; Ctrl+Z le repose. Une seule case, pas
+        -- une pile : ce geste se fait une fois, on le regrette tout de suite,
+        -- et une pile aurait fait croire a une annulation generale de la
+        -- grille, qui elle n'existe pas.
+        if Core.MouseClicked(1) then sel.t, sel.s = t, s end
         if Core.ModAlt() and Core.MouseClicked(1) then
+            if c then
+                erased = { t = t, s = s, clip = c }
+                flash("Cell erased — Ctrl+Z puts it back")
+            end
             clearCell(t, s)
         elseif Core.ModCtrl() and c and Core.MouseClicked(1) then
             cdrag = { t = t, s = s }
@@ -2387,7 +2429,64 @@ local function pollMixDrag()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- LE CLAVIER
+-- ---------------------------------------------------------------------------
+-- CP_Session n'en avait AUCUN. Chez Ableton on descend un set entier en tapant
+-- Entree — fleches pour se deplacer, Entree pour lancer — et c'est le geste
+-- qui separe une grille qu'on regarde d'une grille dont on joue.
+local KEY_LEFT, KEY_RIGHT = 1818584692, 1919379572
+local KEY_UP, KEY_DOWN    = 30064, 1685026670
+local KEY_ENTER, KEY_DEL  = 13, 6579564
+
+local function handleKeys()
+    local char = Core.GetChar()
+    if not char or char == 0 then return end
+
+    -- Ctrl+Z repose la derniere case effacee. Alt+clic est un raccourci a une
+    -- main qui detruit ; il lui fallait son retour.
+    if char == 26 then
+        if erased and erased.clip then
+            cells[erased.t][erased.s] = erased.clip
+            markDirty()
+            flash("Cell restored")
+            erased = nil
+        else
+            flash("Nothing to restore")
+        end
+        Core.ConsumeChar()
+        return
+    end
+
+    if char == KEY_LEFT then
+        sel.t = (sel.t - 1) % TRACKS; Core.ConsumeChar()
+    elseif char == KEY_RIGHT then
+        sel.t = (sel.t + 1) % TRACKS; Core.ConsumeChar()
+    elseif char == KEY_UP then
+        sel.s = (sel.s - 1) % SCENES; Core.ConsumeChar()
+    elseif char == KEY_DOWN then
+        sel.s = (sel.s + 1) % SCENES; Core.ConsumeChar()
+    elseif char == KEY_ENTER then
+        -- Entree lance la case ; sur une case vide elle arrete la colonne,
+        -- ce qui est ce qu'on veut dire en descendant une grille trouee.
+        local c = cells[sel.t] and cells[sel.t][sel.s]
+        if c then launchCell(sel.t, sel.s) else stopTrack(sel.t) end
+        Core.ConsumeChar()
+    elseif char == KEY_DEL then
+        local c = cells[sel.t] and cells[sel.t][sel.s]
+        if c then
+            erased = { t = sel.t, s = sel.s, clip = c }
+            clearCell(sel.t, sel.s)
+            flash("Cell erased — Ctrl+Z puts it back")
+        end
+        Core.ConsumeChar()
+    end
+end
+
 local function frame(theme)
+    -- Le clavier d'abord : il peut consommer la touche avant que
+    -- quoi que ce soit d'autre la voie, et il ne dessine rien.
+    handleKeys()
     local C = theme.colors
     local attached = Loop.IsAttached()
 
