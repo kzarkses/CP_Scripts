@@ -288,6 +288,53 @@ local function containerCount(tr, ci)
     return (ok and tonumber(n)) or 0
 end
 
+-- ---------------------------------------------------------------------------
+-- FAIRE ENTRER UN EFFET DANS UN CONTENEUR — et pourquoi c'est delicat
+-- ---------------------------------------------------------------------------
+-- REAPER ne sait pas creer un effet DANS un conteneur : on l'ajoute au bout de
+-- la chaine, puis on le deplace. Et c'est la que se cachait le defaut « mes
+-- pads ouvrent tous leur conteneur, et j'ai des conteneurs dans des
+-- conteneurs ».
+--
+-- L'index encode vaut  0x2000000 + sous_index_1 * (NOMBRE D'EFFETS + 1)
+--                      + index_conteneur_1.
+-- Le nombre d'effets EST dans la formule. Or un deplacement RETIRE l'effet de
+-- la chaine du dessus : le nombre change PENDANT l'operation, et l'index qu'on
+-- a calcule avant ne designe plus la meme chose apres. Chez moi, un ReaPitch
+-- destine au conteneur du pad se decodait en « troisieme element du conteneur
+-- qui est le choke » — d'ou des boites imbriquees et une chaine qui s'ouvre en
+-- grand pour montrer ce qu'elle vient de faire n'importe ou.
+--
+-- Il n'y a qu'une configuration ou l'etat d'APRES est previsible sans deviner :
+-- la source est le DERNIER effet de la chaine, et le conteneur est AVANT elle.
+-- Retirer le dernier ne bouge l'index de personne, et le nombre d'effets passe
+-- simplement a n-1. On calcule donc l'adresse pour cet etat-la, et on impose
+-- cette configuration a l'appelant plutot que de generaliser un calcul faux.
+--
+-- Et on VERIFIE : le conteneur doit avoir gagne un element. Un deplacement rate
+-- qui rendrait `true` laisserait un effet en vrac dans la chaine du kit.
+local function moveLastIntoBox(tr, box)
+    local n = r.TrackFX_GetCount(tr)
+    if n < 2 or box < 0 or box >= n - 1 then return false end
+    local at = containerCount(tr, box)
+    -- (at+1) * n : `n` est bien le compte AVEC la source, ce qui vaut
+    -- (compte_apres + 1) — c'est le nombre que la formule attend une fois la
+    -- source partie.
+    local dest = FX_CONTAINER + (at + 1) * n + (box + 1)
+    if not r.TrackFX_CopyToTrack(tr, n - 1, tr, dest, true) then return false end
+    if containerCount(tr, box) ~= at + 1 then return false end
+    return true
+end
+
+-- Deplacer un effet quelconque de la chaine en DERNIERE position. Indices
+-- ordinaires des deux cotes : aucune arithmetique d'encodage, donc rien a
+-- rater. C'est le pas qui met l'appelant dans la configuration ci-dessus.
+local function moveToEnd(tr, fx)
+    local n = r.TrackFX_GetCount(tr)
+    if fx == n - 1 then return true end
+    return r.TrackFX_CopyToTrack(tr, fx, tr, n - 1, true) and true or false
+end
+
 -- La plage de notes d'un RS5K, en notes MIDI. C'est LA VERITE d'un pad : ce
 -- qui le fait sonner sur cette touche et pas une autre. On ne range donc pas
 -- son numero a cote (une etiquette peut mentir, une plage de notes non).
@@ -772,16 +819,25 @@ local function initPadFx(tr, fx, note)
     setFxLabel(tr, fx, "Pad " .. note)
 end
 
--- UN PAD EST UN RS5K DE PLUS DANS LA CHAINE.
+-- UN PAD EST UNE BOITE, ET DEDANS UN RS5K.
 --
 -- Le fan-out d'envois MIDI filtres a disparu avec les pistes enfants, et ce
 -- n'est pas un compromis : dans une seule chaine, tous les RS5K voient le meme
 -- MIDI et chacun ne repond qu'a SA plage de notes — c'est le RS5K lui-meme qui
 -- filtre, comme il l'a toujours fait. Replier SUPPRIME de la machinerie.
 --
--- Le rescan final n'est pas une precaution de style : ajouter un effet change le
--- nombre d'effets de la chaine, donc l'index encode de tout pad range dans un
--- conteneur. Les laisser perimes ferait ecrire un reglage dans le mauvais pad.
+-- POURQUOI LA BOITE DES LA NAISSANCE, et non « a la demande » comme au premier
+-- jet : parce que « a la demande » veut dire restructurer la chaine au moment
+-- ou l'utilisateur demande autre chose — un accord, un effet — et une
+-- restructuration au milieu d'un geste est exactement la ou les index encodes
+-- se perdent. Avec la boite d'emblee, ajouter quoi que ce soit a un pad ne
+-- deplace plus rien : on entre dans une boite qui existe deja. En prime la
+-- chaine du kit se lit comme la grille — une boite par pad, au nom de son
+-- echantillon — au lieu d'une file de « ReaSamplOmatic5000 » identiques.
+--
+-- Si le conteneur echoue (REAPER 6, ou plus vieux), on retombe sur un RS5K a
+-- plat : le pad sonne, et seuls ses effets a lui manquent. Un kit qui ne sonne
+-- pas serait un prix bien plus lourd que cette asymetrie.
 function Kit.EnsurePad(note)
     if note < Kit.BASE or note >= Kit.BASE + Kit.MAX then return nil end
     local pad = Kit.Pad(note)
@@ -789,18 +845,40 @@ function Kit.EnsurePad(note)
 
     ubegin()
     local tr = Kit.Ensure()
+    local box = r.TrackFX_AddByName(tr, "Container", false, -1)
+    if box >= 0 then
+        hideFX(tr, box)
+        setFxLabel(tr, box, "Pad " .. note)
+    else
+        box = nil
+    end
     local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1)
     if fx < 0 then
+        if box then r.TrackFX_Delete(tr, box) end
         uend("Sampler: create pad " .. note)
         return nil
     end
     initPadFx(tr, fx, note)
+    if box then
+        -- la boite vient d'etre posee juste avant lui : c'est exactement la
+        -- configuration que moveLastIntoBox exige
+        if moveLastIntoBox(tr, box) then
+            fx = containerItem(tr, box, 0)
+        else
+            r.TrackFX_Delete(tr, box)   -- rien de deplace : la boite est vide
+            box = nil
+        end
+    end
     -- INSCRIT TOUT DE SUITE, sans attendre le rescan. LoadSample ouvre son
     -- propre bloc d'annulation autour de cet appel, donc le rescan est differe
     -- a la fin du geste : compter dessus rendrait `nil` a l'appelant qui vient
-    -- de creer le pad. L'index est de toute facon juste — un effet ajoute EN
-    -- BOUT de chaine ne decale aucun de ceux qui le precedent.
-    local pad_new = { track = tr, fx = fx, box = nil, path = nil, note = note,
+    -- de creer le pad, et il ne pourrait pas y charger son echantillon.
+    --
+    -- L'index de CE pad est juste (il vient d'etre lu apres le deplacement).
+    -- Ceux des AUTRES pads en conteneur, eux, viennent de bouger : la chaine a
+    -- gagne une boite, et le nombre d'effets est dans leur adresse. C'est
+    -- exactement ce que `rescan()` repare, et pourquoi il n'est pas facultatif.
+    local pad_new = { track = tr, fx = fx, box = box, path = nil, note = note,
                       name = "Pad " .. note, fmt = {} }
     Kit.pads[note] = pad_new
     Kit.version = Kit.version + 1
@@ -850,10 +928,11 @@ function Kit.LoadSample(note, path, opts)
     pad.path = path
     pad.name = baseName(path)
     pad.fmt = {}
-    -- LE NOM DU PAD EST L'ETIQUETTE DE L'EFFET. C'etait le nom de la piste ;
+    -- LE NOM DU PAD EST L'ETIQUETTE DE SA BOITE. C'etait le nom de la piste ;
     -- il n'y a plus de piste par pad, et renommer la piste du kit a chaque
-    -- chargement d'echantillon serait absurde. Renomme dans la chaine, il se
-    -- lit au meme endroit qu'avant : la ou on regarde quand on ouvre le kit.
+    -- chargement d'echantillon serait absurde. Sur la boite, il se lit au meme
+    -- endroit qu'avant : la ou on regarde quand on ouvre la chaine du kit — et
+    -- la chaine se lit alors comme la grille.
     setFxLabel(pad.track, pad.box or pad.fx, pad.name)
     if newmat and not (opts and opts.keep_sync) then
         clearSyncState(note, pad)
@@ -1621,14 +1700,14 @@ end
 local RP_ADD = "ReaPitch (Cockos)"
 
 -- Ajouter un effet DANS un conteneur : REAPER ne sait pas le faire d'un coup.
--- On l'ajoute au bout de la chaine, puis on le DEPLACE a sa place dans la
--- boite — un aller-retour, et l'index encode de destination fait le reste.
+-- On l'ajoute au bout de la chaine — donc en dernier, ce qui est la
+-- configuration que moveLastIntoBox exige — puis on l'y fait entrer.
 local function addFxToBox(tr, box, addname)
+    local at = containerCount(tr, box)
     local tmp = r.TrackFX_AddByName(tr, addname, false, -1)
     if tmp < 0 then return nil end
-    local at = containerCount(tr, box)
-    local dest = containerItem(tr, box, at)
-    if not r.TrackFX_CopyToTrack(tr, tmp, tr, dest, true) then
+    hideFX(tr, tmp)
+    if not moveLastIntoBox(tr, box) then
         r.TrackFX_Delete(tr, tmp)
         return nil
     end
@@ -2100,6 +2179,9 @@ function Kit.PadHasBox(note)
     return pad ~= nil and pad.box ~= nil
 end
 
+-- Un pad NE dans un projet d'avant (a plat dans la chaine) rentre dans une
+-- boite ici. Les pads neufs en ont une des la naissance et ne passent jamais
+-- par la.
 function Kit.EnsurePadBox(note)
     local pad = Kit.Pad(note)
     if not pad or not pad.fx then return nil end
@@ -2111,9 +2193,12 @@ function Kit.EnsurePadBox(note)
         uend("Sampler: pad FX box")
         return nil
     end
-    local dest = containerItem(tr, box, 0)
-    local moved = r.TrackFX_CopyToTrack(tr, pad.fx, tr, dest, true)
-    if not moved then
+    hideFX(tr, box)
+    -- METTRE LE RS5K EN DERNIER, derriere la boite. C'est la seule
+    -- configuration ou l'adresse d'arrivee est calculable sans deviner (voir
+    -- moveLastIntoBox) : la boite est posee au bout, on fait passer le RS5K
+    -- apres elle, et on le fait entrer.
+    if not moveToEnd(tr, pad.fx) or not moveLastIntoBox(tr, box) then
         r.TrackFX_Delete(tr, box)
         uend("Sampler: pad FX box")
         return nil

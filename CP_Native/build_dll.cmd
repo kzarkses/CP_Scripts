@@ -1,7 +1,27 @@
 @echo off
 REM reaper_cpclip.dll ? l'extension REAPER.
 setlocal
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+REM TROUVER VISUAL STUDIO PLUTOT QUE LE SUPPOSER. Le chemin en dur ne vaut
+REM que pour une edition Community 2022 installee par defaut : sur une autre
+REM machine (Professional, Build Tools, disque D:) il echoue en silence, et
+REM l'erreur qu'on voit ensuite est "cl introuvable", qui ne dit pas pourquoi.
+REM vswhere est livre AVEC Visual Studio depuis 2017 et vit toujours au meme
+REM endroit.
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VCVARS="
+if exist "%VSWHERE%" (
+  for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * ^
+      -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
+      -property installationPath`) do set "VCVARS=%%i\VC\Auxiliary\Build\vcvars64.bat"
+)
+if not defined VCVARS set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+if not exist "%VCVARS%" (
+  echo.
+  echo   Visual Studio introuvable.
+  echo   Installe "Desktop development with C++" ^(VS 2022 ou Build Tools^).
+  exit /b 5
+)
+call "%VCVARS%" >nul 2>&1
 cd /d "%~dp0"
 if not exist build mkdir build
 
@@ -9,7 +29,18 @@ REM Le SDK reste HORS du depot : c'est une dependance fournisseur, pas notre
 REM code, et sa licence n'est pas la notre. Surchargeable pour qui le range
 REM ailleurs.
 REM   git clone --depth 1 https://github.com/justinfrankel/reaper-sdk.git
-if not defined REAPER_SDK set REAPER_SDK=C:\Users\Cedric\dev\reaper-sdk\sdk
+REM Trois endroits conventionnels avant d'abandonner, pour qu'un clone frais
+REM sur une autre machine construise sans qu'on ait rien a regler :
+REM   1. REAPER_SDK, s'il est pose (il gagne toujours)
+REM   2. a cote du depot     ..\..\reaper-sdk\sdk
+REM   3. %USERPROFILE%\dev\reaper-sdk\sdk
+if not defined REAPER_SDK (
+  if exist "%~dp0..\..\reaper-sdk\sdk\reaper_plugin.h" (
+    set "REAPER_SDK=%~dp0..\..\reaper-sdk\sdk"
+  ) else (
+    set "REAPER_SDK=%USERPROFILE%\dev\reaper-sdk\sdk"
+  )
+)
 set SDK=%REAPER_SDK%
 if not exist "%SDK%\reaper_plugin.h" (
   echo.

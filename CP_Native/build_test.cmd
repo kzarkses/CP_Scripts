@@ -1,7 +1,27 @@
 @echo off
 REM Harnais hors-ligne du coeur. Ne depend ni de REAPER ni du SDK.
 setlocal
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+REM TROUVER VISUAL STUDIO PLUTOT QUE LE SUPPOSER. Le chemin en dur ne vaut
+REM que pour une edition Community 2022 installee par defaut : sur une autre
+REM machine (Professional, Build Tools, disque D:) il echoue en silence, et
+REM l'erreur qu'on voit ensuite est "cl introuvable", qui ne dit pas pourquoi.
+REM vswhere est livre AVEC Visual Studio depuis 2017 et vit toujours au meme
+REM endroit.
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VCVARS="
+if exist "%VSWHERE%" (
+  for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * ^
+      -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
+      -property installationPath`) do set "VCVARS=%%i\VC\Auxiliary\Build\vcvars64.bat"
+)
+if not defined VCVARS set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+if not exist "%VCVARS%" (
+  echo.
+  echo   Visual Studio introuvable.
+  echo   Installe "Desktop development with C++" ^(VS 2022 ou Build Tools^).
+  exit /b 5
+)
+call "%VCVARS%" >nul 2>&1
 cd /d "%~dp0"
 if not exist build mkdir build
 

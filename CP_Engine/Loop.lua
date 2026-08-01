@@ -216,16 +216,46 @@ local norder = 0
 -- top-level, unmarked folder head, and it would walk straight into the grid as
 -- a column. Three string reads per track, behind the same half-second debounce
 -- as the rest of this.
-local LEGACY_OWN = { "P_EXT:CP_KIT", "P_EXT:CP_KIT_INSTR", "P_EXT:" .. LEGACY_TAG }
+-- Ce qui reste de l'infrastructure et n'a rien a faire dans la grille : la
+-- piste routeur d'avant le moteur natif, et rien d'autre. Le dossier « CP » est
+-- ecarte par sa marque (engine:folder), plus bas.
+local LEGACY_OWN = { "P_EXT:" .. LEGACY_TAG }
 
+-- UN KIT EST UN INSTRUMENT, DONC UNE COLONNE.
+--
+-- Il etait ecarte, et a l'epoque c'etait juste : un kit etait un DOSSIER
+-- d'infrastructure avec une piste par pad, et remplir la grille de ces
+-- soixante-cinq pistes n'aurait eu aucun sens. Depuis le chantier 2 c'est une
+-- piste ordinaire qui fait du son — exactement ce qu'une colonne doit contenir,
+-- et le seul moyen de poser un motif de batterie dans une case de la grille
+-- sans passer par un detour. L'ecarter maintenant serait cacher l'instrument le
+-- plus evident du projet.
+--
+-- Ce qu'on ecarte encore : le dossier partage « CP » (engine:folder) et le
+-- routeur legacy. Pas de son, pas de colonne.
 local function eligible(tr)
     if r.GetParentTrack(tr) ~= nil then return false end
-    if Tracks and Tracks.MarkOf and Tracks.MarkOf(tr) then return false end
+    local app, role = nil, nil
+    if Tracks and Tracks.MarkOf then app, role = Tracks.MarkOf(tr) end
+    if app and not (app == "sampler" and (role == "kit" or role == "instrument")) then
+        return false
+    end
     for i = 1, #LEGACY_OWN do
         local ok, v = r.GetSetMediaTrackInfo_String(tr, LEGACY_OWN[i], "", false)
         if ok and v ~= "" then return false end
     end
     return true
+end
+
+-- Cette piste est-elle un instrument de la suite (un kit, l'instrument
+-- chromatique) ? La grille s'en sert pour le DIRE : une colonne qu'on a faite
+-- et une piste que l'utilisateur a faite ne se lisent pas pareil.
+function Loop.IsSuiteInstrument(tr)
+    if not valid(tr) then return nil end
+    if not (Tracks and Tracks.MarkOf) then return nil end
+    local app, role = Tracks.MarkOf(tr)
+    if app ~= "sampler" then return nil end
+    return role                       -- "kit" | "instrument"
 end
 
 -- Rebuilt in place, every refresh. No table is created here: this runs behind a

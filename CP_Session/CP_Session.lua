@@ -2606,6 +2606,18 @@ local function frame(theme)
         local cx = x + scene_w + gap + ci * (cell_w + gap)
         local mc = C.text_mute or C.text_disabled
         local routed = Loop.GetLaneDest(t) ~= nil
+        -- UN INSTRUMENT DE LA SUITE SE LIT AUTREMENT. Un kit de CP_Sampler est
+        -- une colonne comme les autres depuis le chantier 2 — mais ce n'est pas
+        -- une piste que l'utilisateur a faite, c'est une que la suite a faite
+        -- pour lui, et savoir laquelle est laquelle en un coup d'oeil est la
+        -- moitie du travail d'un en-tete. La separation se fait par le DESSIN,
+        -- pas par la couleur : un liseré sous le nom, dans la teinte d'accent.
+        local kind = Loop.IsSuiteInstrument(Loop.GetLaneDest(t))
+        if kind then
+            local a = C.accent
+            Core.DrawRect(cx, y + head_h - 2, cell_w - 20, 2,
+                          a[1], a[2], a[3], 0.55)
+        end
         Core.DrawText(cellLabel(t, SCENES, trackName(t), cell_w - 22), cx + 2, y + 2,
                       mc[1], mc[2], mc[3], routed and 0.9 or 0.45)
         local ax = cx + cell_w - 16
