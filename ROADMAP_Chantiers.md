@@ -199,32 +199,31 @@ pistes.
 Petit, et c'est celui qui rend la confiance. « Je ne suis jamais sûr que le
 sample soit bien tempo-matché » est un problème d'affichage, pas de moteur.
 
-- [ ] **Le tempo retenu ET SA RAISON.** `SrcTempo.Bpm` rend déjà `bpm, why`
-      (`"declared"` / `"analysed"` / `"named"` / `"inferred"` / `nil`), et
-      l'en-tête du module explique pourquoi la raison fait partie de la
-      réponse. **Personne ne l'affiche.** `rateFor` jette le `why` sans le
-      regarder. À montrer sous la case et dans le navigateur.
-- [ ] **Le tempo déclaré, enfin éditable.** `clip.src_bpm` est le champ
-      prioritaire du modèle et **n'a aucun écrivain dans tout le dépôt** — deux
-      lectures, zéro écriture. Aujourd'hui tu ne peux pas dire à une case « ce
-      fichier fait 128 ». Un item de menu suffit.
-- [ ] **La barre de progression suit le SON.** Elle affiche la phase de la
-      lane, qui est une position sur la grille ; la voix publie sa propre
-      position (`Voice.State` rend `état, position`) et personne ne la lit. Les
-      deux ne coïncident que si le fichier remplit exactement sa passe.
-- [ ] **« Stretch » cesse de mentir.** Le libellé dit « keeps the key, plays
-      late » : les deux moitiés sont fausses. `Warp.Resolve` joue un **repitch**
-      en attendant la cuisson, et **rien ne réarme après** — ça reste un
-      repitch jusqu'au prochain lancement manuel. Trois correctifs : notifier la
-      fin de cuisson (un compteur de version que `frame()` observe), câbler
-      `Warp.Retry` (zéro appelant : un échec est définitif pour la session), et
-      réécrire le libellé.
-- [ ] **Le texte d'aide de CP_Session décrit un câblage supprimé** : « unroute »
-      (retiré), « each column grows a SAMPLER track » (faux depuis `audioDest`),
-      « a channel of the column's own (9 to 12) and the router feeds each
-      destination one filtered channel » (le routeur, les canaux et l'envoi
-      filtré ont tous disparu). L'aide est le seul endroit où l'utilisateur
-      apprend le modèle, et elle en enseigne un qui n'existe plus.
+- [x] **Le tempo retenu ET SA RAISON.** La ligne sous une case audio dit
+      maintenant `128 BPM · name` — et `· read` (REAPER a lu le fichier, tempo
+      embarqué compris), `· set` (décidé), `· guess` (déduit de la seule durée),
+      ou **`no tempo found`**, qui est l'information qui manquait le plus :
+      elle dit que le fichier joue tel quel. Calculé **une fois**, là où
+      `soundBars` l'est déjà, et mémoïsé par case — cette ligne part dans une
+      boucle de dessin.
+- [x] **Le tempo déclaré, enfin éditable.** « Source tempo… » dans le menu
+      Tempo. Il bat toutes les autres sources, et la longueur de passe est
+      recalculée avec lui — puisqu'elle en dépend.
+- [x] **La barre de progression suit le SON.** `Cells.Progress(t)` lit la
+      position que la voix publie et la rend en fraction de la matière ; la
+      phase de la lane reste la réponse pour une case MIDI, et le repli quand
+      rien ne sonne. Un one-shot ne voit plus sa barre continuer d'avancer
+      pendant qu'il se tait.
+- [x] **« Stretch » cesse de mentir.** Les trois correctifs : `Warp.Version()`
+      change à chaque fin de cuisson (réussie **ou** échouée) et `frame()`
+      réarme les cases concernées — une case étirée ne reste plus un repitch
+      jusqu'au prochain lancement manuel ; `Warp.Retry` a enfin un appelant, à
+      côté de `Warp.Failure` qui dit **pourquoi** ça a échoué ; et le libellé
+      est réécrit — « keeps the key, repitches until it is rendered ».
+- [x] **Le texte d'aide de CP_Session** ne décrit plus de câblage supprimé.
+      « Unroute », la piste SAMPLER par colonne et le routeur à canaux filtrés
+      sont remplacés par ce qui est vrai : une colonne est une piste du projet,
+      le moteur y verse le son directement, et l'armement est celui de REAPER.
 
 ---
 

@@ -71,6 +71,9 @@ local sin, floor = math.sin, math.floor
 local TRACKS = Loop.TRACKS
 local SCENES = 8
 
+-- Le compteur de fins de cuisson qu'on a deja vu passer (Warp.Version).
+local warp_seen = 0
+
 -- A sound cell IS a CP voice. There is no second path any more: the RS5K wiring
 -- — a child track per column, two plugin instances in it, a filtered send and a
 -- reserved MIDI channel — is gone, and with it the reason a launcher project
@@ -108,10 +111,11 @@ end
 -- "?" overlay content (standard help affordance, one per app)
 local HELP_TEXT = [[
 ## What a column is
-A column is a LANE of the looper engine, and it plays into the REAPER
-track it is routed to — the same routing CP_Looper edits. Click a
-column's NAME to choose that track, make a new one, or unroute it. A
-column that says "no track" plays into nothing yet.
+A COLUMN IS A TRACK OF YOUR PROJECT. Make a track in REAPER and a
+column appears, bound to it; the columns follow the project's own
+order. Click a column's NAME to point it somewhere else, to make a
+new track, or to hide the column. There is nothing to route: a column
+that has a track plays into it, through its FX and its fader.
 
 ## The grid
 A column per track, a row per scene, one clip per cell. Every cell
@@ -124,12 +128,13 @@ the one on the left); the triangle beside a row launches that whole
 scene, and tracks with no clip in it stop, as in Ableton.
 
 ## Recording into a cell
-1. ARM the track — the circle in its header. One track at a time: the
-   armed track is the one your playing is heard through, so arming is
-   also how you choose which instrument you are playing.
+1. ARM the track — the circle in its header. That is REAPER's own
+   record-arm on that track: arming is how you choose which instrument
+   you are playing, and nothing here arms or disarms behind your back.
 2. Click the circle in any EMPTY cell of that track.
 3. Play. A MIDI keyboard, or REAPER's virtual keyboard. Clicking pads in
-   CP_Sampler does NOT record — those are previews, not playing.
+   CP_Sampler does NOT record — a pad click is addressed to the kit's
+   track and reaches nothing else, so it cannot land in a take.
 
 The take does not start on your click: it waits for the next Q boundary,
 and the cell counts the beats down so you can come in on time. It then
@@ -158,25 +163,36 @@ loops TEMPO-MATCHED through that column's track. Drop or write MIDI
 and it plays through the engine.
 
 ## How a sound follows the tempo — right-click, Tempo
+THE LINE UNDER A SOUND CELL SAYS WHAT IT DECIDED, and where the number
+came from: "128 BPM · name" (the filename said so), "· read" (REAPER
+read the file, including an embedded tempo), "· set" (you or the
+project decided it), "· guess" (worked out from the length alone, and
+only when it is unambiguous). "no tempo found" means the file plays
+untouched — which is worth knowing before wondering why it drifts.
+
+SOURCE TEMPO… in the same menu is how you say it yourself. It beats
+every other source, and the pass length is worked out again with it.
+
 REPITCH is the default and it is the one that is in time: the sampler
 reads faster or slower, which moves the pitch with it, exactly as every
 hardware sampler has always done.
 
-STRETCH and DON'T FOLLOW are the other two answers. Stretch keeps the
-key but a sampler cannot stretch without a window of latency, so it is
-now the same repitch until a baked version exists; don't-follow plays
-the file at its own tempo.
+STRETCH keeps the key. A sampler cannot stretch without a window of
+latency, so a stretched cell is RENDERED once to a file and played back
+at normal speed. Until that file exists it plays as a repitch — in
+time, which is what the launch was for, with only the key wrong — and
+the cell says "repitch, rendering". When the render lands, the cell
+picks it up by itself. If it fails, it says so, and the menu offers to
+try again.
+
+DON'T FOLLOW plays the file at its own tempo.
 
 ## Where a sound comes out
-Each column that plays a sound grows a SAMPLER track, a folder child of
-the column's own track — so the sound passes through that column's
-fader, its FX and its meter, which a preview never could when the
-column held an instrument.
-
-The trigger travels on a channel of the column's own (9 to 12), and the
-router feeds each destination one filtered channel, so the column's
-instrument never hears a syllable of it. That is why an instrument and
-sound cells can share one column: not a convention, wiring.
+Through the column's own track: its FX chain, its fader, its meter.
+There is no sampler track and no send — the engine pours the sound
+straight into that track, and MIDI cells pour their notes into the same
+one. That is why an instrument and sound cells share a column without
+hearing each other.
 
 ## The mixer
 The zone under the grid (toggle it beside the "?") is a channel strip
@@ -532,8 +548,12 @@ local function rateFor(c)
     -- clip's own announced tempo is the "declared" source and still wins; what
     -- changed is that when it has none, the browser, this grid and the sampler
     -- now reach the SAME conclusion about the same file instead of three.
-    local rt = SrcTempo.Rate(c.path, { declared = c.src_bpm })
-    return rt, (mode == "stretch")
+    local rt, bpm, why = SrcTempo.Rate(c.path, { declared = c.src_bpm })
+    -- LA RAISON FAIT PARTIE DE LA REPONSE. SrcTempo la rend depuis toujours
+    -- (« declared », « analysed », « named », « inferred ») et l'en-tete du
+    -- module explique pourquoi ; ici on la jetait. « Je ne suis jamais sur que
+    -- le sample soit bien tempo-matche » etait un probleme d'affichage.
+    return rt, (mode == "stretch"), bpm, why
 end
 
 -- WHAT to play, and AT WHAT RATE — the two halves of the same answer.
@@ -599,23 +619,72 @@ local function soundBars(c)
     return 1
 end
 
--- What a sound cell says under its name. A stretch has to be rendered before
--- it can be played, and a render that is queued or running is the one moment
--- where the cell is not yet what the menu says it is — so it says so. Five
--- fixed strings, chosen from per frame: no allocation on a draw path.
-local WARP_SUB = {
-    none    = "audio",
-    ready   = "audio · warped",
-    queued  = "audio · baking",
-    baking  = "audio · baking",
-    failed  = "audio · warp failed",
+-- LE TEMPO RETENU ET SA RAISON, calcules UNE FOIS et gardes sur la case.
+--
+-- Couteux : SrcTempo ouvre la source. Appele la ou soundBars l'est deja — au
+-- depot, a la migration, a l'armement — jamais par frame. Les deux champs sont
+-- de l'affichage : ils ne sont pas serialises, et ils se recalculent a
+-- l'ouverture du projet par le meme chemin.
+local function ensureTempo(c)
+    if not (c and c.path) then return end
+    local mode = c.tempo_mode or "repitch"
+    if mode == "none" then
+        c.bpm_seen, c.bpm_why = nil, "off"
+        return
+    end
+    local bpm, why = SrcTempo.Bpm(c.path, c.src_bpm)
+    c.bpm_seen, c.bpm_why = bpm, why
+end
+
+-- Comment le dire en trois mots sous une case. Volontairement court : la ligne
+-- fait douze pixels de haut et partage la case avec le nom du clip.
+local WHY_SHORT = {
+    declared = "set",       -- quelqu'un l'a decide, ici ou dans le projet
+    analysed = "read",      -- REAPER a lu le fichier (tempo embarque compris)
+    named    = "name",      -- le nom du fichier l'annonce
+    inferred = "guess",     -- deduit de la seule duree, et sous garde
 }
+
+-- Memo par case : cette ligne part dans une boucle de dessin, et la construire
+-- par frame allouerait une chaine par case et par frame. Elle ne change que
+-- quand un de ses termes change, ce qui arrive au clic, pas au rafraichissement.
+local sub_txt = setmetatable({}, { __mode = "k" })
+local sub_key = setmetatable({}, { __mode = "k" })
+
 local function audioSub(c)
-    local mode = c.tempo_mode
-    if mode ~= "stretch" then return WARP_SUB.none end
-    local s0 = c.offs or 0
-    return WARP_SUB[Warp.State(c.path, s0, c.len and (s0 + c.len) or 0,
-                               r.Master_GetTempo() or 120)] or WARP_SUB.none
+    local mode = c.tempo_mode or "repitch"
+    local st = "none"
+    if mode == "stretch" then
+        local s0 = c.offs or 0
+        st = Warp.State(c.path, s0, c.len and (s0 + c.len) or 0,
+                        r.Master_GetTempo() or 120) or "none"
+    end
+    local bpm = c.bpm_seen
+    local key = mode .. st .. (bpm and string.format("%.2f", bpm) or "-")
+                .. (c.bpm_why or "-")
+    if sub_key[c] ~= key then
+        sub_key[c] = key
+        local txt
+        if mode == "none" then
+            txt = "audio · free"
+        elseif not bpm then
+            -- ET ON LE DIT. Sans tempo, la case joue le fichier tel quel, et
+            -- l'utilisateur avait le droit de croire qu'elle etait calee.
+            txt = "audio · no tempo found"
+        else
+            txt = string.format("%g BPM · %s", bpm,
+                                WHY_SHORT[c.bpm_why or ""] or "?")
+        end
+        if mode == "stretch" then
+            if st == "ready" then txt = txt .. " · stretched"
+            elseif st == "queued" or st == "baking" then
+                txt = txt .. " · repitch, rendering"
+            elseif st == "failed" then txt = txt .. " · stretch failed"
+            else txt = txt .. " · repitch" end
+        end
+        sub_txt[c] = txt
+    end
+    return sub_txt[c]
 end
 
 -- A length in BARS, and fractions are legitimate: half a bar is a real loop,
@@ -632,8 +701,11 @@ end
 -- the two places a cell is FILLED, plus a safety net at arm time for projects
 -- saved before this existed.
 local function ensureBars(c)
-    if c and c.kind == "audio" and c.path and not c.bars then
-        c.bars = soundBars(c)
+    if c and c.kind == "audio" and c.path then
+        -- Le tempo d'abord : soundBars s'en sert pour decider si le fichier est
+        -- assez long pour ETRE une boucle a ce tempo-la.
+        if c.bpm_why == nil then ensureTempo(c) end
+        if not c.bars then c.bars = soundBars(c) end
     end
     return c
 end
@@ -1203,9 +1275,40 @@ local function setCellTempoMode(t, s, mode)
     local c = cells[t][s]
     if not c then return end
     c.tempo_mode = (mode ~= "repitch") and mode or nil
+    ensureTempo(c)
     saveGrid()
     -- A sound already playing takes the new rate at once — it is one parameter
     -- on the sampler, not a reload and not a relaunch.
+    if isAudio(c) then retune(t, s, c) end
+end
+
+-- DIRE A UNE CASE QUE CE FICHIER FAIT 128.
+--
+-- `src_bpm` est le champ PRIORITAIRE du modele — il bat l'analyse, le nom et la
+-- deduction — et il n'avait AUCUN ecrivain dans tout le depot : deux lectures,
+-- zero ecriture. On pouvait donc lire le format et croire que la fonctionnalite
+-- existait. Un champ de saisie suffit, et la longueur de la passe se recalcule
+-- avec, puisqu'elle depend du tempo retenu.
+local function setCellSrcBpm(t, s)
+    local c = cells[t][s]
+    if not (c and c.path) then return end
+    local cur_bpm = c.src_bpm and string.format("%g", c.src_bpm) or ""
+    local ok, v = r.GetUserInputs("Source tempo", 1,
+                                  "BPM (empty = work it out):,extrawidth=90", cur_bpm)
+    if not ok then return end
+    v = v:gsub("%s", "")
+    local bpm = tonumber(v)
+    if v == "" then
+        c.src_bpm = nil
+    elseif bpm and bpm > 20 and bpm < 400 then
+        c.src_bpm = bpm
+    else
+        flash("A source tempo is a number between 20 and 400")
+        return
+    end
+    c.bpm_seen, c.bpm_why, c.bars = nil, nil, nil
+    ensureBars(c)                       -- le tempo change la longueur de passe
+    saveGrid()
     if isAudio(c) then retune(t, s, c) end
 end
 
@@ -1234,14 +1337,40 @@ local function cellMenu(t, s)
                         action = function() setCellColor(t, s, nil) end }
     local snd = has and c.kind ~= "midi" and c.path ~= nil
     local tm  = snd and (c.tempo_mode or "repitch") or nil
+    -- « Stretch (keeps the key, plays late) » : les deux moities etaient
+    -- fausses. Il ne joue pas en retard — il joue EN TEMPS, en repitch, le
+    -- temps qu'une version etiree soit cuite sur disque ; et il ne garde la
+    -- tonalite qu'une fois cette cuisson finie. Le libelle le dit maintenant,
+    -- et la ligne sous la case dit ou en est la cuisson.
+    local wfail = nil
+    if snd and tm == "stretch" then
+        local s0 = c.offs or 0
+        wfail = Warp.Failure(c.path, s0, c.len and (s0 + c.len) or 0,
+                             r.Master_GetTempo() or 120)
+    end
     local tmodes = snd and {
-        { label = "Repitch (in time)", checked = (tm == "repitch"),
+        { label = "Repitch — faster is higher, always in time",
+          checked = (tm == "repitch"),
           action = function() setCellTempoMode(t, s, "repitch") end },
-        { label = "Stretch (keeps the key, plays late)", checked = (tm == "stretch"),
+        { label = "Stretch — keeps the key, repitches until it is rendered",
+          checked = (tm == "stretch"),
           action = function() setCellTempoMode(t, s, "stretch") end },
+        { label = wfail and ("Retry the stretch (" .. tostring(wfail) .. ")")
+                        or "Retry the stretch",
+          disabled = wfail == nil,
+          action = function()
+            local s0 = c.offs or 0
+            Warp.Retry(c.path, s0, c.len and (s0 + c.len) or 0,
+                       r.Master_GetTempo() or 120)
+            retune(t, s, c)
+          end },
         { separator = true },
         { label = "Don't follow the tempo", checked = (tm == "none"),
           action = function() setCellTempoMode(t, s, "none") end },
+        { separator = true },
+        { label = c.src_bpm and string.format("Source tempo: %g BPM…", c.src_bpm)
+                            or "Source tempo…",
+          action = function() setCellSrcBpm(t, s) end },
     } or nil
     -- ONE-SHOT OU BOUCLE — le champ `lmode` existe dans le format CPC1 depuis le
     -- premier jour et n'avait jamais eu de lecteur. Un fichier depose joue une
@@ -1525,7 +1654,14 @@ local function drawCell(theme, t, s, x, y, w, h)
         if playing then
             local a = C.accent
             local prog
-            if lane then
+            -- LE SON D'ABORD, LA GRILLE ENSUITE. La phase de la lane est une
+            -- position sur la GRILLE : elle dit ou en est la mesure, pas ou en
+            -- est le fichier. Les deux ne coincident que si la matiere remplit
+            -- exactement sa passe — donc presque jamais pour un one-shot, qui
+            -- se tait pendant que la barre continue d'avancer. La voix publie
+            -- sa position depuis toujours et personne ne la lisait.
+            if audio then prog = Cells.Progress(t) end
+            if not prog and lane then
                 local L = Loop.LenBeats(lane)
                 if L > 0 then prog = Loop.Phase(lane) / L end
             end
@@ -2391,7 +2527,27 @@ local function frame(theme)
     -- the cell says "baking" first: a window that freezes without saying why
     -- is a window that looks broken. Every other frame this is a length test
     -- on an empty queue.
+    -- UNE CUISSON QUI SE TERMINE DOIT SE FAIRE ENTENDRE. Sans ceci, une case en
+    -- stretch restait un repitch jusqu'au prochain lancement manuel — souvent
+    -- jusqu'a la fin de la session — alors que le fichier etire etait pret sur
+    -- le disque. Warp compte ses fins de cuisson ; on compare, et on rearme les
+    -- cases concernees. Un entier par frame, et rien quand rien ne cuit.
     Warp.Tick()
+    do
+        local wv = Warp.Version()
+        if wv ~= warp_seen then
+            warp_seen = wv
+            for t = 0, TRACKS - 1 do
+                for sc = 0, SCENES - 1 do
+                    local cc = cells[t] and cells[t][sc]
+                    if cc and isAudio(cc) and cc.tempo_mode == "stretch" then
+                        sub_key[cc] = nil          -- la ligne sous la case ment
+                        if cellTag(t, sc) ~= 0 then retune(t, sc, cc) end
+                    end
+                end
+            end
+        end
+    end
     -- Follow the engine rather than argue with it: a launch fired from
     -- CP_Looper or CP_Editor moves what a track plays, and the grid has to
     -- know. Sound cells included: they are lanes like any other now.

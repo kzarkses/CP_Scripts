@@ -2586,3 +2586,70 @@ Deux étapes, laissées volontairement et écrites comme telles dans le plan :
 **l'instrument chromatique replié en pad** (c'est une refonte d'écran de
 CP_Sampler, pas de routage) et **« éclater ce pad vers une piste »** (c'est un
 ajout, et c'est la réponse au seul manque assumé ci-dessus).
+
+
+---
+
+# Session 22 (suite) — chantier 3 : dire ce que la suite sait déjà
+
+Le plus petit des quatre, et celui qui règle « je ne suis jamais sûr que le
+sample soit bien tempo-matché » — qui était un problème **d'affichage**, pas de
+moteur.
+
+## Le tempo, et d'où vient le chiffre
+
+`SrcTempo.Bpm` rend `bpm, why` depuis le premier jour, et l'en-tête du module
+explique pourquoi la raison fait partie de la réponse. `rateFor` jetait le
+`why` sans le regarder. La ligne sous une case audio dit maintenant
+`128 BPM · name`, `· read`, `· set`, `· guess` — et surtout **`no tempo
+found`**, qui est l'information qui manquait le plus : elle dit que le fichier
+joue tel quel, au lieu de laisser croire qu'il est calé.
+
+Calculé **une fois**, là où `soundBars` l'était déjà (dépôt, migration,
+armement), et mémoïsé par case dans une table à clés faibles : cette ligne part
+dans une boucle de dessin, et la reconstruire par frame allouerait une chaîne
+par case et par frame.
+
+## `src_bpm` avait deux lecteurs et zéro écrivain
+
+C'est le champ **prioritaire** du modèle — il bat l'analyse, le nom et la
+déduction — et rien dans le dépôt ne l'écrivait. On pouvait lire le format et
+croire que la fonctionnalité existait. « Source tempo… » dans le menu Tempo, et
+la longueur de passe est recalculée avec, puisqu'elle en dépend.
+
+## La barre de progression suivait la grille, pas le son
+
+Elle affichait `Loop.Phase(lane) / LenBeats`, c'est-à-dire **où en est la
+mesure** — pas où en est le fichier. Les deux ne coïncident que si la matière
+remplit exactement sa passe, donc presque jamais pour un one-shot : le son
+s'arrêtait et la barre continuait. `Cells.Progress(t)` lit la position que la
+voix publie (`Voice.State` rend état **et** position, et personne ne la lisait)
+et la rend en fraction de la matière. La phase reste la bonne réponse pour une
+case MIDI, et le repli quand rien ne sonne.
+
+## « Stretch » disait deux choses fausses en cinq mots
+
+Le libellé était « keeps the key, plays late ». Il ne joue pas en retard : il
+joue **en temps**, en repitch, le temps qu'une version étirée soit cuite sur
+disque. Et il ne garde la tonalité qu'une fois la cuisson finie — ce qui
+n'arrivait jamais du point de vue de la case, parce que **rien ne réarmait
+après**. Trois correctifs, et ils vont ensemble :
+
+- `Warp.Version()` change à chaque fin de cuisson, réussie **ou** échouée. Le
+  cas de l'échec compte autant : sans lui la case annoncerait « rendering »
+  pour toujours.
+- `frame()` compare ce compteur au sien et réarme les cases en stretch. Un
+  entier par frame, et rien quand rien ne cuit.
+- `Warp.Retry` avait **zéro appelant** — un échec était définitif pour la
+  session, et muet. Il est dans le menu, à côté de `Warp.Failure`, qui dit
+  pourquoi.
+
+## L'aide enseignait un modèle qui n'existe plus
+
+C'est le seul endroit où l'utilisateur apprend comment la fenêtre marche.
+« Unroute », « each column grows a SAMPLER track », « the trigger travels on a
+channel of the column's own (9 to 12) and the router feeds each destination one
+filtered channel » : le routeur, les canaux filtrés et la piste sampler ont tous
+disparu il y a deux chantiers. Remplacé par ce qui est vrai — une colonne est
+une piste du projet, le moteur y verse le son directement, et l'armement est
+celui de REAPER.

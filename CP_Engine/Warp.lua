@@ -107,6 +107,18 @@ local failed  = {}    -- [key] = reason. A file that cannot be cooked must not
                       -- be re-attempted every frame for the rest of the session.
 local baking  = nil   -- the key being rendered on THIS frame
 
+-- CE QUI MANQUAIT POUR QUE « STRETCH » CESSE DE MENTIR.
+--
+-- Une case en stretch joue un REPITCH tant que la version cuite n'existe pas —
+-- decision assumee, elle est en temps et seule la tonalite est fausse. Mais
+-- rien ne prevenait quand la cuisson finissait : la case restait un repitch
+-- jusqu'au prochain lancement manuel, c'est-a-dire souvent jusqu'a la fin de la
+-- session. Un compteur suffit : il change a chaque fin de cuisson, l'hote le
+-- compare a celui qu'il avait et rearme ce qui doit l'etre.
+local version = 0
+
+function Warp.Version() return version end
+
 -- Is a cooked version on disk? Returns its path, or nil.
 function Warp.Get(path, s0, s1, bpm)
     local dst = Warp.PathFor(path, s0, s1, bpm)
@@ -164,6 +176,10 @@ function Warp.Tick()
         -- A half-written file would be read as a valid cache hit forever.
         os.remove(q.dst)
     end
+    -- Reussite ou echec, l'etat de cette case vient de changer : dans un cas
+    -- elle peut passer au fichier cuit, dans l'autre elle doit dire qu'elle a
+    -- echoue plutot que d'annoncer une cuisson en cours pour toujours.
+    version = version + 1
     return key, frames, err
 end
 
@@ -171,7 +187,18 @@ end
 -- disk may have space again). Called by the UI, never on a timer.
 function Warp.Retry(path, s0, s1, bpm)
     local _, key = Warp.PathFor(path, s0, s1, bpm)
-    if key then failed[key] = nil end
+    if key then
+        failed[key] = nil
+        version = version + 1
+    end
+end
+
+-- Cette case a-t-elle echoue, et pourquoi ? Un echec etait DEFINITIF pour la
+-- session et muet : ni raison affichee, ni moyen de reessayer. Les deux
+-- manquaient, et `Warp.Retry` n'avait aucun appelant.
+function Warp.Failure(path, s0, s1, bpm)
+    local _, key = Warp.PathFor(path, s0, s1, bpm)
+    return key and failed[key] or nil
 end
 
 function Warp.Pending() return #order end

@@ -557,6 +557,38 @@ function Cells.Tick(gate)
 end
 
 -- ---------------------------------------------------------------------------
+-- OU EN EST LE SON, entre 0 et 1 de sa matiere.
+--
+-- La barre de progression d'une case affichait la PHASE DE LA LANE, qui est une
+-- position sur la grille : « ou en est la mesure », pas « ou en est le fichier ».
+-- Les deux ne coincident que si la matiere remplit exactement sa passe — c'est
+---a-dire presque jamais pour un one-shot, qui se tait pendant que la barre
+-- continue d'avancer. La voix publie sa propre position depuis toujours
+-- (Voice.State rend etat ET position) et personne ne la lisait.
+--
+-- Rend nil quand rien ne sonne : l'appelant retombe alors sur la phase, qui
+-- reste la bonne reponse pour une lane MIDI.
+function Cells.Progress(t)
+    if not NATIVE then return nil end
+    local c = col[t]
+    if not c then return nil end
+    for h = 0, 1 do
+        local slot = c.half[h]
+        if slot.running and slot.clip and slot.clip.frames > 0 then
+            local hv = slot.v[slot.vi]
+            if hv then
+                local st, pos = Voice.State(hv)
+                if st == Voice.PLAYING and pos then
+                    local f = pos / slot.clip.frames
+                    if f < 0 then f = 0 elseif f > 1 then f = 1 end
+                    return f
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- Diagnostic — l'ecart entre ce qu'on a demande et ce qui a ete joue
 --
 -- La lecon de la campagne du moteur : ne pas expliquer un ecart, se donner les
