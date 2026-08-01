@@ -159,7 +159,13 @@ def check_locals(code):
         for i, l in enumerate(lines, 1):
             if i >= dl:
                 break
-            if re.match(r"\s*local\b", l):
+            # ON NE SAUTE QUE LA DECLARATION DE CE NOM-LA. Sauter toute ligne
+            # commencant par `local` rendait l'outil aveugle a
+            # `local n = maFonction()`, qui est la facon la plus courante
+            # d'appeler une fonction en Lua — et c'est exactement l'appel qui
+            # est passe a travers, deux fois de suite.
+            if re.match(r"\s*local\s+(function\s+)?" + re.escape(name)
+                        + r"\b", l):
                 continue
             # un appel ou une indexation : une simple mention peut etre autre
             # chose que l'usage de la locale qu'on croit

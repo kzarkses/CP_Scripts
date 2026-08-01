@@ -175,6 +175,7 @@ local fx_slot, fx_index, fx_dirty = 0, nil, false
 local findKitFX, fxEnsure, fxDeserialize, fxSave
 local fxPad, fxLoadSample, fxClearPad, fxParam, fxSetParam
 local fxQueueLoad, fxPumpLoads, fxReconcile, fxRefreshInstr
+local fxInstrNote, fxInstrSlot
 
 local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
 
@@ -1910,9 +1911,8 @@ end
 -- kit dans cette vue ; s'il en existe plusieurs, le premier gagne, et les
 -- autres restent joignables depuis la grille.
 local INSTR_DEFAULT_NOTE = 60          -- do central, quand la place est libre
-local fxInstrSlot                      -- rempli plus bas, appele par le refresh
 
-local function fxInstrNote()
+fxInstrNote = function()
     for note = Kit.BASE, Kit.BASE + Kit.MAX - 1 do
         local pad = Kit.pads[note]
         if pad and pad.path and Kit.PadChromatic(note) then return note end
