@@ -1085,6 +1085,40 @@ local function pollSection()
     Audition.SetSection(opts.loop, state.sel_b, state.sel_a)
 end
 
+-- La source de l'item est-elle un vrai fichier, dont le chemin dit la meme
+-- chose qu'elle ? Une SECTION enveloppe un fichier : meme chemin, autre duree
+-- et autre origine — jouer son chemin jouerait autre chose que ce qui est
+-- dessine. Tout le reste (WAVE, MP3, FLAC...) est le fichier lui-meme.
+local function plainFileSource()
+    if not state.src or state.path == "" then return false end
+    local t = r.GetMediaSourceType(state.src)
+    return t ~= "SECTION" and t ~= "" and t ~= "MIDI" and t ~= "MIDIPOOL"
+end
+
+-- CE QUI VA JOUER, en toutes lettres. On ne le devine pas : on repose la
+-- question a Audition (`WillUseVoices`) et aux memes CAPACITES qu'elle
+-- interroge, plutot que de recopier sa decision ici — deux copies d'une regle
+-- finissent toujours par diverger, et celle-la se lit dans un menu au moment
+-- ou l'utilisateur cherche une explication.
+local function previewEngineLabel()
+    if not Audition.WillUseVoices() then
+        return "CF_Preview (loop polled once per frame)"
+    end
+    if state.mode == "item" and state.src and not plainFileSource() then
+        return "CF_Preview — the take has no file of its own (section/reversed)"
+    end
+    if state.mode == "item" and state.take then
+        local rate = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
+        if rate and math.abs(rate - 1.0) > 1e-9 then
+            return "CF_Preview — the take is stretched"
+        end
+    end
+    if state.len > 15.0 then
+        return "CF_Preview — over 15 s, read from disk"
+    end
+    return "CP voice (sample-exact loop)"
+end
+
 -- La piste par laquelle l'ecoute doit sortir, ou nil pour la carte son.
 -- Les DEUX moteurs l'honorent maintenant (`resolveOut` d'Audition lit
 -- `opts.out_track`), donc ce choix ne depend plus de celui qui repond.
@@ -1144,10 +1178,26 @@ local function togglePlay(from)
         local fout = r.GetMediaItemInfo_Value(state.item, "D_FADEOUTLEN")
         if fin  and fin  > 0 then PLAY_OPTS.fade_in  = fin  end
         if fout and fout > 0 then PLAY_OPTS.fade_out = fout end
-        -- the take's ACTUAL source, not its file: a section/reversed source
-        -- previews correctly (same time base as the peaks on screen), and
-        -- was not previewable at all by path
-        if state.src then
+        -- LA SOURCE QUAND IL LE FAUT, LE FICHIER QUAND ON PEUT.
+        --
+        -- Une source SECTION (une prise inversee, une sous-section) n'a pas de
+        -- fichier a elle : son chemin designe le fichier ENTIER, donc toutes
+        -- nos positions seraient fausses. Elle doit passer par CF_Preview, qui
+        -- sait jouer une PCM_source qu'on lui tend.
+        --
+        -- Mais un item ordinaire — l'immense majorite — a un vrai fichier
+        -- dessous, et le lui refuser le condamnait a CF_Preview pour rien. Or
+        -- CF_Preview ne tient pas les points de boucle : le retour est
+        -- surveille une fois par frame depuis Lua (`Preview.Poll`), donc une
+        -- selection courte s'entend par paliers au lieu de boucler ou on l'a
+        -- posee. La voix CP, elle, porte ses bornes en frames source et
+        -- reboucle A L'ECHANTILLON — c'est ce qui rend le mode fichier si
+        -- reactif, et il n'y avait aucune raison que l'item n'y ait pas droit.
+        --
+        -- Ce qui reste hors de portee du moteur (transposition, etirement) est
+        -- renvoye a CF_Preview par `Audition` elle-meme, sur des CAPACITES et
+        -- non sur un backend : rien a decider ici.
+        if state.src and not plainFileSource() then
             Audition.PlaySource(state.src, PLAY_OPTS)
             return
         end
@@ -1289,6 +1339,13 @@ local function openSettings()
               checked = opts.out_mode == "item",
               action = function() opts.out_mode = "item" markDirty() end },
         } },
+        -- QUEL MOTEUR VA REPONDRE, dit avant qu'on se demande pourquoi le son
+        -- n'est pas le meme. La voix CP reboucle a l'echantillon ; CF_Preview
+        -- fait surveiller son retour une fois par frame depuis Lua, donc une
+        -- selection tres courte s'entend par paliers. Ce n'est pas un reglage,
+        -- c'est une consequence — de la duree du fichier, d'une transposition,
+        -- d'un taux de lecture, d'une source sans fichier.
+        { label = "Engine: " .. previewEngineLabel(), disabled = true },
         { separator = true },
         -- The rule that says what a time selection MEANS to playback when the
         -- loop is off. With the loop on it loops; with this on it stops there;
