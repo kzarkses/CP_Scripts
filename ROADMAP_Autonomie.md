@@ -2653,3 +2653,61 @@ filtered channel » : le routeur, les canaux filtrés et la piste sampler ont to
 disparu il y a deux chantiers. Remplacé par ce qui est vrai — une colonne est
 une piste du projet, le moteur y verse le son directement, et l'armement est
 celui de REAPER.
+
+
+---
+
+# Session 22 (fin) — le chantier 2 est retiré, et ce qu'il a appris
+
+Le repli du kit sur une piste a été livré le matin et **annulé le soir**. Il
+faisait perdre leurs échantillons aux pads.
+
+## Ce qui a été retiré
+
+`Kit.lua` et `CP_Sampler.lua` reviennent à leur état d'après le chantier 1 :
+dossier « CP Kit », piste MIDI, une piste par pad. Avec eux repartent
+`Loop.eligible` qui laissait les kits devenir des colonnes, la lecture de la
+chaîne dans `KitViewOfTrack`, et le liseré d'en-tête de CP_Session.
+
+L'historique n'est pas réécrit : `5e32ad0`, `29a1ebb` et `305daf4` restent, et
+un `git checkout 5e32ad0 -- CP_Engine/Kit.lua CP_Sampler/CP_Sampler.lua` les
+ramène entiers si on décide de réparer plutôt que de remplacer.
+
+## Ce qui reste, et c'est l'essentiel de la session
+
+Le chantier 1 entier (ABI 1.8, `CP_PortMidiAt`, `Notes.lua`, plus aucun
+armement forcé), le chantier 3 entier, la fenêtre de tolérance de lancement, les
+six correctifs du registre (dont le format 6 pour le tag de lane), `INSTALL.md`,
+`CLAUDE.md` et les scripts de construction portables. **Aucun d'eux ne touche à
+une piste du projet** — c'est ce qui les rend sûrs, et ce n'est pas une
+coïncidence.
+
+## Les deux accidents, et leur racine commune
+
+**Le pitch.** Un ReaPitch par pad exige un conteneur par pad, donc un
+déplacement d'effet vers ce conteneur — et ce déplacement se faisait sur le
+chemin d'un **bouton qu'on tourne**, plusieurs fois par seconde. Chaque tour
+restructurait la chaîne ; l'index encodé d'un conteneur contient le *nombre
+d'effets de la chaîne*, qui change pendant l'opération, donc un tour sur deux
+visait à côté et le suivant ajoutait un second ReaPitch.
+
+**Le repli.** `TrackFX_CopyToTrack(..., is_move=true)` a déplacé les instances
+de RS5K vers la chaîne du kit ; les échantillons n'ont pas suivi. Le garde-fou
+que j'avais écrit — « ne jamais supprimer une piste dont le contenu n'a pas
+bougé » — vérifiait le **déplacement**, pas le **son**. Il contrôlait le geste
+et non son résultat, et un garde-fou qui fait ça ne garde rien.
+
+**La racine.** Tout paramètre d'instrument absent du RS5K coûte un effet de plus
+dans une chaîne partagée, et une chaîne d'effets ne se restructure pas pendant
+un geste. Ce n'est pas un défaut d'écriture, c'est la limite du montage — et
+elle vaut pour l'ADSR, les zones de vélocité, le choke, la transposition à durée
+constante et les sorties séparées.
+
+## La suite
+
+Un instrument à nous : **un effet, une piste, tout dedans**. JSFX ou CLAP —
+`ANALYSE_Sampler_JSFX_vs_CLAP.md` pose les deux positions, ce que chacune coûte,
+ce que chacune tue, et les trois sondes d'une soirée qui décident. Mon avis y
+est marqué comme tel : le JSFX, parce qu'il rend l'échantillonneur disponible
+après un simple clone, et parce qu'il fait disparaître la classe de bug qui a
+coûté cette journée au lieu de la déplacer.

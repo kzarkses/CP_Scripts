@@ -1,53 +1,42 @@
 -- CP_Sampler — Kit
 --
--- UN KIT EST UNE PISTE. Une seule.
+-- THIS IS NOT A LEFTOVER. The suite moved its clip playback to a native engine
+-- and deleted every infrastructure track it used to create; the question "why
+-- does the sampler still make tracks with an RS5K in them" is therefore fair,
+-- and the answer is that a PAD IS NOT A CLIP. The engine plays voices: a
+-- position, a rate, a gain, two linear fades. A pad is an instrument — full
+-- ADSR, choke groups resolved in the audio thread, velocity zones, per-pad
+-- polyphony, its own FX chain and mixer strip and meter, constant-duration
+-- pitch through ReaPitch, and it keeps sounding when this script is closed and
+-- when the extension is absent. Thirteen of the seventeen parameters used here
+-- have no equivalent in the engine. Migrating would be a net loss, not a
+-- simplification.
 --
--- Sa chaine d'effets porte le JSFX de choke, puis un ReaSamplOmatic5000 par
--- pad, et c'est tout le kit. Il n'y a plus de dossier « CP Kit », plus de piste
--- « CP Kit MIDI », plus une piste par pad : soixante-quatre pads pouvaient
--- faire soixante-cinq pistes dans le projet de quelqu'un qui voulait une
--- batterie, et c'est exactement le « bordel » qu'on a retire.
+-- The sampler engine: a folder track ("CP Kit") with one child track per pad,
+-- each hosting a hidden ReaSamplOmatic5000. RS5K is the audio engine — its
+-- window is never shown; the CP_Sampler grid is the only interface.
 --
--- CE QUE LE REPLI A SUPPRIME PLUTOT QU'AJOUTE. Le fan-out d'envois MIDI
--- filtres vers les pads n'existait QUE parce que les pads etaient des pistes
--- separees. Dans une seule chaine, tous les RS5K voient le meme MIDI et chacun
--- ne repond qu'a SA plage de notes — le filtrage etait deja le sien. Les envois
--- ne faisaient que lui apporter ce qu'il allait de toute facon trier.
+-- Why track-per-pad (mpl RS5K manager / Ableton Drum Rack semantics):
+-- every pad gets its own FX chain, sends, meter and mixer strip for free,
+-- and the whole kit is saved inside the project like any other tracks.
 --
--- THIS IS NOT A LEFTOVER. Le moteur natif joue des VOIX : une position, un
--- taux, un gain, deux fondus lineaires. Un pad est un INSTRUMENT : ADSR
--- complet, groupes de choke resolus dans le fil audio, zones de velocite,
--- polyphonie par pad, transposition a duree constante par ReaPitch, et il
--- continue de sonner quand ce script est ferme et quand l'extension est
--- absente. Treize des dix-sept parametres utilises ici n'ont aucun equivalent
--- dans le moteur. La sortie propre est un plugin CLAP autour de src/core, pas
--- une migration a moitie.
---
--- IDENTITE D'UN PAD : SA PLAGE DE NOTES. lo == hi == la touche. C'est la seule
--- identite qui ne puisse pas mentir, parce que c'est elle qui decide sur quelle
--- touche il sonne ; un tag range a cote pouvait diverger de ce qu'on entendait.
--- Un pad qui a des effets a lui vit dans un CONTENEUR (REAPER 7) et son index
--- est alors encode — mais il se lit et s'ecrit comme les autres, donc le reste
--- du module ne sait pas lequel des deux il tient.
---
--- Identification, en P_EXT (dans le projet, sur du undo) :
---   le kit : P_EXT:CP_KIT = "1"
---   ce qu'un pad sait de lui-meme : P_EXT:CP_KIT_<CLE>_<note> sur le kit
---   l'instrument chromatique : P_EXT:CP_KIT_INSTR = "1", sur sa propre piste
+-- Identification is P_EXT track state (saved in the project, undo-safe):
+--   parent: P_EXT:CP_KIT = "1"     pads: P_EXT:CP_KIT_NOTE = "36".."99"
+--   instrument: P_EXT:CP_KIT_INSTR = "1"   (its own track, beside the kits)
 --
 -- MIDI flow — READ THIS ONE, it is the part that used to be incomprehensible.
 --
 -- TWO ROADS REACH THE KIT, AND THEY ARE NOT THE SAME ROAD.
 --   1. What YOU play. A pad click, a key on the chromatic keyboard, a note
 --      auditioned in the editor: CP_Engine/Notes writes it into ONE engine
---      port, and that port is poured into the kit track, pre-FX. Nothing else
---      in the project hears it. No track is armed for this, ever.
---   2. What the PROJECT plays. A recorded MIDI item on the kit track, a looper
---      lane routed here, a keyboard you monitor because you armed the track —
---      all of it is REAPER's own MIDI, arriving the way it arrives on any
+--      port, and that port is poured into the kit's MIDI bus track, pre-FX.
+--      Nothing else in the project hears it. No track is armed for this, ever.
+--   2. What the PROJECT plays. A recorded MIDI item on the bus, a looper lane
+--      routed here, a keyboard you monitor because you armed the track — all
+--      of it is REAPER's own MIDI, arriving the way it arrives on any
 --      instrument track.
--- Both land in the same chain: the choke JSFX, then every RS5K, each answering
--- to its own note.
+-- Both land in the same FX chain: the generated choke JSFX, then per-pad
+-- MIDI-only sends whose RS5K note range does the filtering.
 --
 -- WHAT THIS MODULE NO LONGER DOES, and it is the whole point: it does not arm
 -- anything of its own accord. It used to force I_RECARM, I_RECMON and
@@ -58,15 +47,10 @@
 -- the arm goes back to meaning what REAPER means by it, and Kit.Armed() is a
 -- reading, not an intent.
 --
--- CE QU'ON A PERDU, ET QUI EST ASSUME : le fader, le mute/solo et le VU PAR
--- PAD dans le mixer de REAPER. Les effets par pad, non — les conteneurs les
--- gardent. Pour le pad qui a vraiment besoin de sa tranche, l'eclatement vers
--- une piste est la reponse, et il sera explicite.
---
--- The chromatic INSTRUMENT is still a second instrument on a track of its own.
--- Le replier en pad (une plage de notes qui couvre le clavier) est la suite du
--- chantier 2 ; ce n'est pas fait, et c'est une refonte d'interface, pas de
--- routage.
+-- The chromatic INSTRUMENT is a second instrument on a track of its own, with
+-- its own input and its own output. Both can sound at once — and now they
+-- really can, because a pad click no longer reaches anything but the kit.
+-- Kit.mode says which one is on screen, and the live port follows it.
 --
 -- RS5K param indices (verified against mpl_RS5K_manager_functions.lua):
 --   0 vol · 1 pan · 3/4 note range · 8 max voices · 9 attack · 10 release
@@ -78,7 +62,7 @@
 
 local Kit = {}
 
-local r  -- reaper, injected (Kit.init)
+local r  -- reaper, injected
 
 -- « A quelle vitesse va ce fichier » — une seule reponse pour toute la suite
 -- (feuille de route phase 3). Les lecteurs de tempo vivaient ici, et c'etait
@@ -121,11 +105,13 @@ local RS5K_ADD  = "ReaSamplOmatic5000 (Cockos)"
 local CHOKE_ADD = "JS:CP_Scripts/cp_kit_choke.jsfx"
 local CHOKE_VERSION = "CP Kit Choke v1"
 
--- Les envois MIDI bus -> pad vivaient ici, avec leur masque de canal. Ils
--- n'existent plus : dans une seule chaine d'effets, chaque RS5K voit le meme
--- MIDI et ne repond qu'a sa plage de notes. Le filtrage etait deja le sien ;
--- les envois ne faisaient que lui apporter ce qu'il allait de toute facon
--- trier. Replier a donc SUPPRIME de la machinerie, pas deplace.
+-- Bus → pad sends: take any source channel, deliver on channel 1. I_MIDIFLAGS
+-- is (src & 31) | (dest << 5), dest 1..16. Not load-bearing — the kit already
+-- sounds correctly on channels 1..8 when a looper lane is routed here, so the
+-- pads are demonstrably channel-blind — but pinning the destination keeps new
+-- sends deterministic now that previews carry a channel tag (Kit.UI_CHAN) and
+-- live play does not. Existing sends are left alone for the same reason.
+local MIDI_TO_CH1 = 1 << 5
 
 Kit.parent = nil       -- folder MediaTrack (validated on access)
 Kit.bus    = nil       -- "CP Kit MIDI" child track — the kit's MIDI track.
@@ -135,11 +121,7 @@ Kit.bus    = nil       -- "CP Kit MIDI" child track — the kit's MIDI track.
                        -- through the folder is a feedback loop and REAPER
                        -- silently mutes the send (mpl's "MIDI bus" design
                        -- exists for exactly this reason).
-Kit.pads   = {}        -- [note] = { track, fx, box, path, name, note, fmt = {} }
-                       -- track = la piste du kit, fx = l'index de son RS5K
-                       -- (encode quand il est dans un conteneur), box = ce
-                       -- conteneur ou nil
-Kit.legacy_bus = nil   -- l'ancienne piste « CP Kit MIDI », le temps du repli
+Kit.pads   = {}        -- [note] = { track, fx, path, name, note, fmt = {} }
 Kit.mode   = "drum"    -- "drum" (4x4 pads) | "instrument" (chromatic)
 Kit.instr  = nil       -- instrument track { track, fx, path, name, root, fmt }
 Kit.kits   = {}        -- every CP_KIT parent in the project (Scan fills it)
@@ -154,11 +136,6 @@ local repaired = false -- one routing migration/repair pass per session
 -- (SetActive, SetMode) doit pouvoir y renvoyer les notes tenues, et que son
 -- corps vit avec les helpers de jeu, tout en bas.
 local playTarget
-
--- Ce qu'un pad sait de lui-meme (tempo de source, sync, accord mis de cote).
--- Range sur la piste du kit, suffixe par la note — le corps vit avec la
--- synchro de tempo, plus bas, mais l'echange de pads en a besoin avant.
-local padExt, setPadExt, padState, putState
 
 local Tracks  -- optional Engine/Tracks module (common P_EXT:CP mark + folder)
 
@@ -184,13 +161,6 @@ end
 -- EnsurePad → Ensure) and raw Undo_BeginBlock pairs would unbalance —
 -- only the outermost pair touches REAPER, and its description wins.
 local undo_depth = 0
--- LE RESCAN DIFFERE. Toute modification de STRUCTURE de la chaine (un pad qui
--- naît, un pad qu'on retire, une boite qu'on cree) decale l'index encode des
--- pads ranges en conteneur : les laisser perimes ferait ecrire un reglage dans
--- le mauvais pad. Il faut donc rescanner — mais une seule fois par geste, pas
--- soixante-quatre fois pendant le chargement d'un preset. Le rescan attend
--- donc la fin du bloc d'annulation, qui est exactement la definition d'un geste.
-local rescan_due = false
 local function ubegin()
     if undo_depth == 0 then r.Undo_BeginBlock() end
     undo_depth = undo_depth + 1
@@ -199,18 +169,8 @@ local function uend(desc)
     undo_depth = undo_depth - 1
     if undo_depth == 0 then
         r.Undo_EndBlock(desc, -1)
-        if rescan_due then
-            rescan_due = false
-            Kit.Scan()
-        end
         last_change = r.GetProjectStateChangeCount(0)
     end
-end
-
-local function rescan()
-    if undo_depth > 0 then rescan_due = true return end
-    Kit.Scan()
-    last_change = r.GetProjectStateChangeCount(0)
 end
 
 local function trackIdx(tr)  -- 0-based
@@ -247,102 +207,6 @@ local function findRS5K(tr)
         if fxMatches(tr, i, "samplomatic") then return i end
     end
     return nil
-end
-
--- ---------------------------------------------------------------------------
--- CONTENEURS (REAPER 7)
--- ---------------------------------------------------------------------------
--- Un conteneur est un effet qui en contient d'autres. On l'adresse par un index
--- ENCODE : 0x2000000 + (sous_index+1) * (nombre_d_effets_de_la_chaine + 1) +
--- (index_du_conteneur+1). Toutes les fonctions TrackFX_* l'acceptent, ce qui
--- veut dire qu'un pad dans un conteneur se lit et s'ecrit EXACTEMENT comme un
--- pad posé a plat : aucun appelant de ce module n'a a savoir lequel des deux
--- il regarde.
---
--- ATTENTION, ET C'EST LE PIEGE : l'encodage depend du NOMBRE d'effets de la
--- chaine. Ajouter un pad decale tous les index encodes des autres. Toute
--- modification de structure doit donc rescanner — c'est la regle, et elle est
--- appliquee par Kit.Scan appele en fin de chaque operation structurelle.
-local FX_CONTAINER = 0x2000000
-
-local function isContainer(tr, i)
-    local ok = r.TrackFX_GetNamedConfigParm(tr, i, "container_count")
-    return ok and true or false
-end
-
--- Index encode du j-ieme effet (0-base) du conteneur a l'index `ci`. REAPER
--- 7.06+ le donne directement ; en dessous on refait le calcul a la main, ce
--- qui est la meme chose et evite de dependre d'une version pour une
--- multiplication.
-local function containerItem(tr, ci, j)
-    local ok, id = r.TrackFX_GetNamedConfigParm(tr, ci, "container_item." .. j)
-    if ok and id and id ~= "" then
-        local v = tonumber(id)
-        if v then return math.floor(v) end
-    end
-    return FX_CONTAINER + (j + 1) * (r.TrackFX_GetCount(tr) + 1) + (ci + 1)
-end
-
-local function containerCount(tr, ci)
-    local ok, n = r.TrackFX_GetNamedConfigParm(tr, ci, "container_count")
-    return (ok and tonumber(n)) or 0
-end
-
--- ---------------------------------------------------------------------------
--- FAIRE ENTRER UN EFFET DANS UN CONTENEUR — et pourquoi c'est delicat
--- ---------------------------------------------------------------------------
--- REAPER ne sait pas creer un effet DANS un conteneur : on l'ajoute au bout de
--- la chaine, puis on le deplace. Et c'est la que se cachait le defaut « mes
--- pads ouvrent tous leur conteneur, et j'ai des conteneurs dans des
--- conteneurs ».
---
--- L'index encode vaut  0x2000000 + sous_index_1 * (NOMBRE D'EFFETS + 1)
---                      + index_conteneur_1.
--- Le nombre d'effets EST dans la formule. Or un deplacement RETIRE l'effet de
--- la chaine du dessus : le nombre change PENDANT l'operation, et l'index qu'on
--- a calcule avant ne designe plus la meme chose apres. Chez moi, un ReaPitch
--- destine au conteneur du pad se decodait en « troisieme element du conteneur
--- qui est le choke » — d'ou des boites imbriquees et une chaine qui s'ouvre en
--- grand pour montrer ce qu'elle vient de faire n'importe ou.
---
--- Il n'y a qu'une configuration ou l'etat d'APRES est previsible sans deviner :
--- la source est le DERNIER effet de la chaine, et le conteneur est AVANT elle.
--- Retirer le dernier ne bouge l'index de personne, et le nombre d'effets passe
--- simplement a n-1. On calcule donc l'adresse pour cet etat-la, et on impose
--- cette configuration a l'appelant plutot que de generaliser un calcul faux.
---
--- Et on VERIFIE : le conteneur doit avoir gagne un element. Un deplacement rate
--- qui rendrait `true` laisserait un effet en vrac dans la chaine du kit.
-local function moveLastIntoBox(tr, box)
-    local n = r.TrackFX_GetCount(tr)
-    if n < 2 or box < 0 or box >= n - 1 then return false end
-    local at = containerCount(tr, box)
-    -- (at+1) * n : `n` est bien le compte AVEC la source, ce qui vaut
-    -- (compte_apres + 1) — c'est le nombre que la formule attend une fois la
-    -- source partie.
-    local dest = FX_CONTAINER + (at + 1) * n + (box + 1)
-    if not r.TrackFX_CopyToTrack(tr, n - 1, tr, dest, true) then return false end
-    if containerCount(tr, box) ~= at + 1 then return false end
-    return true
-end
-
--- Deplacer un effet quelconque de la chaine en DERNIERE position. Indices
--- ordinaires des deux cotes : aucune arithmetique d'encodage, donc rien a
--- rater. C'est le pas qui met l'appelant dans la configuration ci-dessus.
-local function moveToEnd(tr, fx)
-    local n = r.TrackFX_GetCount(tr)
-    if fx == n - 1 then return true end
-    return r.TrackFX_CopyToTrack(tr, fx, tr, n - 1, true) and true or false
-end
-
--- La plage de notes d'un RS5K, en notes MIDI. C'est LA VERITE d'un pad : ce
--- qui le fait sonner sur cette touche et pas une autre. On ne range donc pas
--- son numero a cote (une etiquette peut mentir, une plage de notes non).
-local function noteRangeOf(tr, fx)
-    local lo = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.NOTE_LO)
-    local hi = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.NOTE_HI)
-    if not lo or not hi then return nil end
-    return math.floor(lo * 127 + 0.5), math.floor(hi * 127 + 0.5)
 end
 
 local function findChoke(tr)
@@ -424,31 +288,6 @@ while (midirecv(ofs, m1, m2, m3)) (
     return true
 end
 
--- LE CHOKE EST TOUJOURS PREMIER DE LA CHAINE, et il y reste.
---
--- C'est la seule piece capable de couper une note a l'echantillon tant que le
--- RS5K est le moteur, et elle doit voir le MIDI AVANT les pads : place apres,
--- elle couperait des notes que les RS5K ont deja jouees. `-1000` est la
--- position zero (voir TrackFX_AddByName : <= -1000 est une position, -1000 le
--- premier element). Elle est cachee : la grille de pads est l'interface.
-local function ensureChoke(tr)
-    if not valid(tr) then return nil end
-    local fi = findChoke(tr)
-    if not fi then
-        if not ensureChokeFile() then return nil end
-        fi = r.TrackFX_AddByName(tr, CHOKE_ADD, false, -1000)
-        if fi < 0 then return nil end
-        hideFX(tr, fi)
-    elseif fi > 0 then
-        -- Il existe mais pas en tete : un kit d'avant le portait sur le dossier,
-        -- ou quelqu'un a range sa chaine a la main. Place apres un RS5K, il
-        -- couperait des notes que celui-ci a deja jouees. On le remonte.
-        if r.TrackFX_CopyToTrack(tr, fi, tr, 0, true) then fi = 0 end
-    end
-    choke_fx, choke_tr = fi, tr
-    return fi
-end
-
 -- ---------------------------------------------------------------------------
 -- Discovery
 -- ---------------------------------------------------------------------------
@@ -467,91 +306,42 @@ local function folderWalk(parent, fn)
     end
 end
 
--- Le fichier charge dans un RS5K. FILE0 partout, FILE sur certains builds.
-local function rs5kFile(tr, fx)
-    local ok, fn = r.TrackFX_GetNamedConfigParm(tr, fx, "FILE0")
-    if ok and fn ~= "" then return fn end
-    ok, fn = r.TrackFX_GetNamedConfigParm(tr, fx, "FILE")
-    if ok and fn ~= "" then return fn end
-    return nil
-end
-
--- L'ETIQUETTE d'un pad. Le nom de la piste faisait ce travail ; il n'y a plus
--- de piste par pad, donc c'est le nom renomme de l'effet — visible dans la
--- chaine de REAPER, ce qui est exactement ou on veut le lire quand on ouvre le
--- kit a la main.
-local function fxLabel(tr, fx)
-    local ok, nm = r.TrackFX_GetNamedConfigParm(tr, fx, "renamed_name")
-    if ok and nm and nm ~= "" then return nm end
-    return nil
-end
-
-local function setFxLabel(tr, fx, name)
-    r.TrackFX_SetNamedConfigParm(tr, fx, "renamed_name", name or "")
-end
-
--- UN PAD EST UN RS5K DANS LA CHAINE DU KIT, et son numero est SA PLAGE DE
--- NOTES. C'est la seule identite qui ne puisse pas mentir : c'est elle qui
--- decide sur quelle touche il sonne. Un tag range a cote pouvait diverger de
--- ce qu'on entendait ; ici la question ne se pose plus.
---
--- Un pad qui a des effets a lui vit dans un CONTENEUR : on descend d'un niveau
--- pour trouver son RS5K, et l'index encode qu'on garde se lit et s'ecrit comme
--- n'importe quel autre. Le reste du module ne sait pas lequel des deux il tient.
-local function adoptPadFx(tr, fx, pads, box)
-    local lo, hi = noteRangeOf(tr, fx)
-    if not lo or lo ~= hi then return false end          -- chromatique, pas un pad
-    if lo < Kit.BASE or lo >= Kit.BASE + Kit.MAX then return false end
-    if pads[lo] then return false end                     -- premier arrive
-    local path = rs5kFile(tr, fx)
-    pads[lo] = {
-        track = tr, fx = fx, box = box, path = path, note = lo,
-        name = fxLabel(tr, box or fx) or (path and baseName(path)) or "",
-        fmt = {},
-    }
-    return true
-end
-
--- Toute la chaine du kit, une fois : le choke, puis les pads a plat et les
--- pads en conteneur.
-local function scanChain(tr, pads)
-    local n = r.TrackFX_GetCount(tr)
-    for i = 0, n - 1 do
-        if fxMatches(tr, i, "cp_kit_choke") then
-            if not choke_fx then choke_fx, choke_tr = i, tr end
-        elseif fxMatches(tr, i, "samplomatic") then
-            adoptPadFx(tr, i, pads, nil)
-        elseif isContainer(tr, i) then
-            local cn = containerCount(tr, i)
-            for j = 0, cn - 1 do
-                local sub = containerItem(tr, i, j)
-                if fxMatches(tr, sub, "samplomatic") then
-                    adoptPadFx(tr, sub, pads, i)
-                    break                 -- un conteneur = un pad
-                end
-            end
-        end
-    end
-end
-
--- LA FORME D'AVANT : une piste par pad, taggee CP_KIT_NOTE, dans un dossier.
--- Elle n'est plus produite, mais elle existe dans les projets deja faits et
--- Kit.Fold la replie. On la reconnait donc encore — et uniquement pour ca.
-local function scanLegacyPad(tr, pads, in_folder)
+-- One pad candidate. Detection is layered so a kit survives anything:
+--   1. the P_EXT:CP_KIT_NOTE tag (our own pads)
+--   2. inside the kit folder: any RS5K with a single-note range is
+--      ADOPTED (mpl RS5K-manager kits, hand-built kits, lost tags) and
+--      the tag is healed for next time.
+-- FILE0 is the RS5K sample path; some builds answer to "FILE" instead.
+local function scanPad(tr, pads, in_folder)
     local note = tonumber(getExt(tr, "CP_KIT_NOTE") or "")
     local fx = findRS5K(tr)
     if not note and in_folder and fx then
-        local lo, hi = noteRangeOf(tr, fx)
-        if lo and lo == hi then note = lo end
+        local lo = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.NOTE_LO)
+        local hi = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.NOTE_HI)
+        local nlo = math.floor(lo * 127 + 0.5)
+        local nhi = math.floor(hi * 127 + 0.5)
+        if nlo == nhi then
+            note = nlo
+            setExt(tr, "CP_KIT_NOTE", tostring(note))  -- heal the tag
+        end
     end
     if not note or note < Kit.BASE or note >= Kit.BASE + Kit.MAX
        or pads[note] then
         return
     end
+    local path = nil
+    if fx then
+        local ok, fn = r.TrackFX_GetNamedConfigParm(tr, fx, "FILE0")
+        if ok and fn ~= "" then
+            path = fn
+        else
+            ok, fn = r.TrackFX_GetNamedConfigParm(tr, fx, "FILE")
+            if ok and fn ~= "" then path = fn end
+        end
+    end
     local _, tname = r.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
-    local path = fx and rs5kFile(tr, fx) or nil
     pads[note] = {
-        track = tr, fx = fx, path = path, note = note, legacy = true,
+        track = tr, fx = fx, path = path, note = note,
         name = (tname ~= "" and tname) or (path and baseName(path)) or "",
         fmt = {},
     }
@@ -576,7 +366,6 @@ end
 
 function Kit.Scan()
     Kit.parent, Kit.bus, Kit.instr, choke_fx = nil, nil, nil, nil
-    Kit.legacy_bus, choke_tr = nil, nil
     local pads = {}
     local kits = Kit.kits
     for i = #kits, 1, -1 do kits[i] = nil end
@@ -600,39 +389,40 @@ function Kit.Scan()
     end
     if Kit.parent then
         Kit.mode = getExt(Kit.parent, "CP_KIT_MODE") or "drum"
-        -- LE KIT EST LA PISTE. Sa chaine d'effets porte le choke puis les pads,
-        -- et `Kit.bus` n'est plus une piste enfant : c'est la piste elle-meme.
-        -- Le nom reste parce que tout le module parle du « bus » quand il veut
-        -- dire « la ou le MIDI du kit arrive », et c'est toujours vrai.
-        Kit.bus = Kit.parent
-        scanChain(Kit.parent, pads)
-
-        -- LA FORME D'AVANT, et uniquement pour la replier (Kit.Fold). Un
-        -- dossier avec une piste par pad : on la lit encore, on ne la produit
-        -- plus. `legacy = true` sur ces pads dit a tout le monde qu'ils sont en
-        -- sursis — et Kit.Fold les fait passer dans la chaine.
         folderWalk(Kit.parent, function(tr)
             if getExt(tr, "CP_KIT_MIDI") then
-                Kit.legacy_bus = tr
-                if not choke_fx then
-                    choke_fx = findChoke(tr)
-                    choke_tr = choke_fx and tr or nil
-                end
+                Kit.bus = tr
             elseif getExt(tr, "CP_KIT_INSTR") then
                 scanInstrument(tr)
             else
-                scanLegacyPad(tr, pads, true)
+                scanPad(tr, pads, true)
             end
         end)
-        if not Kit.legacy_bus and #kits == 1 then
+        -- Safety nets: tagged tracks that escaped the folder (moved
+        -- around, folder depths mangled by hand) are still adopted — but
+        -- ONLY while the project has a single kit: a global search with
+        -- several kits around would swallow another kit's bus or pads.
+        if not Kit.bus and #kits == 1 then
             for i = 0, count - 1 do
                 local tr = r.GetTrack(0, i)
-                if getExt(tr, "CP_KIT_MIDI") then Kit.legacy_bus = tr break end
+                if getExt(tr, "CP_KIT_MIDI") then Kit.bus = tr break end
             end
         end
-        if not choke_fx and Kit.legacy_bus then
-            choke_fx = findChoke(Kit.legacy_bus)
-            choke_tr = choke_fx and Kit.legacy_bus or nil
+        if next(pads) == nil and #kits == 1 then
+            for i = 0, count - 1 do
+                local tr = r.GetTrack(0, i)
+                if tr ~= Kit.parent and tr ~= Kit.bus then
+                    scanPad(tr, pads, false)
+                end
+            end
+        end
+        if Kit.bus then
+            choke_fx = findChoke(Kit.bus)
+            choke_tr = choke_fx and Kit.bus or nil
+        end
+        if not choke_fx then
+            choke_fx = findChoke(Kit.parent)   -- legacy pre-bus position
+            choke_tr = choke_fx and Kit.parent or nil
         end
     end
     -- The instrument stands on its own track, beside the kits rather than
@@ -696,23 +486,25 @@ end
 function Kit.NewKit(name)
     name = (name and name ~= "") and name or "CP Kit"
     ubegin()
-    local idx = r.CountTracks(0)
-    r.InsertTrackAtIndex(idx, false)
-    local tr = r.GetTrack(0, idx)
-    r.GetSetMediaTrackInfo_String(tr, "P_NAME", name, true)
-    if Tracks then Tracks.Mark(tr, "sampler", "kit") end
+    local tr
+    if Tracks then
+        tr = Tracks.NewChild("sampler", "kit", name)
+    else
+        local idx = r.CountTracks(0)
+        r.InsertTrackAtIndex(idx, false)
+        tr = r.GetTrack(0, idx)
+        r.GetSetMediaTrackInfo_String(tr, "P_NAME", name, true)
+    end
     setExt(tr, "CP_KIT", "1")
-    r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)
-    ensureChoke(tr)
     uend("Sampler: new kit " .. name)
     Kit.SetActive(tr)
     return tr
 end
 
--- Adopt an existing kit: mark this track as a kit, make it the active one and
--- rescan. Works on mpl RS5K-manager kits and hand-built track-per-pad setups —
--- those arrive as a folder of pad tracks, and Kit.Fold pulls them into one
--- chain on the next poll. Other kits keep their tag: multi-kit is normal.
+-- Adopt an existing kit: mark this folder track as a kit parent, make it
+-- the active one and rescan (children with single-note RS5Ks get pad tags
+-- healed). Works on mpl RS5K-manager kits and hand-built track-per-pad
+-- setups. Other kits keep their tag — multi-kit is the normal state now.
 function Kit.Adopt(track)
     if not valid(track) then return false end
     ubegin()
@@ -733,18 +525,12 @@ function Kit.Poll()
     -- la cible de jeu suit, et ce qui sonnait est relache la ou il sonnait.
     -- C'est tout ce que ce poll ecrit — plus aucun armement n'est reaffirme.
     Notes.SetTrack(playTarget())
-    -- UNE FOIS PAR SESSION : le repli. Un kit construit avant le chantier 2 est
-    -- un dossier plein de pistes ; Kit.Fold en fait une piste, en DEPLACANT ce
-    -- qu'il contient et sans jamais supprimer une piste dont le contenu n'est
-    -- pas arrive. Sur un kit deja replie, c'est une poignee de lectures.
+    -- One-time routing migration/repair per session: kits built before
+    -- the MIDI-bus architecture have choke+sends on the folder parent
+    -- (feedback-muted) and possibly pads armed as a user workaround.
     if not repaired then
         repaired = true
-        if valid(Kit.parent) then
-            Kit.Fold()
-            -- et on reprend les ReaPitch qu'une version precedente de ce module
-            -- a empiles dans les boites de pad (voir Kit.CleanPitchLeftovers)
-            Kit.CleanPitchLeftovers()
-        end
+        if valid(Kit.parent) then Kit.Repair() end
         Kit.SplitInstrument()   -- one-time: the instrument leaves the kit
         Kit.Scan()
     end
@@ -764,132 +550,141 @@ end
 -- ---------------------------------------------------------------------------
 -- Creation
 -- ---------------------------------------------------------------------------
--- LE KIT EST UNE PISTE ORDINAIRE, et c'est tout le chantier 2 en une phrase.
---
--- Il naissait dans le dossier partage « CP », en dossier lui-meme, avec une
--- piste enfant pour le MIDI et une piste enfant PAR PAD. Soixante-quatre pads,
--- c'etait jusqu'a soixante-cinq pistes dans le projet de quelqu'un qui voulait
--- une batterie. Maintenant : une piste, sa chaine d'effets, et rien d'autre.
---
--- Pas de dossier CP non plus : ce dossier existe pour ranger de
--- l'infrastructure, et un kit n'en est pas — c'est un instrument, il vit ou
--- l'utilisateur le pose. Il porte quand meme la marque commune (P_EXT:CP),
--- parce que la marque est la seule autorite de decouverte de la suite.
 function Kit.Ensure()
     if valid(Kit.parent) then return Kit.parent end
     Kit.Scan()
     if valid(Kit.parent) then return Kit.parent end
 
     ubegin()
-    local idx = r.CountTracks(0)
-    r.InsertTrackAtIndex(idx, false)
-    local tr = r.GetTrack(0, idx)
-    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Kit", true)
-    if Tracks then Tracks.Mark(tr, "sampler", "kit") end
+    local tr
+    if Tracks then
+        -- Born inside the shared CP folder, with the common ownership mark.
+        tr = Tracks.NewChild("sampler", "kit", "CP Kit")
+    else
+        local idx = r.CountTracks(0)
+        r.InsertTrackAtIndex(idx, false)
+        tr = r.GetTrack(0, idx)
+        r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Kit", true)
+    end
     setExt(tr, "CP_KIT", "1")
-    r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)   -- record MIDI input
-    ensureChoke(tr)
-    Kit.parent, Kit.bus = tr, tr
+    Kit.parent = tr
     Kit.version = Kit.version + 1
     uend("Sampler: create kit")
     return tr
 end
 
--- Le « bus » et le kit sont la meme piste. La fonction reste parce que tout le
--- module parle du bus quand il veut dire « la ou le MIDI du kit arrive », et
--- que c'est toujours exact — seulement, l'endroit ou il arrive est desormais la
--- chaine d'effets du kit, pas une piste enfant.
-function Kit.EnsureBus()
-    return Kit.Ensure()
-end
-
--- Reglages d'un RS5K qui vient de naitre en pad : sa touche, et le
--- comportement one-shot d'une batterie.
-local function initPadFx(tr, fx, note)
-    hideFX(tr, fx)
-    -- Factory defaults captured once (0dB volume knob reset target etc.)
-    if not Kit.DEFAULT_VOL then
-        Kit.DEFAULT_VOL = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.VOL)
-        Kit.DEFAULT_ATT = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.ATTACK)
-        Kit.DEFAULT_REL = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.RELEASE)
-        Kit.DEFAULT_DEC = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.DECAY)
-        Kit.DEFAULT_SUS = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.SUSTAIN)
+-- Insert a track as first child of the folder (depth dance shared by the
+-- MIDI bus and the pads — never touches non-kit tracks).
+local function insertChildTrack(parent)
+    local pidx = trackIdx(parent)
+    local has_children = r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH") > 0
+        and (function()
+            local any = false
+            folderWalk(parent, function() any = true return true end)
+            return any
+        end)()
+    r.InsertTrackAtIndex(pidx + 1, false)
+    local tr = r.GetTrack(0, pidx + 1)
+    if has_children then
+        r.SetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH", 0)
+    else
+        -- The parent may itself be the LAST child of an outer folder (the
+        -- shared CP folder): whatever levels it was closing move onto the
+        -- new last child, on top of closing the kit itself.
+        local pd = r.GetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH")
+        if pd > 0 then pd = 0 end
+        r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", 1)
+        r.SetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH", pd - 1)
     end
-    r.TrackFX_SetParamNormalized(tr, fx, Kit.P.NOTE_LO, note / 127)
-    r.TrackFX_SetParamNormalized(tr, fx, Kit.P.NOTE_HI, note / 127)
-    r.TrackFX_SetParamNormalized(tr, fx, Kit.P.OBEY, 0)  -- one-shot
-    -- 4 voices: rapid hits overlap naturally instead of hard-stealing
-    -- the single default voice (drum-roll feel)
-    r.TrackFX_SetParamNormalized(tr, fx, Kit.P.MAXV, 4 / 64)
-    setFxLabel(tr, fx, "Pad " .. note)
+    return tr
 end
 
--- UN PAD EST UNE BOITE, ET DEDANS UN RS5K.
+-- The kit's MIDI bus: hosts the choke JSFX and fans MIDI out to the pads.
+-- Recording lands MIDI performances as items HERE — their playback drives the
+-- kit too.
 --
--- Le fan-out d'envois MIDI filtres a disparu avec les pistes enfants, et ce
--- n'est pas un compromis : dans une seule chaine, tous les RS5K voient le meme
--- MIDI et chacun ne repond qu'a SA plage de notes — c'est le RS5K lui-meme qui
--- filtre, comme il l'a toujours fait. Replier SUPPRIME de la machinerie.
---
--- POURQUOI LA BOITE DES LA NAISSANCE, et non « a la demande » comme au premier
--- jet : parce que « a la demande » veut dire restructurer la chaine au moment
--- ou l'utilisateur demande autre chose — un accord, un effet — et une
--- restructuration au milieu d'un geste est exactement la ou les index encodes
--- se perdent. Avec la boite d'emblee, ajouter quoi que ce soit a un pad ne
--- deplace plus rien : on entre dans une boite qui existe deja. En prime la
--- chaine du kit se lit comme la grille — une boite par pad, au nom de son
--- echantillon — au lieu d'une file de « ReaSamplOmatic5000 » identiques.
---
--- Si le conteneur echoue (REAPER 6, ou plus vieux), on retombe sur un RS5K a
--- plat : le pad sonne, et seuls ses effets a lui manquent. Un kit qui ne sonne
--- pas serait un prix bien plus lourd que cette asymetrie.
+-- IT IS BORN LIKE ANY OTHER INSTRUMENT TRACK: not armed, not monitoring, with
+-- whatever input REAPER gives a new track. It used to be born armed on all
+-- inputs and all channels, and that was not a convenience — it was the whole
+-- reason live MIDI was impossible to reason about. Playing it is arming it,
+-- yourself, once, like anything else in REAPER.
+function Kit.EnsureBus()
+    if valid(Kit.bus) then return Kit.bus end
+    local parent = Kit.Ensure()
+    local count = r.CountTracks(0)
+    for i = 0, count - 1 do
+        local tr = r.GetTrack(0, i)
+        if getExt(tr, "CP_KIT_MIDI") then
+            Kit.bus = tr
+            return tr
+        end
+    end
+    ubegin()
+    local tr = insertChildTrack(parent)
+    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Kit MIDI", true)
+    setExt(tr, "CP_KIT_MIDI", "1")
+    r.SetMediaTrackInfo_Value(tr, "I_RECMODE", 0)   -- record MIDI input
+    if ensureChokeFile() then
+        local fi = r.TrackFX_AddByName(tr, CHOKE_ADD, false, -1000)
+        if fi >= 0 then
+            choke_fx = fi
+            hideFX(tr, fi)
+        end
+    end
+    Kit.bus = tr
+    Kit.version = Kit.version + 1
+    uend("Sampler: create MIDI bus")
+    return tr
+end
+
 function Kit.EnsurePad(note)
     if note < Kit.BASE or note >= Kit.BASE + Kit.MAX then return nil end
     local pad = Kit.Pad(note)
     if pad then return pad end
+    local parent = Kit.Ensure()
 
     ubegin()
-    local tr = Kit.Ensure()
-    local box = r.TrackFX_AddByName(tr, "Container", false, -1)
-    if box >= 0 then
-        hideFX(tr, box)
-        setFxLabel(tr, box, "Pad " .. note)
-    else
-        box = nil
+    local bus = Kit.EnsureBus()
+    local tr = insertChildTrack(parent)
+    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "Pad " .. note, true)
+    setExt(tr, "CP_KIT_NOTE", tostring(note))
+
+    -- MIDI-only send bus → pad (the pad's audio flows through the folder;
+    -- sourcing from the folder parent itself would be a feedback loop and
+    -- REAPER would mute the send)
+    local s = r.CreateTrackSend(bus, tr)
+    if s >= 0 then
+        r.SetTrackSendInfo_Value(bus, 0, s, "I_SRCCHAN", -1)
+        r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", MIDI_TO_CH1)
     end
-    local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1)
-    if fx < 0 then
-        if box then r.TrackFX_Delete(tr, box) end
-        uend("Sampler: create pad " .. note)
-        return nil
-    end
-    initPadFx(tr, fx, note)
-    if box then
-        -- la boite vient d'etre posee juste avant lui : c'est exactement la
-        -- configuration que moveLastIntoBox exige
-        if moveLastIntoBox(tr, box) then
-            fx = containerItem(tr, box, 0)
-        else
-            r.TrackFX_Delete(tr, box)   -- rien de deplace : la boite est vide
-            box = nil
+
+    local fx = r.TrackFX_AddByName(tr, RS5K_ADD, false, -1000)
+    if fx >= 0 then
+        hideFX(tr, fx)
+        -- Factory defaults captured once (0dB volume knob reset target etc.)
+        if not Kit.DEFAULT_VOL then
+            Kit.DEFAULT_VOL = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.VOL)
+            Kit.DEFAULT_ATT = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.ATTACK)
+            Kit.DEFAULT_REL = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.RELEASE)
+            Kit.DEFAULT_DEC = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.DECAY)
+            Kit.DEFAULT_SUS = r.TrackFX_GetParamNormalized(tr, fx, Kit.P.SUSTAIN)
         end
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.NOTE_LO, note / 127)
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.NOTE_HI, note / 127)
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.OBEY, 0)  -- one-shot
+        -- 4 voices: rapid hits overlap naturally instead of hard-stealing
+        -- the single default voice (drum-roll feel)
+        r.TrackFX_SetParamNormalized(tr, fx, Kit.P.MAXV, 4 / 64)
+    else
+        fx = nil
     end
-    -- INSCRIT TOUT DE SUITE, sans attendre le rescan. LoadSample ouvre son
-    -- propre bloc d'annulation autour de cet appel, donc le rescan est differe
-    -- a la fin du geste : compter dessus rendrait `nil` a l'appelant qui vient
-    -- de creer le pad, et il ne pourrait pas y charger son echantillon.
-    --
-    -- L'index de CE pad est juste (il vient d'etre lu apres le deplacement).
-    -- Ceux des AUTRES pads en conteneur, eux, viennent de bouger : la chaine a
-    -- gagne une boite, et le nombre d'effets est dans leur adresse. C'est
-    -- exactement ce que `rescan()` repare, et pourquoi il n'est pas facultatif.
-    local pad_new = { track = tr, fx = fx, box = box, path = nil, note = note,
-                      name = "Pad " .. note, fmt = {} }
-    Kit.pads[note] = pad_new
+
+    pad = { track = tr, fx = fx, path = nil, note = note,
+            name = "Pad " .. note, fmt = {} }
+    Kit.pads[note] = pad
     Kit.version = Kit.version + 1
     uend("Sampler: create pad " .. note)
-    rescan()
-    return Kit.pads[note] or pad_new
+    return pad
 end
 
 -- ---------------------------------------------------------------------------
@@ -916,13 +711,17 @@ function Kit.LoadSample(note, path, opts)
         return false
     end
     if not pad.fx then
-        local fx = r.TrackFX_AddByName(pad.track, RS5K_ADD, false, -1)
+        local fx = r.TrackFX_AddByName(pad.track, RS5K_ADD, false, -1000)
         if fx < 0 then
             uend("Sampler: load sample")
             return false
         end
-        initPadFx(pad.track, fx, note)
+        hideFX(pad.track, fx)
         pad.fx = fx
+        r.TrackFX_SetParamNormalized(pad.track, fx, Kit.P.NOTE_LO, note / 127)
+        r.TrackFX_SetParamNormalized(pad.track, fx, Kit.P.NOTE_HI, note / 127)
+        r.TrackFX_SetParamNormalized(pad.track, fx, Kit.P.OBEY, 0)
+        r.TrackFX_SetParamNormalized(pad.track, fx, Kit.P.MAXV, 4 / 64)
     end
     r.TrackFX_SetNamedConfigParm(pad.track, pad.fx, "FILE0", path)
     r.TrackFX_SetNamedConfigParm(pad.track, pad.fx, "DONE", "")
@@ -933,12 +732,7 @@ function Kit.LoadSample(note, path, opts)
     pad.path = path
     pad.name = baseName(path)
     pad.fmt = {}
-    -- LE NOM DU PAD EST L'ETIQUETTE DE SA BOITE. C'etait le nom de la piste ;
-    -- il n'y a plus de piste par pad, et renommer la piste du kit a chaque
-    -- chargement d'echantillon serait absurde. Sur la boite, il se lit au meme
-    -- endroit qu'avant : la ou on regarde quand on ouvre la chaine du kit — et
-    -- la chaine se lit alors comme la grille.
-    setFxLabel(pad.track, pad.box or pad.fx, pad.name)
+    r.GetSetMediaTrackInfo_String(pad.track, "P_NAME", pad.name, true)
     if newmat and not (opts and opts.keep_sync) then
         clearSyncState(note, pad)
         if not (opts and opts.no_sync) then autoSync(note) end
@@ -948,37 +742,46 @@ function Kit.LoadSample(note, path, opts)
     return true
 end
 
--- VIDER UN PAD, C'EST RETIRER SON RS5K DE LA CHAINE.
---
--- Il n'y a plus de piste a garder derriere : un pad vide est simplement un pad
--- qui n'est pas la. Si le pad avait un conteneur (donc des effets a lui), on
--- retire le conteneur entier — sinon on laisserait une boite d'effets orpheline
--- traiter du silence, et personne ne saurait plus a quoi elle appartenait.
---
--- Clear et Delete se rejoignent donc, et c'est la simplification qu'on
--- cherchait : sans piste par pad, « vider » et « supprimer » ne different plus.
-local function removePadFx(pad)
-    if not pad then return end
-    if pad.box then
-        r.TrackFX_Delete(pad.track, pad.box)
-    elseif pad.fx then
-        r.TrackFX_Delete(pad.track, pad.fx)
-    end
-end
-
+-- Remove the sample (RS5K instance) but keep the pad track and its FX chain.
 function Kit.ClearPad(note)
     local pad = Kit.Pad(note)
     if not pad then return end
     ubegin()
-    removePadFx(pad)
-    Kit.pads[note] = nil
+    if pad.fx then r.TrackFX_Delete(pad.track, pad.fx) end
+    pad.fx, pad.path = nil, nil
+    pad.name = "Pad " .. note
+    pad.fmt = {}
+    r.GetSetMediaTrackInfo_String(pad.track, "P_NAME", pad.name, true)
     Kit.version = Kit.version + 1
     uend("Sampler: clear pad")
-    rescan()        -- les index encodes des autres pads ont bouge
 end
 
+-- Delete the pad track entirely (folder closer handled).
 function Kit.DeletePad(note)
-    Kit.ClearPad(note)
+    local pad = Kit.Pad(note)
+    if not pad then return end
+    ubegin()
+    local parent = Kit.parent
+    local pad_d = r.GetMediaTrackInfo_Value(pad.track, "I_FOLDERDEPTH")
+    if pad_d < 0 and valid(parent) then
+        -- Hand the WHOLE closing depth to the previous track if it is
+        -- still inside the folder (the pad may close outer folders too —
+        -- the shared CP folder — hence += pad_d, not -1); when the last
+        -- pad goes, the parent stops being a folder and takes over the
+        -- outer closures itself.
+        local idx = trackIdx(pad.track)
+        local prev = idx > 0 and r.GetTrack(0, idx - 1) or nil
+        if prev and prev ~= parent then
+            r.SetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH",
+                r.GetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH") + pad_d)
+        elseif prev == parent then
+            r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", pad_d + 1)
+        end
+    end
+    r.DeleteTrack(pad.track)
+    Kit.pads[note] = nil
+    Kit.version = Kit.version + 1
+    uend("Sampler: delete pad")
 end
 
 -- Swap two pad SLOTS (Drum Rack drag): tracks keep their FX chains and
@@ -990,10 +793,9 @@ function Kit.SwapPads(a, b)
     if not pa and not pb then return end
     ubegin()
     local ga, gb = Kit.Choke(a), Kit.Choke(b)
-    -- La plage de notes EST l'identite du pad : la deplacer suffit, et il n'y
-    -- a plus de tag range a cote qui pourrait diverger de ce qu'on entend.
     local function assign(pad, note)
         if not pad then return end
+        setExt(pad.track, "CP_KIT_NOTE", tostring(note))
         if pad.fx then
             r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.NOTE_LO, note / 127)
             r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.NOTE_HI, note / 127)
@@ -1001,16 +803,11 @@ function Kit.SwapPads(a, b)
         pad.note = note
         pad.fmt = {}
     end
-    local sa, sb = padState(a), padState(b)
     assign(pa, b)
     assign(pb, a)
     Kit.pads[a], Kit.pads[b] = pb, pa
     Kit.SetChoke(a, gb or 0)
     Kit.SetChoke(b, ga or 0)
-    -- L'identite de tempo appartient au SLOT elle aussi : elle voyage avec le
-    -- pad, sinon un echange rendrait la boucle calee sur le tempo de l'autre.
-    putState(b, sa)
-    putState(a, sb)
     Kit.version = Kit.version + 1
     uend("Sampler: swap pads")
 end
@@ -1087,62 +884,11 @@ local function plainSet(tr, fx, pid, v)
 end
 
 -- ---------------------------------------------------------------------------
--- CE QU'UN PAD SAIT DE LUI-MEME, ET OU C'EST RANGE
--- ---------------------------------------------------------------------------
--- Le tempo de source, le drapeau de sync et l'accord manuel mis de cote
--- vivaient dans le P_EXT de LA PISTE DU PAD. Il n'y a plus de piste par pad :
--- ils vivent maintenant sur la piste du kit, suffixes par la note. Toujours
--- dans le .RPP, toujours voyageant avec le projet, toujours lisibles par un
--- REAPER qui n'a rien de tout ceci installe.
---
--- La lecture retombe sur l'ancienne place quand elle ne trouve rien : un kit
--- pas encore replie doit continuer a sonner juste en attendant Kit.Fold.
-local function padKey(note, key) return "CP_KIT_" .. key .. "_" .. note end
-
-padExt = function(note, key)
-    local kt = Kit.parent
-    if valid(kt) then
-        local v = getExt(kt, padKey(note, key))
-        if v then return v end
-    end
-    local pad = Kit.pads[note]
-    if pad and pad.legacy and valid(pad.track) then
-        return getExt(pad.track, "CP_KIT_" .. key)
-    end
-    return nil
-end
-
-setPadExt = function(note, key, val)
-    local kt = Kit.parent
-    if valid(kt) then setExt(kt, padKey(note, key), val) end
-    local pad = Kit.pads[note]
-    if pad and pad.legacy and valid(pad.track) then
-        setExt(pad.track, "CP_KIT_" .. key, val)
-    end
-end
-
--- L'identite de tempo d'un SLOT, prise et reposee d'un bloc (echange de pads,
--- repli). Trois champs, et les trois doivent voyager ensemble : garder le BPM
--- sans le drapeau de sync, ou l'inverse, produit un pad qui se re-accorde sur
--- un tempo qu'il n'a jamais eu.
-local ST_KEYS = { "BPM", "SYNC", "TUNE0" }
-
-padState = function(note)
-    local st = {}
-    for i = 1, #ST_KEYS do st[ST_KEYS[i]] = padExt(note, ST_KEYS[i]) end
-    return st
-end
-
-putState = function(note, st)
-    for i = 1, #ST_KEYS do
-        setPadExt(note, ST_KEYS[i], (st and st[ST_KEYS[i]]) or "")
-    end
-end
-
--- ---------------------------------------------------------------------------
 -- Tempo sync (refonte chantier 8): repitch a pad's loop to the project
 -- tempo through the TUNE offset — rate follows pitch, the vinyl trade-off
--- the analysis accepted (true time-stretch is the bake's job).
+-- the analysis accepted (true time-stretch is the bake's job). Source BPM
+-- and the sync flag persist on the pad track (P_EXT), so they travel with
+-- the project like everything else about a pad.
 -- ---------------------------------------------------------------------------
 -- Stored BPM wins; everything else is a guess and is ranked as one. The store
 -- is written when a tempo is DECIDED (the user typing one, autoSync engaging
@@ -1150,7 +896,7 @@ end
 function Kit.PadSrcBpm(note)
     local pad = Kit.Pad(note)
     if not pad then return nil end
-    local stored = tonumber(padExt(note, "BPM") or "")
+    local stored = tonumber(getExt(pad.track, "CP_KIT_BPM") or "")
     if stored and stored > 0 then return stored end
     return (SrcTempo.FromName(pad.path))
 end
@@ -1173,12 +919,14 @@ local function applySync(note, pad, project_bpm)
 end
 
 function Kit.SetPadSrcBpm(note, bpm)
-    if not Kit.Pad(note) then return end
-    setPadExt(note, "BPM", bpm and tostring(bpm) or "")
+    local pad = Kit.Pad(note)
+    if not pad then return end
+    setExt(pad.track, "CP_KIT_BPM", bpm and tostring(bpm) or "")
 end
 
 function Kit.PadSynced(note)
-    return Kit.Pad(note) ~= nil and padExt(note, "SYNC") == "1"
+    local pad = Kit.Pad(note)
+    return pad ~= nil and getExt(pad.track, "CP_KIT_SYNC") == "1"
 end
 
 -- Turning sync ON parks the user's manual tune in P_EXT and beat-matches
@@ -1190,14 +938,14 @@ function Kit.SetPadSynced(note, on)
     if not pad or not pad.fx then return end
     if on then
         local cur = r.TrackFX_GetParamNormalized(pad.track, pad.fx, Kit.P.TUNE)
-        setPadExt(note, "TUNE0", string.format("%.6f", cur))
-        setPadExt(note, "SYNC", "1")
+        setExt(pad.track, "CP_KIT_TUNE0", string.format("%.6f", cur))
+        setExt(pad.track, "CP_KIT_SYNC", "1")
         applySync(note, pad, r.Master_GetTempo())
     else
-        setPadExt(note, "SYNC", "")
-        local t0 = tonumber(padExt(note, "TUNE0") or "")
+        setExt(pad.track, "CP_KIT_SYNC", "")
+        local t0 = tonumber(getExt(pad.track, "CP_KIT_TUNE0") or "")
         r.TrackFX_SetParamNormalized(pad.track, pad.fx, Kit.P.TUNE, t0 or 0.5)
-        setPadExt(note, "TUNE0", "")
+        setExt(pad.track, "CP_KIT_TUNE0", "")
         pad.fmt[Kit.P.TUNE] = nil
     end
     last_change = r.GetProjectStateChangeCount(0)
@@ -1211,7 +959,7 @@ end
 clearSyncState = function(note, pad)
     if not pad then return end
     if Kit.PadSynced(note) then Kit.SetPadSynced(note, false) end
-    setPadExt(note, "BPM", "")
+    setExt(pad.track, "CP_KIT_BPM", "")
 end
 
 -- Re-aim every synced pad at the given tempo. Cheap enough for the host
@@ -1220,7 +968,7 @@ function Kit.ApplyTempoSync(project_bpm)
     if not project_bpm or project_bpm <= 0 then return end
     local wrote = false
     for note, pad in pairs(Kit.pads) do
-        if pad.fx and padExt(note, "SYNC") == "1" then
+        if pad.fx and getExt(pad.track, "CP_KIT_SYNC") == "1" then
             if applySync(note, pad, project_bpm) then wrote = true end
         end
     end
@@ -1252,7 +1000,7 @@ autoSync = function(note)
     -- tempo when the file carries one. No answer means: do not touch it.
     local bpm = SrcTempo.Bpm(pad.path)
     if not bpm then return end
-    setPadExt(note, "BPM", string.format("%.3f", bpm))
+    setExt(pad.track, "CP_KIT_BPM", string.format("%.3f", bpm))
     if Kit.PadSynced(note) then
         applySync(note, pad, ref)   -- already synced: just re-aim
     else
@@ -1301,13 +1049,16 @@ function Kit.EnsureInstrument()
         end
     end
     ubegin()
-    -- Une piste ordinaire, comme le kit : le dossier « CP » range de
-    -- l'infrastructure, et un instrument n'en est pas.
-    local idx = r.CountTracks(0)
-    r.InsertTrackAtIndex(idx, false)
-    local tr = r.GetTrack(0, idx)
-    r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Instrument", true)
-    if Tracks then Tracks.Mark(tr, "sampler", "instrument") end
+    local tr
+    if Tracks then
+        -- born beside the kits in the shared CP folder, not inside one
+        tr = Tracks.NewChild("sampler", "instrument", "CP Instrument")
+    else
+        local idx = r.CountTracks(0)
+        r.InsertTrackAtIndex(idx, false)
+        tr = r.GetTrack(0, idx)
+        r.GetSetMediaTrackInfo_String(tr, "P_NAME", "CP Instrument", true)
+    end
     setExt(tr, "CP_KIT_INSTR", "1")
     setExt(tr, "CP_KIT_ROOT", "60")
     -- comme le bus : une piste d'instrument ordinaire, ni armee ni branchee
@@ -1583,17 +1334,6 @@ function Kit.FloatInstrRS5K()
     end
 end
 
--- Renommer un pad. C'etait le nom de sa piste ; c'est l'etiquette de son effet
--- dans la chaine du kit — meme endroit dans l'interface de REAPER, meme role.
-function Kit.SetPadName(note, name)
-    local pad = Kit.Pad(note)
-    if not pad then return end
-    pad.name = name or ""
-    setFxLabel(pad.track, pad.box or pad.fx, pad.name)
-    Kit.version = Kit.version + 1
-    last_change = r.GetProjectStateChangeCount(0)
-end
-
 -- ---------------------------------------------------------------------------
 -- Params
 -- ---------------------------------------------------------------------------
@@ -1663,10 +1403,12 @@ end
 function Kit.SetChoke(note, grp)
     if not valid(Kit.parent) then return end
     if not choke_fx or not valid(choke_tr) then
-        if not ensureChoke(Kit.EnsureBus()) then return end
-        -- Il vient d'entrer EN TETE de chaine : tous les pads ont recule d'un
-        -- cran, et un index encode perime ecrirait dans le mauvais pad.
-        rescan()
+        if not ensureChokeFile() then return end
+        local bus = Kit.EnsureBus()
+        local fi = findChoke(bus) or r.TrackFX_AddByName(bus, CHOKE_ADD, false, -1000)
+        if not fi or fi < 0 then return end
+        choke_fx, choke_tr = fi, bus
+        hideFX(bus, fi)
     end
     r.TrackFX_SetParamNormalized(choke_tr, choke_fx, note - Kit.BASE, grp / 8)
     refreshObey(note, Kit.Pad(note))
@@ -1694,83 +1436,63 @@ end
 -- the semitone-shift param is found BY NAME and cached on the pad (param
 -- indices have moved across REAPER versions, names haven't).
 -- ---------------------------------------------------------------------------
--- LE REAPITCH PAR PAD A ETE RETIRE, ET IL FAUT DIRE POURQUOI
--- ---------------------------------------------------------------------------
--- Il existait pour transposer un pad SANS changer sa duree — le complement du
--- TUNE du RS5K, qui est un reechantillonnage (la hauteur et la duree bougent
--- ensemble, le geste du vinyle). L'intention etait juste. Le montage ne l'etait
--- pas.
---
--- Un ReaPitch par pad veut dire un effet DE PLUS dans la chaine du kit, donc
--- une boite par pad, donc un deplacement d'effet vers un conteneur — et ce
--- deplacement se faisait sur le chemin d'un BOUTON QU'ON TOURNE, c'est-a-dire
--- plusieurs fois par seconde tant que la souris est enfoncee. Chaque tour
--- restructurait la chaine, la fenetre d'effets se redessinait, le rescan
--- suivait, et quand un index encode se perdait le tour d'apres en ajoutait un
--- autre. Un bouton ne restructure pas le projet. Jamais.
---
--- Ce qui reste, et qui couvre le besoin :
---   · TUNE (Kit.P.TUNE) — la transposition du pad, couplee a la duree. C'est
---     ce que fait tout echantillonneur materiel, c'est le defaut assume par
---     toute la suite (« REPITCH est celui qui est en temps »), et c'est UN
---     parametre sur UN effet : rien a creer, rien a deplacer.
---   · Bake / Warp — quand il faut vraiment garder la tonalite, on CUIT le
---     fichier une fois et on le joue a vitesse normale. C'est deja la reponse
---     de CP_Session pour ses cases, et elle ne coute rien au fil audio.
---   · Et la vraie sortie, ecrite dans la feuille de route : un instrument CP en
---     plugin, ou un ADSR, une transposition et un choke sont des parametres du
---     moteur et non des effets qu'on empile.
---
--- Kit.PadPitch/SetPadPitch survivent sous ce nom parce que les fenetres les
--- appellent, mais elles parlent maintenant au TUNE. Un seul chemin, un seul
--- parametre, aucune structure touchee pendant un geste.
-function Kit.PadPitch(note)
-    local pad = Kit.Pad(note)
-    if not (pad and pad.fx) then return 0 end
-    return plainOf(pad.track, pad.fx, Kit.P.TUNE) or 0
-end
+local RP_ADD = "ReaPitch (Cockos)"
 
-function Kit.SetPadPitch(note, st)
-    local pad = Kit.Pad(note)
-    if not (pad and pad.fx) then return end
-    plainSet(pad.track, pad.fx, Kit.P.TUNE, st)   -- clamps into the real range
-    pad.fmt[Kit.P.TUNE] = nil
-    last_change = r.GetProjectStateChangeCount(0)
-end
-
--- REPARER CE QUE LE MONTAGE PRECEDENT A LAISSE. Une session ou le bouton a ete
--- tourne peut contenir plusieurs ReaPitch empiles dans la boite d'un pad, voire
--- des boites imbriquees. On les retire une fois par session, comme le repli :
--- ce sont des effets que ce module a poses, donc c'est a lui de les reprendre.
--- On ne retire QUE des ReaPitch, et seulement dans les boites de pad : c'est
--- exactement ce que ce module y a mis, et rien d'autre n'y met de ReaPitch.
--- Un pad dont la hauteur avait ete reglee revient donc a zero — c'est la perte
--- assumee, et elle est petite a cote d'une chaine qui se restructure toute
--- seule. Le TUNE du RS5K, lui, n'est pas touche.
-function Kit.CleanPitchLeftovers()
-    local kit = Kit.parent
-    if not valid(kit) then return 0 end
-    local removed = 0
-    for _, pad in pairs(Kit.pads) do
-        if pad.box then
-            -- a l'envers : retirer decale ce qui suit
-            local n = containerCount(kit, pad.box)
-            for j = n - 1, 0, -1 do
-                local sub_i = containerItem(kit, pad.box, j)
-                local a, b = r.TrackFX_GetFXName(kit, sub_i, "")
-                local nm = type(a) == "string" and a or b
-                if nm and nm:find("ReaPitch", 1, true) then
-                    r.TrackFX_Delete(kit, sub_i)
-                    removed = removed + 1
-                end
-            end
+local function padReaPitch(pad, create)
+    if not (pad and valid(pad.track)) then return nil end
+    if pad.rp_fx and pad.rp_param then
+        local a, b = r.TrackFX_GetFXName(pad.track, pad.rp_fx, "")
+        local nm = type(a) == "string" and a or b
+        if nm and nm:find("ReaPitch", 1, true) then
+            return pad.rp_fx, pad.rp_param
+        end
+        pad.rp_fx, pad.rp_param = nil, nil   -- chain changed under us
+    end
+    local fx = -1
+    for i = 0, r.TrackFX_GetCount(pad.track) - 1 do
+        local a, b = r.TrackFX_GetFXName(pad.track, i, "")
+        local nm = type(a) == "string" and a or b
+        if nm and nm:find("ReaPitch", 1, true) then fx = i break end
+    end
+    if fx < 0 then
+        if not create then return nil end
+        fx = r.TrackFX_AddByName(pad.track, RP_ADD, false, -1)
+        if fx < 0 then return nil end
+        hideFX(pad.track, fx)
+    end
+    -- Bind the CONTINUOUS "Shift (full range)" slider, not the stepped
+    -- integer "Shift (semitones)" one: a stepped param snaps every small
+    -- knob drag back to the last whole value, which reads as a dead —
+    -- then jumpy — knob. Semitones kept as a fallback for old ReaPitch
+    -- builds that may name things differently.
+    local full, semi
+    for i = 0, r.TrackFX_GetNumParams(pad.track, fx) - 1 do
+        local _, pn = r.TrackFX_GetParamName(pad.track, fx, i, "")
+        local low = pn and pn:lower() or ""
+        if not low:find("formant", 1, true) then
+            -- no break: BOTH are needed (semitones comes after full range)
+            if not full and low:find("full range", 1, true) then full = i end
+            if not semi and low:find("semitone", 1, true) then semi = i end
         end
     end
-    if removed > 0 then
-        Kit.version = Kit.version + 1
-        rescan()
+    local best = full or semi
+    if best then
+        -- One-shot migration: an earlier build drove the stepped slider —
+        -- fold any leftover shift into the continuous param so the audible
+        -- pitch and the knob agree again. DISPLAY units throughout: the raw
+        -- values are normalized, where 0.5 (not 0) means "no shift".
+        if full and semi and semi ~= full then
+            local sv = plainOf(pad.track, fx, semi)
+            if sv and math.abs(sv) > 0.005 then
+                local cur = plainOf(pad.track, fx, full) or 0
+                plainSet(pad.track, fx, full, cur + sv)
+                plainSet(pad.track, fx, semi, 0)
+            end
+        end
+        pad.rp_fx, pad.rp_param = fx, best
+        return fx, best
     end
-    return removed
+    return nil
 end
 
 -- Plain-value access to a pad's RS5K params (ms / dB — what the sliders
@@ -1813,49 +1535,35 @@ end
 
 -- Current shift in semitones (0 while no ReaPitch exists — nothing is
 -- created by reading).
+function Kit.PadPitch(note)
+    local pad = Kit.Pad(note)
+    if not pad then return 0 end
+    local fx, pi = padReaPitch(pad, false)
+    if not fx then return 0 end
+    return plainOf(pad.track, fx, pi) or 0
+end
+
+function Kit.SetPadPitch(note, st)
+    local pad = Kit.Pad(note)
+    if not pad then return end
+    local fx, pi = padReaPitch(pad, true)
+    if not fx then return end
+    plainSet(pad.track, fx, pi, st)   -- clamps into the param's real bounds
+    last_change = r.GetProjectStateChangeCount(0)
+end
+
 -- ---------------------------------------------------------------------------
 -- Live helpers
 -- ---------------------------------------------------------------------------
--- LA LUEUR D'UN PAD, ET CE QU'ELLE N'EST PLUS.
---
--- C'etait un VU : Track_GetPeakInfo sur la piste du pad. Les pads partagent
--- desormais la piste du kit, et REAPER ne mesure pas un effet, il mesure une
--- piste — le niveau d'un pad n'existe donc plus comme quantite lisible. C'est
--- la perte assumee du repli, avec le fader et le mute/solo par pad ; le geste
--- « eclater ce pad vers une piste » est la reponse pour celui qui en a besoin.
---
--- Ce qui reste est plus honnete qu'un VU faux : le niveau DU KIT, attribue au
--- pad dont on SAIT qu'il vient d'etre frappe. C'est un retour de geste, pas une
--- mesure — et il ne pretend rien sur les pads declenches par un item ou une
--- lane, qu'on ne voit pas passer. Le decay evite qu'un pad reste allume.
-local HIT_S = 0.35
-local hit_t = {}
-
--- Note jouee depuis cette fenetre : c'est le seul instant ou l'on sait quel pad
--- sonne. PlayNote l'appelle ; rien d'autre ne peut le savoir.
-local function markHit(note)
-    hit_t[note] = r.time_precise()
-end
-
+-- Pad output level (for the grid glow). Linear peak, max of both channels.
 function Kit.PadPeak(note)
     local pad = Kit.pads[note]
     if not pad or not pad.path then return 0 end
     if not valid(pad.track) then return 0 end
-    -- Un pad LEGACY a encore sa piste, donc son vrai VU : tant que le repli
-    -- n'a pas eu lieu, on le rend plutot que de faire semblant.
-    if pad.legacy then
-        local a = r.Track_GetPeakInfo(pad.track, 0)
-        local b = r.Track_GetPeakInfo(pad.track, 1)
-        return (b > a) and b or a
-    end
-    local t0 = hit_t[note]
-    if not t0 then return 0 end
-    local age = r.time_precise() - t0
-    if age > HIT_S then return 0 end
     local a = r.Track_GetPeakInfo(pad.track, 0)
     local b = r.Track_GetPeakInfo(pad.track, 1)
     if b > a then a = b end
-    return a * (1 - age / HIT_S)
+    return a
 end
 
 -- LE CANAL RESERVE N'A PLUS DE RAISON D'ETRE, et il vaut la peine de dire
@@ -1885,13 +1593,6 @@ playTarget = function()
         local t = Kit.instr and Kit.instr.track
         return valid(t) and t or nil
     end
-    -- Un kit pas encore replie a toujours son ancien bus, et c'est LUI qui
-    -- porte le choke et les envois vers les pads : jouer dans la piste du
-    -- dossier ne reveillerait rien. Kit.Fold supprime ce cas des le premier
-    -- poll, mais la premiere frame existe aussi.
-    if valid(Kit.legacy_bus) and Kit.legacy_bus ~= Kit.parent then
-        return Kit.legacy_bus
-    end
     return valid(Kit.bus) and Kit.bus or nil
 end
 
@@ -1902,7 +1603,6 @@ end
 function Kit.PlayNote(note, on, vel)
     Notes.SetTrack(playTarget())
     if on then
-        markHit(note)
         -- Le repli n'a pas d'adresse : il garde le canal reserve, qui est tout
         -- ce qu'un broadcast peut offrir en guise de destinataire.
         if Notes.IsTargeted() then Notes.On(note, vel)
@@ -1976,221 +1676,63 @@ function Kit.InputIsAll()
     return r.GetMediaTrackInfo_Value(tr, "I_RECINPUT") == Kit.INPUT_ALL
 end
 
--- ---------------------------------------------------------------------------
--- LE REPLI — d'un dossier plein de pistes vers une seule chaine d'effets
--- ---------------------------------------------------------------------------
--- Un kit deja construit est un dossier « CP Kit », une piste « CP Kit MIDI »
--- portant le choke, et une piste par pad portant un RS5K et parfois des effets.
--- Kit.Fold en fait une piste : le choke reste premier, chaque pad DEMENAGE dans
--- la chaine — dans un CONTENEUR quand il avait des effets a lui, a plat sinon.
+-- One-shot migration + self-heal: move a legacy choke off the folder parent,
+-- drop the feedback-muted parent→pad sends, and guarantee exactly one MIDI
+-- send bus → every pad.
 --
--- UNE REGLE, ET ELLE COMMANDE TOUT LE RESTE : on ne supprime jamais une piste
--- dont le contenu n'a pas ete deplace avec succes. TrackFX_CopyToTrack en mode
--- MOVE rend le deplacement atomique du point de vue de REAPER ; si un seul
--- effet refuse de partir, la piste reste, avec tout ce qu'elle contient. Un
--- kit a moitie replie est reparable ; un kit a moitie supprime ne l'est pas.
---
--- Et jamais les deux formes en meme temps : un RS5K reste dans l'ancienne
--- piste ET un autre dans la chaine, ce serait le meme pad joue deux fois.
--- C'est pour ca que c'est un DEPLACEMENT et pas une copie.
-
--- Tous les effets d'une piste, deplaces dans un conteneur neuf du kit. Rend
--- l'index du conteneur, ou nil. Le conteneur porte le nom du pad : ouvrir la
--- chaine du kit doit dire ce qu'on regarde.
-local function moveChainIntoBox(src, kit, label)
-    local n = r.TrackFX_GetCount(src)
-    if n <= 0 then return nil end
-    local box = r.TrackFX_AddByName(kit, "Container", false, -1)
-    if box < 0 then return nil end
-    -- Toujours prendre le PREMIER de la source : chaque deplacement decale ce
-    -- qui reste, et viser un index fixe raterait la moitie de la chaine.
-    for j = 0, n - 1 do
-        local dest = containerItem(kit, box, j)
-        if not r.TrackFX_CopyToTrack(src, 0, kit, dest, true) then
-            return box, false        -- partiel : l'appelant ne supprime rien
-        end
-    end
-    if label then setFxLabel(kit, box, label) end
-    return box, true
-end
-
--- Un pad legacy vers la chaine du kit. `simple` (un seul effet, le RS5K) part a
--- plat ; tout le reste part dans un conteneur, ce qui preserve exactement les
--- effets par pad — c'est la raison d'etre des conteneurs ici.
-local function foldOnePad(pad, kit)
-    local src = pad.track
-    if not valid(src) or src == kit then return true end
-    local n = r.TrackFX_GetCount(src)
-    if n <= 0 then return true end            -- rien a sauver, la piste peut partir
-    if n == 1 and pad.fx == 0 then
-        local dest = r.TrackFX_GetCount(kit)
-        if not r.TrackFX_CopyToTrack(src, 0, kit, dest, true) then return false end
-        setFxLabel(kit, dest, pad.name ~= "" and pad.name or ("Pad " .. pad.note))
-        return true
-    end
-    local _, ok = moveChainIntoBox(src, kit, pad.name ~= "" and pad.name
-                                              or ("Pad " .. pad.note))
-    return ok == true
-end
-
--- La piste d'un pad, une fois videe. Le pas de fermeture de dossier est repris
--- par le voisin du dessus, exactement comme le faisait DeletePad avant.
-local function dropEmptyTrack(tr, parent)
-    if not valid(tr) then return end
-    if r.TrackFX_GetCount(tr) > 0 then return end   -- il reste quelque chose
-    if r.CountTrackMediaItems(tr) > 0 then return end -- et des items encore plus
-    local d = r.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH")
-    if d < 0 then
-        local idx = trackIdx(tr)
-        local prev = idx > 0 and r.GetTrack(0, idx - 1) or nil
-        if prev then
-            r.SetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH",
-                r.GetMediaTrackInfo_Value(prev, "I_FOLDERDEPTH") + d)
-        elseif valid(parent) then
-            r.SetMediaTrackInfo_Value(parent, "I_FOLDERDEPTH", d + 1)
-        end
-    end
-    r.DeleteTrack(tr)
-end
-
-function Kit.Fold()
-    local kit = Kit.parent
-    if not valid(kit) then return false end
-
-    -- Y a-t-il quoi que ce soit a replier ? LECTURES SEULES, pour qu'un kit
-    -- deja replie paie une poignee de requetes une fois par session et n'ouvre
-    -- aucun bloc d'annulation.
-    local legacy, nlegacy = {}, 0
-    for note, pad in pairs(Kit.pads) do
-        if pad.legacy and valid(pad.track) and pad.track ~= kit then
-            nlegacy = nlegacy + 1
-            legacy[nlegacy] = { note = note, pad = pad }
-        end
-    end
-    local bus = Kit.legacy_bus
-    local has_bus = valid(bus) and bus ~= kit
-    if nlegacy == 0 and not has_bus then return false end
-
+-- IT NO LONGER DISARMS ANYTHING. It used to disarm the folder parent and every
+-- pad track, on the grounds that arming them had been a user workaround for
+-- the muted sends. Perhaps it was — but a repair pass that silently rewrites
+-- record-arm across a dozen tracks is exactly the behaviour this chantier is
+-- removing, and the workaround it undoes has been unnecessary since the sends
+-- were fixed. What it fixes now is routing, which is what it is for.
+function Kit.Repair()
+    if not valid(Kit.parent) then return end
     ubegin()
+    local bus = Kit.EnsureBus()
 
-    -- 1. Le choke d'abord, pour qu'il soit PREMIER de la chaine avant que les
-    --    pads n'arrivent derriere. Ses reglages SONT les groupes de choke de
-    --    tout le kit : on ne recree pas une instance neuve, on recupere ceux-la.
-    --    Et jamais deux instances — la seconde re-couperait ce que la premiere
-    --    vient de laisser passer.
-    if has_bus then
+    local pc = findChoke(Kit.parent)
+    if pc then
         local bc = findChoke(bus)
         if bc then
-            local kc = findChoke(kit)
-            if kc then
-                for i = 0, Kit.MAX - 1 do
-                    r.TrackFX_SetParamNormalized(kit, kc, i,
-                        r.TrackFX_GetParamNormalized(bus, bc, i))
+            for i = 0, Kit.MAX - 1 do
+                r.TrackFX_SetParamNormalized(bus, bc, i,
+                    r.TrackFX_GetParamNormalized(Kit.parent, pc, i))
+            end
+        end
+        r.TrackFX_Delete(Kit.parent, pc)
+    end
+
+    for si = r.GetTrackNumSends(Kit.parent, 0) - 1, 0, -1 do
+        local dest = r.GetTrackSendInfo_Value(Kit.parent, 0, si, "P_DESTTRACK")
+        if dest and getExt(dest, "CP_KIT_NOTE") then
+            r.RemoveTrackSend(Kit.parent, 0, si)
+        end
+    end
+
+    local have = {}
+    for si = 0, r.GetTrackNumSends(bus, 0) - 1 do
+        local dest = r.GetTrackSendInfo_Value(bus, 0, si, "P_DESTTRACK")
+        if dest then
+            local _, guid = r.GetSetMediaTrackInfo_String(dest, "GUID", "", false)
+            have[guid] = true
+        end
+    end
+    for _, pad in pairs(Kit.pads) do
+        if valid(pad.track) then
+            local _, guid = r.GetSetMediaTrackInfo_String(pad.track, "GUID", "", false)
+            if not have[guid] then
+                local s = r.CreateTrackSend(bus, pad.track)
+                if s >= 0 then
+                    r.SetTrackSendInfo_Value(bus, 0, s, "I_SRCCHAN", -1)
+                    r.SetTrackSendInfo_Value(bus, 0, s, "I_MIDIFLAGS", MIDI_TO_CH1)
                 end
-                r.TrackFX_Delete(bus, bc)   -- sinon le bus ne serait jamais vide
-            else
-                r.TrackFX_CopyToTrack(bus, bc, kit, 0, true)
             end
         end
     end
-    ensureChoke(kit)
-
-    -- 2. Chaque pad, dans l'ordre des notes pour que la chaine se lise comme la
-    --    grille. Un pad qui refuse de partir garde sa piste, et le repli
-    --    reprendra a la prochaine session.
-    table.sort(legacy, function(x, y) return x.note < y.note end)
-    for i = 1, nlegacy do
-        local e = legacy[i]
-        local st = padState(e.note)          -- lu AVANT que la piste ne parte
-        if foldOnePad(e.pad, kit) then
-            putState(e.note, st)             -- repose sur la piste du kit
-            dropEmptyTrack(e.pad.track, kit)
-        end
-    end
-
-    -- 3. Le bus n'a plus de raison d'etre : il ne portait que le choke et les
-    --    envois vers les pads, et les deux viennent de disparaitre. On ne le
-    --    supprime que s'il est reellement vide — un utilisateur a pu y poser
-    --    autre chose, et ce n'est pas a nous de le jeter.
-    if has_bus then
-        for si = r.GetTrackNumSends(bus, 0) - 1, 0, -1 do
-            r.RemoveTrackSend(bus, 0, si)
-        end
-        dropEmptyTrack(bus, kit)
-    end
-
-    -- LE KIT CESSE D'ETRE UN DOSSIER TOUT SEUL, et il ne faut surtout pas
-    -- l'aider : c'est dropEmptyTrack qui rend le pas de fermeture au voisin du
-    -- dessus, donc au parent quand le DERNIER enfant part — et sa profondeur
-    -- retombe alors a zero d'elle-meme. Forcer la profondeur ici avalerait la
-    -- piste suivante du projet dans un dossier qui n'a rien demande, et il
-    -- reste peut-etre une piste que l'utilisateur a rangee la exprès.
-
-    uend("Sampler: fold the kit onto one track")
-    if Tracks and Tracks.DropFolderIfEmpty then Tracks.DropFolderIfEmpty() end
-    Kit.version = Kit.version + 1
-    rescan()
-    return true
-end
-
--- `Kit.Repair` vivait ici. Elle reparait le routage d'avant : deplacer un choke
--- pose sur le dossier, retirer les envois parent -> pad que REAPER coupait pour
--- boucle, garantir un envoi bus -> pad par pad. Tout cela portait sur une
--- architecture qui n'existe plus, et Kit.Fold repare mieux : elle la supprime.
-
--- ---------------------------------------------------------------------------
--- LES EFFETS D'UN PAD — un conteneur, et seulement quand on en veut un
--- ---------------------------------------------------------------------------
--- Un pad a plat est un RS5K dans la chaine du kit : lui ajouter un effet le
--- mettrait sur le chemin de TOUS les pads suivants. Le conteneur est la boite
--- qui rend « les effets de CE pad » possible sans piste par pad — et il n'est
--- cree qu'a la demande, parce qu'une boite vide autour de chaque pad serait
--- soixante-quatre boites a regarder pour rien.
-function Kit.PadHasBox(note)
-    local pad = Kit.Pad(note)
-    return pad ~= nil and pad.box ~= nil
-end
-
--- Un pad NE dans un projet d'avant (a plat dans la chaine) rentre dans une
--- boite ici. Les pads neufs en ont une des la naissance et ne passent jamais
--- par la.
-function Kit.EnsurePadBox(note)
-    local pad = Kit.Pad(note)
-    if not pad or not pad.fx then return nil end
-    if pad.box then return pad.box end
-    ubegin()
-    local tr = pad.track
-    local box = r.TrackFX_AddByName(tr, "Container", false, -1)
-    if box < 0 then
-        uend("Sampler: pad FX box")
-        return nil
-    end
-    hideFX(tr, box)
-    -- METTRE LE RS5K EN DERNIER, derriere la boite. C'est la seule
-    -- configuration ou l'adresse d'arrivee est calculable sans deviner (voir
-    -- moveLastIntoBox) : la boite est posee au bout, on fait passer le RS5K
-    -- apres elle, et on le fait entrer.
-    if not moveToEnd(tr, pad.fx) or not moveLastIntoBox(tr, box) then
-        r.TrackFX_Delete(tr, box)
-        uend("Sampler: pad FX box")
-        return nil
-    end
-    setFxLabel(tr, box, pad.name ~= "" and pad.name or ("Pad " .. note))
-    Kit.version = Kit.version + 1
-    uend("Sampler: pad FX box")
-    rescan()
-    local p2 = Kit.Pad(note)
-    return p2 and p2.box or nil
-end
-
--- Ouvrir la boite d'un pad : c'est la ou on ajoute ses effets, avec la chaine
--- de REAPER, sans que ce module ait a savoir ce qu'on y met.
-function Kit.ShowPadBox(note)
-    local box = Kit.EnsurePadBox(note)
-    if not box then return false end
-    local pad = Kit.Pad(note)
-    if pad then r.TrackFX_Show(pad.track, box, 3) end
-    return true
+    choke_fx = findChoke(bus)
+    choke_tr = choke_fx and bus or nil
+    uend("Sampler: repair kit routing")
 end
 
 function Kit.FloatRS5K(note)

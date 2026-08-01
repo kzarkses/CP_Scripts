@@ -216,46 +216,16 @@ local norder = 0
 -- top-level, unmarked folder head, and it would walk straight into the grid as
 -- a column. Three string reads per track, behind the same half-second debounce
 -- as the rest of this.
--- Ce qui reste de l'infrastructure et n'a rien a faire dans la grille : la
--- piste routeur d'avant le moteur natif, et rien d'autre. Le dossier « CP » est
--- ecarte par sa marque (engine:folder), plus bas.
-local LEGACY_OWN = { "P_EXT:" .. LEGACY_TAG }
+local LEGACY_OWN = { "P_EXT:CP_KIT", "P_EXT:CP_KIT_INSTR", "P_EXT:" .. LEGACY_TAG }
 
--- UN KIT EST UN INSTRUMENT, DONC UNE COLONNE.
---
--- Il etait ecarte, et a l'epoque c'etait juste : un kit etait un DOSSIER
--- d'infrastructure avec une piste par pad, et remplir la grille de ces
--- soixante-cinq pistes n'aurait eu aucun sens. Depuis le chantier 2 c'est une
--- piste ordinaire qui fait du son — exactement ce qu'une colonne doit contenir,
--- et le seul moyen de poser un motif de batterie dans une case de la grille
--- sans passer par un detour. L'ecarter maintenant serait cacher l'instrument le
--- plus evident du projet.
---
--- Ce qu'on ecarte encore : le dossier partage « CP » (engine:folder) et le
--- routeur legacy. Pas de son, pas de colonne.
 local function eligible(tr)
     if r.GetParentTrack(tr) ~= nil then return false end
-    local app, role = nil, nil
-    if Tracks and Tracks.MarkOf then app, role = Tracks.MarkOf(tr) end
-    if app and not (app == "sampler" and (role == "kit" or role == "instrument")) then
-        return false
-    end
+    if Tracks and Tracks.MarkOf and Tracks.MarkOf(tr) then return false end
     for i = 1, #LEGACY_OWN do
         local ok, v = r.GetSetMediaTrackInfo_String(tr, LEGACY_OWN[i], "", false)
         if ok and v ~= "" then return false end
     end
     return true
-end
-
--- Cette piste est-elle un instrument de la suite (un kit, l'instrument
--- chromatique) ? La grille s'en sert pour le DIRE : une colonne qu'on a faite
--- et une piste que l'utilisateur a faite ne se lisent pas pareil.
-function Loop.IsSuiteInstrument(tr)
-    if not valid(tr) then return nil end
-    if not (Tracks and Tracks.MarkOf) then return nil end
-    local app, role = Tracks.MarkOf(tr)
-    if app ~= "sampler" then return nil end
-    return role                       -- "kit" | "instrument"
 end
 
 -- Rebuilt in place, every refresh. No table is created here: this runs behind a
@@ -429,55 +399,20 @@ function Loop.KitViewOfTrack(tr)
     for k in pairs(pads) do pads[k] = nil end
     local parent = kitParentOf(tr)
     if parent then
-        -- UN KIT EST UNE PISTE (chantier 2) : ses pads sont les RS5K de sa
-        -- chaine d'effets, et le numero d'un pad est SA PLAGE DE NOTES. On lit
-        -- donc la chaine, pas les pistes enfants — et un pad range dans un
-        -- conteneur se lit par l'index encode que REAPER nous donne.
-        local nfx = r.TrackFX_GetCount(parent)
-        local function look(fx)
-            local ok, id = r.TrackFX_GetNamedConfigParm(parent, fx, "fx_ident")
-            if not ok or not id or not id:lower():find("samplomatic", 1, true) then
-                return
+        local i = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
+        local depth, cnt = 1, r.CountTracks(0)
+        while depth > 0 and i < cnt do
+            local ch = r.GetTrack(0, i)
+            local _, nv = r.GetSetMediaTrackInfo_String(ch, "P_EXT:CP_KIT_NOTE", "", false)
+            local note = tonumber(nv or "")
+            if note and note >= 0 and note <= 127
+               and r.TrackFX_GetCount(ch) > 0 then
+                local _, nm = r.GetSetMediaTrackInfo_String(ch, "P_NAME", "", false)
+                pads[note] = { fx = true, name = nm }
+                n = n + 1
             end
-            local lo = r.TrackFX_GetParamNormalized(parent, fx, 3)
-            local hi = r.TrackFX_GetParamNormalized(parent, fx, 4)
-            local a = math.floor((lo or 0) * 127 + 0.5)
-            local b = math.floor((hi or 0) * 127 + 0.5)
-            if a ~= b or pads[a] then return end
-            local _, nm = r.TrackFX_GetNamedConfigParm(parent, fx, "renamed_name")
-            pads[a] = { fx = true, name = (nm ~= "" and nm) or ("Pad " .. a) }
-            n = n + 1
-        end
-        for i = 0, nfx - 1 do
-            local isbox, cn = r.TrackFX_GetNamedConfigParm(parent, i, "container_count")
-            if isbox then
-                for j = 0, (tonumber(cn) or 0) - 1 do
-                    local ok2, sub = r.TrackFX_GetNamedConfigParm(parent, i,
-                                                                  "container_item." .. j)
-                    if ok2 and sub and sub ~= "" then look(math.floor(tonumber(sub) or -1)) end
-                end
-            else
-                look(i)
-            end
-        end
-        -- La forme d'avant, tant qu'un projet n'a pas ete replie : une piste
-        -- par pad, taggee, dans le dossier du kit.
-        if n == 0 then
-            local i = math.floor(r.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER"))
-            local depth, cnt = 1, r.CountTracks(0)
-            while depth > 0 and i < cnt do
-                local ch = r.GetTrack(0, i)
-                local _, nv = r.GetSetMediaTrackInfo_String(ch, "P_EXT:CP_KIT_NOTE", "", false)
-                local note = tonumber(nv or "")
-                if note and note >= 0 and note <= 127
-                   and r.TrackFX_GetCount(ch) > 0 then
-                    local _, nm = r.GetSetMediaTrackInfo_String(ch, "P_NAME", "", false)
-                    pads[note] = { fx = true, name = nm }
-                    n = n + 1
-                end
-                depth = depth + r.GetMediaTrackInfo_Value(ch, "I_FOLDERDEPTH")
-                i = i + 1
-            end
+            depth = depth + r.GetMediaTrackInfo_Value(ch, "I_FOLDERDEPTH")
+            i = i + 1
         end
     end
     kitview.n = n
