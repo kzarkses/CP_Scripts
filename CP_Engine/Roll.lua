@@ -835,7 +835,25 @@ end
 --
 -- Aucune identite a comparer, aucun index a suivre pendant le geste : une
 -- passe d'insertion, un tri, un point d'annulation.
-function Roll.Stamp(list, n)
+-- DOUBLER UN GROUPE ET REPARTIR AVEC L'UN DES DEUX EXEMPLAIRES.
+--
+-- C'est le copier-glisser, et il demande une chose que ni `Duplicate` ni `Sync`
+-- ne savent faire : apres l'insertion il y a DEUX notes a chaque position, et
+-- il faut en designer exactement UNE par position. Les deux fonctions
+-- precedentes re-selectionnent par IDENTITE — le couple (depart, hauteur) —
+-- donc elles prennent les deux, et le glisser emporte l'original avec la copie.
+-- Le geste marche alors parfaitement et ne se voit pas.
+--
+-- Ici on RESERVE : chaque entree de la photo reclame un index encore libre a sa
+-- position. Peu importe lequel des deux exemplaires elle obtient — ils sont
+-- identiques a cet instant — ce qui compte est qu'il y en ait un par entree, et
+-- qu'il en reste autant sur place. C'est ce qui fait qu'on voit l'original
+-- rester pendant qu'on emmene la copie, des le premier pixel du glisser.
+--
+-- La photo est mise a jour au passage : ses index pointaient sur des notes
+-- d'avant l'insertion, et un tri les a tous deplaces.
+local claimed = {}
+function Roll.StampAndClaim(list, n)
     if not Roll.backend or not n or n <= 0 then return 0 end
     for k = 1, n do
         local e = list[k]
@@ -844,9 +862,31 @@ function Roll.Stamp(list, n)
         end
     end
     Roll.backend.sort()
-    Roll.Sync()
+    -- `readAll` remplit les tableaux ET rend le compte, comme dans Sync. On ne
+    -- passe PAS par Sync : elle re-selectionne par identite, ce qui est
+    -- exactement ce qu'on doit eviter ici.
+    Roll.count = Roll.backend.readAll()
+
+    for i = 1, Roll.count do claimed[i] = nil end
+    Roll.ClearSel()
+    local got = 0
+    for k = 1, n do
+        local e = list[k]
+        local ms = math.floor(e.s * 1000 + 0.5)
+        for i = 1, Roll.count do
+            if not claimed[i] and Roll.pitches[i] == e.p
+               and math.floor(Roll.starts[i] * 1000 + 0.5) == ms then
+                claimed[i] = true
+                e.i = i
+                Roll.AddSel(i)
+                got = got + 1
+                break
+            end
+        end
+    end
+    Roll.version = Roll.version + 1
     Roll.backend.undo("MIDI: copy notes")
-    return n
+    return got
 end
 
 Roll.clip = { n = 0, s = {}, l = {}, p = {}, v = {} }
