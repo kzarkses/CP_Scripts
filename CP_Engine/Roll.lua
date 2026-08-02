@@ -320,6 +320,10 @@ end
 -- ---------------------------------------------------------------------------
 function Roll.Insert(t, pitch, len, vel)
     if not Roll.backend or len <= 0 then return end
+    -- Corrigee AVANT, parce que la recherche qui suit compare a `pitch` : le
+    -- filet du backend la deplacerait apres coup et la note posee ne serait
+    -- jamais retrouvee, donc jamais selectionnee.
+    pitch = Roll.SnapPitch(pitch)
     Roll.backend.insertNote(t, pitch, len, vel)
     Roll.backend.sort()
     Roll.Sync()
@@ -345,8 +349,23 @@ end
 -- ---------------------------------------------------------------------------
 -- Live drag edits (no sort — indices stay stable) + Commit on release
 -- ---------------------------------------------------------------------------
+-- LA CONTRAINTE DE GAMME SE POSE ICI, ET PAS SEULEMENT SUR LE BACKEND.
+--
+-- Le filet du backend suffisait a ce que la matiere soit juste, et c'est
+-- pourquoi le defaut etait invisible a la relecture : la note ETAIT sur une
+-- rangee permise. Mais le dessin ne lit pas la matiere, il lit CE CACHE — et le
+-- cache recevait la hauteur brute. Pendant tout le glisser on voyait donc la
+-- note sur la rangee interdite, et elle « sautait » au relachement, au premier
+-- `Sync`.
+--
+-- Un outil qui laisse faire puis corrige apres coup n'est pas une contrainte,
+-- c'est une surprise. En corrigeant AVANT d'ecrire les deux, la note ne peut
+-- tout simplement pas se poser dehors : le pointeur descend, elle attend la
+-- rangee suivante qui existe. C'est ce que Cedric demande, et c'est aussi ce
+-- qui rend la gamme lisible sans avoir a l'expliquer.
 function Roll.MoveLive(i, t, pitch)
     if not Roll.backend or i < 1 or i > Roll.count then return end
+    pitch = Roll.SnapPitch(pitch)
     Roll.backend.setNote(i, t, nil, pitch, nil)
     Roll.starts[i], Roll.pitches[i] = t, pitch
 end

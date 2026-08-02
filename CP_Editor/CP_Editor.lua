@@ -111,6 +111,11 @@ local opts = {
     -- velocite, et un reglage qu'on ne voit pas est un reglage qui n'existe
     -- pas tant qu'on n'a pas appris qu'il etait la.
     lane_open  = cfg.lane_open ~= false,
+    -- Comment les notes se colorent : "flat" (la couleur du theme, comme
+    -- depuis toujours), "pitch" ou "velocity" — les deux axes que le MIDI
+    -- editor de REAPER propose et qui disent quelque chose qu'on ne peut pas
+    -- lire autrement d'un coup d'oeil.
+    note_color = cfg.note_color or "flat",
     -- Hear a note as you write or drag it. On by default: writing blind is
     -- the exception, not the rule. Off matters when the instrument is loud,
     -- when you are working against a running loop, or when the audition
@@ -215,6 +220,7 @@ local function persistConfig()
     cfg.grid_div  = opts.grid_div
     cfg.note_names = opts.note_names
     cfg.lane_open  = opts.lane_open
+    cfg.note_color = opts.note_color
     cfg.audition   = opts.audition
     cfg.out_mode   = opts.out_mode
     cfg.loop       = opts.loop
@@ -388,6 +394,9 @@ local GRID_BAR_OPTS = { w = 3 }
 local ROOT_ITEMS = { "C", "C#", "D", "D#", "E", "F",
                      "F#", "G", "G#", "A", "A#", "B" }
 local SCALE_ITEMS = { "Scale: off" }
+local COLOR_ITEMS = { "Colour: flat", "Colour: pitch", "Colour: velocity" }
+local COLOR_VALS  = { "flat", "pitch", "velocity" }
+local COLOR_BAR_OPTS = { w = 3 }
 local ROOT_BAR_OPTS  = { w = 2 }
 local SCALE_BAR_OPTS = { w = 3 }
 
@@ -2827,6 +2836,46 @@ local function gridLabel()
     return grid_lbl.s
 end
 
+-- LA COULEUR D'UNE NOTE, ET ELLE REND TROIS NOMBRES.
+--
+-- Pas une table : ce chemin tourne une fois par note visible et par frame, et
+-- une table par note serait quelques milliers d'allocations par seconde sur une
+-- grille dense — exactement ce que ce depot s'interdit dans un chemin de
+-- dessin. Trois valeurs de retour ne coutent rien.
+--
+-- PAR HAUTEUR, la teinte fait un tour complet sur les douze demi-tons : deux
+-- notes a l'octave ont la meme couleur, ce qui est ce qu'on veut lire — une
+-- ligne de basse et son double une octave au-dessus se reconnaissent d'un coup
+-- d'oeil. C'est ce que fait le MIDI editor de REAPER.
+--
+-- PAR VELOCITE, du froid au chaud. Et dans ce mode SEULEMENT, l'opacite cesse
+-- de suivre la velocite : elle la disait deja, et deux canaux pour une seule
+-- grandeur font une note faible illisible sur le fond au lieu de simplement
+-- froide.
+local function hsvRGB(h, s, v)
+    local i = math.floor(h * 6)
+    local f = h * 6 - i
+    local p, q, t = v * (1 - s), v * (1 - f * s), v * (1 - (1 - f) * s)
+    local m = i % 6
+    if m == 0 then return v, t, p elseif m == 1 then return q, v, p
+    elseif m == 2 then return p, v, t elseif m == 3 then return p, q, v
+    elseif m == 4 then return t, p, v else return v, p, q end
+end
+
+local function noteRGBA(i, base)
+    local mode = opts.note_color
+    if mode == "pitch" then
+        local rr, gg, bb = hsvRGB((Roll.pitches[i] % 12) / 12, 0.60, 0.95)
+        return rr, gg, bb, 0.42 + (Roll.vels[i] / 127) * 0.50
+    elseif mode == "velocity" then
+        local f = Roll.vels[i] / 127
+        local rr, gg, bb = hsvRGB(0.58 - 0.58 * f, 0.45 + 0.45 * f,
+                                  0.70 + 0.28 * f)
+        return rr, gg, bb, 0.92
+    end
+    return base[1], base[2], base[3], 0.35 + (Roll.vels[i] / 127) * 0.55
+end
+
 -- ---------------------------------------------------------------------------
 -- Rows (event-driven build; drum mode shows pad rows named after the kit)
 -- ---------------------------------------------------------------------------
@@ -2970,6 +3019,17 @@ local function barMidi(theme)
     if sch then
         if si == 1 then Roll.ClearScale()
         else Roll.SetScale(Roll.scale_root or 0, Roll.SCALES[si - 1].iv) end
+        markDirty()
+    end
+
+    local cidx = 1
+    for i = 1, #COLOR_VALS do
+        if COLOR_VALS[i] == opts.note_color then cidx = i break end
+    end
+    local cch, ci = UI.BarCombo("m_ncol", cidx, COLOR_ITEMS, false,
+                                COLOR_BAR_OPTS)
+    if cch then
+        opts.note_color = COLOR_VALS[ci]
         markDirty()
     end
     UI.BarSep()
@@ -4299,9 +4359,9 @@ local function drawRoll(theme, area_h)
                 local x1 = math.floor(xAtTime(math.min(t1n, state.t1)))
                 if x1 - x0 < 2 then x1 = x0 + 2 end
                 local y = wave.ry + (rowi - 1) * row_h
-                local alpha = 0.35 + (Roll.vels[i] / 127) * 0.55
+                local nr, ng, nb, alpha = noteRGBA(i, col_acc)
                 Core_tk.DrawRect(x0, y + 1, x1 - x0 - 1, row_h - 2,
-                                 col_acc[1], col_acc[2], col_acc[3], alpha)
+                                 nr, ng, nb, alpha)
                 if Roll.IsSel(i) then
                     Core_tk.DrawRect(x0, y + 1, x1 - x0 - 1, row_h - 2,
                                      col_sel[1], col_sel[2], col_sel[3], 1, false)
@@ -4338,9 +4398,14 @@ local function drawRoll(theme, area_h)
                 local x = math.floor(xAtTime(t0n))   -- same lattice as the note
                 local bh = (Roll.vels[i] / 127) * (lh - 4)
                 local sel = Roll.IsSel(i)
-                local c = sel and col_sel or col_acc
+                -- LA BARRE PORTE LA COULEUR DE SA NOTE : c'est la meme note, et
+                -- deux couleurs pour un seul objet obligent a chercher laquelle
+                -- appartient a laquelle.
+                local nr, ng, nb
+                if sel then nr, ng, nb = col_sel[1], col_sel[2], col_sel[3]
+                else nr, ng, nb = noteRGBA(i, col_acc) end
                 Core_tk.DrawRect(x, ly + lh - bh, 3, bh,
-                                 c[1], c[2], c[3], sel and 1 or 0.7)
+                                 nr, ng, nb, sel and 1 or 0.85)
             end
         end
     end
