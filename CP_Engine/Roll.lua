@@ -99,9 +99,46 @@ local function makeTakeBackend(take, item)
     return be
 end
 
+-- LA GAMME EST UNE CONTRAINTE, PAS UNE COULEUR.
+--
+-- Elle teintait les rangees du dehors et servait aux operations qui la
+-- demandaient — quantifier la hauteur, transposer dans la gamme — mais rien
+-- n'empechait d'ECRIRE dehors : un clic sur une rangee grisee posait une note
+-- fausse, et un glisser vertical en traversait cinq. Dessiner une interdiction
+-- puis compter sur l'utilisateur pour ne pas y aller, c'est le contraire d'un
+-- outil.
+--
+-- LA CONTRAINTE EST POSEE AU DERNIER ENDROIT, sur le dos du backend, et non
+-- dans les quinze appelants qui ecrivent une hauteur. Un appelant, ca s'oublie,
+-- et le suivant qu'on ecrira dans six mois l'oubliera aussi. Celui-ci est le
+-- SEUL chemin vers la matiere : il n'y a pas de deuxieme porte a garder.
+--
+-- Ce qui est DEJA ecrit n'est pas touche. Activer une gamme ne doit pas
+-- reecrire un morceau sous les doigts — `Roll.SnapToScale` existe pour le
+-- demander, et c'est un geste, jamais un effet de bord.
+--
+-- Cout quand la gamme est eteinte : un appel de fonction qui rend son argument.
+-- `Roll.SnapPitch` sort sur `not Roll.scale_on` avant tout calcul.
+local function guardScale(be)
+    if not be or be.scale_guarded then return be end
+    local ins, set = be.insertNote, be.setNote
+    if ins then
+        be.insertNote = function(t, pitch, len, vel)
+            return ins(t, pitch and Roll.SnapPitch(pitch) or pitch, len, vel)
+        end
+    end
+    if set then
+        be.setNote = function(i, t, len, pitch, vel)
+            return set(i, t, len, pitch and Roll.SnapPitch(pitch) or pitch, vel)
+        end
+    end
+    be.scale_guarded = true
+    return be
+end
+
 function Roll.Attach(take, item)
     Roll.take, Roll.item = take, item
-    Roll.backend = makeTakeBackend(take, item)
+    Roll.backend = guardScale(makeTakeBackend(take, item))
     -- clear the whole SET, not just the primary: Sync re-selects by (pitch,start)
     -- identity, so a stale selset would bleed a selection into the new take
     Roll.ClearSel()
@@ -111,6 +148,7 @@ end
 -- Inject a custom backend (e.g. a loop stored in gmem). Cache unit is
 -- whatever the backend/renderer agree on.
 function Roll.SetBackend(be)
+    be = guardScale(be)
     Roll.take, Roll.item = nil, nil
     Roll.backend = be
     Roll.ClearSel()          -- see Roll.Attach: a stale selset bleeds across lanes
@@ -858,6 +896,10 @@ function Roll.StampAndClaim(list, n)
     for k = 1, n do
         local e = list[k]
         if e and e.s and e.p then
+            -- La photo est corrigee AVANT l'insertion : c'est elle qui servira
+            -- a reclamer les copies plus bas, et une hauteur deplacee par le
+            -- filet ne se retrouverait pas.
+            e.p = Roll.SnapPitch(e.p)
             Roll.backend.insertNote(e.s, e.p, e.l or 0.25, e.v or 100)
         end
     end
@@ -966,7 +1008,14 @@ function Roll.Glue()
     flush()
     if mn == 0 then return 0 end
     deleteSelectedRaw()
-    for k = 1, mn do Roll.backend.insertNote(mS[k], mP[k], mL[k], mV[k]); rsS[k], rsP[k] = mS[k], mP[k] end
+    -- La hauteur RETENUE doit etre celle qui sera ECRITE : le filet de gamme
+    -- la deplace sinon apres coup, et la re-selection chercherait une note qui
+    -- n'existe pas — geste juste, rien de selectionne.
+    for k = 1, mn do
+        mP[k] = Roll.SnapPitch(mP[k])
+        Roll.backend.insertNote(mS[k], mP[k], mL[k], mV[k])
+        rsS[k], rsP[k] = mS[k], mP[k]
+    end
     Roll.backend.sort()
     Roll.Sync()
     Roll.SelectByIdentity(rsS, rsP, mn)
@@ -1034,6 +1083,13 @@ function Roll.SetScale(root, intervals)
     for i = 0, 11 do Roll.scale_mask[i] = false end
     for _, iv in ipairs(intervals) do Roll.scale_mask[iv % 12] = true end
     Roll.scale_on = true
+    -- LA GAMME RETIENT DE QUI ELLE VIENT. Le masque ne suffit pas a une liste
+    -- deroulante : deux gammes peuvent le partager, et surtout un masque ne
+    -- porte pas de nom. Garder la table d'intervalles fait que « quelle gamme
+    -- est active » a une reponse par IDENTITE, sans comparer douze booleens —
+    -- et le changement de fondamentale cesse de perdre le nom en chemin, ce
+    -- qu'il faisait depuis toujours.
+    Roll.scale_iv = intervals
     Roll.scale_ver = Roll.scale_ver + 1
 end
 function Roll.ClearScale() Roll.scale_on = false; Roll.scale_ver = Roll.scale_ver + 1 end
@@ -1086,7 +1142,7 @@ function Roll.InsertChord(t, root, intervals, len, vel)
     if not Roll.backend or len <= 0 then return 0 end
     local n = 0
     for _, iv in ipairs(intervals) do
-        local p = root + iv
+        local p = Roll.SnapPitch(root + iv)
         if p >= 0 and p <= 127 then
             Roll.backend.insertNote(t, p, len, vel); rsS[n + 1] = t; rsP[n + 1] = p; n = n + 1
         end
@@ -1143,6 +1199,7 @@ function Roll.Arpeggiate(rate, mode, gate, octaves)
     local t, k, made = a, 0, 0
     while t < b - 1e-6 and made < 512 do
         local p = (mode == "random") and seqP[math.floor(rnd() * sn) + 1] or seqP[(k % sn) + 1]
+        p = Roll.SnapPitch(p)
         local len = rate * gate
         if t + len > b then len = b - t end
         if len > 1e-4 then
@@ -1173,8 +1230,9 @@ function Roll.Euclidean(a, b, pitch, steps, pulses, vel, rotation)
         if bucket >= steps then bucket = bucket - steps; hit = true end
         if hit then
             local si = (i + rotation) % steps
-            Roll.backend.insertNote(a + si * cell, pitch, cell * 0.9, vel)
-            rsS[made + 1] = a + si * cell; rsP[made + 1] = pitch; made = made + 1
+            local sp = Roll.SnapPitch(pitch)
+            Roll.backend.insertNote(a + si * cell, sp, cell * 0.9, vel)
+            rsS[made + 1] = a + si * cell; rsP[made + 1] = sp; made = made + 1
         end
     end
     if made == 0 then return 0 end
