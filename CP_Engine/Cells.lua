@@ -355,7 +355,12 @@ end
 -- depuis le debut — il entre a sa deuxieme mesure. C'est ce qui verrouille
 -- toutes les boucles sur la meme grille, et c'est exactement ce que faisait le
 -- clip d'une note. Le son doit faire pareil, sinon il flotte.
-local function playAt(slot, at, phase, len_beats, gate, snap)
+-- `len_beats` est la FIN de la passe et `p0` son DEBUT, tous deux en beats
+-- depuis le debut de la case. Sans accolade de boucle ils valent (longueur, 0)
+-- et rien ne change ; avec une accolade, ils la decrivent — et c'est tout ce
+-- qu'il a fallu pour que le son suive le MIDI, parce que la phase recue est
+-- deja en coordonnees de case.
+local function playAt(slot, at, phase, len_beats, gate, snap, p0)
     if not slot.clip or not at or at < 0 then return end
     local tempo = Loop.Tempo()
     if not tempo or tempo <= 0 then tempo = 120 end
@@ -364,7 +369,10 @@ local function playAt(slot, at, phase, len_beats, gate, snap)
     -- Un depart qu'on apprend avec deux frames de retard a commence a zero.
     -- Voir CATCHUP_SNAP_S : rabattre la phase AVANT de calculer ce qu'il reste,
     -- pour que la passe garde sa longueur entiere.
-    if snap and phase > 0 and phase * spb < CATCHUP_SNAP_S then phase = 0 end
+    p0 = p0 or 0
+    if snap and phase > p0 and (phase - p0) * spb < CATCHUP_SNAP_S then
+        phase = p0
+    end
 
     -- BOUCLE OU ONE-SHOT — et par defaut, ONE-SHOT.
     --
@@ -522,8 +530,17 @@ local function drive(t, half, gate)
     local mode = math.floor((Loop.Mode(lane) or 0) + 0.5)
     local pend = Loop.Pending(lane) or 0
     local tgt  = Loop.PendingTarget(lane) or 0
-    local lenb = Loop.LenBeats(lane) or 4
-    if lenb <= 0 then lenb = 4 end
+    -- LA ZONE DE LECTURE, ET LE SON LA SUIT COMME LE MIDI.
+    --
+    -- Sans accolade elle vaut la case entiere et pas une ligne ne change. Avec
+    -- une accolade, tout ce qui parlait de « longueur de la case » ici parlait
+    -- en fait de « longueur d'une passe » : les deux se confondaient, et c'est
+    -- pour ca que la distinction ne se voyait pas. Ne pas la faire aurait laisse
+    -- les notes tourner sur deux mesures et le son sur quatre — la seule facon
+    -- de rater ce genre de fonctionnalite sans jamais la voir rater.
+    local sa, slen = Loop.Span(lane)
+    if not slen or slen <= 0 then sa, slen = 0, 4 end
+    local sb = sa + slen
 
     -- LE LANCEMENT. On lit la decision du moteur, on ne la refait pas. Un
     -- sentinel (« j'attends une horloge ») n'est pas une date : on repasse.
@@ -544,12 +561,14 @@ local function drive(t, half, gate)
             -- va etre pose, et il ne l'est pas encore.
             local pf = Loop.GetPlayFrom(lane)
             local ph0
-            if pf >= 0 then ph0 = pf - math.floor(pf / lenb) * lenb
+            if pf >= 0 then
+                local w = pf - sa
+                ph0 = sa + (w - math.floor(w / slen) * slen)
             else
                 local a = tgt + (Loop.GetLaneOffset(lane) or 0)
-                ph0 = a - math.floor(a / lenb) * lenb
+                ph0 = sa + (a - math.floor(a / slen) * slen)
             end
-            playAt(slot, beatToFrame(tgt), ph0, lenb, gate)
+            playAt(slot, beatToFrame(tgt), ph0, sb, gate, nil, sa)
             slot.armed = true
             slot.dated = true    -- ce depart est date : rien a rattraper
         end
@@ -573,23 +592,24 @@ local function drive(t, half, gate)
             -- demande le rabat de phase — les deux autres partent d'une date que
             -- le moteur a choisie, donc d'une phase exacte.
             if slot.dated then slot.dated = false
-            else playAt(slot, Voice.Now(), phase, lenb, gate, true) end
+            else playAt(slot, Voice.Now(), phase, sb, gate, true, sa) end
         end
         -- LES PASSES SUIVANTES SE RACCROCHENT A LA PHASE DU MOTEUR, relue a
         -- chaque frame. Pas d'accumulateur, donc pas de derive : un desaccord
         -- est corrige au tour suivant au lieu de s'additionner.
-        local to_next = lenb - phase
+        local to_next = sb - phase
         -- L'avance ne peut pas depasser une demi-passe : sur une boucle plus
         -- courte que l'avance, la condition serait vraie en permanence et une
         -- seule passe serait jamais armee.
         local look = LOOKAHEAD_BEATS
-        if look > lenb * 0.5 then look = lenb * 0.5 end
+        if look > slen * 0.5 then look = slen * 0.5 end
         if to_next <= look then
             if not slot.armed then
                 local at = Loop.EngineBeat() + to_next
                 if not (stop_beat and at >= stop_beat - 1e-6) then
-                    -- Une frontiere de passe : la phase y vaut zero.
-                    playAt(slot, beatToFrame(at), 0, lenb, gate)
+                    -- Une frontiere de passe : la phase y vaut le DEBUT DE LA
+                    -- ZONE, qui n'est zero que sans accolade.
+                    playAt(slot, beatToFrame(at), sa, sb, gate, nil, sa)
                 end
                 slot.armed = true
             end

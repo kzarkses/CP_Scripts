@@ -780,13 +780,60 @@ end
 
 function Loop.PlayClipFrom(lane, beat)
     if not NATIVE or not lane then return false end
-    local lb = Loop.LenBeats(lane)
-    if lb <= 0 then return false end
+    -- LA ZONE, PAS LA LONGUEUR DE LA CASE. Sous accolade, la phase court dans
+    -- la zone : reduire le deplacement modulo la longueur du CLIP donnerait un
+    -- decalage juste a une longueur de clip pres et faux a une longueur de zone
+    -- pres — c'est-a-dire faux, sauf quand l'une divise l'autre.
+    local _, slen = Loop.Span(lane)
+    if not slen or slen <= 0 then return false end
     local ph  = Loop.Phase(lane) or 0
     local off = Loop.GetLaneOffset(lane)
-    Loop.SetLaneOffset(lane, (off + (beat - ph)) % lb)
+    Loop.SetLaneOffset(lane, (off + (beat - ph)) % slen)
     reseat[lane] = (reseat[lane] or 0) + 1
     return true
+end
+
+-- ---------------------------------------------------------------------------
+-- L'ACCOLADE DE BOUCLE (ABI 2.1)
+-- ---------------------------------------------------------------------------
+-- La sous-region qu'une case joue en boucle, en beats depuis son debut. Ce
+-- n'est PAS une porte qui tairait ce qui est autour : c'est une longueur de
+-- boucle. La case devient une boucle de deux mesures et revient deux fois plus
+-- souvent, au lieu de tourner sur quatre mesures dont deux de silence.
+--
+-- Poser `b <= a` (ou rien) l'efface. Le bornage — une accolade qui deborde
+-- d'une case qu'on vient de raccourcir — appartient au MOTEUR : il le fait une
+-- fois par bloc et le publie, et `Loop.Span` rend ce resultat-la. Deux copies
+-- de la regle auraient diverge exactement sur le cas ou elle sert.
+function Loop.SetLoopRange(lane, a, b)
+    if not NATIVE then return end
+    if not a or not b or b <= a then
+        r.CP_LaneSet(lane, "loopa", 0)
+        r.CP_LaneSet(lane, "loopb", -1)
+        return
+    end
+    r.CP_LaneSet(lane, "loopa", a)
+    r.CP_LaneSet(lane, "loopb", b)
+end
+
+-- Ce que l'utilisateur a DEMANDE, tel quel — pour l'afficher et le modifier.
+-- Rend nil quand il n'y a pas d'accolade.
+function Loop.GetLoopRange(lane)
+    if not NATIVE then return nil end
+    local a = r.CP_LaneGet(lane, "loopa")
+    local b = r.CP_LaneGet(lane, "loopb")
+    if not b or b <= (a or 0) then return nil end
+    return a, b
+end
+
+-- Ce que le moteur JOUE reellement : debut et longueur, apres bornage dans la
+-- case. Sans accolade, (0, longueur de la case) — donc tout appelant peut s'en
+-- servir sans jamais tester s'il y en a une.
+function Loop.Span(lane)
+    if not NATIVE then return 0, 4 end
+    local l = r.CP_LaneGet(lane, "spanlen")
+    if not l or l <= 0 then return 0, Loop.LenBeats(lane) end
+    return r.CP_LaneGet(lane, "spana") or 0, l
 end
 
 function Loop.SetLaneAudio() end
@@ -1115,8 +1162,22 @@ local function pollCapture()
                 for lane = 0, Loop.MAX_LANES - 1 do
                     local m = math.floor(r.CP_LaneGet(lane, "mode") + 0.5)
                     if m == 1 or m == 5 then
-                        local Lb = Loop.LenBeats(lane)
-                        local ph = beat - math.floor(beat / Lb) * Lb
+                        -- LA CAPTURE ECRIT DANS LA ZONE QUE LE MOTEUR JOUE.
+                        --
+                        -- Elle repliait le beat modulo la longueur de la CASE.
+                        -- Sous accolade, le moteur boucle sur la ZONE : une
+                        -- note jouee tombait donc hors d'elle et ne sonnait
+                        -- JAMAIS — enregistree, visible dans l'editeur, muette.
+                        -- Le musicien joue sur la boucle qu'il entend et
+                        -- n'entend jamais revenir ce qu'il vient de jouer.
+                        --
+                        -- Le decalage de phase entre aussi ici, et pour la meme
+                        -- raison : la phase de la lane vaut `sa + ((x + off)
+                        -- mod Ls)`. Ecrire sans lui posait la note a l'endroit
+                        -- ou elle aurait sonne SANS le geste « pars d'ici ».
+                        local sa, slen = Loop.Span(lane)
+                        local a = beat + (Loop.GetLaneOffset(lane) or 0)
+                        local ph = sa + (a - math.floor(a / slen) * slen)
                         local hs, hv = heldOf(lane)
                         if on then
                             -- a new note-on closes any pending note of the
@@ -1225,14 +1286,26 @@ function Loop.LaneToClip(lane)
         tag = 1000000 + lane
         Loop.SetLaneTag(lane, tag)
     end
+    -- L'ACCOLADE VOYAGE AVEC LA CASE, PAS AVEC LA LANE.
+    --
+    -- Une lane est un EMPLACEMENT que toutes les cases d'une colonne se
+    -- partagent : `armLane` y charge une autre case, et sans ces deux champs
+    -- l'accolade de la precedente restait en place. La case suivante n'aurait
+    -- alors joue que ses mesures 3 et 4, sans qu'aucun geste ne l'ait demande —
+    -- et la meme case, relancee sur la lane jumelle, aurait perdu la sienne.
+    -- L'accolade apparaissait et disparaissait selon l'etat de lecture au
+    -- moment du lancement, ce qui est la pire facon d'avoir tort.
+    local la, lb = Loop.GetLoopRange(lane)
     return {
-        kind  = "midi",
-        id    = tag,
-        name  = "Lane " .. (lane + 1),
-        notes = { s = s, l = l, p = p, v = v },
-        bars  = Loop.GetLengthBars(lane),
-        q     = "bar",
-        lmode = "loop",
+        kind   = "midi",
+        id     = tag,
+        name   = "Lane " .. (lane + 1),
+        notes  = { s = s, l = l, p = p, v = v },
+        bars   = Loop.GetLengthBars(lane),
+        q      = "bar",
+        lmode  = "loop",
+        loop_a = la,
+        loop_b = lb,
     }
 end
 
@@ -1254,6 +1327,12 @@ function Loop.ApplyClip(lane, clip)
        and clip.bars ~= Loop.GetLengthBars(lane) then
         Loop.SetLengthBars(lane, clip.bars)
     end
+    -- TOUJOURS ECRITE, MEME QUAND LA CASE N'EN A PAS. C'est le seul geste qui
+    -- efface l'accolade de l'occupant precedent ; ne l'ecrire que si la case en
+    -- porte une aurait laisse passer exactement le cas qu'on ferme. Et APRES la
+    -- longueur : le moteur borne l'accolade dans la case, la borner contre
+    -- l'ancienne longueur la ramenerait a rien.
+    Loop.SetLoopRange(lane, clip.loop_a, clip.loop_b)
     Loop.BumpVer(lane)
     return true
 end
@@ -1288,6 +1367,15 @@ local function migrateQ(ver, q)
 end
 
 function Loop.Serialize()
+    -- FORMAT 7 : L'ACCOLADE DE BOUCLE entre dans le bloc de chaque lane.
+    --
+    -- Elle se sauve, contrairement au decalage de phase — et la difference est
+    -- de nature, pas de gout. Un decalage est un geste de JEU : le retrouver a
+    -- la reouverture serait une surprise. Une accolade est une EDITION, au meme
+    -- titre que la longueur de la boucle ou les notes elles-memes ; la perdre a
+    -- la fermeture ferait d'elle un brouillon, et personne ne construit sur un
+    -- brouillon.
+    --
     -- FORMAT 6 : le TAG DE LANE entre dans le bloc de chaque lane.
     --
     -- Il n'etait pas serialise, et c'etait une perte silencieuse : le tag est
@@ -1297,7 +1385,7 @@ function Loop.Serialize()
     -- lane. Un lecteur ancien ignore le champ (les champs inconnus sont
     -- ignores), un lecteur neuf sur un projet ancien lit 0 — ce qui est
     -- exactement ce que le tag valait avant.
-    local out = { "6",
+    local out = { "7",
                   (Loop.GetFreeRun() and "1" or "0") .. "|"
                   .. (Loop.GetArmedLane() or -1) .. "|" .. num(Loop.GetLaunchQ()) }
     for lane = 0, Loop.MAX_LANES - 1 do
@@ -1306,10 +1394,12 @@ function Loop.Serialize()
         -- an in-flight recording (1), arm (4) or overdub (5) is not a state to
         -- restore: store what the lane actually holds
         if m == 1 or m == 4 or m == 5 then m = (n > 0) and 3 or 0 end
+        local la, lb = Loop.GetLoopRange(lane)
         local parts = { num(Loop.GetLengthBars(lane)),
                         Loop.GetMute(lane) and "1" or "0",
                         tostring(m),
                         string.format("%d", math.floor(Loop.GetLaneTag(lane) or 0)),
+                        num(la or 0), num(lb or -1),
                         tostring(n) }
         for i = 0, n - 1 do
             local s, l, p, v = Loop.GetNote(lane, i)
@@ -1327,7 +1417,7 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if not ver or not ver:match("^[1-6]$") then return false end
+    if not ver or not ver:match("^[1-7]$") then return false end
     local v2 = (ver ~= "1")
 
     local base = v2 and 2 or 1
@@ -1360,9 +1450,15 @@ function Loop.Deserialize(str)
             -- v6 glisse le TAG entre le mode et le nombre de notes. Avant lui,
             -- le tag n'etait nulle part : zero est donc la reponse juste pour
             -- un projet ancien, et c'est ce que la lane valait deja.
-            local v6   = (ver == "6")
+            local v6   = (ver == "6" or ver == "7")
+            local v7   = (ver == "7")
             local tag  = v6 and math.floor(tonumber(t[4]) or 0) or 0
-            local hdr  = v6 and 5 or (v2 and 4 or 3)
+            -- v7 glisse l'accolade entre le tag et le nombre de notes. Sur un
+            -- projet plus ancien elle n'existe pas, et « pas d'accolade » est
+            -- exactement ce que la lane valait : rien a migrer.
+            local la   = v7 and tonumber(t[5]) or 0
+            local lb   = v7 and tonumber(t[6]) or -1
+            local hdr  = v7 and 7 or (v6 and 5 or (v2 and 4 or 3))
             local n     = math.floor(tonumber(t[hdr]) or 0)
             if n > Loop.MAX_NOTES then n = Loop.MAX_NOTES end
             local written = 0
@@ -1381,6 +1477,9 @@ function Loop.Deserialize(str)
             Loop.SetLengthBars(lane, bars)
             Loop.SetMute(lane, muted)
             Loop.SetLaneTag(lane, tag)            -- qui joue quoi, apres reouverture
+            -- APRES la longueur : le moteur borne l'accolade dans la case, et
+            -- la borner contre l'ancienne longueur la ramenerait a zero.
+            Loop.SetLoopRange(lane, la, lb)
             Loop.SetNoteCount(lane, written)      -- publishes
             -- mode last: it is what makes the lane sound, so nothing may be
             -- playing off a half-written note list
