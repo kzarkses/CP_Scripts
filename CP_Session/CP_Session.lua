@@ -144,12 +144,36 @@ CTRL-CLICK THE TRIANGLE to launch the scene ADDITIVELY: columns the
 scene does not fill keep playing. That is how a pad or a drone
 survives a scene change without being duplicated into all eight rows.
 
+## Motion — what a column does at the end of a pass
+Right-click a column NAME and pick Motion. Seven behaviours, one per
+column: STAY (loop, the default), ONE SHOT (play once and stop),
+MARCH & WRAP / & STAY / & STOP (step down to the next filled cell of
+that column, then wrap, hold the last one, or stop), RANDOM and
+EXCLUSIVE RANDOM (which never picks the cell that just played).
+Empty cells are skipped, so a column with three clips marches on three.
+A column whose motion is not Stay says so in its header: 1x, M>, M=,
+M., R? or R!. The playing cell counts its passes on the right — xN.
+The step is QUANTIZED like any launch: it is asked for inside the last
+Q window so the engine lands it on the loop end. That only falls on
+the loop end when the clip length is a MULTIPLE of Q — at Q: Bar a
+three-beat clip steps on the next bar, which is what quantize means.
+THIS RULE IS LUA, SO IT STOPS WITH THIS WINDOW. Close CP_Session while
+a column is marching and the current clip keeps looping: the sound
+carries on, the chaining does not.
+
 ## Keyboard
-Arrows move the selection, ENTER launches it (an empty cell stops that
-column), DELETE erases it. CTRL+Z puts back the last cell you erased —
-Alt-click and Delete are one-handed shortcuts that destroy, so they
-have their way back. The selection follows your last click, so the
-mouse and the keyboard never disagree about where you are.
+Arrows move the selection, PAGE UP / PAGE DOWN jump to the top and the
+bottom of the column, ENTER launches the cell (an empty cell stops that
+column), DELETE erases it. SHIFT+ENTER launches the whole SCENE and
+steps down one — hit it again and again and you walk the set.
+CTRL+ENTER does the same ADDITIVELY. CTRL+SHIFT+I captures whatever is
+playing into the first empty scene row, with no audible interruption:
+the clips are copied and the lanes simply answer that they now hold the
+new row. Nothing is retriggered.
+CTRL+Z puts back the last cell you erased — Alt-click and Delete are
+one-handed shortcuts that destroy, so they have their way back. The
+selection follows your last click, so the mouse and the keyboard never
+disagree about where you are.
 
 ## Recording into a cell
 1. ARM the track — the circle in its header. That is REAPER's own
@@ -366,6 +390,100 @@ local function trackName(t)
     return c.s
 end
 
+-- ---------------------------------------------------------------------------
+-- LE MOTION — ce qu'une colonne fait a la fin d'une passe
+-- ---------------------------------------------------------------------------
+-- FL appelle ca Motion, et c'est PAR PISTE : Stay, One shot, March & wrap,
+-- March & stay, March & stop, Random, Exclusive random. Ableton fait la meme
+-- chose PAR CLIP, avec dix Follow Actions et deux probabilites. Le grain
+-- COLONNE d'abord, deliberement : il faut savoir s'il suffit avant de
+-- construire un panneau par case.
+--
+-- CE QUI CHANGE DE NATURE ICI. Jusqu'a maintenant la grille EXECUTE des ordres :
+-- on clique, ca part. Avec le motion elle en PRODUIT — une colonne descend ses
+-- huit cases toute seule, et ce qu'on entend cesse d'etre la somme des clics.
+-- C'est le seul chantier de cette fenetre qui change ce qu'elle EST.
+--
+-- ⚠️ CETTE REGLE EST EN LUA, DONC ELLE S'ARRETE AVEC LA FENETRE. Ableton et FL
+-- n'ont pas ce probleme parce que leur moteur porte la regle. Fermer CP_Session
+-- pendant qu'une colonne marche laisse la case en cours tourner en boucle : le
+-- SON continue, l'enchainement s'arrete. Descendre la regle dans le C++ est un
+-- autre chantier, et il se decide a l'usage — la question est de savoir si on
+-- ferme cette fenetre en jouant, et elle n'a pas de reponse theorique.
+local MOTION_STAY, MOTION_ONCE  = 0, 1
+local MOTION_WRAP, MOTION_MSTAY, MOTION_MSTOP = 2, 3, 4
+local MOTION_RAND, MOTION_XRAND = 5, 6
+local MOTION_LAST = 6
+
+local MOTION_LABEL = {
+    [0] = "Stay",
+    "One shot",
+    "March & wrap",
+    "March & stay",
+    "March & stop",
+    "Random",
+    "Exclusive random",
+}
+-- Deux caracteres dans l'en-tete de colonne, parce que c'est tout ce qu'il y a.
+-- Ils ne sont pas devinables et n'ont pas a l'etre : ils disent « cette colonne
+-- ne fait pas que boucler », et le nom entier est a un clic dans le menu.
+-- Stay ne dessine rien — le defaut n'a pas a se signaler.
+local MOTION_TAG = { [0] = "", "1x", "M>", "M=", "M.", "R?", "R!" }
+
+local motion = {}    -- [t] = un des sept
+-- L'etat de suivi d'une colonne. `pz` est la phase DANS LA ZONE de la passe
+-- precedente : c'est son repli qui date une fin de passe, et il n'y a rien
+-- d'autre a stocker.
+local mot = {}       -- [t] = { lane, tag, pz, armed, plays }
+for t = 0, TRACKS - 1 do
+    motion[t] = MOTION_STAY
+    mot[t] = { lane = -1, tag = 0, pz = 0, armed = false, plays = 0 }
+end
+-- Un tirage qui rend la meme suite a chaque ouverture de REAPER n'est pas un
+-- tirage. Une fois, ici : `math.random` est global au script.
+math.randomseed(floor((r.time_precise() * 1000) % 2147483647))
+
+local function saveMotion()
+    local out = {}
+    for t = 0, TRACKS - 1 do
+        if motion[t] ~= MOTION_STAY then
+            out[#out + 1] = t .. "=" .. motion[t]
+        end
+    end
+    r.SetProjExtState(0, "CP_Session", "motion", table.concat(out, ","))
+end
+
+local function loadMotion()
+    local _, blob = r.GetProjExtState(0, "CP_Session", "motion")
+    if not blob or blob == "" then return end
+    for ts, ms in blob:gmatch("(%d+)=(%d+)") do
+        local t, m = tonumber(ts), tonumber(ms)
+        if t and m and t < TRACKS and m >= 0 and m <= MOTION_LAST then
+            motion[t] = m
+        end
+    end
+end
+
+local function motionMenu(t)
+    local items = {}
+    for m = 0, MOTION_LAST do
+        items[#items + 1] = {
+            label = MOTION_LABEL[m],
+            checked = (motion[t] == m),
+            action = function()
+                motion[t] = m
+                saveMotion()
+                -- Le suivi repart : changer de regle en cours de passe ne doit
+                -- pas tirer sur une fenetre qu'on a deja traversee.
+                local f = mot[t]
+                f.lane, f.armed = -1, false
+                flash(trackName(t) .. " — motion: " .. MOTION_LABEL[m])
+            end,
+        }
+    end
+    return items
+end
+
 -- Route this column: pick any project track, or make one. This is the same
 -- routing CP_Looper edits — one truth, two windows.
 local function trackMenu(t)
@@ -406,6 +524,11 @@ local function trackMenu(t)
             track_name[t].known = false
         end }
     end
+    -- CE QUE CETTE COLONNE FAIT A LA FIN D'UNE PASSE. Le menu est celui du nom
+    -- de colonne parce que le motion est une propriete de la COLONNE, pas d'une
+    -- case : le declarer huit fois serait le declarer nulle part.
+    items[#items + 1] = { separator = true }
+    items[#items + 1] = { label = "Motion", children = motionMenu(t) }
     UI.NativeMenu(items)
 end
 
@@ -427,6 +550,21 @@ local function barsLabel(bars)
     if not s then
         s = bars == 1 and "1 bar" or (bars .. " bars")
         bars_lbl[bars] = s
+    end
+    return s
+end
+
+-- Le compteur de passes, en chaine. Bati une fois par valeur et plafonne a 99,
+-- ce qui borne la table : ce texte part dans une boucle de dessin qui tourne en
+-- continu pendant qu'une case joue, et une concatenation par frame et par case
+-- est exactement ce que ce fichier passe son temps a eviter.
+local plays_lbl = { [0] = "" }
+local function playsLabel(n)
+    if n > 99 then n = 99 end
+    local s = plays_lbl[n]
+    if not s then
+        s = (n >= 99) and "x99+" or ("x" .. n)
+        plays_lbl[n] = s
     end
     return s
 end
@@ -1044,6 +1182,175 @@ local function stopAll()
 end
 
 -- ---------------------------------------------------------------------------
+-- LE MOTION, deuxieme moitie — ce qui AGIT
+-- ---------------------------------------------------------------------------
+-- Le vocabulaire (les sept noms, le reglage par colonne, sa persistance, son
+-- menu) est monte au-dessus de `trackMenu`, qui l'ouvre. Ce qui suit AGIT, et
+-- ne peut donc pas etre ailleurs : il lui faut `launchCell` et `stopTrack`.
+
+-- « De quoi jouer » — la meme question que sceneLaunch pose, et pour la meme
+-- raison : demander les NOTES d'une case audio repond zero.
+local function playable(t, s)
+    local c = cells[t] and cells[t][s]
+    return (c and (isAudio(c) or cellNotes(c) > 0)) and true or false
+end
+
+-- La case suivante EN DESCENDANT qui a de quoi jouer. Les trous sont sautes :
+-- une colonne dont seules les cases 0, 3 et 7 sont remplies marche sur trois
+-- cases, pas sur huit dont cinq silencieuses.
+local function nextPlayable(t, from, wrap)
+    for i = 1, SCENES - 1 do
+        local s = from + i
+        if s >= SCENES then
+            if not wrap then return nil end
+            s = s - SCENES
+        end
+        if playable(t, s) then return s end
+    end
+    return nil
+end
+
+-- Le tirage. `excl` interdit la case en cours — c'est tout l'ecart entre Random
+-- et Exclusive random chez FL, et sans lui une colonne de deux cases retombe
+-- sur elle-meme une fois sur deux, ce qui ne s'entend pas comme un tirage.
+-- Deux passages sur huit cases, uniquement a une fin de passe.
+local function randomPlayable(t, cur_s, excl)
+    local n = 0
+    for s = 0, SCENES - 1 do
+        if playable(t, s) and not (excl and s == cur_s) then n = n + 1 end
+    end
+    if n == 0 then return nil end
+    local k = math.random(n)
+    for s = 0, SCENES - 1 do
+        if playable(t, s) and not (excl and s == cur_s) then
+            k = k - 1
+            if k == 0 then return s end
+        end
+    end
+    return nil
+end
+
+local function fireMotion(t, m, s)
+    if m == MOTION_ONCE then
+        stopTrack(t)
+        return
+    end
+    local nxt
+    if m == MOTION_WRAP then
+        nxt = nextPlayable(t, s, true)
+    elseif m == MOTION_MSTAY or m == MOTION_MSTOP then
+        nxt = nextPlayable(t, s, false)
+        if not nxt then
+            -- Le bas de la colonne. March & stay y reste en boucle, March &
+            -- stop s'y tait : c'est le seul endroit ou les deux different.
+            if m == MOTION_MSTOP then stopTrack(t) end
+            return
+        end
+    elseif m == MOTION_RAND then
+        nxt = randomPlayable(t, s, false)
+    elseif m == MOTION_XRAND then
+        nxt = randomPlayable(t, s, true)
+    end
+    -- RETOMBER SUR LA CASE EN COURS VEUT DIRE « CONTINUE ». La relancer la
+    -- ferait BASCULER — un second lancement de la case qui joue l'arrete, c'est
+    -- le toggle d'Ableton — donc un Random sur une colonne d'une seule case
+    -- s'eteindrait des la premiere passe au lieu de tourner.
+    if not nxt or nxt == s then return end
+    launchCell(t, nxt)
+end
+
+-- QUAND TIRER, et c'est la seule question difficile du chantier.
+--
+-- Un lancement est QUANTIFIE. Demander la case suivante au moment ou la passe
+-- se termine la fait partir a la frontiere de Q d'APRES — donc un Q entier en
+-- retard. On tire dans la DERNIERE FENETRE DE Q avant la fin de la passe, et la
+-- quantification du moteur pose le depart exactement sur cette fin.
+--
+-- TROIS RESERVES, ecrites la ou elles mordent :
+--
+--  · La frontiere ne coincide avec la fin de boucle que si la longueur de la
+--    lane est un MULTIPLE de Q. A Q: Bar sur une lane de trois temps, la case
+--    suivante part sur la mesure suivante et non sur la fin de la passe. Ce
+--    n'est pas un defaut de ce code : c'est ce que « quantifie » veut dire.
+--
+--  · A Q: Beat et 160 BPM la fenetre vaut 375 ms, soit onze frames de defer.
+--    C'est le PLANCHER. Plus serre, un tir tomberait entre deux frames.
+--
+--  · Q: Off n'a pas de fenetre du tout. On tire alors SUR le repli de phase,
+--    donc avec une frame de retard. C'est ce que « pas de quantize » veut dire,
+--    et le dire vaut mieux qu'inventer une avance qu'on ne peut pas tenir.
+--
+-- Le compteur de tours tombe du meme repli, gratuitement — Ableton l'affiche
+-- dans son Track Status field, et c'est la reponse a « ca fait combien de fois
+-- que ca tourne » qu'on se pose en jouant.
+local function pollMotion()
+    -- L'HORLOGE COMPTE AUTANT QUE LA LANE. Sans elle la phase ne bouge plus,
+    -- donc `slen - ph` reste fige : un transport arrete pile dans la derniere
+    -- fenetre de Q ferait tirer le motion, et la colonne avancerait d'une case
+    -- sans qu'une passe se soit terminee. Un enchainement se compte en passes
+    -- JOUEES. On remet le suivi a zero plutot que de sortir, sinon la reprise
+    -- lirait un repli de phase la ou il n'y a eu qu'une pause.
+    local clock = Loop.ClockRunning()
+    local q = Loop.GetLaunchQ() or 0
+    for t = 0, TRACKS - 1 do
+        local f = mot[t]
+        local lane = liveLane(t)
+        if not clock or not isRunning(lane) then
+            f.lane, f.pz, f.armed, f.plays = -1, 0, false, 0
+        else
+            local tag = Loop.GetLaneTag(lane)
+            local sa, slen = Loop.Span(lane)
+            if not slen or slen <= 0 then slen = 1 end
+            local ph = (Loop.Phase(lane) or 0) - (sa or 0)
+            if ph < 0 then ph = 0 elseif ph > slen then ph = slen end
+            if lane ~= f.lane or tag ~= f.tag then
+                -- UNE AUTRE CASE A PRIS LA COLONNE. Le compteur compte les
+                -- passes de CE clip, donc il repart. Et surtout : la nouvelle
+                -- lane part de zero, ce qui ressemble a un repli de phase sans
+                -- en etre un — le compter ferait tirer le motion une passe trop
+                -- tot a chaque pas de sa propre marche.
+                f.lane, f.tag, f.pz, f.armed, f.plays = lane, tag, ph, false, 0
+            else
+                local wrapped = false
+                if ph + 1e-9 < f.pz then
+                    wrapped = true
+                    f.plays = f.plays + 1
+                    f.armed = false
+                end
+                f.pz = ph
+                local m = motion[t]
+                -- Une file deja posee gagne : un lancement que Cedric vient de
+                -- demander a la main ne se fait pas doubler par la regle.
+                if m ~= MOTION_STAY and not f.armed
+                   and Loop.Pending(lane) == 0 then
+                    local fire
+                    if q > 0 then
+                        -- Le plafond a la moitie de la passe existe pour les
+                        -- cases plus COURTES que Q : sans lui la fenetre couvre
+                        -- toute la passe et le tir part des la premiere frame.
+                        local win = (q < slen * 0.5) and q or (slen * 0.5)
+                        fire = (slen - ph) <= win + 1e-9
+                    else
+                        fire = wrapped
+                    end
+                    if fire then
+                        f.armed = true
+                        local s = sceneOfLane(lane, t)
+                        if s then fireMotion(t, m, s) end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Combien de fois la case en cours a tourne dans cette colonne, ou 0.
+local function motionPlays(t)
+    local f = mot[t]
+    return f and f.plays or 0
+end
+
+-- ---------------------------------------------------------------------------
 -- Editing — CP_Editor only, and it must be able to PLAY what it edits
 -- ---------------------------------------------------------------------------
 -- A cell that is currently playing is edited THROUGH its live lane, so the
@@ -1277,6 +1584,73 @@ local function pasteCell(t, s, c)
     saveGrid()
 end
 
+-- ---------------------------------------------------------------------------
+-- CAPTURE AND INSERT SCENE — Ableton, Ctrl+Shift+I
+-- ---------------------------------------------------------------------------
+-- « Copier ce qui joue dans une nouvelle scene, with no audible interruption. »
+-- Ici c'est EXACT par construction, et ce n'est pas une chance : le tag de lane
+-- est de la METADONNEE PURE. Recopier les descripteurs puis reposer les tags
+-- fait changer de ligne a la lane sans toucher a ce qu'elle joue — pas une note
+-- redeclenchee, pas une phase remise a zero, pas un fondu.
+--
+-- Ableton INSERE une ligne ; cette grille en a huit, fixes. La cible est donc la
+-- premiere ligne ENTIEREMENT VIDE en descendant depuis la selection, et quand il
+-- n'y en a plus on le dit — ecraser une ligne pleine serait detruire une scene
+-- pour en garder une autre, ce que personne ne demande en tapant « capture ».
+local function sceneEmpty(s)
+    for t = 0, TRACKS - 1 do
+        if cells[t] and cells[t][s] then return false end
+    end
+    return true
+end
+
+local function captureScene()
+    -- CE QUI JOUE, RELEVE AVANT D'ECRIRE. La copie repose les tags, donc la
+    -- releve doit etre finie quand la premiere ecriture a lieu.
+    --
+    -- Une lane qui ENREGISTRE (mode 1) est exclue : la reetiqueter couperait le
+    -- lien que `pollRec` suit pour ranger la prise dans sa case, et une capture
+    -- ne doit jamais faire perdre un take en cours.
+    local src, n = {}, 0
+    for t = 0, TRACKS - 1 do
+        local lane = liveLane(t)
+        local m = floor(Loop.Mode(lane) + 0.5)
+        if m == 3 or m == 5 then
+            local s = sceneOfLane(lane, t)
+            if s and cells[t][s] then
+                src[t] = { s = s, lane = lane }
+                n = n + 1
+            end
+        end
+    end
+    if n == 0 then
+        flash("Nothing is playing — there is nothing to capture")
+        return
+    end
+    local dst
+    for i = 0, SCENES - 1 do
+        local s = (sel.s + i) % SCENES
+        if sceneEmpty(s) then dst = s break end
+    end
+    if not dst then
+        flash("Every scene row is full — clear one to capture into")
+        return
+    end
+    for t = 0, TRACKS - 1 do
+        local it = src[t]
+        if it then
+            pasteCell(t, dst, cells[t][it.s])
+            -- LE TAG, ET RIEN D'AUTRE. La lane continue sa passe ; elle repond
+            -- simplement qu'elle tient desormais la case de la nouvelle ligne.
+            Loop.SetLaneTag(it.lane, cellTag(t, dst))
+            cur[t] = dst
+        end
+    end
+    saveGrid()
+    sel.s = dst
+    flash("Captured " .. n .. " clip(s) into scene " .. (dst + 1))
+end
+
 local function renameCell(t, s)
     local c = cells[t][s]
     if not c then return end
@@ -1460,6 +1834,7 @@ local function cellMenu(t, s)
 end
 
 loadGrid()
+loadMotion()
 
 do
     local _, v = r.GetProjExtState(0, "CP_Session", "rec_bars")
@@ -1733,6 +2108,19 @@ local function drawCell(theme, t, s, x, y, w, h)
         end
         local nm = (c.name and c.name ~= "") and c.name or "clip"
         local tw = w - bw - 6
+        -- COMBIEN DE FOIS CA A TOURNE. Ableton l'affiche dans son Track Status
+        -- field, et c'est la question qu'on se pose en jouant : « ca fait
+        -- combien de passes ». Elle tombe gratuitement du meme repli de phase
+        -- qui date le motion, donc elle ne coute rien a personne.
+        local np = playing and motionPlays(t) or 0
+        if np > 0 then
+            local pl = playsLabel(np)
+            tw = tw - 20
+            UI.SetFontCaption()
+            Core.DrawText(pl, x + w - 4 - Core.MeasureText(pl), y + 4,
+                          mc[1], mc[2], mc[3], 0.75)
+            UI.SetFontBody()
+        end
         Core.DrawText(cellLabel(t, s, nm, tw), x + bw + 2, y + 3,
                       tc[1], tc[2], tc[3], 0.95)
         UI.SetFontCaption()
@@ -2476,6 +2864,21 @@ local function handleKeys()
         sel.s = (sel.s - 1) % SCENES; Core.ConsumeChar()
     elseif a == "cell.next_scene" then
         sel.s = (sel.s + 1) % SCENES; Core.ConsumeChar()
+    elseif a == "cell.first_scene" then
+        sel.s = 0; Core.ConsumeChar()
+    elseif a == "cell.last_scene" then
+        sel.s = SCENES - 1; Core.ConsumeChar()
+    elseif a == "scene.launch" or a == "scene.launch_add" then
+        -- LANCER, PUIS AVANCER. C'est l'avance qui fait le geste : taper Entree
+        -- encore et encore descend le set, et sans elle il faudrait une fleche
+        -- entre chaque scene. Elle s'arrete en bas plutot que de boucler — on
+        -- descend un morceau, on ne le repasse pas en boucle sans le demander.
+        sceneLaunch(sel.s, a == "scene.launch_add")
+        if sel.s < SCENES - 1 then sel.s = sel.s + 1 end
+        Core.ConsumeChar()
+    elseif a == "scene.capture" then
+        captureScene()
+        Core.ConsumeChar()
     elseif a == "cell.launch" then
         -- Entree lance la case ; sur une case vide elle arrete la colonne,
         -- ce qui est ce qu'on veut dire en descendant une grille trouee.
@@ -2695,6 +3098,10 @@ local function frame(theme)
         local s = sceneOfLane(liveLane(t), t)
         if s and s ~= cur[t] then cur[t] = s end
     end
+    -- LA FIN DE PASSE COMME EVENEMENT. Juste apres le poll, parce que c'est lui
+    -- qui redonne quelle moitie est vivante — lire la phase avant lui ferait
+    -- suivre la lane que la colonne vient de quitter.
+    pollMotion()
     pollRec()
 
     -- edits coming home from CP_Editor (own channel: see the editor's
@@ -2737,8 +3144,21 @@ local function frame(theme)
         local cx = x + scene_w + gap + ci * (cell_w + gap)
         local mc = C.text_mute or C.text_disabled
         local routed = Loop.GetLaneDest(t) ~= nil
-        Core.DrawText(cellLabel(t, SCENES, trackName(t), cell_w - 22), cx + 2, y + 2,
+        -- LE MOTION SE VOIT. Une colonne qui va changer de case toute seule doit
+        -- le dire dans son en-tete, sinon la grille se met a bouger sans raison
+        -- lisible — et c'est exactement le genre de reglage qu'on oublie avoir
+        -- pose. Deux caracteres, et le nom entier dans le menu du nom.
+        local mtag = MOTION_TAG[motion[t]] or ""
+        local nw = (mtag ~= "") and (cell_w - 42) or (cell_w - 22)
+        if nw < 8 then nw = 8 end
+        Core.DrawText(cellLabel(t, SCENES, trackName(t), nw), cx + 2, y + 2,
                       mc[1], mc[2], mc[3], routed and 0.9 or 0.45)
+        if mtag ~= "" then
+            -- La police de cette boucle est DEJA la caption : la reposer ici
+            -- laisserait les colonnes suivantes dessiner leur nom en body.
+            local a = C.accent
+            Core.DrawText(mtag, cx + cell_w - 36, y + 3, a[1], a[2], a[3], 0.9)
+        end
         local ax = cx + cell_w - 16
         local armed = isArmed(t)
         local d = C.danger or C.accent

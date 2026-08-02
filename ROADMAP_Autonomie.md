@@ -3141,3 +3141,90 @@ règle, en mode case seulement. Pas un modificateur de la règle, parce que les
 deux poignées se posent au même endroit — on fait une sélection, puis on en fait
 la zone de lecture. Un même pixel aurait porté les deux. C'est la bande de
 boucle de REAPER, et c'est la même raison.
+
+## La grille cesse d'exécuter des ordres et se met à en produire
+
+Chantier 4 fermé, §4a à §4c. C'est le seul de la liste qui change ce que
+CP_Session **est** : jusqu'ici on cliquait et ça partait, la fenêtre était un
+lanceur. Une colonne peut maintenant descendre ses huit cases toute seule, et ce
+qu'on entend cesse d'être la somme des clics.
+
+**Sept comportements, par colonne, comme FL.** Stay, One shot, March & wrap,
+March & stay, March & stop, Random, Exclusive random. Grain **colonne** et pas
+grain clip, délibérément : les Follow Actions par case d'Ableton sont un panneau
+par case, et il faut savoir si la colonne suffit avant de construire ça. Le
+réglage vit dans le menu du **nom** de colonne — parce que c'est une propriété de
+la colonne, et la déclarer huit fois serait la déclarer nulle part.
+
+**La seule question difficile était de savoir QUAND tirer.** Un lancement est
+quantifié : demander la case suivante au moment où la passe se termine la fait
+partir à la frontière de Q d'*après*, donc un Q entier en retard. On tire dans la
+**dernière fenêtre de Q avant la fin de la passe**, et la quantification du
+moteur pose le départ exactement sur cette fin. Trois réserves sont écrites
+au-dessus du code, là où elles mordent : la frontière ne coïncide avec la fin de
+boucle que si la longueur de lane est un **multiple** de Q ; à Q: Beat et
+160 BPM la fenêtre vaut 375 ms, soit onze frames de defer, et c'est le plancher ;
+et **Q: Off n'a pas de fenêtre du tout** — on y tire sur le repli lui-même, avec
+une frame de retard, parce que le dire vaut mieux qu'inventer une avance qu'on ne
+peut pas tenir.
+
+**Deux gardes que l'écriture a rendus nécessaires, et qu'aucun plan n'aurait
+prévus.** L'horloge doit battre : un transport arrêté fige la phase, donc une
+fenêtre de Q figée, donc un tir — la colonne aurait avancé d'une case sans
+qu'aucune passe se soit terminée. Et **retomber sur la case en cours veut dire
+*continue*** : la relancer la ferait basculer, puisqu'un second lancement de la
+case qui joue l'arrête. Sans ce test, un Random sur une colonne d'une seule case
+s'éteint à la première passe — le tirage aurait « marché » et le son se serait
+tu.
+
+**Un troisième garde vient du fait qu'une lane est un emplacement partagé.** Au
+moment où le motion tire, la colonne bascule sur sa moitié jumelle, dont la phase
+part de zéro : ça ressemble à un repli de phase et n'en est pas un. Le compter
+ferait tirer le motion une passe trop tôt **à chaque pas de sa propre marche** —
+un défaut qui s'auto-entretient et qui ne se voit qu'en écoutant. Le suivi
+compare donc la lane *et* le tag, et repart quand l'un des deux change.
+
+**Le compteur de tours tombe du même repli, gratuitement.** Il s'affiche dans la
+case qui joue (`xN`), et il compte les passes de **ce clip-là** : un pas de
+marche le remet à zéro, parce que la question qu'on se pose en jouant est
+« depuis combien de temps j'entends ça ».
+
+⚠️ **Cette règle est en Lua, donc elle s'arrête avec la fenêtre.** Fermer
+CP_Session pendant qu'une colonne marche laisse la case en cours tourner en
+boucle : le son continue, l'enchaînement s'arrête. Ableton et FL n'ont pas ce
+problème parce que leur moteur porte la règle. C'est écrit en tête du bloc, et
+c'est une décision qui appartient à l'usage — descendre la règle dans le C++ est
+un autre chantier, et la question « est-ce que je ferme cette fenêtre en
+jouant » n'a pas de réponse théorique.
+
+### Les petits gestes, et pourquoi deux d'entre eux ont changé de sens
+
+**Capture and Insert Scene est exact par construction**, et ce n'est pas une
+chance : le tag de lane est de la métadonnée pure. Recopier les descripteurs puis
+reposer les tags fait changer de ligne à la lane **sans toucher à ce qu'elle
+joue** — pas une note redéclenchée, pas une phase remise à zéro. Ableton
+*insère* une ligne ; cette grille en a huit, fixes, donc la cible est la première
+ligne entièrement vide en descendant depuis la sélection, et quand il n'y en a
+plus on le dit. Écraser une ligne pleine serait détruire une scène pour en garder
+une autre, ce que personne ne demande en tapant « capture ». Une lane qui
+**enregistre** est exclue de la relève : la réétiqueter couperait le lien que
+`pollRec` suit pour ranger la prise dans sa case, et une capture ne doit jamais
+faire perdre un take.
+
+**Page Up / Page Down montent et descendent de huit scènes chez Ableton.** Cette
+grille en a huit *en tout* : le geste transposé tel quel aurait donné deux
+touches inertes. Elles valent donc le haut et le bas de la colonne — le même
+geste ramené à la taille de l'objet.
+
+**Et l'avance de Maj+Entrée est ce qui fait le geste, pas le lancement.** Chez
+Ableton on sélectionne une scène, on tape Entrée, et la sélection descend — donc
+taper Entrée encore et encore joue le morceau. Sans l'avance il faudrait une
+flèche entre chaque scène, et on ne descend plus un set : on le pilote. Elle
+s'arrête en bas plutôt que de boucler, parce qu'on descend un morceau, on ne le
+repasse pas sans le demander.
+
+**Le linteur de raccourcis a crié pour la bonne raison** : le vocabulaire a gagné
+un groupe (`scene.*`) que son expression régulière ne connaissait pas. Trois
+actions déclarées et « jamais exécutées » — exactement le cas (1) pour lequel il
+existe, sauf que le trou était en lui. Un mot ajouté à la liste des préfixes.
+

@@ -47,7 +47,7 @@ FALLBACK = {
 }
 
 PREFIX = (r'"((?:note|edge|roll|lane|ruler|vel|play|view|audio|edit|sel|walk'
-          r'|brace|clip|pad|page|cell)\.[a-z_0-9]+)"')
+          r'|brace|clip|pad|page|cell|scene)\.[a-z_0-9]+)"')
 
 
 def read(rel):

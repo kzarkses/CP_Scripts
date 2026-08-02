@@ -257,8 +257,10 @@ depuis CP_Editor joue le fichier entier. Tout existe pourtant dessous — le
 moteur porte `loop_start` / `loop_end` / `pos` / `gain` en frames source, et
 `Voice.Play` les transmet déjà.
 
-- [ ] Faire passer `offs` / `len` / `gain` jusqu'à `opts` dans `playAt`.
-- [ ] `soundBars` mesure la RÉGION et non le fichier.
+- [x] Faire passer `offs` / `len` / `gain` jusqu'à `opts` dans `playAt`.
+- [x] `soundBars` mesure la RÉGION et non le fichier — une tranche de deux
+      temps prise dans un break de quatre mesures fait deux temps, et c'est
+      cette longueur-là qui décide de la passe.
 
 **Ce que ça débloque** : découper un break en huit tranches, une par case. Un
 geste fondateur d'une session view, aujourd'hui strictement impossible. Et
@@ -273,35 +275,65 @@ même chose **par clip** avec dix Follow Actions et deux probabilités.
 **Grain colonne d'abord**, à la FL. Les Follow Actions par clip sont un panneau
 par case, et il faut savoir si le grain colonne suffit avant de le construire.
 
-- [ ] Un enum de sept comportements par colonne, dans `frame()` juste après
-      `Loop.Poll()`. Tout est déjà exposé : `Loop.Phase`, `Loop.LenBeats`,
-      `Loop.GetLaunchQ`, et `launchCell` sait déjà échanger sur une frontière.
-- [ ] Le compteur de tours joués tombe gratuitement du même poll (une détection
-      de repli de phase). Ableton l'affiche dans le Track Status field.
+- [x] Un enum de sept comportements par colonne (`pollMotion`, appelé dans
+      `frame()` juste après `Loop.Poll()` — c'est lui qui redonne quelle moitié
+      est vivante, et lire la phase avant lui suivrait la lane que la colonne
+      vient de quitter). Réglage par colonne dans le menu du **nom** de colonne,
+      persisté avec le projet, et **visible dans l'en-tête** : `1x`, `M>`, `M=`,
+      `M.`, `R?`, `R!`. Stay ne dessine rien — un défaut n'a pas à se signaler.
+- [x] Le compteur de tours joués tombe du même repli de phase, et s'affiche
+      dans la case qui joue (`xN`, à droite du nom). Il compte les passes de
+      **ce clip-là** : un pas de marche le remet à zéro, parce que la question
+      qu'on se pose est « depuis combien de temps j'entends ça ».
 
-**Trois réserves à écrire dans le code** : la règle « tirer dans la dernière
-fenêtre de Q » ne tombe sur la fin de boucle que si la longueur de lane est un
-multiple de Q ; à Q: Beat et 160 BPM la fenêtre vaut onze frames de defer, ce
-qui est le plancher ; et **l'enchaînement s'arrête si la fenêtre se ferme**,
-parce que c'est du Lua — Ableton et FL n'ont pas ce problème.
+**Les trois réserves sont écrites au-dessus de `pollMotion`**, là où elles
+mordent : la frontière de Q ne coïncide avec la fin de boucle que si la longueur
+de lane est un **multiple** de Q ; à Q: Beat et 160 BPM la fenêtre vaut 375 ms,
+soit onze frames de defer, et c'est le plancher ; **Q: Off n'a pas de fenêtre du
+tout**, on y tire donc sur le repli lui-même, avec une frame de retard — le dire
+vaut mieux qu'inventer une avance qu'on ne peut pas tenir.
+
+**Deux gardes que l'écriture a rendus nécessaires**, et qui ne se devinent pas :
+l'horloge doit battre (un transport arrêté fige la phase, et une fenêtre de Q
+figée tire) ; et **retomber sur la case en cours veut dire *continue*** — la
+relancer la ferait basculer, donc un Random sur une colonne d'une seule case
+s'éteindrait dès la première passe.
+
+⚠️ **L'enchaînement s'arrête si la fenêtre se ferme**, parce que c'est du Lua.
+Le son continue, la marche non. C'est écrit en tête du bloc. Descendre la règle
+dans le moteur reste un autre chantier, et il se décide à l'usage : la question
+est de savoir si Cédric ferme cette fenêtre en jouant, et elle n'a pas de
+réponse théorique.
 
 ### 4c — Les petits gestes
 
-- [ ] **`+Scene`** — superposer au lieu de remplacer. FL, verbatim : *« will
+- [x] **`+Scene`** — superposer au lieu de remplacer. FL, verbatim : *« will
       replace playing Clips with any new Clips on the same track in the next
       Scene but leave any Clips on unused tracks playing »*. Aujourd'hui
       `sceneLaunch` arrête toute colonne sans clip, donc **une nappe ne peut pas
       survivre à un changement de scène** : il faut la dupliquer dans les huit
-      lignes. Cinq lignes, zéro stockage.
-- [ ] **Une sélection et un clavier.** Ableton : flèches, Page Up/Down = huit
-      scènes, Entrée = lancer — on descend un set entier en tapant Entrée.
-      CP_Session n'a **aucune gestion clavier** ; l'infrastructure existe et est
-      éprouvée dans CP_Editor. ~60 lignes.
-- [ ] **Capture and Insert Scene** (Ableton, Ctrl+Shift+I) : copier ce qui joue
-      dans une nouvelle scène *« with no audible interruption »*. Ici c'est
-      exact **par construction** : le tag de lane est de la métadonnée pure, donc
-      recopier les descripteurs puis reposer les tags allume la nouvelle ligne
-      sans redéclencher une note.
+      lignes. Cinq lignes, zéro stockage. Ctrl+clic sur le triangle de scène,
+      ou Ctrl+Entrée au clavier : la question se pose **au lancement** plutôt
+      que de vivre dans un réglage qu'on oublie avoir posé.
+- [x] **Une sélection et un clavier.** Flèches, Entrée (case), Suppr, Ctrl+Z.
+      **Page Up / Page Down** montent et descendent de huit scènes chez Ableton ;
+      cette grille en a huit *en tout*, donc ils y valent le haut et le bas de la
+      colonne — le même geste ramené à la taille de l'objet, plutôt qu'une touche
+      inerte. Et **Maj+Entrée lance la scène puis descend d'un cran** : c'est
+      l'avance qui fait le geste, pas le lancement — sans elle il faudrait une
+      flèche entre chaque scène et on ne descend plus un set en tapant Entrée.
+- [x] **Capture and Insert Scene** (Ctrl+Shift+I) : ce qui joue devient une
+      ligne, *« with no audible interruption »*, et c'est exact **par
+      construction** — le tag de lane est de la métadonnée pure, donc recopier
+      les descripteurs puis reposer les tags allume la nouvelle ligne sans
+      redéclencher une note ni remettre une phase à zéro.
+      Ableton **insère** une ligne ; cette grille en a huit, fixes, donc la
+      cible est la première ligne **entièrement vide** en descendant depuis la
+      sélection — et quand il n'y en a plus, on le dit. Écraser une ligne pleine
+      serait détruire une scène pour en garder une autre, ce que personne ne
+      demande en tapant « capture ». Une lane qui **enregistre** est exclue de
+      la relève : la réétiqueter couperait le lien que `pollRec` suit pour ranger
+      la prise dans sa case.
 
 ---
 
