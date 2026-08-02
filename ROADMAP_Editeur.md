@@ -43,11 +43,12 @@ le *trap roll*). Bouton du milieu = panoramique.
 **Lane de vélocité** : clic gauche prend la barre la plus proche, glisser règle
 la vélocité — de toute la sélection s'il y en a une.
 
-**Règle** (modes take et item seulement) : de vraies poignées — un bord de la
+**Règle** (tous les modes depuis le 2026-08-02) : de vraies poignées — un bord de la
 sélection temporelle la redimensionne, son corps la déplace, le drapeau du
 curseur d'édition le déplace, un clic dans le vide pose le curseur et efface la
 sélection, un glisser dans le vide en crée une. Ctrl = sans magnétisme.
-**Inerte en mode clip** — c'est le point 5 de ce document.
+~~**Inerte en mode clip**~~ — corrigé le 2026-08-02 (§5.1) : une case porte son
+propre curseur et sa propre sélection, en beats.
 
 **Clavier** : `Space` / `Shift+Space` / `Ctrl+Shift+Space` (trois départs, ceux
 de REAPER), `Home`, `+` / `-`, `Ctrl+Z` / `Ctrl+Y`, `Ctrl+A` / `C` / `X` / `V`
@@ -63,6 +64,14 @@ les deux hôtes **dans le même changement**.
 ---
 
 ## 2. L'inventaire REAPER — la config de Cédric, relevée
+
+> **La colonne « CP_Editor » date du 2026-08-02 au matin**, avant le travail
+> décrit en §3. Elle n'est pas mise à jour, et c'est délibéré : c'est le relevé
+> qui a fondé le plan, et un relevé qu'on repeint au fur et à mesure ne prouve
+> plus rien. Ce qui est fait se lit aux cases cochées du §3. Sont encore ✗
+> aujourd'hui : les quatre lignes « loop points » du glisser de règle (§7 — on
+> ne les copie pas), et le changement de hauteur pendant le glisser
+> d'insertion (§3.7).
 
 ### MIDI note — clic gauche
 
@@ -151,6 +160,10 @@ les deux hôtes **dans le même changement**.
 
 ## 3. Ce qu'il faut construire, dans l'ordre où ça se tient
 
+**Fait le 2026-08-02 : 3.1 à 3.7, la section 4, et la 5.1/5.2.** Ce qui reste
+est en fin de document — la fenêtre de capture (§6), les gestes de molette, les
+lanes de CC.
+
 L'ordre n'est pas celui des tableaux : il est celui des **dépendances**. Chaque
 étape rend la suivante moins chère.
 
@@ -162,19 +175,19 @@ rien ne copie. Les deux conventions ne peuvent pas coexister, et tout le reste
 du document en dépend : la moitié des lignes manquantes sont des combinaisons
 *avec* l'un ou l'autre.
 
-- [ ] Passer « sans magnétisme » sur **Shift**, libérer **Ctrl** pour la copie.
+- [x] Passer « sans magnétisme » sur **Shift**, libérer **Ctrl** pour la copie.
       Shift est aujourd'hui « sélection additive » sur la grille — qui devient
       **Ctrl**, comme chez REAPER (*Toggle note selection*).
-- [ ] Le faire **dans `RollUI` et les deux hôtes en même temps** ; un éditeur
+- [x] Le faire **dans `RollUI` et les deux hôtes en même temps** ; un éditeur
       qui n'obéit pas aux mêmes doigts que l'autre est pire que les deux
       anciens.
 
 ### 3.2 — Le trousseau de modificateurs
 
-- [ ] `Core.ModWin()` — le bit 32 de `mouse_cap`, que le toolkit n'expose pas
+- [x] `Core.ModWin()` — le bit 32 de `mouse_cap`, que le toolkit n'expose pas
       encore alors que quatre lignes de la config de Cédric s'en servent
       (double/halve length, arpeggiate).
-- [ ] **Une table**, pas une cascade de `if`. Un `modmask` (ctrl|shift|alt|win)
+- [x] **Une table**, pas une cascade de `if`. Un `modmask` (ctrl|shift|alt|win)
       calculé une fois par frame, et un dictionnaire geste → action. C'est ce
       qui rend le point 5 de ce document possible : **on ne peut rendre
       configurable que ce qui est déjà une donnée.**
@@ -184,27 +197,27 @@ du document en dépend : la moitié des lignes manquantes sont des combinaisons
 Trois contextes, un seul mécanisme : Alt efface. Aujourd'hui il n'y a que le
 clic droit, et il ne fait pas de traînée.
 
-- [ ] Alt+clic sur une note = supprime.
-- [ ] Alt+glisser sur la grille = **gomme à la traînée** (tout ce que le
+- [x] Alt+clic sur une note = supprime.
+- [x] Alt+glisser sur la grille = **gomme à la traînée** (tout ce que le
       pointeur traverse).
-- [ ] Shift+Alt = idem, sans magnétisme.
+- [x] Shift+Alt = idem, sans magnétisme.
 
 ### 3.4 — Les sélections riches
 
 Ce sont les quatre lignes de « MIDI note — clic gauche » et ce sont, à l'usage,
 celles qui font gagner le plus de temps.
 
-- [ ] Shift+clic = ajoute la **plage** entre l'ancre et la note cliquée.
-- [ ] Ctrl+clic = bascule une note dans la sélection.
-- [ ] Shift+Alt = toutes les notes de la mesure.
-- [ ] Ctrl+Alt = cette note et toutes celles qui suivent.
-- [ ] Alt+clic dans le vide = tout désélectionner.
-- [ ] Sur la règle, Shift+clic = sélectionner les notes de la sélection
+- [x] Shift+clic = ajoute la **plage** entre l'ancre et la note cliquée.
+- [x] Ctrl+clic = bascule une note dans la sélection.
+- [x] Shift+Alt = toutes les notes de la mesure.
+- [x] Ctrl+Alt = cette note et toutes celles qui suivent.
+- [x] Alt+clic dans le vide = tout désélectionner.
+- [x] Sur la règle, Shift+clic = sélectionner les notes de la sélection
       temporelle.
 
 ### 3.5 — Les contraintes de déplacement
 
-- [ ] Shift+Ctrl = déplacement sur **un seul axe** (celui du plus grand
+- [x] Shift+Ctrl = déplacement sur **un seul axe** (celui du plus grand
       mouvement, verrouillé à la prise).
 - [ ] Shift+Ctrl+Alt = déplacement vertical **hors gamme** — `Roll` connaît
       déjà la gamme (`Roll.scale_on`, `TransposeInScale`), donc c'est la
@@ -212,27 +225,27 @@ celles qui font gagner le plus de temps.
 
 ### 3.6 — Les longueurs et les bords
 
-- [ ] Ctrl sur un bord = redimensionner **cette** note en ignorant la
+- [x] Ctrl sur un bord = redimensionner **cette** note en ignorant la
       sélection.
-- [ ] Alt sur un bord = **étirer** (le groupe se dilate au lieu de se
+- [x] Alt sur un bord = **étirer** (le groupe se dilate au lieu de se
       déplacer) ; Shift+Alt sans magnétisme.
-- [ ] Shift+Win / Ctrl+Win au clic = doubler / diviser la longueur. Deux
+- [x] Shift+Win / Ctrl+Win au clic = doubler / diviser la longueur. Deux
       lignes, une fois `ModWin` posé.
 
 ### 3.7 — Les gestes qui écrivent
 
 Les plus gros, et les seuls qui demandent de vraies fonctions dans `Roll`.
 
-- [ ] **Copier en glissant** (Ctrl) — la note, ou la sélection entière.
-- [ ] **Peindre une ligne droite** (Ctrl+Alt) — des notes régulières entre le
+- [x] **Copier en glissant** (Ctrl) — la note, ou la sélection entière.
+- [x] **Peindre une ligne droite** (Ctrl+Alt) — des notes régulières entre le
       point de prise et le pointeur, au pas de la grille.
-- [ ] **Peindre notes et accords** (Shift+Ctrl+Alt) — la même chose, mais
+- [x] **Peindre notes et accords** (Shift+Ctrl+Alt) — la même chose, mais
       l'accord de la gamme sous la hauteur pointée.
-- [ ] **Arpéger** (Ctrl+Win) — étirer les *positions* d'un groupe sans toucher
+- [x] **Arpéger** (Ctrl+Win) — étirer les *positions* d'un groupe sans toucher
       aux longueurs. `Roll.Reverse` et `Roll.Legato` montrent la forme :
       une passe sur la sélection, une seule écriture.
 - [ ] Le glisser d'insertion doit aussi **changer la hauteur** en montant ou
-      descendant, pas seulement la longueur.
+      descendant, pas seulement la longueur. *(reste à faire)*
 
 ---
 
@@ -243,7 +256,8 @@ la règle, Ctrl+clic dans le vide). CP_Editor ne le déplace que depuis la règl
 et **jamais en mode clip**.
 
 - [ ] Le clic sur une note pose le curseur à son début (mode take/item).
-- [ ] Ctrl+clic dans le vide : désélectionne **et** pose le curseur, sans
+      *(reste à faire — le seul point de la section 4 encore ouvert)*
+- [x] Ctrl+clic dans le vide : désélectionne **et** pose le curseur, sans
       magnétisme.
 
 ---
@@ -260,9 +274,9 @@ cursor / time selection are project concepts; a clip has neither »*. C'est vrai
 du curseur **du projet** — pas d'un curseur **de la case**, qui est de l'état
 de fenêtre pur et ne coûte rien.
 
-- [ ] Un `state.clip_cursor` et un `state.clip_sel_a/b`, **en beats de la
+- [x] Un `state.clip_cursor` et un `state.clip_sel_a/b`, **en beats de la
       case**, avec les mêmes poignées que la règle du mode take.
-- [ ] Ce qu'ils débloquent immédiatement : quantifier / supprimer / transposer
+- [x] Ce qu'ils débloquent immédiatement : quantifier / supprimer / transposer
       **dans la plage**, coller au curseur, sélectionner par le temps. Toutes
       ces opérations existent déjà dans `Roll` et ne prennent pas de plage —
       c'est le seul argument qui leur manque.
@@ -279,13 +293,25 @@ laisse la case verrouillée à la grille, à un décalage près qui ne dérive p
 C'est exactement ce que fait le *legato launch* d'Ableton, et c'est ce que
 « lire à partir d'ici » veut dire.
 
-- [ ] Un champ `offset` par lane dans `cp_lanes.cpp`, ajouté **au seul endroit
+- [x] Un champ `offset` par lane dans `cp_lanes.cpp`, ajouté **au seul endroit
       où la phase est publiée**. `Cells` relit `Loop.Phase` à chaque frame :
       l'audio suit sans une ligne de plus.
-- [ ] Le clic dans la règle d'une case écrit `offset = (position cliquée −
+- [x] Le clic dans la règle d'une case écrit `offset = (position cliquée −
       phase courante)`, quantifié comme un lancement.
-- [ ] ⚠️ **Une réserve à écrire dans le code** : deux cases d'une même colonne
+- [x] ⚠️ **Une réserve à écrire dans le code** : deux cases d'une même colonne
       partagent la colonne, pas l'offset. L'offset appartient à la LANE.
+
+### 5.2 bis — Ce que le scrub NE fait pas, et pourquoi
+
+- Il ne s'applique qu'à une case qui **sonne** : déplacer une case à l'arrêt
+  n'a pas de sens, elle repartira de la grille quand on la lancera.
+- Il n'est appelé **ni à chaque frame d'un glisser** — chaque appel fait
+  rentrer la voix audio au nouvel endroit, et soixante rentrées par seconde
+  s'entendent comme un bourdonnement — mais une fois à la prise et une fois au
+  relâchement.
+- Il n'est **pas quantifié**. Ableton aligne son scrub sur le quantize global ;
+  ici c'est un geste d'édition, et attendre une mesure pour voir où l'on a
+  cliqué serait une gêne, pas une aide. À rediscuter après usage.
 
 ### 5.3 — La zone de lecture d'une case — après le 5.1
 
@@ -310,18 +336,28 @@ CP_Scripts. REAPER style, c'est dans son ADN. »*
 qu'un raccourci est un `if char == 113` au milieu d'une fonction, il n'y a rien
 à configurer : il faut d'abord que la liaison soit une **donnée**.
 
-- [ ] **Une table de liaisons par module**, déclarée en haut du fichier :
+- [x] **Une table de liaisons par module**, déclarée en haut du fichier :
       `{ id, défaut, contexte, libellé }`. Les fonctions ne testent plus un
       code de touche mais un **identifiant d'action**.
-- [ ] **Un module partagé**, `CP_Engine/Keymap.lua` : charge les défauts,
+- [x] **Un module partagé**, `CP_Engine/Keymap.lua` : charge les défauts,
       applique le fichier de l'utilisateur, répond `Keymap.Action(char, mods,
       contexte)`. Un seul endroit qui sait lire une combinaison.
-- [ ] **Le stockage dans `CP_Config/`**, comme le reste des réglages de Cédric
+- [x] **Le stockage dans `CP_Config/`**, comme le reste des réglages de Cédric
       — un fichier Lua lisible, pas un ExtState opaque.
 - [ ] **Une fenêtre d'édition**, une seule pour toute la suite, qui liste les
       contextes et capture la frappe. `CP_Toolkit/CP_KeyDetector.lua` fait déjà
-      la capture : il existe précisément pour ça.
-- [ ] **Le point d'entrée est le 3.2** de ce document. Une fois que les
+      la capture : il existe précisément pour ça. **C'est le seul point du §6
+      encore ouvert** — sa règle est déjà tranchée et écrite dans
+      `Keymap.Export` : sur un geste de souris, SEULS les modificateurs se
+      changent, parce que la zone et le geste sont la *nature* de l'action
+      (REAPER lui-même ne permet pas de les déplacer) ; sur une touche, le code
+      et les modificateurs.
+      ⚠️ Le vrai obstacle n'est pas le dessin : les vocabulaires sont déclarés
+      **dans chaque script**, donc une fenêtre séparée ne les connaîtrait pas.
+      Il faut d'abord les sortir dans `CP_Engine/Keymaps/<module>.lua`, que
+      l'application ET la fenêtre chargent. C'est une heure, et ça se fait
+      avant le dessin, pas après.
+- [x] **Le point d'entrée est le 3.2** de ce document. Une fois que les
       modificateurs de souris de CP_Editor sont une table, la même mécanique
       sert aux touches, et le premier module est fait.
 

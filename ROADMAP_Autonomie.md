@@ -2858,3 +2858,133 @@ C++ (ce qui ne casse pas le verrouillage de phase : un décalage constant reste
 un verrouillage) — et les **raccourcis configurables**, qui ne sont pas un
 chantier d'interface mais de forme : tant qu'un raccourci est un `if char ==
 113` au milieu d'une fonction, il n'y a rien à configurer.
+
+---
+
+# Session 25 — l'éditeur obéit à la table de REAPER, et une case a un curseur
+
+Session longue, ouverte par quatre défauts signalés au fil de l'usage — la
+bonne façon de les recevoir, et celle qui les fait tous corriger le même jour.
+
+## Un lancement se lisait comme une fin
+
+Le symptôme était impossible à deviner et limpide une fois décrit : *« je fais
+Space, ça joue le son sans activer le bouton Play ; si je refais Space pendant
+que ça joue, ça relance, et cette fois le bouton est bon. »* Le second appui
+**relançait** au lieu d'arrêter : donc `Audition.IsPlaying()` répondait faux
+pendant que le son sortait.
+
+`Voice.Play` ne fait pas sonner — il POSTE une commande que le fil audio draine
+à son prochain bloc. Entre les deux, le moteur répond honnêtement « cette voix
+ne joue pas », et `IsPlaying` le prenait pour « elle a fini ». Elle appelait
+`finished()`, qui remet le backend à `none` et lâche le clip courant. Le son
+partait quand même ; la fenêtre le croyait arrêté pour toujours. Intermittent,
+parce que la course dépend de la taille du tampon audio contre la durée d'une
+frame.
+
+Un loquet dit maintenant ce que l'état seul ne peut pas dire : **« lancée, pas
+encore vue sonner » n'est pas « finie »**. Une seule expression y répond, parce
+que deux lecteurs qui répondaient différemment sont exactement ce qui a produit
+le défaut.
+
+## Le son de l'éditeur ne passait par rien
+
+Sans piste, une voix CP sort **directement sur la carte**. C'est le bon défaut
+d'un navigateur — on écoute un fichier tel qu'il est — et c'est déroutant quand
+on prépare un son pour le morceau. Trois sorties nommées remplacent l'ancien
+oui/non : la carte, le master, la piste de l'item.
+
+Et une asymétrie qui traînait : `opts.out_track` était lu par CF_Preview depuis
+toujours et **ignoré par la voix native**. Demander « passe par la piste de cet
+item » marchait donc ou non selon le moteur qui répondait, sans que rien ne le
+dise. *Un réglage que seule la moitié des chemins honore est pire qu'un réglage
+absent.*
+
+## Un item ordinaire n'avait pas droit au moteur exact
+
+*« En mode fichier c'est parfait, je peux faire une sélection d'une milliseconde
+et ça boucle vraiment une milliseconde. Le même sample depuis l'arrangeur, non :
+il y a des paliers. »*
+
+En mode item, l'écoute passait **toujours** par `PlaySource`, donc toujours par
+CF_Preview — qui ne tient pas les points de boucle : le retour est surveillé
+une fois par frame depuis Lua. Le détour existait pour une bonne raison (une
+source SECTION n'a pas de fichier à elle, son chemin désigne le fichier entier)
+mais il était **trop large** : un item ordinaire a un vrai fichier dessous.
+
+Le menu Playback dit désormais quel moteur va répondre, avec la raison quand ce
+n'est pas l'exact.
+
+## Un verrou qu'on n'avait pas pressé
+
+Déposer un fichier posait `state.lock`. L'intention était juste — un dépôt
+délibéré ne doit pas se faire voler par la sélection de l'arrangement — mais le
+verrou faisait deux choses au lieu d'une : il bloquait aussi tous les clics
+**suivants**. Le mécanisme correct existait déjà pour le mode case : se souvenir
+de l'item sélectionné à l'ouverture, et ne suivre que ce qui change après.
+
+## Le gros morceau : une liaison est une donnée
+
+`CP_Engine/Keymap.lua`. Tant qu'un raccourci s'écrit `if char == 113 then
+quantize()`, il n'y a **rien à configurer** : la liaison n'existe nulle part,
+elle est dissoute dans le flot de contrôle.
+
+Le modèle indexe **par action**, pas par touche. C'est l'inverse de ce qu'on
+écrirait spontanément, et c'est ce qui rend une fenêtre de réglages possible :
+elle liste des actions et demande « avec quoi ? », qui est la question de
+l'utilisateur. Le sens inverse, celui dont l'entrée a besoin soixante fois par
+frame, est un index reconstruit à chaque changement — donc jamais pendant un
+geste.
+
+Le piano roll est recâblé dessus, avec les **six contextes MIDI de la config de
+Cédric reproduits fidèlement**, y compris là où REAPER n'est pas cohérent avec
+lui-même : Shift ignore le magnétisme sur une note et sur la grille, mais c'est
+Ctrl qui l'ignore sur la règle. On ne corrige pas ça. Le geste que ses doigts
+connaissent vaut mieux qu'une règle propre qu'il faudrait réapprendre.
+
+Ce qui change pour lui : « sans magnétisme » passe de Ctrl à Shift. Ça aligne
+enfin le piano roll sur la vue d'onde de la **même fenêtre**, qui lit Shift
+depuis toujours — il y avait deux conventions dans un seul éditeur.
+
+Arrivent : la gomme (Alt, au clic et à la traînée), la sélection par plage, la
+bascule, la mesure entière, la note et toutes les suivantes, copier en
+glissant, le verrouillage d'un axe, étirer par le bord, arpéger, doubler et
+diviser une longueur, peindre une ligne et des accords — diatoniques quand une
+gamme est posée.
+
+**Un piège qui coûte une touche entière** : sur un caractère imprimable, Shift
+est déjà DANS le code. Sur un clavier français, « + » se tape Shift+=, donc
+`gfx.getchar` rend 43 avec le bit Shift levé, et une liaison « 43, aucun
+modificateur » ne correspond jamais.
+
+## Une case a un curseur, et repart où l'on clique
+
+*« En mode case, la règle est inerte : le curseur d'édition et la sélection
+temporelle sont des concepts du PROJET. »* C'était vrai du curseur **du
+projet**, faux de celui de la **case** — qui n'est que de l'état de fenêtre, ne
+coûte rien, et manquait à tout ce qui prend une plage. Quatre accesseurs disent
+la différence une fois, et la règle devient le *même code* dans les deux modes.
+
+Puis le morceau qui touche le C++ : **ABI 1.9**, un décalage de phase par lane.
+La phase est ancrée sur le beat zéro du projet — c'est ce qui verrouille toutes
+les boucles sur la même grille — mais un décalage **constant** ne casse pas ce
+verrou, il le déplace. Le harnais le **mesure** : un beat demandé donne un
+beat, et l'écart vaut toujours un beat vingt passes plus loin. C'est toute la
+différence entre déplacer un verrou et le casser, et c'est la seule raison pour
+laquelle ce champ a le droit d'exister.
+
+Le moteur le lit **au même endroit** pour le portail MIDI et pour la phase
+publiée : les brancher séparément aurait séparé les notes du son d'un décalage
+exactement égal à celui qu'on venait de poser. Et `Cells` relit un compteur de
+replacement, parce qu'une voix audio tient une date de départ en frames et
+finirait sa passe — on entendrait les notes sauter et le son rester.
+
+## Ce qui reste, et c'est écrit
+
+La fenêtre de capture des raccourcis. Sa règle est tranchée, mais son vrai
+obstacle n'est pas le dessin : les vocabulaires sont déclarés **dans chaque
+script**, donc une fenêtre séparée ne les connaîtrait pas. Il faut d'abord les
+sortir dans `CP_Engine/Keymaps/<module>.lua`. En attendant, `Keymap.Export`
+écrit la carte complète dans `CP_Config/CP_Keymap.lua`, commentée, et
+`Keymap.Reload` la relit sans fermer la fenêtre — REAPER a eu `reaper-kb.ini`
+bien avant d'avoir une fenêtre pour le remplir, et c'est le bon ordre.
