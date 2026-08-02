@@ -247,10 +247,18 @@ function Roll.SelectPitch(pitch, additive)
 end
 
 -- Delete every selected note (right-to-left so indices stay valid).
+--
+-- ET LA PLAGE COMPTE ICI AUSSI. Sans elle, Suppr sur une plage sans selection
+-- ne faisait rien du tout (seln == 0) — ce qui est encore pire que d'en faire
+-- trop : le geste part, et rien ne bouge.
 function Roll.DeleteSel()
-    if not Roll.backend or Roll.seln == 0 then return end
+    if not Roll.backend then return end
+    local ranged = (Roll.seln == 0) and Roll.range_a ~= nil
+    if Roll.seln == 0 and not ranged then return end
     for i = Roll.count, 1, -1 do
-        if Roll.selset[i] then Roll.backend.deleteNote(i) end
+        if (ranged and Roll.InRange(i)) or (not ranged and Roll.selset[i]) then
+            Roll.backend.deleteNote(i)
+        end
     end
     Roll.backend.sort()
     Roll.Sync()
@@ -354,6 +362,52 @@ end
 -- "iterative / soft" quantize. Swing is expressed inside snap_fn by the host
 -- (it knows the grid), so the model stays grid-agnostic. Acts on the selection
 -- when there is one, else on everything. Returns the number of notes moved.
+-- ---------------------------------------------------------------------------
+-- LA PLAGE DE TEMPS — l'autre facon de designer ce qu'on vise
+-- ---------------------------------------------------------------------------
+-- Une selection temporelle qui ne fait rien n'est pas une selection : c'est un
+-- rectangle qu'on dessine pour rien. Elle etait dessinee, deplacable,
+-- redimensionnable — et AUCUNE operation ne la consultait, parce que le seul
+-- endroit qui decide de ce qu'une operation vise ne connaissait que deux
+-- reponses : « la selection de notes » ou « tout ».
+--
+-- L'ORDRE DE PRIORITE, et il n'est pas negociable : une selection de NOTES
+-- gagne toujours. Elle est explicite, on l'a faite note par note ; une plage
+-- est un contour, et un contour ne doit pas defaire un choix. La plage ne
+-- repond donc que quand rien n'est selectionne — la ou « tout » repondait, et
+-- ou « tout » etait justement la mauvaise reponse.
+--
+-- Le brancher ICI plutot que dans chaque operation les rend TOUTES sensibles a
+-- la plage d'un coup : quantifier, transposer, decaler, legato, inverser,
+-- humaniser, velocite, supprimer, copier. Les brancher une par une aurait
+-- garanti qu'il en reste trois qui ne le sont pas.
+Roll.range_a, Roll.range_b = nil, nil
+
+function Roll.SetRange(a, b)
+    if a and b and b > a + 1e-9 then Roll.range_a, Roll.range_b = a, b
+    else Roll.range_a, Roll.range_b = nil, nil end
+end
+
+function Roll.HasRange() return Roll.range_a ~= nil end
+
+-- Une note est DANS la plage si elle y commence. Le critere « elle la
+-- chevauche » ferait quantifier une note commencee deux mesures avant parce
+-- que sa queue depasse dans le contour, ce qui n'est jamais ce qu'on veut dire.
+function Roll.InRange(i)
+    if not Roll.range_a then return true end
+    local st = Roll.starts[i]
+    return st >= Roll.range_a - 1e-9 and st < Roll.range_b - 1e-9
+end
+
+-- Combien de notes la plage tient. Sert a le DIRE dans la fenetre : une portee
+-- d'operation qu'on ne voit pas est une surprise en attente.
+function Roll.RangeCount()
+    if not Roll.range_a then return 0 end
+    local n = 0
+    for i = 1, Roll.count do if Roll.InRange(i) then n = n + 1 end end
+    return n
+end
+
 function Roll.Quantize(snap_fn, strength)
     if not Roll.backend or Roll.count == 0 then return 0 end
     strength = strength or 1
@@ -367,9 +421,18 @@ function Roll.Quantize(snap_fn, strength)
         end
         return false
     end
+    -- MEME REGLE QUE PARTOUT AILLEURS, et elle est ecrite ici parce que cette
+    -- fonction est declaree AVANT `forEachTarget` et garde donc sa propre
+    -- boucle. C'est exactement le cas que le commentaire de la plage annonce :
+    -- brancher les operations une par une garantit qu'il en reste une qui ne
+    -- l'est pas, et celle-la aurait ete la plus utilisee des trois.
     local moved = 0
     if Roll.seln > 0 then
         for i in pairs(Roll.selset) do if q(i) then moved = moved + 1 end end
+    elseif Roll.range_a then
+        for i = 1, Roll.count do
+            if Roll.InRange(i) and q(i) then moved = moved + 1 end
+        end
     else
         for i = 1, Roll.count do if q(i) then moved = moved + 1 end end
     end
@@ -404,6 +467,8 @@ local rsS, rsP = {}, {}                 -- reselect (start,pitch) identity buffe
 local function forEachTarget(fn)
     if Roll.seln > 0 then
         for i in pairs(Roll.selset) do fn(i) end
+    elseif Roll.range_a then
+        for i = 1, Roll.count do if Roll.InRange(i) then fn(i) end end
     else
         for i = 1, Roll.count do fn(i) end
     end
@@ -772,7 +837,7 @@ end
 -- selected, but DeleteSel is a no-op then — which would silently copy the whole
 -- clip and delete nothing.
 function Roll.Cut()
-    if Roll.seln == 0 then return 0 end
+    if Roll.seln == 0 and not Roll.range_a then return 0 end
     local n = Roll.Copy()
     if n > 0 then Roll.DeleteSel() end
     return n
