@@ -155,11 +155,76 @@ que c'est ce qu'on relit — pas la case.
    franchissait le pont d'ABI trois à quatre **cents** fois. Un instantané par
    frame rend ce coût **constant**.
 
-**Ce qui n'est dans aucune feuille** : le « plus de son sauf C2 » du sampler du
-2026-08-02. Deux vrais défauts ont été fermés (écriture redondante, anneau gmem
-sans garde) mais la cause du symptôme n'est **pas** établie. Le compteur
-`refus=` du rapport d'état existe pour que la prochaine fois réponde au lieu de
-déduire. **Toujours ouvert.**
+**Le « plus de son sauf C2 » du sampler — FERMÉ le 2026-08-02.** Trois défauts
+répondaient, et le troisième était la cause. Une boucle `while` **non bornée**
+dans le repli d'une voix du moteur natif, un drain d'anneau gmem non borné de la
+même façon — les deux se lisent « le moteur audio a planté » et les deux sont
+fermés et comptés (`N resync` dans la zone de statut). Mais le silence des pads
+venait d'ailleurs : **`@gfx` et `@block` partageaient `i` et `k`**. Toute
+variable d'un JSFX est globale et les sections ne tournent pas sur le même fil ;
+or `k` est l'**index du champ** dans le drain de réglages, et `@gfx` s'en servait
+comme compteur de lignes de 0 à 12 — soit exactement `P_LOADED`, `P_DATA`,
+`P_FRAMES`, `P_NCH`. Un réglage arrivant pendant que la fenêtre dessine
+atterrissait dans le pointeur de matière : le pad se taisait sans qu'aucun geste
+ne l'ait touché. Aucun plantage n'était nécessaire — juste la fenêtre ouverte.
+
+Désigné par une anomalie d'**affichage** : la liste montrait des pads 65 à 77
+alors qu'il n'y en a que 64, et ces lignes lisent la table des voix
+(`pad(65) == voice(2)`). Le partage de `i` était la moitié visible de celui de
+`k`. Sans la capture image par image de Cédric, il n'y avait rien à chercher.
+`Tools/jsfx_lint.py` refuse désormais le croisement, **vérifié contre le fichier
+d'avant** (trois lignes rendues) et muet sur celui d'après.
+
+---
+
+## Ce que la DEUXIÈME ÉCOUTE a rendu — 2026-08-02, la nuit
+
+- [x] **Le tempo écrit dans le nom du fichier n'était pas lu.** `_02_136.wav` :
+      le motif exigeait un séparateur **des deux côtés**, donc il consommait
+      celui de droite, et `gmatch` reprenait la lecture à `136` — qui n'avait
+      alors plus de séparateur devant lui. **Le numéro de piste mangeait le
+      tempo**, dans la convention de nommage la plus répandue des banques.
+      Douze fichiers sur douze passaient à travers. Prouvé sur vingt cas :
+      treize gains, zéro régression.
+- [x] **Le tempo écrit dans l'ENTÊTE du fichier n'était lu par personne.** WAV
+      acidisé, trame `TBPM`, AIFF annoté. C'est une source à part maintenant
+      (`embedded`), et on ne devine pas le nom de la clé : REAPER rend la
+      **liste** des identifiants du fichier. Le drapeau `oneshot` a le dernier
+      mot. Conséquence : `analysed` descend en quatrième — une fois le tempo
+      embarqué lu explicitement, ce qui lui reste est un **ajustement**, et un
+      ajustement ne passe pas devant un nombre qu'un humain a écrit.
+- [x] **La grille de CP_Editor était celle du PROJET par-dessus la forme
+      d'onde.** Juste seulement si le fichier est déjà au tempo du projet. « Je
+      dnd un sample, ça marche, mais je ne sais pas pourquoi » : les lignes
+      tombaient à côté de la caisse claire. Un fichier ne porte pas une *carte*
+      de tempo, il porte **un** tempo : ses temps sont réguliers dans ses
+      propres secondes. Grille, magnétisme et règle en héritent — la règle
+      compte en mesures (« 3.1 »), la ligne d'info nomme le tempo, **sa source**
+      et la longueur en mesures.
+- [x] **Le découpage d'une case son pouvait s'ouvrir mais pas rentrer.**
+      « Comment décaler le début d'un sample dans un système non linéaire ? » —
+      un clip n'a pas de position, il a une **région** dans son fichier.
+      `offs`/`len` existaient de bout en bout ; seul le retour manquait.
+      Sans sélection, on rend le fichier entier. La longueur en mesures est
+      reprise à zéro, parce que c'est la région qui la décide.
+
+### Le plafond d'un pad — 5,8 s, et ce n'est pas un choix
+
+`maxmem=33554432` est le **plafond dur de REAPER** pour un JSFX. Les chemins en
+prennent 24 576 ; les 33 529 856 restants se divisent en soixante-quatre parts
+égales, soit 512 000 slots par pad — **5,80 s en stéréo à 44,1 kHz**, 11,6 s en
+mono, 5,33 s à 48 kHz. Le découpage est **fixe** exprès : un pad ne peut ni
+fragmenter, ni déborder sur son voisin, ni fuir quand on le recharge vingt fois.
+
+**Ce qui le lèverait, si le besoin se confirme** : un allocateur à pointeur
+montant sur toute la réserve — chaque pad prend ce qu'il lui faut, à la suite —
+avec **repack par rechargement** quand le pointeur bute. Le JSFX en est capable
+sans aide : il possède les chemins de ses soixante-quatre pads (c'est ce qui rend
+un kit auto-suffisant) et `reload_next` recharge déjà un pad par bloc. Un kit de
+quatre boucles de quatre mesures tiendrait alors, et un kit de soixante-quatre
+coups aussi. **Non fait** : la carte mémoire est ce qui vient de cesser de coûter
+des soirées, et une boucle de quatre mesures a déjà sa place — une **case de
+Session**, jouée par le moteur natif, qui n'a pas ce plafond.
 
 **La décision qui attendait dans le chantier 1 n'a pas été forcée** : le motion
 est écrit en Lua, donc l'enchaînement s'arrête quand CP_Session se ferme. Le son
