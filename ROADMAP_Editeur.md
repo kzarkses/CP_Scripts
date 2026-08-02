@@ -348,6 +348,61 @@ est la version musicale de « je ne veux entendre que ces deux mesures ».
 
 ---
 
+## 5 bis. Ce qui accompagne une note
+
+Demande de Cédric du 2026-08-02 : *« des choses spécifiques aux notes… jouer
+des notes avec probabilité à chaque boucle… tout ce qui accompagne les notes
+(vel, prob, …) dans la section en dessous des notes, et en faire une section
+collapsable »*.
+
+- [x] **La section se replie**, et son en-tête survit au repliement : treize
+      pixels qui portent le chevron et le nom de ce qu'on règle. Une section
+      qu'on replie sans laisser de poignée est une section qu'on a perdue.
+      L'état est persisté avec les autres réglages de fenêtre.
+- [ ] **Une liste dans l'en-tête** pour choisir ce qu'on règle. Elle attend
+      d'avoir deux entrées : un sélecteur à un seul choix ment sur ce qui
+      existe.
+
+### La probabilité — le chantier, et il est décidé
+
+**Elle ne peut exister qu'en mode case.** Le MIDI de REAPER n'a pas de champ
+par note où la ranger : sur un take, il faudrait la coder dans un événement de
+notation, la voir se perdre à chaque glisser, et l'expliquer. La lane, elle,
+est notre format — c'est là que ça se fait, et la limitation se dit plutôt
+qu'elle ne se contourne.
+
+**Le tirage est SANS ÉTAT, et c'est ce qui le rend possible dans le fil
+audio.** Une note tirée au sort doit garder sa décision pendant toute la
+passe — sinon elle s'allume et s'éteint en cours de note — ce qui semble
+demander une mémoire par note et par passe. Ça n'est pas nécessaire :
+
+```
+pass  = floor(pref / Ls)                  // l'index de passe, déjà calculable
+h     = hash2(index_de_note, pass ^ graine_de_lane)
+if (h & 0xFF) >= prob  →  cette note se tait CE TOUR-CI
+```
+
+Le hachage ne dépend que de `(note, passe)`, donc il est **constant pendant
+toute la passe** et **identique pour l'attaque et pour la coupure**. Zéro
+octet d'état, zéro allocation, et le harnais peut prouver la distribution
+parce qu'elle est reproductible — ce qu'un vrai générateur aléatoire ne
+permettrait pas.
+
+La graine par lane empêche deux lanes portant les mêmes notes de tirer à
+l'identique, ce qui s'entendrait immédiatement comme un artefact.
+
+**Ce que ça coûte ailleurs** : un octet dans `LaneNote`, un septième argument
+à `CP_LaneSetNote` / `CP_LaneGetNote` (**ABI 2.2**), un champ de plus dans le
+format de sérialisation (**8**), et la lane de la section ci-dessus qui
+l'édite. Rien dans `Cells` : une case audio n'a pas de notes.
+
+**Pourquoi ce n'est pas fait le 2026-08-02** : le moteur venait de recevoir
+deux corrections de datation le même soir, et empiler un tirage dans la porte
+avant que Cédric ait entendu les premières aurait mélangé deux causes dans le
+même symptôme. C'est exactement ce qui a coûté la soirée de l'ABI 1.10.
+
+---
+
 ## 6. Rendre les raccourcis configurables — l'ADN de REAPER
 
 Demande de Cédric du 2026-08-02 : *« à terme, rendre configurable tous les

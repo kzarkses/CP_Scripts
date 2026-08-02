@@ -107,6 +107,10 @@ local opts = {
     midi_snap = cfg.midi_snap ~= false,   -- piano roll: snap to the grid
     grid_div  = cfg.grid_div,             -- editor grid (whole notes), nil = project
     note_names = cfg.note_names == true,  -- draw note names inside notes
+    -- La section sous les notes. Ouverte par defaut : c'est la ou se regle la
+    -- velocite, et un reglage qu'on ne voit pas est un reglage qui n'existe
+    -- pas tant qu'on n'a pas appris qu'il etait la.
+    lane_open  = cfg.lane_open ~= false,
     -- Hear a note as you write or drag it. On by default: writing blind is
     -- the exception, not the rule. Off matters when the instrument is loud,
     -- when you are working against a running loop, or when the audition
@@ -210,6 +214,7 @@ local function persistConfig()
     cfg.last_vel  = state.last_vel
     cfg.grid_div  = opts.grid_div
     cfg.note_names = opts.note_names
+    cfg.lane_open  = opts.lane_open
     cfg.audition   = opts.audition
     cfg.out_mode   = opts.out_mode
     cfg.loop       = opts.loop
@@ -2646,7 +2651,20 @@ do
     end
 end
 local BLACK_KEY = { [1] = true, [3] = true, [6] = true, [8] = true, [10] = true }
-local VEL_H  = 44     -- velocity lane height
+local VEL_H  = 44     -- la lane elle-meme, ouverte
+-- L'EN-TETE RESTE QUAND LE CORPS DISPARAIT, et c'est tout ce qui separe une
+-- section repliable d'une section qu'on a perdue. Treize pixels : de quoi
+-- porter le chevron et le nom de ce qu'on regle, et de quoi le rouvrir sans
+-- aller le chercher dans un menu.
+local LANE_HDR = 13
+-- Ce qu'accompagne une note — la velocite aujourd'hui, la probabilite et le
+-- reste quand ils existeront — se regle ici. La liste de ce qui s'y montre est
+-- volontairement dans UNE variable : le jour ou il y en a deux, c'est une
+-- entree de plus et aucune geometrie a refaire.
+local LANE_NAME = "Velocity"
+local function laneH()
+    return LANE_HDR + (opts.lane_open and VEL_H or 0)
+end
 local MROLL_BUF = 906 -- grid background buffer (905 = waveform)
 
 -- LA PISTE QUI DOIT SONNER. Un piano roll n'a pas d'instrument a lui : il
@@ -3407,7 +3425,8 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local in_grid = mx >= wave.x and mx < wave.x + wave.w
                 and my >= wave.ry and my < wave.ry + wave.rh
     local in_vel = mx >= wave.x and mx < wave.x + wave.w
-               and my >= vy and my < vy + VEL_H
+               and opts.lane_open
+               and my >= vy + LANE_HDR and my < vy + LANE_HDR + VEL_H
     local in_ruler = mx >= wave.x and mx < wave.x + wave.w
                  and my >= wave.y and my < wave.ry
     local in_lane = mx >= lane_x0 and mx < wave.x
@@ -3870,6 +3889,19 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     end
 
     -- velocity lane press: grab the nearest note bar
+    -- L'EN-TETE REPLIE, ET RIEN D'AUTRE. Il est au-dessus de la lane, donc
+    -- hors de `in_vel` par construction : aucun geste de velocite ne peut
+    -- tomber dessus par accident, et aucun clic de repliement ne peut poser une
+    -- velocite.
+    local in_lane_hdr = mx >= wave.x - lane_w and mx < wave.x + wave.w
+                    and my >= vy and my < vy + LANE_HDR
+    if in_lane_hdr then
+        UI.SetCursor("arrow")
+        if Core_tk.MouseClicked(1) then
+            opts.lane_open = not opts.lane_open
+            markDirty()
+        end
+    end
     if in_vel and not state.mdrag then UI.SetCursor("vel") end
     if in_vel and Core_tk.MouseClicked(1) and Roll.count > 0 then
         local best, best_d = nil, 6
@@ -4057,7 +4089,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 end
                 UI.SetCursor("note_edge")
             elseif md.mode == "vel" and md.idx then
-                local vel = (vy + VEL_H - my) / VEL_H * 127
+                local vel = (vy + LANE_HDR + VEL_H - my) / VEL_H * 127
                 if md.multi and md.multi > 1 then
                     for k = 1, md.multi do Roll.SetVelLive(move_snap[k].i, vel) end
                 else
@@ -4125,7 +4157,7 @@ local function drawRoll(theme, area_h)
     local aw = UI.GetAvailableWidth()
     local rows = rollRows()
     local lane_w = rows.drum and 96 or 40
-    local grid_h = area_h - RULER_H - VEL_H - 4
+    local grid_h = area_h - RULER_H - laneH() - 4
     if grid_h < 60 then grid_h = 60 end
     local row_h = grid_h / rows.n
 
@@ -4284,18 +4316,32 @@ local function drawRoll(theme, area_h)
     end
     if show_names then UI.SetFontBody() end
 
-    -- velocity lane — its own zone, so it gets its own edge
-    Core_tk.DrawRect(gx, vy, aw, VEL_H, col_bg[1], col_bg[2], col_bg[3], 1)
+    -- LA SECTION DE CE QUI ACCOMPAGNE UNE NOTE — sa propre zone, donc son
+    -- propre bord, et un en-tete qui survit au repliement.
+    Core_tk.DrawRect(gx, vy, aw, laneH(), col_bg[1], col_bg[2], col_bg[3], 1)
     Core_tk.DrawRect(gx, vy, aw, 1, col_edge[1], col_edge[2], col_edge[3], col_edge[4] or 1)
-    for i = 1, Roll.count do
-        local t0n = Roll.starts[i]
-        if t0n >= state.t0 and t0n <= state.t1 then
-            local x = math.floor(xAtTime(t0n))   -- same lattice as the note
-            local bh = (Roll.vels[i] / 127) * (VEL_H - 4)
-            local sel = Roll.IsSel(i)
-            local c = sel and col_sel or col_acc
-            Core_tk.DrawRect(x, vy + VEL_H - bh, 3, bh,
-                             c[1], c[2], c[3], sel and 1 or 0.7)
+    do
+        -- Le chevron pointe vers ce qui va se passer, pas vers ce qui est :
+        -- vers le bas quand un clic va ouvrir, vers le haut quand il va fermer.
+        local cx, cy = gx + 7, vy + math.floor(LANE_HDR / 2)
+        local d = opts.lane_open and -3 or 3
+        UI.DrawTriangle(cx - 4, cy - d, cx + 4, cy - d, cx, cy + d,
+                        col_mute[1], col_mute[2], col_mute[3], 0.9)
+        Core_tk.DrawText(LANE_NAME, gx + 18, vy + 1,
+                         col_mute[1], col_mute[2], col_mute[3], 1)
+    end
+    if opts.lane_open then
+        local ly, lh = vy + LANE_HDR, VEL_H
+        for i = 1, Roll.count do
+            local t0n = Roll.starts[i]
+            if t0n >= state.t0 and t0n <= state.t1 then
+                local x = math.floor(xAtTime(t0n))   -- same lattice as the note
+                local bh = (Roll.vels[i] / 127) * (lh - 4)
+                local sel = Roll.IsSel(i)
+                local c = sel and col_sel or col_acc
+                Core_tk.DrawRect(x, ly + lh - bh, 3, bh,
+                                 c[1], c[2], c[3], sel and 1 or 0.7)
+            end
         end
     end
 
@@ -4379,7 +4425,7 @@ local function drawRoll(theme, area_h)
         local pp = r.GetPlayPosition() - itemPos()
         if pp >= state.t0 and pp <= state.t1 then
             local x = xAtTime(pp)
-            Core_tk.DrawRect(x, wave.ry, 1, grid_h + 4 + VEL_H,
+            Core_tk.DrawRect(x, wave.ry, 1, grid_h + 4 + laneH(),
                              col_head[1], col_head[2], col_head[3], 1)
         end
         UI.RequestRedraw()
@@ -4393,7 +4439,7 @@ local function drawRoll(theme, area_h)
             local ph = Loop.Phase(state.clip_lane)
             if ph >= state.t0 and ph <= state.t1 then
                 local x = xAtTime(ph)
-                Core_tk.DrawRect(x, wave.ry, 1, grid_h + 4 + VEL_H,
+                Core_tk.DrawRect(x, wave.ry, 1, grid_h + 4 + laneH(),
                                  col_head[1], col_head[2], col_head[3], 1)
             end
             UI.RequestRedraw()
