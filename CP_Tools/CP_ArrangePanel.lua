@@ -147,6 +147,10 @@ local done      = false
 local function restoreAll()
     if done then return end
     done = true
+    -- LE FOCUS REVIENT A REAPER, quoi qu'il arrive. Une sonde qui rend la main
+    -- en gardant le clavier laisserait le transport muet, et on chercherait du
+    -- cote du transport.
+    if r.JS_Window_SetFocus and MAIN then pcall(r.JS_Window_SetFocus, MAIN) end
     if PANEL then
         -- On rend la fenetre au bureau AVANT de la detruire : `gfx.quit` sur une
         -- fille reparentee n'a jamais ete mis a l'epreuve ici, et c'est
@@ -220,6 +224,59 @@ local mx, my    = -1, -1
 local last_rect = ""
 local applied   = ""
 
+-- ---------------------------------------------------------------------------
+-- ⚠️ LE CLAVIER N'ARRIVAIT PAS, ET C'ETAIT LE SEUL NON DU PREMIER PASSAGE
+-- ---------------------------------------------------------------------------
+-- Une fenetre fille ne recoit pas les touches parce qu'elle n'a pas le FOCUS :
+-- la fenetre principale le garde, et `gfx.getchar` ne voit donc jamais rien.
+-- Ce n'est pas une limite du reparentage, c'est une consequence de Windows, et
+-- elle a deux reponses qu'on mesure ensemble plutot que d'en choisir une :
+--
+--   · PRENDRE LE FOCUS quand la souris entre, le RENDRE quand elle sort. C'est
+--     la politique « focus suit la souris », qui est exactement ce qu'un hote a
+--     panneaux veut : le panneau sous le doigt recoit les touches, et REAPER
+--     les reprend des qu'on en sort. `Focus.lua` existe deja dans le depot pour
+--     departager quatre fenetres sur la barre d'espace ; ici la question
+--     devient plus simple, pas plus compliquee.
+--   · LIRE L'ETAT GLOBAL DU CLAVIER (`JS_VKeys_GetState`), qui ne depend
+--     d'aucun focus. Ca marche toujours, mais ca rend des codes de touches
+--     VIRTUELLES et non des caracteres, et ca voit ce qui se passe meme quand
+--     on n'est pas concerne — donc c'est un repli, pas un choix.
+--
+-- Rendre le focus en sortant N'EST PAS UN DETAIL : sans ca, on volerait la
+-- barre d'espace a REAPER pour toute la session, et le transport cesserait de
+-- repondre partout ailleurs. La sonde le fait, et le rapport dit combien de
+-- fois le focus a change de main.
+local took_focus   = 0
+local gave_focus   = 0
+local had_focus    = false
+local vkeys_seen   = false
+
+local function focusPolicy(inside)
+    local f = r.JS_Window_GetFocus()
+    if inside and f ~= PANEL then
+        r.JS_Window_SetFocus(PANEL)
+        took_focus = took_focus + 1
+        had_focus = true
+    elseif not inside and had_focus and f == PANEL then
+        r.JS_Window_SetFocus(MAIN)
+        gave_focus = gave_focus + 1
+        had_focus = false
+    end
+end
+
+-- On ne regarde QUE la plage imprimable et les fleches : les modificateurs et
+-- les boutons de souris ne sont pas fiables ici (la doc de js le dit), et les
+-- compter ferait repondre « oui » a une sonde qui n'a rien vu.
+local function vkeysDown()
+    local st = r.JS_VKeys_GetState(-0.2)
+    if not st then return false end
+    for i = 0x20, 0x5A do
+        if st:byte(i + 1) ~= 0 then return true end
+    end
+    return false
+end
+
 local STOP_W, STOP_H = 120, 26
 
 local function follow()
@@ -266,11 +323,12 @@ local function draw()
     gfx.drawstr(string.format("followed %d times   ·   re-hidden %d   ·   %d frames",
                               moves, reshown, frames))
     gfx.x, gfx.y = 18, 80
-    gfx.drawstr(string.format("mouse %s (%d,%d)   ·   keys %s (last %d)",
-        saw_mouse and "YES" or "no", mx, my, saw_key and "YES" or "no", last_key))
+    gfx.drawstr(string.format("mouse %s (%d,%d)   ·   getchar %s (%d)   ·   vkeys %s",
+        saw_mouse and "YES" or "no", mx, my,
+        saw_key and "YES" or "no", last_key, vkeys_seen and "YES" or "no"))
     gfx.set(0.98, 0.76, 0.30, 1)
     gfx.x, gfx.y = 18, 106
-    gfx.drawstr("Move the mouse here, type, drag REAPER's splitters, resize.")
+    gfx.drawstr("TYPE while the pointer is HERE, then type over REAPER.")
     gfx.set(0.55, 0.57, 0.62, 1)
     gfx.x, gfx.y = 18, 128
     gfx.drawstr(string.format("auto-stop in %.0f s", rem > 0 and rem or 0))
@@ -298,8 +356,18 @@ local function finish()
                       drew and "YES" or "NO"))
     say(string.format("mouse reached us                : %s",
                       saw_mouse and "YES" or "no (move the pointer over it)"))
-    say(string.format("keyboard reached us             : %s",
+    say(string.format("keyboard via gfx.getchar        : %s",
                       saw_key and "YES" or "no"))
+    say(string.format("  focus taken / given back      : %d / %d",
+                      took_focus, gave_focus))
+    say(string.format("keyboard via JS_VKeys_GetState  : %s",
+                      vkeys_seen and "YES" or "no"))
+    if not saw_key and vkeys_seen then
+        say("  -> focus alone is not enough; the global key state is the way in.")
+    elseif saw_key then
+        say("  -> focus-follows-mouse works: the pane under the pointer gets the")
+        say("     keys, and REAPER takes them back when the pointer leaves.")
+    end
     say(string.format("followed the oracle             : %d time(s)", moves))
     say(string.format("band windows re-hidden          : %d", reshown))
     say(string.format("frames                          : %d", frames))
@@ -325,7 +393,10 @@ local function loop()
     keeper()
     follow()
     mx, my = gfx.mouse_x, gfx.mouse_y
-    if mx >= 0 and my >= 0 and mx < gfx.w and my < gfx.h then saw_mouse = true end
+    local inside = mx >= 0 and my >= 0 and mx < gfx.w and my < gfx.h
+    if inside then saw_mouse = true end
+    focusPolicy(inside)
+    if vkeysDown() then vkeys_seen = true end
     draw()
     local el = r.time_precise() - t0
     local on_stop = mx >= gfx.w - STOP_W - 8 and my >= gfx.h - STOP_H - 8
