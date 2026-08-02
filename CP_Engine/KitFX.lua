@@ -149,10 +149,38 @@ end
 -- ---------------------------------------------------------------------------
 -- Lua ecrit la commande PUIS avance l'index : tant que l'index n'a pas bouge,
 -- le JSFX ne lit rien, et une commande a moitie ecrite n'existe pas pour lui.
+-- UN ANNEAU PLEIN REFUSE, IL NE SE RATTRAPE PAS.
+--
+-- `push` avancait `wpos` sans jamais regarder `rpos`. Tant que le JSFX draine
+-- (il vide tout l'anneau a chaque bloc), les 2048 cases sont largement de trop
+-- et rien ne se voit. Mais le jour ou il ne draine pas — piste hors ligne,
+-- effet contourne, rendu en cours, plugin en train de recharger — Lua fait le
+-- tour et REECRIT DES CASES QUE LE PLUGIN N'A PAS ENCORE LUES.
+--
+-- Ce qu'on y perd n'est pas une commande, c'est la COHERENCE d'une commande :
+-- le JSFX lit alors quatre mots dont deux appartiennent a l'ancienne et deux a
+-- la nouvelle. Un OP_SET pour le pad 24 devient un OP_SET pour un autre pad, un
+-- autre champ, une autre valeur — c'est-a-dire un reglage arbitraire ecrit dans
+-- un pad arbitraire, et des pads qui se taisent sans qu'aucun geste ne les ait
+-- touches.
+--
+-- Perdre une commande est un defaut visible et local : le bouton ne prend pas,
+-- on le retourne. En corrompre une est invisible et lointaine. On refuse donc,
+-- et on le DIT dans le journal, pour que la prochaine fois la question soit
+-- deja repondue quand on l'ouvre.
+local lapped = 0
 local function push(slot, op, pad, field, value)
     if not sel() then return false end
     local b = base(slot)
     local w = r.gmem_read(b + MB_WPOS) or 0
+    local rp = r.gmem_read(b + MB_RPOS) or 0
+    if (w - rp) >= RING_N - 1 then
+        -- On COMPTE plutot que de tracer : ce module n'a pas de journal, et lui
+        -- en donner un le ferait dependre de la fenetre. Le rapport d'etat lit
+        -- ce compteur a cote de wpos et rpos, la ou la question se pose.
+        lapped = lapped + 1
+        return false
+    end
     local e = b + MB_RING + (w % RING_N) * RING_SZ
     r.gmem_write(e,     op)
     r.gmem_write(e + 1, pad or 0)
@@ -161,6 +189,10 @@ local function push(slot, op, pad, field, value)
     r.gmem_write(b + MB_WPOS, w + 1)
     return true
 end
+
+-- Combien de commandes l'anneau a refusees depuis l'ouverture. Zero est la
+-- reponse normale ; autre chose designe un plugin qui ne tourne pas.
+function KitFX.Lapped() return lapped end
 
 function KitFX.Set(slot, pad, field, value)
     return push(slot, OP_SET, pad, field, value)
@@ -241,6 +273,7 @@ function KitFX.Raw(slot)
         base = b,
         wpos = r.gmem_read(b + MB_WPOS) or -1,
         rpos = r.gmem_read(b + MB_RPOS) or -1,
+        lapped = lapped,
         lseq = r.gmem_read(b + MB_LSEQ) or -1,
         lack = r.gmem_read(b + MB_LACK) or -1,
         lpad = r.gmem_read(b + MB_LPAD) or -1,

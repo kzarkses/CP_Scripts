@@ -2278,8 +2278,25 @@ function fxParam(note, pid)
     return Kit.FXDefault(pid)
 end
 
+-- UNE VALEUR QUI NE CHANGE PAS NE S'ECRIT PAS.
+--
+-- Le journal du 2026-08-02 montre `pid=13 v=0.14187643020595` envoye QUINZE
+-- fois de suite, a l'identique. Un bouton ne fait pas ca : c'est le handler qui
+-- est appele a chaque frame tant que le doigt est pose, meme immobile — et un
+-- redimensionnement de fenetre garde le doigt pose longtemps.
+--
+-- Chaque appel depose une commande dans l'anneau du JSFX. Des centaines
+-- d'ecritures pour un seul geste, dont la quasi-totalite ne demandent RIEN :
+-- c'est du trafic pur, et c'est lui qui rend possible le debordement que
+-- `KitFX.push` refuse desormais. Les deux corrections repondent au meme
+-- journal, par les deux bouts.
+--
+-- La comparaison est exacte et non a une tolerance pres : la valeur vient d'un
+-- bouton qui rend le meme double tant qu'il n'a pas bouge d'un pixel. Une
+-- tolerance aurait avale de vrais mouvements lents.
 function fxSetParam(note, pid, v)
     local pad = Kit.pads[note]
+    if pad and pad.path and pad.p and pad.p[pid] == v then return end
     if not (pad and pad.path) then
         KitLog.Line("SetParam note=%d pid=%s REFUSE : pad=%s path=%s",
                     note, tostring(pid), tostring(pad ~= nil),
@@ -2872,10 +2889,14 @@ function Kit.SelfTest()
 
     local raw = KitFX.Raw(fx_slot)
     if raw then
+        -- `refus` est la question qu'on se pose quand des pads se taisent sans
+        -- qu'un geste les ait touches : autre chose que zero veut dire que le
+        -- JSFX n'a pas draine et que Lua a refuse d'ecraser ce qu'il n'avait
+        -- pas lu. C'est le seul chiffre du rapport qui accuse quelqu'un.
         KitLog.Line("gmem base=%d wpos=%d rpos=%d lseq=%d lack=%d lpad=%d "
-                    .. "status=%d nloaded=%d hb=%d",
+                    .. "status=%d nloaded=%d hb=%d refus=%d",
                     raw.base, raw.wpos, raw.rpos, raw.lseq, raw.lack,
-                    raw.lpad, raw.status, raw.nloaded, raw.hb)
+                    raw.lpad, raw.status, raw.nloaded, raw.hb, raw.lapped or 0)
     else
         KitLog.Line("gmem INDISPONIBLE — KitFX ne s est pas attache")
     end
