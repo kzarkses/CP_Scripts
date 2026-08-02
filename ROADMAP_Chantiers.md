@@ -20,6 +20,46 @@ Cédric qui écoute.
 
 ---
 
+## L'ORDRE, décidé par Cédric le 2026-08-02
+
+Ce qui reste tient en cinq chantiers. **Cet ordre est le sien, il ne se
+redécide pas** — et il ne suit délibérément pas l'ordre d'écriture de ce
+fichier.
+
+1. **La session devient un instrument** (§4b et §4c). Le seul qui change la
+   nature de l'objet : aujourd'hui la grille exécute des ordres, demain elle
+   produit une structure. ⚠️ **Une décision t'attend dedans** : les follow
+   actions en Lua s'arrêtent quand la fenêtre se ferme. Si ça doit y survivre,
+   ça descend dans le moteur et ce n'est plus le même chantier. Grain
+   **colonne** d'abord, à la FL — les Follow Actions par clip sont un panneau
+   par case, et il faut savoir si le grain colonne suffit avant de le
+   construire.
+2. **Huit colonnes** (`Loop.MAX_LANES` 8 → 16). Voir « Les corrections d'une
+   ligne » : ça casse le format de session, plafond dur à 15.
+3. **La probabilité par note**, plus les **en-têtes de catégories** de la
+   section sous les notes — vélocité et probabilité pour l'instant, et la
+   structure prévue pour celles qui suivront. Conception arrêtée dans
+   `ROADMAP_Editeur.md` §5 bis : tirage **sans état**, un hachage de
+   (note, passe), donc reproductible et prouvable au harnais. **Mode case
+   seulement** — le MIDI de REAPER n'a pas de champ où la ranger.
+4. **Le registre des défauts.** Dix-sept lignes, et Cédric le dit : *« c'est
+   important de corriger les bugs en priorité »*. Sept touchent la perte de
+   données ou le mauvais son.
+5. **La performance.** Six lignes, et la cible reste un PC de 2005.
+
+**Ce qui n'est dans aucune feuille** : le « plus de son sauf C2 » du sampler du
+2026-08-02. Deux vrais défauts ont été fermés (écriture redondante, anneau gmem
+sans garde) mais la cause du symptôme n'est **pas** établie. Le compteur
+`refus=` du rapport d'état existe pour que la prochaine fois réponde au lieu de
+déduire.
+
+**Où NE PAS chercher ce qui reste** : `ROADMAP_Autonomie.md` est le JOURNAL. Ses
+cases non cochées sont des marqueurs « prochain chantier » que leur propre
+exécution a rendus caducs, et l'une d'elles a déjà été comptée à tort comme un
+reste. Ce qui reste à faire vit ici, et nulle part ailleurs.
+
+---
+
 ## Où on en est (2026-08-01)
 
 Le moteur natif est complet et l'autonomie est atteinte : plus aucune piste
