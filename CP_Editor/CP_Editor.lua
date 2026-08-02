@@ -2070,7 +2070,9 @@ local function handleDragOut()
             r.TrackCtl_SetToolTip(d.label, sx + 16, sy + 12, true)
         end
     end
-    UI.SetCursor("hand")
+    -- On tient quelque chose qui sort de la fenetre : c'est le curseur de
+    -- glisser-deposer de REAPER, pas une main a tout faire.
+    UI.SetCursor("dd_out")
 
     if Core_tk.MouseReleased(1) then
         state.adrag = nil
@@ -2143,7 +2145,7 @@ local function waveInput(theme)
     local in_ruler = (not Core_tk.HasPopup())
         and mx >= wave.x and mx < wave.x + wave.w
         and my >= wave.y and my < wave.y + RULER_H
-    if in_ruler then UI.SetCursor("arrow") end
+    if in_ruler then UI.SetCursor("ts_edge") end
     if in_ruler and Core_tk.MouseClicked(1) then state.rdrag_ruler = true end
     if state.rdrag_ruler then
         if Core_tk.MouseDown(1) then
@@ -2172,7 +2174,7 @@ local function waveInput(theme)
                 state.t1 = state.t1 + dt
                 clampView()
             end
-            UI.SetCursor("size_all")
+            UI.SetCursor("pan")
         end
     end
 
@@ -2183,14 +2185,26 @@ local function waveInput(theme)
     if inside and not state.wpress and not Core_tk.MouseDown(64) then
         state.whot, state.whot_i = waveHit(mx, my)
         local t = timeAtX(mx)
+        -- CHAQUE POIGNEE A SON CURSEUR, celui que REAPER met sur le meme
+        -- geste dans l'arrangement. Un fondu ne ressemble pas a un bord de
+        -- region, et les distinguer AVANT le clic est tout ce qu'on demande a
+        -- un pointeur.
         if state.whot == "mark" then
-            UI.SetCursor(Core_tk.ModAlt() and "arrow" or "size_we")
+            UI.SetCursor(Core_tk.ModAlt() and "erase" or "marker")
         elseif Core_tk.ModCtrl() and state.sel_a and state.path ~= ""
                and t > state.sel_a and t < state.sel_b then
             -- the only cue that Ctrl in here drags the selection OUT
-            UI.SetCursor("hand")
+            UI.SetCursor("dd_out")
+        elseif state.whot == "fadein" then
+            UI.SetCursor("fade_in")
+        elseif state.whot == "fadeout" then
+            UI.SetCursor("fade_out")
+        elseif state.whot == "trim_a" or state.whot == "trim_b" then
+            UI.SetCursor("item_edge")
+        elseif state.whot then
+            UI.SetCursor("ts_edge")
         else
-            UI.SetCursor(state.whot and "size_we" or "ibeam")
+            UI.SetCursor("sel_time")
         end
     end
 
@@ -2245,7 +2259,7 @@ local function waveInput(theme)
                     state.sel_a, state.sel_b = state.sel_b, state.sel_a
                     wp.kind = (k == "sel_a") and "sel_b" or "sel_a"
                 end
-                UI.SetCursor("size_we")
+                UI.SetCursor("ts_edge")
             elseif k == "dragout" then
                 -- Promote once the mouse has really moved: below the
                 -- threshold this is still a click, and a click means
@@ -2259,13 +2273,13 @@ local function waveInput(theme)
                 -- A dragged transient snaps like everything else, and is
                 -- clamped between its neighbours so the list stays in order.
                 markerMove(wp.i, waveSnap(t))
-                UI.SetCursor("size_we")
+                UI.SetCursor("marker")
             elseif k == "trim_a" or k == "trim_b" then
                 -- The played part, resized by its edges — the same gesture as
                 -- the Sampler's region, on the object the arrange owns.
                 Ops.TrimEdge(state.item, state.take,
                              (k == "trim_a") and "start" or "end", t, state.len)
-                UI.SetCursor("size_we")
+                UI.SetCursor("item_edge")
             elseif state.mode == "item" then
                 local _, _, a, b, rate = fadeHandles()
                 if k == "fadein" then
@@ -2277,7 +2291,7 @@ local function waveInput(theme)
                     if f < 0 then f = 0 end
                     Ops.SetFades(state.item, nil, f)
                 end
-                UI.SetCursor("size_we")
+                UI.SetCursor(k == "fadein" and "fade_in" or "fade_out")
             end
         else
             -- release
@@ -3285,13 +3299,13 @@ local function drawVScroll(theme, x, y, w, h)
             if nhi > 127 then nhi = 127 end
             if nhi - vrows + 1 < 0 then nhi = vrows - 1 end
             state.view_hi = nhi
-            UI.SetCursor("size_ns")
+            UI.SetCursor("resize_ns")
             UI.RequestRedraw()
         else
             state.sbar_drag = nil
         end
     elseif over then
-        UI.SetCursor("arrow")
+        UI.SetCursor("resize_ns")
     end
 end
 
@@ -3675,6 +3689,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
 
     -- marquee (right-drag box select)
     if state.marquee then
+        UI.SetCursor("marquee")
         if Core_tk.MouseDown(2) then
             state.marquee.cx, state.marquee.cy = mx, my
             if math.abs(mx - state.marquee.x) > 4 or math.abs(my - state.marquee.y) > 4 then
@@ -3714,6 +3729,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     end
 
     -- velocity lane press: grab the nearest note bar
+    if in_vel and not state.mdrag then UI.SetCursor("vel") end
     if in_vel and Core_tk.MouseClicked(1) and Roll.count > 0 then
         local best, best_d = nil, 6
         for i = 1, Roll.count do
@@ -3748,6 +3764,34 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
             local live = md.zone and Keymap.Mouse(KM, md.zone, "drag", mods) or nil
             local free = (md.free_act ~= nil and live == md.free_act)
             local axis = (md.axis_act ~= nil and live == md.axis_act)
+
+            -- LA COPIE SE FAIT AU PREMIER PIXEL, ET C'EST ELLE QU'ON EMMENE.
+            --
+            -- La poser au relachement donnait le bon etat final et un mauvais
+            -- geste : pendant tout le glisser la place d'origine restait vide,
+            -- donc on ne voyait pas ce qu'on gardait — on voyait un
+            -- deplacement, et la copie apparaissait a la fin comme une
+            -- surprise. Ce qu'on veut voir, c'est l'original qui RESTE.
+            --
+            -- Elle ne peut pas se faire a la PRISE non plus : on ne sait pas
+            -- encore si le geste sera un clic (qui doit seulement basculer la
+            -- selection) ou un glisser. Le premier pixel est le seul instant ou
+            -- la question a une reponse.
+            if md.copy and not md.copied and md.px
+               and (math.abs(mx - md.px) > 2 or math.abs(my - md.py) > 2) then
+                md.copied = true
+                local n = md.copy_n or 0
+                if n > 0 and Roll.StampAndClaim(move_snap, n) > 0 then
+                    md.multi = (n > 1) and n or nil
+                    -- L'ancre suit : `md.idx` pointait sur une note d'avant
+                    -- l'insertion, et le tri a tout deplace.
+                    for k = 1, n do
+                        local e = move_snap[k]
+                        if e.s == md.op and e.p == md.opp then md.idx = e.i break end
+                    end
+                    md.idx = md.idx or move_snap[1].i
+                end
+            end
 
 
             if md.mode == "erase" then
@@ -3879,6 +3923,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     Roll.SetVelLive(md.idx, vel)
                 end
                 state.last_vel = Roll.vels[md.idx]
+                UI.SetCursor("vel")
                 md.moved = true
             end
         else
@@ -3897,14 +3942,6 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                         flash(n .. " painted")
                     end
                 end
-            elseif md.moved and md.copy then
-                -- LA COPIE SE POSE AU RELACHEMENT, la ou les notes ETAIENT.
-                -- On a deplace les originales ; on remet une copie a leur
-                -- place de depart. L'etat final est celui de REAPER, et rien
-                -- n'a eu a suivre des index pendant le geste.
-                Roll.Commit(md.mode == "resize" and "MIDI: resize note"
-                            or "MIDI: move note")
-                Roll.Stamp(move_snap, md.copy_n or 0)
             elseif md.moved and md.mode ~= "erase" then
                 Roll.Commit(md.mode == "vel" and "MIDI: velocity"
                             or md.mode == "resize" and "MIDI: resize note"

@@ -1735,6 +1735,16 @@ local CURSOR_IDS = {
     pan        = 32646,  -- le panoramique au bouton du milieu
     ts_edge    = 32644,  -- un bord de selection temporelle
     ts_move    = 32646,  -- deplacer la selection temporelle
+    -- La vue d'onde. Elle fait les memes gestes que l'arrangement de REAPER
+    -- sur un item, donc elle emprunte exactement ses curseurs.
+    sel_time   = 32513,  -- tirer une selection dans le son
+    item_edge  = 32644,  -- un bord de region
+    fade_in    = 32644,  -- la poignee de fondu d'entree
+    fade_out   = 32644,  -- celle de sortie
+    marker     = 32644,  -- un transitoire qu'on deplace
+    slide      = 32646,  -- glisser le contenu
+    dd_out     = 32649,  -- sortir une selection de la fenetre
+    resize_ns  = 32645,  -- une hauteur qu'on redimensionne
 }
 
 -- Declares AVANT ce qui les ecrit : `Core.SetCursorName` les remet a zero pour
@@ -1762,6 +1772,14 @@ local CURSOR_NAMES = {
     pan        = "arrange_handscroll",
     ts_edge    = "ruler_timesel",
     ts_move    = "timesel_move",
+    sel_time   = "arrange_ibeam",
+    item_edge  = "arrange_rightresize",
+    fade_in    = "arrange_fadein",
+    fade_out   = "arrange_fadeout",
+    marker     = "arrange_takemarker",
+    slide      = "arrange_slide",
+    dd_out     = "dragdrop",
+    resize_ns  = "dock_resize",
 }
 
 -- Poser un nom REAPER sur un curseur, une fois qu'on l'a identifie a l'oeil.
