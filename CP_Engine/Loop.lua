@@ -939,6 +939,7 @@ function Loop.SetUserMute(lane, on)
 end
 
 function Loop.GetUserMute(lane) return user_mute[lane] == true end
+function Loop.GetMechMute(lane) return mech_mute[lane] == true end
 
 -- Ce que le moteur fait EFFECTIVEMENT, c'est-a-dire le OU des deux. Lu depuis
 -- le moteur et non depuis les tables : c'est lui qui joue, et deux verites qui
@@ -1770,8 +1771,14 @@ function Loop.Serialize()
         -- restore: store what the lane actually holds
         if m == 1 or m == 4 or m == 5 then m = (n > 0) and 3 or 0 end
         local la, lb = Loop.GetLoopRange(lane)
+        -- ⚠️ L'INTENTION MECANIQUE, PAS L'ETAT EFFECTIF. Ce champ portait le OU
+        -- des deux, et le relire tel quel remettait le mute MUSICAL sur une
+        -- lane qui ne portait que le mecanique : une case audio serait revenue
+        -- MUETTE d'un rechargement de projet, et une lane du Looper demutee
+        -- serait restee sans MIDI, sans aucun moyen de la debloquer. Chaque
+        -- champ porte une seule chose, ou il n'en porte aucune.
         local parts = { num(Loop.GetLengthBars(lane)),
-                        Loop.GetMute(lane) and "1" or "0",
+                        Loop.GetMechMute(lane) and "1" or "0",
                         tostring(m),
                         string.format("%d", math.floor(Loop.GetLaneTag(lane) or 0)),
                         num(la or 0), num(lb or -1),
@@ -1900,12 +1907,27 @@ function Loop.Deserialize(str)
                 end
             end
             Loop.SetLengthBars(lane, bars)
-            -- L'EFFECTIF D'ABORD, PUIS L'INTENTION. `muted` est ce que le
-            -- moteur faisait ; on le repose comme mecanique parce que c'est de
-            -- la sa provenance la plus courante (une case audio), et l'intention
-            -- musicale par-dessus. Les deux se recomposent en OU.
-            Loop.SetMute(lane, muted)
-            Loop.SetUserMute(lane, umute)
+            -- ⚠️ AVANT LE FORMAT 10, LE MUTE NE SE RESTAURE PAS DU TOUT.
+            --
+            -- Le champ y portait le OU des deux intentions, et rien ne permet
+            -- de les separer apres coup. Le reposer comme MUSICAL rendrait
+            -- muette toute case audio d'un projet ancien — elles portent toutes
+            -- le mute mecanique — et le reposer comme MECANIQUE laisserait une
+            -- lane du Looper sans MIDI meme apres l'avoir demutee, puisque le
+            -- bouton n'ecrit que l'autre moitie.
+            --
+            -- On perd donc un mute d'utilisateur a la reouverture d'un projet
+            -- ancien, une fois. C'est incomparablement moins cher qu'une lane
+            -- coincee sans issue, et le mecanique se refait tout seul :
+            -- `armLane` le repose sur chaque case audio, dans la meme frame que
+            -- ce rappel, avant qu'un seul bloc audio ne passe.
+            if v10 then
+                Loop.SetMute(lane, muted)
+                Loop.SetUserMute(lane, umute)
+            else
+                Loop.SetMute(lane, false)
+                Loop.SetUserMute(lane, false)
+            end
             -- AVANT l'accolade : c'est elle qui donne la longueur en beats
             -- contre laquelle le moteur borne la zone.
             Loop.SetLaneTsNum(lane, tsn)

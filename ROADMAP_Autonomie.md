@@ -3627,3 +3627,34 @@ dans le moteur est une décision d'usage, pas de code. Et la cause du « plus de
 son sauf C2 » du sampler n'est toujours **pas** établie — deux vrais défauts ont
 été fermés autour, ce qui n'est pas la même chose.
 
+## Le mute separe, et la regression qu'il a failli introduire
+
+Trouvee en relisant le format juste apres l'avoir ecrit, avant qu'elle ne sorte.
+
+Le champ `muted` du bloc de lane portait l'etat EFFECTIF, c'est-a-dire le OU des
+deux intentions qu'on venait justement de separer. Le relire tel quel reposait
+donc le mute MUSICAL sur des lanes qui ne portaient que le mecanique :
+
+ - **une case audio revenait MUETTE** d'un rechargement de projet — elles portent
+   toutes le mute mecanique, donc leur effectif etait vrai, donc au retour elles
+   se retrouvaient user-mutees et `Cells.drive` taisait leur voix ;
+ - **une lane du Looper demutee restait sans MIDI** — le bouton n'ecrit que la
+   moitie musicale, et la moitie mecanique restee vraie continuait de couper,
+   sans aucun moyen de la debloquer depuis l'interface.
+
+C'est-a-dire, trait pour trait, la regression que l'avertissement au-dessus de
+`Loop.SetMute` annoncait depuis le premier jour : « taire la voix sur mute
+rendrait TOUTE case audio silencieuse ». Elle est revenue par la porte de
+derriere, celle du format, une heure apres avoir ete fermee par la porte
+d'entree.
+
+Le champ porte donc l'intention MECANIQUE, et rien d'autre. Chaque champ porte
+une seule chose, ou il n'en porte aucune.
+
+**Et avant le format 10, on ne restaure aucun des deux.** Rien ne permet de
+separer apres coup ce qui a ete ecrit melange ; on perd donc un mute
+d'utilisateur a la reouverture d'un projet ancien, une fois. C'est
+incomparablement moins cher qu'une lane coincee sans issue — et le mecanique se
+refait tout seul, puisque `armLane` le repose sur chaque case audio dans la meme
+frame que le rappel, avant qu'un seul bloc audio ne passe.
+
