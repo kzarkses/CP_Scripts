@@ -6448,7 +6448,10 @@ local function meterSplit(w)
     local gap = (w >= 5) and 1 or 0
     local half = floor((w - gap) / 2)
     if half < 1 then half = 1 gap = (w > 2) and (w - 2) or 0 end
-    return half, gap, floor((w - (half * 2 + gap)) / 2)
+    -- Le reste ne peut pas etre negatif : a une ou deux largeurs, les deux
+    -- moities debordent d'un pixel et le rail les ferait sortir de leur rect.
+    local pad = floor((w - (half * 2 + gap)) / 2)
+    return half, gap, (pad > 0) and pad or 0
 end
 
 function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, hold_r)
