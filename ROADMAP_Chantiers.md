@@ -30,11 +30,90 @@ Cédric qui écoute, et c'est la seule chose qui manque à cette liste.
 déclarés que rien ne lit, et le pitch à durée constante, qui demande un
 étirement qu'un fil audio de 2005 ne fera pas.
 
-**L'état du moteur** : ABI **2.4**, formats de sérialisation **10** (lanes) et
-**CPC1** (clips), **181 assertions** au harnais, zéro allocation dans le fil
-audio.
+**L'état du moteur** : ABI **2.5**, formats de sérialisation **10** (lanes) et
+**CPC1** (clips), **188 assertions** au harnais, zéro allocation dans le fil
+audio. *(Le message du commit `02d92ee` annonce 190 : il a été écrit avant le
+dernier passage du harnais et se trompe de deux. La mesure fait foi.)*
 
-**Une relecture adversariale a suivi** (quatre angles, chaque trouvaille
+---
+
+## Ce que la PREMIÈRE ÉCOUTE a rendu — 2026-08-02, le soir
+
+Neuf points, et une seule cause pour les cinq premiers : **la longueur d'une
+case n'est connue que de la lane**, et trois décisions musicales la demandaient
+à la grille de quantize, qui ne connaît qu'elle-même.
+
+- [x] **Les sept modes de motion étaient faux, et de la même façon.** On tirait
+      dans la dernière fenêtre de Q en comptant sur la quantification du moteur
+      pour poser le départ sur la fin de la passe. Dès que la passe fait plus de
+      deux Q — une case de **deux mesures** avec Q à la mesure — la fenêtre
+      s'ouvrait **pile** sur une frontière, le moteur répondait « tout de
+      suite », et la colonne changeait de case **au milieu du clip**.
+      → **ABI 2.5** : `play-at` / `stop-at`, un **rendez-vous** et non un
+      quantize. Un geste humain garde la grille ; un enchaînement pose sa date.
+- [x] **Une note aussi longue que sa boucle ne se déclenchait pas.** La porte
+      réconcilie un **ensemble** : celle qui couvre toute la passe est désirée à
+      toutes les phases, donc elle attaque une fois et plus jamais. Le
+      contournement — « la raccourcir d'un cheveu » — rouvrait le trou qui
+      produisait la ré-attaque. Le **numéro de passe** entre dans l'identité du
+      désir ; il se calculait déjà pour la probabilité.
+- [x] **Une prise commençait n'importe où dans la case.** Elle partait à la
+      prochaine frontière de quantize, dure une passe entière, et ses notes sont
+      écrites à la phase où elles ont été jouées : commencer ailleurs qu'à la
+      phase zéro rend la même musique **tournée**. « À chaque fois c'est le
+      milieu du clip qui est le début » — Q à la mesure avec Rec : 4 mesures se
+      trompait trois fois sur quatre.
+- [x] **Le réglage qui manquait : la LONGUEUR d'une passe.** « Je dépose un
+      kick, il joue une fois par mesure ; si je mets 4 fois par bar, ça ne change
+      rien. » Exact : la signature **multiplie** la passe, elle ne la divise pas,
+      et « Loop the material » répète à la durée **du fichier** — cinq coups par
+      mesure à 120, hors de toute grille. Une case joue **une fois par passe** :
+      un quart de mesure fait sortir quatre coups, sur la grille. Menu `Length`,
+      du huitième de mesure — le plancher du moteur — à trente-deux.
+- [x] **Une case audio perdait sa signature et son accolade à chaque
+      armement.** Son clip est synthétisé, et `Loop.ApplyClip` écrit *toujours*
+      ces deux champs — exprès, pour effacer ceux de l'occupant précédent d'une
+      lane partagée. Le clip synthétique ne les recopiait pas : le réglage tenait
+      une seconde, puis le lancement suivant le remettait à zéro.
+- [x] **La barre d'espace ne faisait rien depuis la grille.** Cliquer une case
+      ouvre son clip dans CP_Editor — c'est le geste même — mais le focus clavier
+      reste sur la grille. CP_Session entre dans l'ordre du focus en **dernier**
+      et ne réclame jamais la touche : elle la passe.
+- [x] **La barre de vélocité prenait la mauvaise note.** Les barres d'un accord
+      tombent à la **même abscisse** : « la plus proche en X » revenait à prendre
+      toujours la plus grave. La **sélection** gagne, puis la **hauteur du
+      doigt** ; et les choisies se dessinent **en dernier**, sinon elles
+      disparaissent derrière une voisine plus haute.
+- [x] **Le VU n'avait pas deux moitiés de la même épaisseur.** Cinq pixels à
+      gauche, six à droite. Un VU dont les côtés diffèrent cesse de se lire comme
+      une paire.
+- [x] **Le pied de tranche.** Pan, mute et solo passent en colonne **à droite**
+      du fader et du VU au lieu d'occuper trois lignes sous eux — trente-trois
+      pixels rendus à la course du fader. Le pan devient un bouton rond
+      **bipolaire** : son arc part du centre, donc le côté se lit sans lire un
+      nombre.
+
+### Ce qui a été SONDÉ et volontairement laissé tel quel
+
+**« Attendre le Q pour arrêter un clip quand l'horloge est libre, est-ce
+juste ? »** Oui, et la raison n'est pas dans notre code : *horloge libre* et
+*quantize* sont deux réglages différents. L'horloge libre dit **d'où vient le
+temps** quand le transport de REAPER ne roule pas ; Q dit **où tombent les
+gestes**. Live n'a pas la distinction parce que chez lui les clips *sont* le
+transport — et il quantifie tout, y compris ses Follow Actions (*« any setting
+other than "None" will quantize the clip's launch when it is triggered by Follow
+Actions »*, `Recherche/REFERENCE_Ableton_SessionView.md` §70-71).
+
+Sans grille, deux cases lancées à une seconde d'intervalle ne se rejoignent
+jamais : c'est précisément ce qu'une session view existe pour empêcher. `Q: Off`
+est à un clic et donne le comportement sans contrainte.
+
+**Ce que Live a et que nous n'avons pas** : une quantification de lancement **par
+clip** (`None` / `Global` / une valeur), qui est la vraie réponse à « je veux que
+*celle-là* parte sans attendre ». C'est un champ par lane dans le moteur et un
+sous-menu par case. Non fait ; c'est le prochain candidat de ce fichier.
+
+**Une relecture adversariale avait précédé** (quatre angles, chaque trouvaille
 attaquée par un sceptique) : dix-sept trouvailles, quatre réfutées, **treize
 corrigées**. Les deux plus graves étaient de la même journée — le mute séparé
 dans des tables **locales à un état Lua** alors que la lane est partagée, et la
