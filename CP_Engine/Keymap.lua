@@ -172,7 +172,7 @@ end
 -- doit savoir qu'il peut refaire sa liste. Les separer garantissait qu'un jour
 -- l'un serait pose sans l'autre.
 local function touched(m)
-    touched(m)
+    m.dirty = true
     m.ver = (m.ver or 0) + 1
 end
 

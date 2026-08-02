@@ -520,7 +520,76 @@ end
 -- stops, a recording one is left to the Looper. A lane the engine still
 -- believes is empty is promoted to "stopped with content" first, so the
 -- very first launch of a freshly written clip takes instead of no-oping.
+-- La position de l'item dans le projet, ou zero quand la cible n'en est pas
+-- un. Remontee ici parce que les accesseurs de curseur en dependent, et qu'ils
+-- doivent eux-memes preceder clipLaunch.
+local function itemPos()
+    if not state.item then return 0 end   -- clip/file mode: no item
+    return r.GetMediaItemInfo_Value(state.item, "D_POSITION")
+end
+
+-- LE CURSEUR D'EDITION, ET IL Y EN A DEUX SORTES. Un item vit dans la
+-- timeline et emprunte donc celui de REAPER ; une case vit hors d'elle et
+-- porte le sien. Quatre fonctions le disent une fois, et plus rien en dessous
+-- n'a besoin de savoir laquelle des deux il regarde — c'est ce qui permet a la
+-- regle d'etre le MEME code dans les deux modes.
+local function editCursor()
+    if state.mode == "clip" then return state.clip_cur or 0 end
+    return r.GetCursorPosition() - itemPos()
+end
+
+local function setEditCursor(t)
+    if t < 0 then t = 0 end
+    if state.mode == "clip" then state.clip_cur = t return end
+    r.SetEditCurPos(itemPos() + t, false, false)
+end
+
+local function timeSel()
+    if state.mode == "clip" then
+        local a, b = state.clip_sel_a, state.clip_sel_b
+        if a and b and b > a + 1e-6 then return a, b end
+        return nil
+    end
+    local a, b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+    if b > a + 0.0001 then
+        local pos = itemPos()
+        return a - pos, b - pos
+    end
+    return nil
+end
+
+local function setTimeSel(a, b)
+    if state.mode == "clip" then
+        if not a or not b or b <= a + 1e-6 then
+            state.clip_sel_a, state.clip_sel_b = nil, nil
+        else
+            state.clip_sel_a, state.clip_sel_b = a, b
+        end
+        return
+    end
+    local pos = itemPos()
+    if not a or not b or b <= a + 0.0001 then
+        r.GetSet_LoopTimeRange(true, false, 0, 0, false)
+    else
+        r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
+    end
+end
+
+-- LANCER UNE CASE DEPUIS LE CURSEUR.
+--
+-- Le scrub ne peut deplacer qu'une case QUI SONNE : sur une case a l'arret il
+-- n'y a pas de phase a decaler, et poser le decalage maintenant ne voudrait
+-- rien dire — le lancement tombera sur une frontiere de quantize, plus tard,
+-- ou la phase sera tout autre.
+--
+-- On note donc l'intention et on l'applique AU MOMENT OU LA CASE PART. Le
+-- rendez-vous existe deja : le sondage de lane ci-dessous voit le mode passer a
+-- « joue », et c'est la seule frame ou la question a une reponse exacte.
+--
+-- C'est ce qui fait que le curseur veut dire quelque chose meme quand rien ne
+-- joue — sans ca, on le pose, on regarde, et il ne se passe rien.
 local function clipLaunch()
+    state.clip_launch_from = editCursor()
     if not state.clip_track then
         flash("Clip has no live engine (open it from the Looper or Session)")
         return
@@ -2535,57 +2604,6 @@ end
 -- `gridStepQN` lives with the view helpers now: the waveform snaps to the same
 -- grid as the roll, and it is drawn much earlier in this file.
 -- ---------------------------------------------------------------------------
-local function itemPos()
-    if not state.item then return 0 end   -- clip/file mode: no item
-    return r.GetMediaItemInfo_Value(state.item, "D_POSITION")
-end
-
--- LE CURSEUR D'EDITION, ET IL Y EN A DEUX SORTES. Un item vit dans la
--- timeline et emprunte donc celui de REAPER ; une case vit hors d'elle et
--- porte le sien. Quatre fonctions le disent une fois, et plus rien en dessous
--- n'a besoin de savoir laquelle des deux il regarde — c'est ce qui permet a la
--- regle d'etre le MEME code dans les deux modes.
-local function editCursor()
-    if state.mode == "clip" then return state.clip_cur or 0 end
-    return r.GetCursorPosition() - itemPos()
-end
-
-local function setEditCursor(t)
-    if t < 0 then t = 0 end
-    if state.mode == "clip" then state.clip_cur = t return end
-    r.SetEditCurPos(itemPos() + t, false, false)
-end
-
-local function timeSel()
-    if state.mode == "clip" then
-        local a, b = state.clip_sel_a, state.clip_sel_b
-        if a and b and b > a + 1e-6 then return a, b end
-        return nil
-    end
-    local a, b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
-    if b > a + 0.0001 then
-        local pos = itemPos()
-        return a - pos, b - pos
-    end
-    return nil
-end
-
-local function setTimeSel(a, b)
-    if state.mode == "clip" then
-        if not a or not b or b <= a + 1e-6 then
-            state.clip_sel_a, state.clip_sel_b = nil, nil
-        else
-            state.clip_sel_a, state.clip_sel_b = a, b
-        end
-        return
-    end
-    local pos = itemPos()
-    if not a or not b or b <= a + 0.0001 then
-        r.GetSet_LoopTimeRange(true, false, 0, 0, false)
-    else
-        r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
-    end
-end
 
 -- Roll time mapping. Item-backed modes: the cache unit is item-relative
 -- SECONDS, mapped through the project TimeMap (tempo maps respected).
@@ -4149,6 +4167,16 @@ local function frame(theme)
             local m = math.floor(Loop.Mode(state.clip_lane) + 0.5)
             local p = Loop.Pending(state.clip_lane)
             if m ~= state.lane_mode or p ~= state.lane_pend then
+                -- LA CASE VIENT DE PARTIR : c'est ici, et seulement ici, que
+                -- « depuis le curseur » a une reponse exacte. La phase existe,
+                -- le decalage se calcule contre elle, et le son comme les notes
+                -- entrent au bon endroit.
+                if m == 3 and state.lane_mode ~= 3
+                   and state.clip_launch_from and state.clip_launch_from > 0
+                   and opts.ruler_scrub then
+                    Loop.PlayClipFrom(state.clip_lane, state.clip_launch_from)
+                end
+                if m == 3 then state.clip_launch_from = nil end
                 state.lane_mode, state.lane_pend = m, p
                 UI.RequestRedraw()
             end
