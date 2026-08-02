@@ -414,9 +414,9 @@ function Preview.TempoSyncRate(path, mult)
     return (SrcTempo.Rate(path, { mult = mult or 1.0 }))
 end
 
--- The tempo itself, and WHY it is believed ("declared" | "analysed" |
--- "named" | "inferred"). A window showing a number the user cannot account
--- for is a window they learn to distrust.
+-- The tempo itself, and WHY it is believed ("declared" | "embedded" |
+-- "named" | "analysed" | "inferred"). A window showing a number the user
+-- cannot account for is a window they learn to distrust.
 function Preview.SrcBpm(path, declared)
     SrcTempo.init(r, Preview)
     return SrcTempo.Bpm(path, declared)
