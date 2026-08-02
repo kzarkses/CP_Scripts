@@ -2049,6 +2049,15 @@ end
 -- On relit donc dans l'ordre inverse de la dependance : on vide, on recharge,
 -- on invalide. `Loop` a deja suspendu son autosave sur le meme front.
 local function reloadProject()
+    -- LES COLONNES D'ABORD, ET C'EST UN ORDRE, PAS UNE PRECAUTION. Tout ce qui
+    -- suit — la grille relue, l'etat des lanes rappele, les cases son
+    -- rearmees — s'adresse a des PISTES par l'intermediaire de `Loop.dest`. Tant
+    -- qu'il n'a pas ete refait, il designe encore celles du projet precedent :
+    -- on rearmait donc les cases du projet B sur les pistes du projet A, et
+    -- c'est exactement l'etat intermediaire ou plus rien ne correspond a rien.
+    -- Le poll de Loop finissait par le refaire — jusqu'a une demi-seconde plus
+    -- tard, et seulement si les deux compteurs d'etat differaient.
+    Loop.RefreshDests()
     for t = 0, TRACKS - 1 do
         local row = cells[t]
         for s = 0, SCENES - 1 do row[s] = nil end
@@ -2513,33 +2522,50 @@ local MIX_FADW  = 21       -- the fader's own width (cap included)
 -- a 16-px slot leaves a pixel of air above and below the glyphs — text that
 -- touches its own border reads as text that overflowed, even when it did not.
 local MIX_ROW   = 16
-local MIX_BAR   = 5        -- the scroll bar of a list that overflows
 local MIX_DB    = 11       -- the level readout, on a line of its own
-local MIX_SENDS = 4        -- most send slots shown before the list scrolls
 -- Le plancher du bloc de fader vaut desormais la colonne de droite : pan, M et
 -- S l'un sur l'autre. En dessous, la colonne deborderait dans les envois.
 local MIX_FADMIN = MIX_BTN * 3 + 8
-local MIX_ROWS  = 24       -- most rows a list will ever draw (id/label tables)
--- How much of a strip the two LISTS may take. The fader gets everything else:
--- it is the control you reach for a hundred times an hour, and on a console it
--- is the tallest thing in the strip for exactly that reason. A list that grew
--- at its expense would be a directory with a fader stapled to it.
-local MIX_LISTS = 0.55
+-- ---------------------------------------------------------------------------
+-- LES CHIFFRES QUI NE SERVENT QU'A LA ZONE, DANS UNE SEULE TABLE
+-- ---------------------------------------------------------------------------
+-- Le linter du depot compte les locales de chunk et s'arrete a deux cents ; il
+-- avertit AVANT qu'on bute, et sa consigne est litteralement de regrouper des
+-- constantes plutot que d'en ajouter une de plus. Six de celles-ci ne sont lues
+-- qu'ici, entre deux et quatre fois chacune : les mettre ensemble ne coute
+-- aucune lisibilite et rend cinq rangs.
+--
+--   BAR    la barre de defilement d'une liste qui deborde
+--   SENDS  le nombre de departs montres avant qu'elle defile
+--   ROWS   le plus de lignes qu'une liste dessinera jamais (tables d'ids)
+--   LISTS  la part de la tranche que les deux listes peuvent prendre. Le fader
+--          garde tout le reste : c'est le controle qu'on attrape cent fois par
+--          heure, et sur une console c'est le plus haut de la tranche pour
+--          exactement cette raison. Une liste qui grandirait a ses depens
+--          ferait un annuaire avec un fader agrafe dessus.
+--   DEF    la hauteur d'ouverture : de quoi voir une chaine, deux departs et un
+--          fader qu'on a envie de saisir. Elle ouvrait a son MINIMUM, ce qui
+--          montrait la tranche au moment ou elle sert le moins.
+--   MAX    la plus haute qu'on laisse la zone devenir
+local MIXZ = { BAR = 5, SENDS = 4, ROWS = 24, LISTS = 0.55,
+               DEF = 300, MAX = 620 }
 -- The shortest the zone can be: a usable fader block + the readout + padding.
 -- Le pan et les deux boutons ne prennent plus de hauteur a eux : ils sont DANS
 -- le bloc de fader, en colonne a sa droite.
 local MIX_MIN   = MIX_PAD * 2 + MIX_DB + MIX_FADMIN
--- …and what it opens at: enough for a chain, a couple of sends and a fader
--- worth grabbing. It was opening at its MINIMUM, which showed the strip at its
--- least useful and left the seam to be discovered before anything worked.
-local MIX_DEF   = 300
-local MIX_MAX   = 620
 local SEAM_GRAB = 5        -- the band of the seam that resizes the zone
 
 local mix_open  = Core.LoadPersistent("CP_Session", "mix", true)
+-- LE MASTER, VU D'ICI. Il a son propre interrupteur parce qu'on ne veut pas le
+-- meme chose des deux : le melangeur sert a travailler une colonne, le master a
+-- SURVEILLER la sortie — et quand on n'ouvre plus le melangeur natif, plus rien
+-- ne la montre. L'allumer ouvre la zone du bas s'il le faut : « je veux voir le
+-- master » ne doit pas demander deux clics et la connaissance de l'autre bouton.
+local master_open = Core.LoadPersistent("CP_Session", "master", false)
+local MASTER_W  = MIX_FADW + MIX_GAP + MIX_MET + MIX_GAP + MIX_BTN + 2
 -- new key on purpose: the old one holds "as small as it goes" for everyone who
 -- opened the window before the strip had anything in it
-local mix_h     = Core.LoadPersistent("CP_Session", "mixh2", MIX_DEF)
+local mix_h     = Core.LoadPersistent("CP_Session", "mixh2", MIXZ.DEF)
 local mix_moved = false    -- did the fader gesture in flight change anything
 -- QUELLE COLONNE A SON PAN SOUS LE DOIGT. Un bouton rond ne rend pas de
 -- « relache » comme un fader : il faut donc se souvenir qu'on en tourne un pour
@@ -2550,17 +2576,31 @@ local mix_seam  = nil      -- { y0, h0 } while the seam is being dragged
 local fxdrag    = nil      -- { tr, i, t, x, y } an FX being carried
 local snddrag   = nil      -- { t } a send being drawn from this column
 if type(mix_h) ~= "number" then mix_h = MIX_MIN end
-if mix_h < MIX_MIN then mix_h = MIX_MIN elseif mix_h > MIX_MAX then mix_h = MIX_MAX end
+if mix_h < MIX_MIN then mix_h = MIX_MIN elseif mix_h > MIXZ.MAX then mix_h = MIXZ.MAX end
+
+-- ---------------------------------------------------------------------------
+-- LE MASTER EST UNE TRANCHE, PAS UN CAS PARTICULIER
+-- ---------------------------------------------------------------------------
+-- Il prend le rang qui SUIT les colonnes dans toutes les tables indexees par
+-- colonne — identites de controles, caches de troncature, compteurs de crete,
+-- position de defilement. Un rang de plus, et `drawMix` le dessine avec le meme
+-- code que le reste : c'est ce qui garantit qu'un fader de master se comporte
+-- comme un fader de colonne, au pixel et au geste pres.
+--
+-- Deux choses seulement le distinguent, et elles viennent de REAPER, pas d'ici :
+-- il n'a pas de SOLO, et ses departs vont au materiel — donc pas de liste de
+-- sends, qui n'aurait proposé que d'en creer un vers nulle part.
+local MASTER = TRACKS
 
 -- Ids are identity, and identity must not be rebuilt every frame.
 local mix_id = { v = {}, m = {}, s = {}, p = {}, sd = {} }
-for t = 0, TRACKS - 1 do
+for t = 0, MASTER do
     mix_id.v[t] = "mixv" .. t
     mix_id.m[t] = "mixm" .. t
     mix_id.s[t] = "mixs" .. t
     mix_id.p[t] = "mixp" .. t
     local row = {}
-    for i = 1, MIX_ROWS do row[i] = "mixsd" .. t .. "_" .. i end
+    for i = 1, MIXZ.ROWS do row[i] = "mixsd" .. t .. "_" .. i end
     mix_id.sd[t] = row
 end
 
@@ -2569,9 +2609,9 @@ end
 -- draw path — the strip redraws thirty times a second.
 local fx_lbl, sd_lbl = {}, {}
 local mix_scroll = {}      -- [t] = { fx, sd } first row shown in each list
-for t = 0, TRACKS - 1 do
+for t = 0, MASTER do
     local a, b = {}, {}
-    for i = 1, MIX_ROWS do a[i] = {} b[i] = {} end
+    for i = 1, MIXZ.ROWS do a[i] = {} b[i] = {} end
     fx_lbl[t], sd_lbl[t] = a, b
     mix_scroll[t] = { fx = 0, sd = 0 }
 end
@@ -2705,7 +2745,8 @@ end
 
 local function drawMix(theme, t, x, y, w, h)
     local C = theme.colors
-    local tr = Loop.GetLaneDest(t)
+    local master = (t == MASTER)
+    local tr = master and r.GetMasterTrack(0) or Loop.GetLaneDest(t)
     local live = Mix.Valid(tr)
     local g = mix_col[t]
     if not g then g = {}; mix_col[t] = g end
@@ -2726,20 +2767,26 @@ local function drawMix(theme, t, x, y, w, h)
     local avail = db_y - SEC_GAP - y             -- lists + fader
 
     local nfx  = live and Mix.FxCount(tr) or 0
-    local nsnd = live and Mix.SendCount(tr) or 0
-    -- The lists never take more than MIX_LISTS of the strip and the FADER TAKES
+    -- Les departs du master vont au MATERIEL : une liste de sends n'y aurait
+    -- propose que d'en creer un vers nulle part.
+    local nsnd = (live and not master) and Mix.SendCount(tr) or 0
+    -- The lists never take more than MIXZ.LISTS of the strip and the FADER TAKES
     -- EVERYTHING ELSE. Within their share the sends ask for what they hold plus
     -- one empty slot (capped: a session sends to a handful of places, not to
     -- twenty) and the chain takes the rest — as SLOTS, filled or not, exactly
     -- as a console does. What does not fit is reachable by scrolling the list,
     -- which is what the thin bar on its right edge is for.
-    local cap = floor(avail * MIX_LISTS)
+    local cap = floor(avail * MIXZ.LISTS)
     if avail - cap < MIX_FADMIN + SEC_GAP then cap = avail - MIX_FADMIN - SEC_GAP end
     if cap < 0 then cap = 0 end
     local fx_rows, sd_rows = 0, 0
-    if cap >= MIX_ROW * 2 + SEC_GAP then
+    if master then
+        -- Pas de sends : toute la part des listes revient a la chaine d'effets,
+        -- qui est justement ce qu'on vient regarder sur un master.
+        if cap >= MIX_ROW then fx_rows = floor(cap / MIX_ROW) end
+    elseif cap >= MIX_ROW * 2 + SEC_GAP then
         local want_s = nsnd + 1
-        if want_s > MIX_SENDS then want_s = MIX_SENDS end
+        if want_s > MIXZ.SENDS then want_s = MIXZ.SENDS end
         local room = floor((cap - SEC_GAP) / MIX_ROW)
         sd_rows = want_s
         if sd_rows > room - 1 then sd_rows = room - 1 end
@@ -2773,7 +2820,7 @@ local function drawMix(theme, t, x, y, w, h)
     -- ---- the chain, as SLOTS
     local over_fx = nil
     if fx_rows > 0 then
-        local bar = (nfx > fx_rows) and MIX_BAR or 0
+        local bar = (nfx > fx_rows) and MIXZ.BAR or 0
         local rw = w - bar
         local bg = C.list_bg or C.frame_bg
         local bd = C.border
@@ -2850,7 +2897,7 @@ local function drawMix(theme, t, x, y, w, h)
 
     -- ---- the sends, same grammar
     if sd_rows > 0 then
-        local bar = (nsnd > sd_rows) and MIX_BAR or 0
+        local bar = (nsnd > sd_rows) and MIXZ.BAR or 0
         local rw = w - bar
         local bg = C.list_bg or C.frame_bg
         local bd = C.border
@@ -2861,7 +2908,7 @@ local function drawMix(theme, t, x, y, w, h)
             local ly = sd_y + (row - 1) * MIX_ROW
             local i  = sc.sd + row
             local hot = inlist and myp >= ly and myp < ly + MIX_ROW
-            if i <= nsnd and i <= MIX_ROWS then
+            if i <= nsnd and i <= MIXZ.ROWS then
                 local nm, _, lvl = Mix.Send(tr, i)
                 MIX_SD_OPTS.accent = Mix.SendMute(tr, i) and C.mute or C.mod
                 MIX_SD_OPTS.disabled = not live
@@ -3013,9 +3060,14 @@ local function drawMix(theme, t, x, y, w, h)
                      not live, MIX_M_OPTS) then
             Mix.SetMute(tr, not muted)
         end
-        if UI.ChipAt(mix_id.s[t], cx, y_s, MIX_BTN, MIX_H, nil, "S",
-                     soloed, not live, MIX_S_OPTS) then
-            Mix.SetSolo(tr, not soloed, Core.ModCtrl())
+        -- LE MASTER N'A PAS DE SOLO, et l'emplacement reste VIDE plutot que de
+        -- porter un bouton grise : un bouton qu'on ne peut jamais presser est
+        -- une promesse qu'on ne tient pas, et il aurait fallu l'expliquer.
+        if not master then
+            if UI.ChipAt(mix_id.s[t], cx, y_s, MIX_BTN, MIX_H, nil, "S",
+                         soloed, not live, MIX_S_OPTS) then
+                Mix.SetSolo(tr, not soloed, Core.ModCtrl())
+            end
         end
     end
 
@@ -3277,6 +3329,11 @@ local function frame(theme)
         mix_open = not mix_open
         Core.SavePersistent("CP_Session", "mix", mix_open)
     end
+    if UI.BarToggle("master", "VolumeUp", nil, master_open,
+                    "Master strip on the right: level, meter, pan, mute and its FX chain") then
+        master_open = not master_open
+        Core.SavePersistent("CP_Session", "master", master_open)
+    end
     UI.BarLeft()
     if attached then
         -- LIT = there is a clock and we follow it. A button called "Clock" that
@@ -3432,7 +3489,17 @@ local function frame(theme)
         UI.AppStatus(engineBadge())
         return
     end
-    local cell_w = floor((w - scene_w - gap * ncol) / ncol)
+    -- ---- LA BANDE DU MASTER EST RESERVEE SUR TOUTE LA HAUTEUR, et pas
+    -- seulement sous le melangeur. Une tranche qui ne serait large que dans la
+    -- zone du bas cesserait d'etre alignee avec les colonnes, et « la tranche
+    -- est sous sa colonne » est la seule chose qui rend cette bande lisible d'un
+    -- coup d'oeil. Le master prend donc sa colonne a lui, a droite, comme sur
+    -- une console — et les cases n'y descendent pas, parce qu'un master ne joue
+    -- rien.
+    local mst_w = master_open and (MASTER_W + gap) or 0
+    local grid_w = w - mst_w
+    local mst_x  = x + grid_w + gap
+    local cell_w = floor((grid_w - scene_w - gap * ncol) / ncol)
     if cell_w < 24 then cell_w = 24 end
 
     -- ---- track headers: name + record arm (the engine monitors ONE track
@@ -3565,11 +3632,25 @@ local function frame(theme)
         local g = mix_col[t]
         if g then g.y = nil end
     end
-    if mix_open then
+    -- LA COLONNE DU MASTER, au-dessus de la zone du bas : un en-tete qui la
+    -- NOMME et une couture qui la separe des colonnes. Les cases ne descendent
+    -- pas dedans — un master ne joue rien — et c'est justement ce vide qui dit
+    -- que cette bande n'est pas une colonne de plus.
+    if master_open then
+        UI.SetFontCaption()
+        local mc = C.text_mute or C.text_disabled
+        local tw = Core.MeasureText("MASTER")
+        Core.DrawText("MASTER", mst_x + floor((MASTER_W - tw) / 2), y + 4,
+                      mc[1], mc[2], mc[3], 0.8)
+        UI.SetFontBody()
+        UI.SeamV(mst_x - gap, y, head_h + SCENES * (cell_h + gap) + 2 + sh)
+    end
+
+    if mix_open or master_open then
         local my = sy + sh + 4
         local win_w, win_h = Core.GetWindowSize()
         local room = win_h - my - 2 - 22        -- the status zone keeps its own
-        if room > MIX_MAX then room = MIX_MAX end
+        if room > MIXZ.MAX then room = MIXZ.MAX end
         if room < MIX_MIN then room = MIX_MIN end
         if mix_h > room then mix_h = room end
         zone_h = 2 + mix_h
@@ -3607,10 +3688,20 @@ local function frame(theme)
         end
 
         UI.SetFontCaption()
-        for ci = 0, ncol - 1 do
-            local cx = x + scene_w + gap + ci * (cell_w + gap)
-            drawMix(theme, Loop.ColumnAt(ci + 1), cx, zy + MIX_PAD,
-                    cell_w, mix_h - MIX_PAD * 2)
+        if mix_open then
+            for ci = 0, ncol - 1 do
+                local cx = x + scene_w + gap + ci * (cell_w + gap)
+                drawMix(theme, Loop.ColumnAt(ci + 1), cx, zy + MIX_PAD,
+                        cell_w, mix_h - MIX_PAD * 2)
+            end
+        end
+        -- Le master en DERNIER, donc par-dessus si jamais une colonne debordait,
+        -- et derriere sa propre couture : la bande de droite est un autre
+        -- endroit, pas la suite de la rangee.
+        if master_open then
+            UI.SeamV(mst_x - gap, zy, mix_h)
+            drawMix(theme, MASTER, mst_x, zy + MIX_PAD,
+                    MASTER_W, mix_h - MIX_PAD * 2)
         end
         UI.SetFontBody()
         pollMixDrag()

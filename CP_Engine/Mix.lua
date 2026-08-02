@@ -46,8 +46,25 @@ function Mix.init(reaper_api)
     r = reaper_api
 end
 
+-- ---------------------------------------------------------------------------
+-- ⚠️ LE MASTER N'EST PAS DANS LA LISTE DES PISTES DU PROJET
+-- ---------------------------------------------------------------------------
+-- `ValidatePtr2(0, tr, "MediaTrack*")` valide en CHERCHANT la piste parmi
+-- celles du projet ; le master n'y figure pas, et il repond donc NON sur un
+-- pointeur parfaitement bon.
+--
+-- C'EST LA QUATRIEME COPIE DE CE CONTROLE DANS LE DEPOT — les trois autres sont
+-- `Audition.trackOk`, `Voice.BindTrack` et `Preview.startPreview`, et chacune a
+-- ete corrigee separement, chaque fois en croyant en finir. Celle-ci rendait
+-- une tranche de master entierement morte : fader gele, VU a zero, mute sans
+-- effet, et rien pour dire pourquoi.
+--
+-- La regle est simple et elle tient en une ligne : le master se reconnait AVANT
+-- qu'on valide, parce qu'il est valide par construction.
 local function valid(tr)
-    return tr and r.ValidatePtr2(0, tr, "MediaTrack*") and true or false
+    if not tr then return false end
+    if tr == r.GetMasterTrack(0) then return true end
+    return r.ValidatePtr2(0, tr, "MediaTrack*") and true or false
 end
 Mix.Valid = valid
 
