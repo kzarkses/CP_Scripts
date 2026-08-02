@@ -1680,8 +1680,26 @@ function Core.SetCursor(cursor_type)
     cursor_this_frame = cursor_type
 end
 
--- Cursor name → Windows cursor resource id. Module constant (audit P9: this
--- table used to be rebuilt on every frame where a cursor was requested).
+-- ---------------------------------------------------------------------------
+-- LES CURSEURS — celui de Windows, et celui de REAPER quand il en a un
+-- ---------------------------------------------------------------------------
+-- `gfx.setcursor(resource_id, custom_cursor_name)` prend DEUX arguments, et le
+-- second est le nom d'un curseur de REAPER. Le toolkit n'en passait qu'un,
+-- donc toute la panoplie de REAPER — la gomme, la main qui copie, l'etirement,
+-- le rasoir — etait hors de portee alors qu'elle est dans le binaire qui nous
+-- heberge.
+--
+-- Chaque entree porte donc les deux : l'identifiant Windows sert de REPLI, et
+-- il est choisi pour rester lisible tout seul. Un nom que REAPER ne connait pas
+-- ne casse rien — il retombe sur l'identifiant — ce qui rend l'ajout d'un
+-- curseur sans risque, et c'est la raison pour laquelle cette table peut
+-- accueillir des noms qu'on n'a pas encore verifies.
+--
+-- ⚠️ LES NOMS DE REAPER NE SE DEVINENT PAS. Ils ne sont pas documentes, et un
+-- nom faux est SILENCIEUX : on obtient le repli, et on croit que le curseur
+-- n'existe pas. `CP_Tools/CP_CursorProbe.lua` sert a les identifier a l'oeil,
+-- ce qui est la seule facon honnete de remplir la seconde colonne.
+--
 -- 32512 = arrow, 32513 = ibeam, 32514 = wait, 32515 = cross
 -- 32516 = uparrow, 32642 = sizenwse, 32643 = sizenesw
 -- 32644 = sizewe (horizontal resize), 32645 = sizens (vertical resize)
@@ -1697,20 +1715,49 @@ local CURSOR_IDS = {
     size_all = 32646,  -- move ✥
     size_nwse = 32642, -- diagonal ↘
     size_nesw = 32643, -- diagonal ↗
+    -- Les gestes que Windows ne sait pas dire. Le repli est le moins mauvais
+    -- des standards ; le badge dessine au pointeur (CP_Editor) porte le sens.
+    copy     = 32512,  -- dupliquer
+    erase    = 32512,  -- gommer
+    stretch  = 32644,  -- etirer un groupe
+    draw     = 32515,  -- peindre
 }
-local _last_cursor_id = nil
+
+-- Declares AVANT ce qui les ecrit : `Core.SetCursorName` les remet a zero pour
+-- forcer la reapplication, et sans declaration prealable elle poserait deux
+-- GLOBALES a la place — le curseur ne changerait pas et rien ne le dirait.
+local _last_cursor_id, _last_cursor_name = nil, nil
+
+-- Le nom REAPER de chaque curseur, quand on l'a IDENTIFIE. Vide tant qu'on ne
+-- l'a pas vu : ecrire un nom probable ici donnerait un repli silencieux et
+-- l'illusion d'avoir traite la question.
+local CURSOR_NAMES = {}
+
+-- Poser un nom REAPER sur un curseur, une fois qu'on l'a identifie a l'oeil.
+-- Ecrit depuis la configuration plutot que dans ce fichier : le toolkit ne doit
+-- pas porter une table de noms qu'il ne peut pas verifier.
+function Core.SetCursorName(name, reaper_name)
+    if not name then return end
+    CURSOR_NAMES[name] = (reaper_name ~= "" and reaper_name) or nil
+    _last_cursor_id = nil          -- forcer la reapplication
+end
+
+
 
 -- Apply cursor at end of frame (called by Core.Run). gfx keeps the cursor
 -- per window, so re-applying an unchanged id every frame is a wasted
 -- syscall — only call gfx.setcursor when the id actually changes.
 local function apply_cursor()
-    local cid = 32512  -- default arrow
+    local cid, cname = 32512, nil
     if cursor_this_frame then
         cid = CURSOR_IDS[cursor_this_frame] or 32512
+        cname = CURSOR_NAMES[cursor_this_frame]
     end
-    if cid ~= _last_cursor_id then
-        gfx.setcursor(cid)
-        _last_cursor_id = cid
+    if cid ~= _last_cursor_id or cname ~= _last_cursor_name then
+        -- Le nom d'abord, l'identifiant en repli : c'est l'ordre des arguments
+        -- de gfx.setcursor, et un nom inconnu retombe tout seul.
+        if cname then gfx.setcursor(cid, cname) else gfx.setcursor(cid) end
+        _last_cursor_id, _last_cursor_name = cid, cname
     end
     cursor_this_frame = nil  -- reset for next frame
 end
