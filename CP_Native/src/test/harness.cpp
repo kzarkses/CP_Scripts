@@ -1628,6 +1628,187 @@ static void test_lane_probability_held_note() {
 //
 // Q a la mesure et une prise de quatre mesures : trois departs sur quatre
 // tombaient au mauvais endroit, et celui du milieu tombait pile au milieu.
+// ---------------------------------------------------------------------------
+// UNE POSITION ABSURDE NE FAIT PAS TOURNER LE FIL AUDIO SANS FIN
+// ---------------------------------------------------------------------------
+// Le repli d'une voix en boucle etait un `while (p >= fin) p -= span`, et rien
+// ne borne `p`. Une position posee loin devant — un rendez-vous mal date, une
+// reprise apres un saut de transport, un appelant qui se trompe d'unite — y
+// faisait tourner des millions de tours DANS LE FIL AUDIO. Le bloc ne rend
+// jamais, l'appareil decroche, et de l'exterieur ca se lit « le moteur audio a
+// plante ».
+//
+// Ce test posait autrefois la question a l'envers : il n'aurait pas echoue, il
+// ne se serait jamais TERMINE. C'est la forme que prend un blocage dans un
+// harnais, et c'est pour ca qu'il faut l'ecrire une fois.
+static void test_voice_absurd_position_is_bounded() {
+  group("voix : une position absurde se replie, elle ne bloque pas");
+  EBox eb; Engine& e = *eb;
+  const frame_t len = 1024;
+  const int clip = make_ramp_clip(e, len, 2);
+  const voice_h v = e.voice_alloc(0);
+
+  Cmd c = mk(kCmdVoicePlay, v, 0);
+  c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayLoop;
+  e.post(0, c);
+  // Une position a un milliard d'echantillons dans un clip de mille : le repli
+  // naif aurait demande un million de soustractions au premier echantillon.
+  Cmd p = mk(kCmdVoiceSet, v, 0);
+  p.u0 = kParamPos; p.a = 1.0e9;
+  e.post(0, p);
+
+  sample_t buf[128 * 2];
+  g_in_audio = true;
+  for (int b = 0; b < 8; ++b) { e.render_port(0, buf, 128, 2); e.tick(128); }
+  g_in_audio = false;
+
+  double vpos = 0.0; int st = 0;
+  e.voice_query(v, &vpos, &st);
+  check_eq(st, kVoicePlaying, "elle joue toujours, repliee dans sa matiere");
+  std::printf("      position demandee 1e9, position reelle %.1f (clip : %lld)\n",
+              vpos, (long long)len);
+  check(vpos >= 0.0 && vpos < (double)len,
+        "et sa tete de lecture est DANS le tampon, pas quelque part devant");
+  // Et elle SONNE : un repli qui aurait laisse la tete hors du tampon rendrait
+  // du silence, ce qui ressemble a un succes et n'en est pas un.
+  double sum = 0.0;
+  for (int i = 0; i < 128 * 2; ++i) sum += (buf[i] < 0 ? -buf[i] : buf[i]);
+  check(sum > 0.0, "et elle produit du signal, pas du silence");
+  e.voice_release(v);
+}
+
+// ---------------------------------------------------------------------------
+// LE TRANSPORT MARTELE — la barre d'espace tenue enfoncee
+// ---------------------------------------------------------------------------
+// Le geste de Cedric, tel qu'il l'a decrit : espace maintenu sur le transport de
+// REAPER, donc play/stop a la vitesse de repetition du clavier, pendant que des
+// cases sont en attente de depart. Chaque front descendant remet toutes les
+// lanes qui jouent en file avec un sentinel « j'attends une horloge », chaque
+// front montant leur redonne une frontiere.
+//
+// Ce qu'on exige : aucune commande perdue, aucune lane laissee dans un etat qui
+// n'existe pas, aucune note tenue en l'air, et zero allocation dans le fil
+// audio. Un moteur qui perd une note tenue sur un front de transport laisse un
+// bourdon jusqu'au panic suivant.
+static void test_transport_storm() {
+  group("tempete de transport : espace maintenu, des cases en attente");
+  EBox eb; Engine& e = *eb;
+  Lanes& L = e.lanes();
+  L.set_freerun(false);
+  L.set_launch_q(4.0);
+
+  const int NL = 8;
+  for (int i = 0; i < NL; ++i) {
+    Lane& l = L.lane(i);
+    l.port.store(i, std::memory_order_relaxed);
+    l.bars.store((i % 4) + 1.0, std::memory_order_relaxed);
+    lane_note(L, i, 0, 0.0, 0.5, 60 + i, 100);
+    lane_note(L, i, 1, 1.0, 3.5, 72 + i, 90);   // une note qui traverse
+    L.publish_notes(i, 2);
+    L.post(i, kLcSetMode, (double)kLaneStopped);
+  }
+
+  // LES CASES AUDIO, qui sont des VOIX et non des lanes. C'est la moitie que
+  // Cedric avait sous les doigts : « des clips audio etaient en attente de
+  // play ». Lua les arrete a chaque front descendant et les reprogramme a
+  // chaque front montant — deux commandes par voix et par bascule.
+  const int NV = 16;
+  static sample_t sbuf[256 * 2];
+  const int clip = make_ramp_clip(e, 4096, 2);
+  voice_h vs[NV];
+  for (int i = 0; i < NV; ++i) vs[i] = e.voice_alloc(i % NL);
+  const int owned0 = e.owned_voices();
+
+  const int B = 256;
+  frame_t clk = 0;
+  double beat = 0.0;
+  int playing = 1;
+  const int before = (int)g_alloc_in_audio.load();
+
+  // 600 blocs, le transport bascule tous les 3 a 7 blocs — soit entre quinze et
+  // trente-cinq millisecondes, ce qu'une touche repetee produit reellement.
+  int next_flip = 3;
+  for (int b = 0; b < 600; ++b) {
+    if (b >= next_flip) {
+      playing = playing ? 0 : 1;
+      next_flip = b + 3 + (b % 5);
+      // Le transport REPART OU IL S'ETAIT ARRETE, comme REAPER : l'ancre est
+      // reposee sur le beat courant.
+      L.publish_transport(120.0, beat, playing, 4.0, clk);
+      if (playing) {
+        for (int i = 0; i < NL; ++i) L.post(i, kLcPlay, 0.0);
+        // Reprogrammer comme le fait Cells : une date en avant, un arret plus
+        // loin, un fondu de cinq millisecondes.
+        for (int i = 0; i < NV; ++i) {
+          Cmd pl = mk(kCmdVoicePlay, vs[i], clk + B * 2);
+          pl.a = 1.0; pl.b = 1.0; pl.u0 = (uint32_t)clip; pl.u1 = kPlayLoop;
+          e.post(i % NL, pl);
+          Cmd st2 = mk(kCmdVoiceStop, vs[i], clk + B * 40);
+          st2.a = 0.005;
+          e.post(i % NL, st2);
+        }
+      } else {
+        // Le front descendant : Lua coupe tout de suite, sans date.
+        for (int i = 0; i < NV; ++i) {
+          Cmd st2 = mk(kCmdVoiceStop, vs[i], 0);
+          st2.a = 0.005;
+          e.post(i % NL, st2);
+        }
+      }
+    }
+    g_in_audio = true;
+    for (int pt = 0; pt < NL; ++pt) e.render_port(pt, sbuf, B, 2);
+    e.tick(B);
+    g_in_audio = false;
+    if (playing) beat += (double)B * 120.0 / (60.0 * 48000.0);
+    clk += B;
+  }
+
+  check_eq((int)g_alloc_in_audio.load() - before, 0,
+           "aucune allocation dans le fil audio pendant la tempete");
+  check_eq((int)L.dropped_commands(), 0, "aucune commande de lane perdue");
+  check_eq((int)e.dropped_commands(), 0, "aucune commande de voix perdue");
+  check_eq(e.owned_voices(), owned0,
+           "aucun emplacement de voix perdu sur deux cents bascules");
+
+  int bad = 0;
+  for (int i = 0; i < NL; ++i) {
+    const int m = L.lane(i).mode.load(std::memory_order_relaxed);
+    if (m < kLaneEmpty || m > kLaneOverdub) bad++;
+    const int p = L.lane(i).pending.load(std::memory_order_relaxed);
+    if (p < 0 || p > 5) bad++;
+  }
+  check_eq(bad, 0, "chaque lane est dans un etat qui existe");
+
+  // TOUT EST-IL RELACHE ? On arrete le transport, on draine, et on compte ce que
+  // les ports rendent encore : une note tenue oubliee est un bourdon.
+  L.publish_transport(120.0, beat, 0, 4.0, clk);
+  g_in_audio = true;
+  for (int b = 0; b < 4; ++b) { e.tick(B); clk += B; }
+  g_in_audio = false;
+  int held = 0;
+  for (int i = 0; i < NL; ++i)
+    for (int p = 0; p < 128; ++p)
+      if (L.lane(i).sounding[p] != 0) held++;
+  check_eq(held, 0, "aucune note laissee tenue par un front de transport");
+
+  // Et on rend tout : un emplacement qui ne se rend pas est une fuite qui ne se
+  // voit qu'une heure plus tard, sous la forme « il n'y a plus de voix ».
+  // ⚠️ TOUS LES PORTS. Un emplacement n'est rendu au fil principal que par le
+  // rendu de SON port : n'en rendre qu'un et compter les autres comme fuites
+  // fait accuser le moteur d'un defaut qui est celui du test. (Ce qui est vrai,
+  // en revanche : un port que plus personne ne rend ne rend plus ses voix — voir
+  // le test suivant.)
+  for (int i = 0; i < NV; ++i) e.voice_release(vs[i]);
+  g_in_audio = true;
+  for (int b = 0; b < 8; ++b) {
+    for (int pt = 0; pt < NL; ++pt) e.render_port(pt, sbuf, B, 2);
+    e.tick(B);
+  }
+  g_in_audio = false;
+  check_eq(e.owned_voices(), 0, "tous les emplacements sont rendus");
+}
+
 static void test_lane_take_starts_on_the_pass() {
   group("lanes : une prise commence au debut d'une passe, pas sur la grille");
   Engine e;
@@ -1905,6 +2086,8 @@ int main() {
   test_lane_probability_held_note();
   test_lane_note_fills_the_loop();
   test_lane_take_starts_on_the_pass();
+  test_voice_absurd_position_is_bounded();
+  test_transport_storm();
   test_lane_play_at_is_a_rendezvous();
   test_lane_no_alloc();
 

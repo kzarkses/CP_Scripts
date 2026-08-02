@@ -189,7 +189,31 @@ void Voice::render(const Pool& pool, sample_t* out, int frames, int nch,
         // fractionnaire est preservee. C'est ce qui evite la derive d'un
         // echantillon par tour, invisible au debut et fatale au bout de dix
         // minutes.
-        while (p >= (double)src_end) p -= (double)span;
+        //
+        // ⚠️ UNE SEULE SOUSTRACTION, PUIS UNE REDUCTION EN O(1). C'etait une
+        // boucle `while`, et son nombre de tours valait (p - fin) / span : rien
+        // dans ce fichier ne borne `p`. Une position posee loin devant — un
+        // rendez-vous mal date, une reprise apres un saut de transport, un
+        // appelant qui se trompe d'unite — faisait tourner cette boucle des
+        // millions de fois DANS LE FIL AUDIO. Ce n'est pas une lenteur : le bloc
+        // ne rend jamais, l'appareil decroche, et de l'exterieur ca se voit comme
+        // « le moteur audio a plante ».
+        //
+        // Le cas normal reste une soustraction et ne coute rien de plus. Le cas
+        // pathologique coute un `floor` — une fois, et jamais par echantillon.
+        p -= (double)span;
+        if (p >= (double)src_end) {
+          const double d = p - (double)src_start;
+          p = (double)src_start + (d - std::floor(d / (double)span) * (double)span);
+          // Un `p` non fini ne se reduit pas : la voix s'eteint plutot que de
+          // lire n'importe ou. Aucune valeur ne devrait arriver ici, et c'est
+          // exactement pour ca qu'on le dit.
+          if (!(p >= (double)src_start && p < (double)src_end)) {
+            st = kVoiceIdle;
+            ended_here = block_start + i;
+            break;
+          }
+        }
       } else {
         st = kVoiceIdle;
         ended_here = block_start + i;
