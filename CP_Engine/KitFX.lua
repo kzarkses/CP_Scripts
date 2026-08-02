@@ -35,6 +35,10 @@ KitFX.SLOTS      = 16
 
 local MB_WPOS, MB_RPOS = 0, 1
 local MB_LSEQ, MB_LACK, MB_LPAD, MB_STATUS = 2, 3, 4, 5
+-- Combien de fois l'instrument a du RECALER l'anneau. Zero est la seule reponse
+-- normale ; autre chose designe deux compteurs qui se sont croises, donc des
+-- reglages perdus — et c'est la seule trace qui restera de l'incident.
+local MB_RESYNC = 8721
 local MB_RING, RING_N, RING_SZ = 16, 2048, 4
 local MB_STR   = 8208
 local PATH_MAX = 255                 -- le JSFX reserve 256 slots, zero compris
@@ -255,6 +259,13 @@ function KitFX.LoadIdle(slot)
     return (r.gmem_read(b + MB_LSEQ) or 0) == (r.gmem_read(b + MB_LACK) or 0)
 end
 
+-- Voir MB_RESYNC. Rend -1 quand on ne voit pas l'instrument, pour qu'un zero
+-- veuille dire « il a compte zero » et non « je n'ai pas pu demander ».
+function KitFX.Resyncs(slot)
+    if not sel() then return -1 end
+    return r.gmem_read(base(slot) + MB_RESYNC) or -1
+end
+
 function KitFX.Status(slot)
     if not sel() then return KitFX.ST_READY end
     return r.gmem_read(base(slot) + MB_STATUS) or KitFX.ST_READY
@@ -280,6 +291,7 @@ function KitFX.Raw(slot)
         status = r.gmem_read(b + MB_STATUS) or -1,
         nloaded = r.gmem_read(b + MB_NLOADED) or -1,
         hb = r.gmem_read(b + MB_HB) or -1,
+        resync = r.gmem_read(b + MB_RESYNC) or -1,
     }
 end
 

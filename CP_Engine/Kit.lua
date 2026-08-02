@@ -1705,7 +1705,15 @@ end
 local load_q, load_head = {}, 1
 local stuck = 0     -- passages depuis que l'accuse se fait attendre
 
+-- ⚠️ LA FILE EST LE SEUL REGISTRE DE CE QU'ON DOIT ENCORE A L'INSTRUMENT.
+--
+-- Le raccourci partait DIRECTEMENT sans rien y inscrire : la demande en vol
+-- n'existait alors nulle part, et personne ne pouvait la renvoyer si elle se
+-- perdait. On l'inscrit toujours, et on avance la tete en meme temps qu'on
+-- envoie — `load_q[load_head - 1]` est donc, a tout instant, la demande que
+-- l'instrument est cense etre en train d'honorer.
 function fxQueueLoad(note, path)
+    load_q[#load_q + 1] = { note = note, path = path }
     -- SI LE CANAL EST LIBRE, ON PART MAINTENANT. La file existe parce que le
     -- creneau de chargement est unique cote instrument, pas pour retarder le
     -- cas courant : deposer UN echantillon devait sonner tout de suite, et il
@@ -1713,11 +1721,10 @@ function fxQueueLoad(note, path)
     -- une demi-seconde selon que la fenetre etait au repos. « Des fois
     -- instantane, des fois pas » est le symptome exact d'une file qu'on ne
     -- court-circuite jamais.
-    if load_head > #load_q and KitFX.LoadIdle(fx_slot) then
+    if load_head == #load_q and KitFX.LoadIdle(fx_slot) then
+        load_head = load_head + 1
         KitFX.Load(fx_slot, note - Kit.BASE, path)
-        return
     end
-    load_q[#load_q + 1] = { note = note, path = path }
 end
 
 -- Combien de pads attendent encore leur matiere. Zero veut dire « tout ce
@@ -1787,6 +1794,28 @@ function fxPumpLoads()
     if not KitFX.LoadIdle(fx_slot) then
         stuck = stuck + 1
         if stuck < 90 then return end
+        -- ⚠️ ON RENVOIE LA MEME, ON NE PASSE PAS A LA SUIVANTE.
+        --
+        -- C'est ici que les pads se perdaient. Le creneau de chargement est
+        -- UNIQUE cote instrument : tant qu'il n'a pas accuse, la demande en vol
+        -- est la seule qu'il connaisse. Passer a la suivante ecrasait le chemin
+        -- et le numero de pad SOUS lui, puis avancait la tete — donc la demande
+        -- abandonnee ne revenait jamais, et rien ne le disait.
+        --
+        -- Le cas ou ca arrive est exactement celui de Cedric : l'instrument ne
+        -- tourne pas (transport martele, piste hors ligne, rendu en cours), donc
+        -- il n'accuse rien pendant une seconde et demie, donc toute une rafale
+        -- de pads passait a la trappe. Il restait le premier — celui qui etait
+        -- parti avant que l'instrument ne se taise — et un seul pad repondait.
+        --
+        -- On renvoie. Au pire on recharge un pad deja charge, ce qui est
+        -- gratuit ; jamais on ne reste muet en croyant avoir envoye.
+        stuck = 0
+        local cur = load_q[load_head - 1]
+        if cur then
+            KitFX.Load(fx_slot, cur.note - Kit.BASE, cur.path)
+            return
+        end
     end
     stuck = 0
     local e = load_q[load_head]
@@ -1815,6 +1844,14 @@ function Kit.EngineLabel()
              or (st == KitFX.ST_TRUNCATED) and " truncated"
              or (st == KitFX.ST_BUSY) and " loading"
              or ""
+    -- UN RECALAGE D'ANNEAU SE DIT. Il veut dire que des reglages sont partis a
+    -- la poubelle : la fenetre montre alors autre chose que ce qui sonne, et
+    -- c'est precisement le genre de divergence qu'on passe une soiree a
+    -- chercher quand rien ne l'annonce.
+    local rs = KitFX.Resyncs and KitFX.Resyncs(fx_slot) or 0
+    if rs and rs > 0 then
+        why = why .. string.format(" · %d resync", rs)
+    end
     return string.format("jsfx/%s %d loaded%s", Notes.Label(), n, why)
 end
 

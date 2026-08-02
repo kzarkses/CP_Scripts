@@ -235,6 +235,12 @@ MB_STR=8208;                           // 8208..8463 : le chemin, en codes
 MB_PEAK=8464; MB_NACT=8528;            // publies vers Lua, un par pad
 MB_LOADED=8592;                        // 1 = ce pad porte de la matiere
 MB_HB=8720;                            // battement ecrit par Lua a chaque passage
+// COMBIEN DE FOIS L'ANNEAU A DU SE RECALER. Zero est la reponse normale, et la
+// seule. Autre chose veut dire que deux compteurs qui ne peuvent que monter se
+// sont croises — deux instruments sur un slot, un projet ferme sous une
+// ecriture — et c'est la seule trace qui restera de l'incident. Sans elle, on
+// n'aurait que « le son a disparu », qui ne designe rien.
+MB_RESYNC=8721;
 MB_NLOADED=8656;                       // combien de pads au total
 OP_NONE=0; OP_SET=1; OP_CLEAR=2; OP_CLEARALL=3;
 
@@ -758,7 +764,38 @@ slider72 != SL_LAST[63] ? ( SL_LAST[63] = slider72; pad(63)[P_VOL] = 10 ^ (slide
 //    L'anneau peut deborder si Lua ecrit plus de trente-deux commandes entre
 //    deux blocs — il ne le fait pas, et s'il le faisait la perte serait un
 //    reglage en retard d'un bloc, pas un son faux.
-while (gmem[gm + MB_RPOS] != gmem[gm + MB_WPOS]) (
+// ⚠️ CETTE BOUCLE EST BORNEE, ET CE N'EST PAS DE LA PRUDENCE.
+//
+// `rpos` et `wpos` vivent dans gmem, qui est GLOBAL A REAPER : il survit a la
+// fermeture d'un projet, a la reinstanciation du plugin, au redemarrage des
+// scripts, et personne ne le remet a zero — c'est voulu, les deux cotes sont
+// sans etat et se relisent l'un l'autre.
+//
+// Mais la condition d'arret est « les deux compteurs sont DIFFERENTS », et il
+// suffit que `rpos` DEPASSE `wpos` une seule fois pour qu'elle reste vraie
+// pendant des milliers de milliards de tours. Deux instruments sur le meme slot
+// de kit — donc deux draineurs sur le meme anneau, chacun avancant rpos —
+// suffisent. Un projet ferme pendant qu'une ecriture etait en vol aussi.
+//
+// Ce n'est pas une lenteur : le bloc ne rend JAMAIS la main. L'appareil
+// decroche, et de l'exterieur ca ne se lit pas comme un anneau desynchronise,
+// ca se lit « le moteur audio a plante ». C'est exactement la meme faute que
+// celle qu'on venait de fermer dans le repli d'une voix, et pour la meme raison :
+// une DONNEE decidait du nombre de tours.
+//
+// On draine donc au plus RING_N entrees, et si l'ecart n'a plus de sens on se
+// RECALE sur wpos au lieu de tourner. On y perd des reglages — ce que l'anneau
+// perd deja quand il fait le tour, et que Lua compte — et on ne perd jamais le
+// fil audio. Perdre un reglage se voit et se refait ; perdre le fil audio arrete
+// la musique.
+rq_d = gmem[gm + MB_WPOS] - gmem[gm + MB_RPOS];
+(rq_d < 0 || rq_d > RING_N) ? (
+  gmem[gm + MB_RPOS] = gmem[gm + MB_WPOS];
+  gmem[gm + MB_RESYNC] = gmem[gm + MB_RESYNC] + 1;
+);
+rq_n = 0;
+while (gmem[gm + MB_RPOS] != gmem[gm + MB_WPOS] && rq_n < RING_N) (
+  rq_n += 1;
   e = MB_RING + (gmem[gm + MB_RPOS] % RING_N) * RING_SZ;
   op = gmem[gm + e];
   pi = gmem[gm + e + 1];
