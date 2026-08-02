@@ -39,6 +39,12 @@ local Clip    = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Bus     = dofile(cp_root .. "CP_Engine/Bus.lua")
 local Focus   = dofile(cp_root .. "CP_Engine/Focus.lua")
 Focus.init(r)
+local Keymap  = dofile(cp_root .. "CP_Engine/Keymap.lua")
+-- UNE SEULE QUESTION POSEE A LA TOUCHE : quelle action ? Ce qui suit ne teste
+-- plus jamais un code, donc changer une liaison ne demande de toucher a aucune
+-- de ces lignes — c'est tout l'objet du tableau.
+local KM = Keymap.Register("sampler",
+                           dofile(cp_root .. "CP_Engine/Keymaps/sampler.lua"))
 
 -- Soft dependency: the engine's peaks reader draws the region strip
 -- (falls back to a plain range slider when the package is absent).
@@ -2042,19 +2048,20 @@ local function handleKeys()
 
     local note = state.sel or pageBase()
 
-    if char == Keys.LEFT then
+    local a = Keymap.Key(KM, char)
+    if a == "pad.prev" then
         if note > Kit.BASE then state.sel = note - 1 end
         UI.ConsumeChar()
-    elseif char == Keys.RIGHT then
+    elseif a == "pad.next" then
         if note < Kit.BASE + Kit.MAX - 1 then state.sel = note + 1 end
         UI.ConsumeChar()
-    elseif char == Keys.UP then
+    elseif a == "pad.up" then
         if note + 4 < Kit.BASE + Kit.MAX then state.sel = note + 4 end
         UI.ConsumeChar()
-    elseif char == Keys.DOWN then
+    elseif a == "pad.down" then
         if note - 4 >= Kit.BASE then state.sel = note - 4 end
         UI.ConsumeChar()
-    elseif char == Keys.SPACE then
+    elseif a == "play.toggle" then
         -- ESPACE EST UNE TOUCHE DE TRANSPORT, PAS UNE TOUCHE DE PAD.
         --
         -- Elle declenchait le pad selectionne, ce qu'Entree fait deja juste en
@@ -2066,7 +2073,7 @@ local function handleKeys()
             r.Main_OnCommand(40044, 0)   -- Transport: Play/stop
         end
         UI.ConsumeChar()
-    elseif char == Keys.ENTER then
+    elseif a == "pad.trigger" then
         padOn(note)
         if state.press_midi then
             -- keyboard has no key-up: schedule the note-off
@@ -2075,19 +2082,19 @@ local function handleKeys()
             state.press_midi = nil
         end
         UI.ConsumeChar()
-    elseif char == Keys.DELETE then
+    elseif a == "pad.clear" then
         Kit.ClearPad(note)
         UI.ConsumeChar()
-    elseif char == Keys.PAGE_UP then
+    elseif a == "page.next" then
         state.page = math.min(3, state.page + 1)
         markDirty()
         UI.ConsumeChar()
-    elseif char == Keys.PAGE_DOWN then
+    elseif a == "page.prev" then
         state.page = math.max(0, state.page - 1)
         markDirty()
         UI.ConsumeChar()
-    elseif char >= Keys.N1 and char <= Keys.N4 then
-        state.page = char - Keys.N1
+    elseif a == "page.1" or a == "page.2" or a == "page.3" or a == "page.4" then
+        state.page = tonumber(a:sub(-1)) - 1
         markDirty()
         UI.ConsumeChar()
     end
@@ -2095,8 +2102,8 @@ local function handleKeys()
     -- follow the selection across pages
     if state.sel then
         local page = math.floor((state.sel - Kit.BASE) / 16)
-        if page ~= state.page and (char == Keys.LEFT or char == Keys.RIGHT
-                                   or char == Keys.UP or char == Keys.DOWN) then
+        if page ~= state.page and (a == "pad.prev" or a == "pad.next"
+                                   or a == "pad.up" or a == "pad.down") then
             state.page = page
             markDirty()
         end

@@ -443,9 +443,22 @@ qu'un raccourci est un `if char == 113` au milieu d'une fonction, il n'y a rien
       et un tampon ExtState fait relire les fenêtres déjà ouvertes une fois par
       seconde — sans lui il faudrait fermer et rouvrir CP_Editor après chaque
       réglage, c'est-à-dire ne jamais tester ce qu'on règle.
-- [ ] **Les autres modules.** Seul `editor` a un vocabulaire. CP_Session,
-      CP_Sampler et CP_Looper suivront le même chemin : un fichier dans
-      `CP_Engine/Keymaps/`, une ligne dans la liste des modules de la fenêtre.
+- [x] **Les autres modules** (2026-08-02). `CP_Engine/Keymaps/sampler.lua`
+      (13 actions) et `session.lua` (7), chacun avec sa ligne dans la liste des
+      modules de la fenêtre. Les deux hôtes ne testent plus un seul code de
+      touche.
+- [x] **CP_Looper n'a pas de fichier, et ce n'est pas un oubli.** Son éditeur
+      de notes passe par `RollUI`, donc par **la carte de CP_Editor** : lui en
+      donner une deuxième créerait deux vérités pour les mêmes touches, ce que
+      cette couche existe précisément pour empêcher.
+- [x] Le linteur vérifie le jeu de replis sur l'**union** des vocabulaires et
+      non sur chacun. Par fichier, il accusait le vocabulaire du Sampler de ne
+      pas déclarer les actions de l'éditeur — et un linteur qui crie à chaque
+      ajout de module apprend à se faire ignorer.
+- [x] Trouvé en chemin : `markDirty()` n'a **jamais existé** dans CP_Session.
+      Le Ctrl+Z qui repose une case effacée plantait à l'appel, et il fallait
+      d'abord effacer une case pour l'atteindre. C'est `saveGrid()` qu'il
+      appelle maintenant — le même chemin que la destruction en face.
 
 **Réserve honnête** : `gfx.getchar` ne rapporte pas tout. Certaines touches
 mortes et certaines combinaisons ne remontent pas, et le clavier AZERTY décale

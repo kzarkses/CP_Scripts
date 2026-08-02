@@ -49,6 +49,13 @@ local Warp   = dofile(cp_root .. "CP_Engine/Warp.lua")
 -- no sampler plugin, nothing in anyone's FX chain.
 local Voice  = dofile(cp_root .. "CP_Engine/Voice.lua")
 local Cells  = dofile(cp_root .. "CP_Engine/Cells.lua")
+local Keymap = dofile(cp_root .. "CP_Engine/Keymap.lua")
+-- UNE SEULE QUESTION POSEE A LA TOUCHE : quelle action ? Ce qui suit ne teste
+-- plus jamais un code, donc changer une liaison ne demande de toucher a aucune
+-- ligne de `handleKeys` — c'est tout l'objet du tableau, et c'est ce qui rend
+-- la fenetre de reglages possible.
+local KM = Keymap.Register("session",
+                           dofile(cp_root .. "CP_Engine/Keymaps/session.lua"))
 Tracks.init(r)
 Ident.init(r, Clip)
 Loop.init(r, Tracks)
@@ -2435,9 +2442,6 @@ end
 -- CP_Session n'en avait AUCUN. Chez Ableton on descend un set entier en tapant
 -- Entree — fleches pour se deplacer, Entree pour lancer — et c'est le geste
 -- qui separe une grille qu'on regarde d'une grille dont on joue.
-local KEY_LEFT, KEY_RIGHT = 1818584692, 1919379572
-local KEY_UP, KEY_DOWN    = 30064, 1685026670
-local KEY_ENTER, KEY_DEL  = 13, 6579564
 
 local function handleKeys()
     local char = Core.GetChar()
@@ -2445,10 +2449,16 @@ local function handleKeys()
 
     -- Ctrl+Z repose la derniere case effacee. Alt+clic est un raccourci a une
     -- main qui detruit ; il lui fallait son retour.
-    if char == 26 then
+    local a = Keymap.Key(KM, char)
+    if a == "edit.undo" then
         if erased and erased.clip then
             cells[erased.t][erased.s] = erased.clip
-            markDirty()
+            -- `markDirty` n'a JAMAIS existe dans cette fenetre : ce retour en
+            -- arriere plantait a l'appel, et personne ne l'avait vu parce qu'il
+            -- faut d'abord effacer une case pour l'atteindre. `saveGrid` est ce
+            -- que `clearCell` appelle en face — la reparation doit ecrire par le
+            -- meme chemin que la destruction, ou elle ne survit pas au projet.
+            saveGrid()
             flash("Cell restored")
             erased = nil
         else
@@ -2458,21 +2468,21 @@ local function handleKeys()
         return
     end
 
-    if char == KEY_LEFT then
+    if a == "cell.prev_track" then
         sel.t = (sel.t - 1) % TRACKS; Core.ConsumeChar()
-    elseif char == KEY_RIGHT then
+    elseif a == "cell.next_track" then
         sel.t = (sel.t + 1) % TRACKS; Core.ConsumeChar()
-    elseif char == KEY_UP then
+    elseif a == "cell.prev_scene" then
         sel.s = (sel.s - 1) % SCENES; Core.ConsumeChar()
-    elseif char == KEY_DOWN then
+    elseif a == "cell.next_scene" then
         sel.s = (sel.s + 1) % SCENES; Core.ConsumeChar()
-    elseif char == KEY_ENTER then
+    elseif a == "cell.launch" then
         -- Entree lance la case ; sur une case vide elle arrete la colonne,
         -- ce qui est ce qu'on veut dire en descendant une grille trouee.
         local c = cells[sel.t] and cells[sel.t][sel.s]
         if c then launchCell(sel.t, sel.s) else stopTrack(sel.t) end
         Core.ConsumeChar()
-    elseif char == KEY_DEL then
+    elseif a == "cell.erase" then
         local c = cells[sel.t] and cells[sel.t][sel.s]
         if c then
             erased = { t = sel.t, s = sel.s, clip = c }

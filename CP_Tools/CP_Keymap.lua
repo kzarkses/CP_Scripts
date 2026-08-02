@@ -30,7 +30,16 @@ KeymapUI.init(r, UI.Core, Keymap)
 -- LES MODULES CONNUS. En ajouter un est une ligne ici et un fichier dans
 -- CP_Engine/Keymaps — jamais une modification de cette fenetre.
 local MODULES = {
-    { name = "editor", label = "CP Editor", file = "CP_Engine/Keymaps/editor.lua" },
+    { name = "editor",  label = "CP Editor",
+      file = "CP_Engine/Keymaps/editor.lua" },
+    { name = "sampler", label = "CP Sampler",
+      file = "CP_Engine/Keymaps/sampler.lua" },
+    { name = "session", label = "CP Session",
+      file = "CP_Engine/Keymaps/session.lua" },
+    -- CP_Looper n'a pas de fichier a lui, et ce n'est pas un oubli : son
+    -- editeur de notes passe par `RollUI`, donc par LA CARTE DE CP_EDITOR.
+    -- Lui en donner une deuxieme creerait deux verites pour les memes touches,
+    -- et c'est exactement ce que cette couche existe pour empecher.
 }
 
 -- Le module que l'appelant veut voir. Pose par KeymapUI.OpenWindow avant de
