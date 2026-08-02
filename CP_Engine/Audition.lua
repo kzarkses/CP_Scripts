@@ -75,6 +75,18 @@ Audition.rate         = 1.0     -- duree, hauteur preservee
 Audition.loop         = false
 Audition.route_track  = false   -- suivre la piste selectionnee
 Audition.out_track    = nil     -- piste epinglee : elle prime sur route_track
+-- LA SORTIE MATERIELLE EST UN CHOIX, PAS UN DEFAUT.
+--
+-- Elle a longtemps ete le defaut, et l'argument etait bon : on ecoute un
+-- fichier tel qu'il est, sans qu'une chaine du projet le colore. Mais le
+-- resultat, a l'usage, est un son qui ne passe NI par le master NI par rien —
+-- donc pas de VU, pas de limiteur, pas d'ecoute au casque si la sortie casque
+-- passe par le master, et rien a regler si le niveau ne va pas.
+--
+-- Le defaut est donc le MASTER, qui est la sortie que tout le monde entend.
+-- La carte reste atteignable, en un clic, pour qui veut vraiment court-circuiter
+-- le projet.
+Audition.hw_out       = false
 Audition.playing_path = nil
 
 -- Declic. Un depart et un arret sur une arete d'echantillon s'entendent sur
@@ -86,6 +98,11 @@ Audition.fade_out = 0.008
 -- Derniere duree de decodage observee, en millisecondes. Diagnostic : c'est le
 -- chiffre qui dit si NATIVE_MAX_S est au bon endroit sur CETTE machine.
 Audition.last_load_ms = 0
+
+-- « La sortie demandee a refuse, on sort par la carte. » Une fenetre doit
+-- pouvoir le DIRE : un son qui arrive par une autre porte que celle qu'on a
+-- choisie se cherche longtemps.
+Audition.out_fallback = false
 
 -- ---------------------------------------------------------------------------
 -- Etat interne
@@ -205,14 +222,38 @@ function Audition.WillUseVoices() return voicesUsable() end
 -- la voix native ne le voyait pas : demander « passe par la piste de cet item »
 -- marchait ou non selon le moteur qui repondait, sans que rien ne le dise. Un
 -- reglage que seule la moitie des chemins honore est pire qu'un reglage absent.
+-- LE MASTER N'EST PAS DANS LA LISTE DES PISTES DU PROJET.
+--
+-- `ValidatePtr2(0, tr, "MediaTrack*")` valide en cherchant la piste parmi
+-- celles du projet, et le master n'y est pas : il repond donc NON sur un
+-- pointeur parfaitement bon. Le nôtre etait alors efface comme « une piste
+-- morte », la sortie retombait ailleurs, et l'ecoute par le master ne se
+-- faisait jamais — sans un mot pour le dire.
+--
+-- On le reconnait donc avant de valider. `GetMasterTrack(0)` est valide par
+-- construction : il n'y a rien a verifier.
+local function trackOk(tr)
+    if not tr then return false end
+    if tr == r.GetMasterTrack(0) then return true end
+    return r.ValidatePtr2(0, tr, "MediaTrack*")
+end
+
 local function resolveOut(opts)
+    if opts and opts.hw_out then return nil end
     local out = (opts and opts.out_track) or Audition.out_track
-    if out and not r.ValidatePtr2(0, out, "MediaTrack*") then
-        out, Audition.out_track = nil, nil       -- la piste est morte
+    if out and not trackOk(out) then
+        out = nil
+        if Audition.out_track and not trackOk(Audition.out_track) then
+            Audition.out_track = nil                -- la piste est morte
+        end
     end
     if not out and Audition.route_track then
         out = r.GetSelectedTrack(0, 0)
+        if not trackOk(out) then out = nil end
     end
+    -- LE DERNIER MOT : le master, pas le silence. Une sortie qu'on n'a pas
+    -- choisie doit rester une sortie qu'on ENTEND.
+    if not out and not Audition.hw_out then out = r.GetMasterTrack(0) end
     return out
 end
 
@@ -234,8 +275,21 @@ local function ensurePort(opts)
     Audition.playing_path = nil
 
     local ok
-    if want then ok = Voice.BindTrack(port, want)
-    else         ok = Voice.BindOutput(port, 0) end
+    if want then ok = Voice.BindTrack(port, want) end
+    -- UNE SORTIE QUI REFUSE NE DOIT PAS DEVENIR DU SILENCE. Si la piste
+    -- demandee n'accepte pas l'apercu — elle vient d'etre supprimee, REAPER
+    -- refuse, peu importe — on retombe sur la carte et on le NOTE. Rendre
+    -- false ici laissait la fenetre sans un son et sans une explication, ce qui
+    -- est la pire des deux issues.
+    if not ok then
+        ok = Voice.BindOutput(port, 0)
+        if ok then
+            want = nil
+            Audition.out_fallback = true
+        end
+    else
+        Audition.out_fallback = false
+    end
     if not ok then port = nil return false end
     bound_to = want
     return true
@@ -424,14 +478,20 @@ end
 -- Deux chemins l'appellent (par chemin, par source) et c'etait la seule chose
 -- qu'ils avaient en commun.
 function Audition.playThrough(start, opts)
+    -- LA MEME SORTIE QUE LA VOIX. Le repli lisait `Audition.out_track` et
+    -- ignorait le defaut master : selon le moteur qui repondait, le son
+    -- sortait par le projet ou par la carte, ce qui est exactement le genre
+    -- d'ecart qu'on vient de fermer de l'autre cote.
+    local want = resolveOut(opts)
+    if opts then opts.out_track = want end
+    Preview.out_track = want
     Preview.volume   = Audition.volume
     Preview.pitch    = Audition.pitch
     Preview.rate     = Audition.rate
     Preview.loop     = Audition.loop
     Preview.fade_in  = Audition.fade_in
     Preview.fade_out = Audition.fade_out
-    Preview.out_track   = Audition.out_track
-    Preview.route_track = Audition.route_track
+    Preview.route_track = false   -- `want` a deja tranche
     if not start() then return false end
     backend = "preview"
     started, start_t = false, r.time_precise()

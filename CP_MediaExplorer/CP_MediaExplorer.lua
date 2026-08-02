@@ -100,6 +100,9 @@ local opts = {
     space_transport  = cfg.space_transport ~= false,   -- default true
     tempo_sync       = cfg.tempo_sync == true,
     route_track      = cfg.route_track == true,
+    -- Court-circuiter le projet est un choix, pas le defaut : sans lui on sort
+    -- par le master, qui est la sortie que tout le monde entend.
+    hw_out           = cfg.hw_out == true,
     carry_volume     = cfg.carry_volume == true,
     carry_rate_pitch = cfg.carry_rate_pitch == true,
     use_mediadb      = cfg.use_mediadb ~= false,       -- default true
@@ -119,6 +122,7 @@ Audition.pitch       = cfg.pitch or 0
 Audition.rate        = cfg.rate or 1.0
 Audition.loop        = cfg.loop == true
 Audition.route_track = opts.route_track
+Audition.hw_out      = opts.hw_out
 
 -- Pin the preview to a dedicated track (or clear it). The GUID travels in
 -- the config so the pin survives restarts of the same project.
@@ -206,6 +210,7 @@ local function persistConfig()
         space_transport  = opts.space_transport,
         tempo_sync       = opts.tempo_sync,
         route_track      = opts.route_track,
+        hw_out           = opts.hw_out,
         carry_volume     = opts.carry_volume,
         carry_rate_pitch = opts.carry_rate_pitch,
         use_mediadb      = opts.use_mediadb,
@@ -889,12 +894,31 @@ local function openSettings()
                             .. "  (re-pin selected)"
               end
               return {
-                  { label = "Master / hardware (default)",
-                    checked = not pinned and not opts.route_track,
+                  -- LE MASTER, ET PAS « LE MASTER OU LA CARTE ». L'entree
+                  -- disait « Master / hardware » et sortait en fait par la
+                  -- CARTE : le son ne passait donc ni par le master, ni par
+                  -- rien — pas de VU, pas de limiteur, rien a regler si le
+                  -- niveau n'allait pas. Les deux sont maintenant deux
+                  -- entrees, parce que ce sont deux choses.
+                  { label = "Master (default)",
+                    checked = not pinned and not opts.route_track
+                              and not opts.hw_out,
                     action = function()
                         setPreviewTrack(nil)
                         opts.route_track = false
+                        opts.hw_out = false
                         Audition.route_track = false
+                        Audition.hw_out = false
+                        markDirty()
+                    end },
+                  { label = "Sound card (direct — bypasses the whole project)",
+                    checked = not pinned and opts.hw_out,
+                    action = function()
+                        setPreviewTrack(nil)
+                        opts.route_track = false
+                        opts.hw_out = true
+                        Audition.route_track = false
+                        Audition.hw_out = true
                         markDirty()
                     end },
                   { label = "Follow selected track",
@@ -902,7 +926,9 @@ local function openSettings()
                     action = function()
                         setPreviewTrack(nil)
                         opts.route_track = true
+                        opts.hw_out = false
                         Audition.route_track = true
+                        Audition.hw_out = false
                         markDirty()
                     end },
                   { label = pin_label, checked = pinned ~= nil,
