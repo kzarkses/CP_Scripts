@@ -48,6 +48,11 @@ local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 -- pour ce qu'elle ne sait pas faire (transposer, lire un long fichier
 -- depuis le disque, jouer une PCM_source qu'on lui tend sans fichier).
 local Audition = dofile(cp_root .. "CP_Engine/Audition.lua")
+-- « A QUEL TEMPO VA CE FICHIER » — une seule reponse pour toute la suite, et
+-- c'est elle qui rend la grille lisible ici : sans elle, l'editeur dessinait
+-- les temps du PROJET par-dessus la forme d'onde, ce qui n'est vrai que si le
+-- fichier est deja au tempo du projet.
+local SrcTempo = dofile(cp_root .. "CP_Engine/SrcTempo.lua")
 local Insert = dofile(cp_root .. "CP_Engine/Insert.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Clip  = dofile(cp_root .. "CP_Engine/Clip.lua")
@@ -68,6 +73,9 @@ Roll.init(r)
 Tracks.init(r)
 Kit.init(r, Tracks)
 Audition.init(r)
+-- Le cache de sources d'Audition sert de fournisseur : demander son tempo a un
+-- fichier n'ouvre alors pas le disque une fois de plus.
+SrcTempo.init(r, Audition)
 Keymap.init(r, UI.Core, UI.Keys)
 KeymapUI.init(r, UI.Core, Keymap)
 Insert.init(r)
@@ -282,7 +290,11 @@ end
 -- An item is anchored by its own position on the timeline. A bare file has no
 -- position at all, so it is read as if it started at the project's zero —
 -- which is exactly what makes a loop's beats land on the grid.
--- ---------------------------------------------------------------------------
+--
+-- Un fichier dont on connait le tempo ne passe PAS par ici : voir srcBeat et
+-- ses trois appelants. Ce chemin reste celui d'un item, et celui d'un fichier
+-- dont aucun tempo ne merite d'etre cru — pour lequel la grille du projet est
+-- la moins mauvaise reponse, faute d'une autre.
 local function srcToProj(t)
     if state.mode == "item" and state.item and state.take then
         local soffs = r.GetMediaItemTakeInfo_Value(state.take, "D_STARTOFFS")
@@ -292,6 +304,31 @@ local function srcToProj(t)
         return pos + (t - soffs) / rate, rate, pos, soffs
     end
     return t, 1, 0, 0
+end
+
+-- ---------------------------------------------------------------------------
+-- ⚠️ UN FICHIER N'A PAS DE POSITION, MAIS IL A UN TEMPO
+-- ---------------------------------------------------------------------------
+-- La grille dessinee par-dessus une forme d'onde etait celle du PROJET, lue a
+-- partir de son zero. Elle n'est juste que lorsque le fichier est deja au
+-- tempo du projet — autrement dit presque jamais. On deposait une boucle a 136
+-- dans une session a 120, ca marchait, et rien a l'ecran ne disait POURQUOI :
+-- les lignes tombaient a cote de la caisse claire, et la seule lecture
+-- possible etait « le tempo-matching, c'est magique ».
+--
+-- Un fichier ne porte pas une CARTE de tempo, il porte UN tempo : ses temps
+-- sont donc reguliers dans ses propres secondes, et cette fonction est tout ce
+-- dont la grille, le magnetisme et la regle ont besoin. Aucun TimeMap n'entre
+-- ici — demander a la carte de tempo de la session ou tombe le deuxieme temps
+-- d'un fichier qui n'y est pas pose ne veut rien dire.
+--
+-- nil quand aucun tempo ne merite d'etre cru, et c'est une reponse : on ne
+-- dessine pas des mesures sur un son dont on ignore la vitesse.
+-- ---------------------------------------------------------------------------
+local function srcBeat()
+    local b = state.src_bpm
+    if not b or b <= 0 then return nil end
+    return 60 / b
 end
 
 local function projToSrc(pt, rate, pos, soffs)
@@ -311,10 +348,18 @@ local SNAP_PX = 12
 -- ruler, or dropping a new marker — hold shift and you land where you point.
 local function waveSnap(t)
     if not opts.wave_snap or Core_tk.ModShift() then return t end
-    local pt, rate, pos, soffs = srcToProj(t)
-    local step = gridStepQN()
-    local qn = math.floor(r.TimeMap2_timeToQN(0, pt) / step + 0.5) * step
-    local best = projToSrc(r.TimeMap2_QNToTime(0, qn), rate, pos, soffs)
+    local best
+    -- LE FICHIER SE MAGNETISE SUR SES PROPRES TEMPS (voir srcBeat).
+    local sb = (state.mode == "file") and srcBeat() or nil
+    if sb then
+        local step = gridStepQN() * sb
+        best = math.floor(t / step + 0.5) * step
+    else
+        local pt, rate, pos, soffs = srcToProj(t)
+        local step = gridStepQN()
+        local qn = math.floor(r.TimeMap2_timeToQN(0, pt) / step + 0.5) * step
+        best = projToSrc(r.TimeMap2_QNToTime(0, qn), rate, pos, soffs)
+    end
     if best < 0 then best = 0 end
     local bd = math.abs(best - t)
 
@@ -468,6 +513,10 @@ local function resetForTarget()
     state.clip_cur = 0
     state.clip_sel_a, state.clip_sel_b = nil, nil
     state.sel_a, state.sel_b = nil, nil
+    -- LA CASE DONT LA REGION EST EN COURS D'EDITION. Elle est reposee juste
+    -- apres par openClip quand la nouvelle cible en vient d'une ; la laisser
+    -- trainer renverrait le decoupage d'un fichier dans la case precedente.
+    state.cell_clip = nil
     state.cursor = 0
     for i = #state.markers, 1, -1 do state.markers[i] = nil end
     state.meta_line = nil
@@ -938,6 +987,26 @@ local function setItem(item)
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- LE TEMPO DE CE FICHIER, ET POURQUOI ON LE CROIT
+-- ---------------------------------------------------------------------------
+-- Demande UNE fois par cible, et une fois de plus quand le tempo du projet
+-- bouge — c'est lui qui decide du taux, et de deux des cinq sources de
+-- SrcTempo. C'est couteux (l'entete du fichier est lue, REAPER est
+-- interroge) : ca n'a rien a faire dans une frame de dessin, et rien ici ne
+-- l'y appelle.
+local function refreshSrcTempo()
+    state.src_ref = r.Master_GetTempo() or 120
+    if state.mode ~= "file" or state.path == "" then
+        state.src_rate, state.src_bpm, state.src_why = 1, nil, nil
+        return
+    end
+    local rate, bpm, why = SrcTempo.Rate(state.path, {})
+    state.src_rate = (rate and rate > 0) and rate or 1
+    state.src_bpm, state.src_why = bpm, why
+    state.meta_line = nil
+end
+
 local function setFile(path)
     flushApply()
     state.clip, state.clip_lane = nil, nil
@@ -961,6 +1030,9 @@ local function setFile(path)
     -- depot Windows, la barre de messages, ou un envoi depuis une autre
     -- fenetre.
     state.seen_sel_item = r.GetSelectedMediaItem(0, 0)
+    -- Apres que le mode et le chemin soient poses : c'est de ces deux-la que
+    -- la reponse depend.
+    refreshSrcTempo()
     resetForTarget()
     return true
 end
@@ -1030,7 +1102,9 @@ local function clearTarget()
     state.mode, state.item, state.take = nil, nil, nil
     state.clip, state.clip_lane = nil, nil
     state.clip_track, state.clip_tag = nil, 0
+    state.cell_clip = nil
     state.path, state.name, state.len = "", "", 0
+    state.src_rate, state.src_bpm, state.src_why = 1, nil, nil
     state.mdrag = nil
 end
 
@@ -1053,6 +1127,17 @@ local function rangeNote()
     end
     return ""
 end
+
+-- D'OU VIENT LE TEMPO AFFICHE. Un nombre qu'on ne peut pas expliquer est un
+-- nombre qu'on apprend a ignorer — et ces cinq mots disent exactement combien
+-- lui faire confiance. Meme vocabulaire que sous les cases de CP_Session.
+local WHY_LBL = {
+    declared = "set",       -- quelqu'un l'a decide
+    embedded = "file",      -- l'entete du fichier le porte
+    named    = "name",      -- le nom du fichier l'annonce
+    analysed = "read",      -- l'ajustement de REAPER sur la duree
+    inferred = "guess",     -- deduit de la seule duree, et sous garde
+}
 
 local function metaLine()
     if state.mode == "midi" or state.mode == "clip" then
@@ -1086,8 +1171,22 @@ local function metaLine()
         state.meta_line = ""
         return ""
     end
-    state.meta_line = string.format("%.3fs  ·  %dch  ·  %.1fk%s",
-        state.len, state.ch, state.sr / 1000,
+    -- LE TEMPO ET LA LONGUEUR EN MESURES, dits en clair et avec leur source.
+    -- « Je dnd un sample et ca marche, mais je ne sais pas pourquoi » : la
+    -- reponse est ce nombre-la, et il n'etait affiche nulle part dans cette
+    -- fenetre. La longueur en mesures est ce qui dit d'un coup d'oeil si la
+    -- boucle est entiere ou s'il manque un temps.
+    local tempo = ""
+    local sb = srcBeat()
+    if sb and state.len > 0 then
+        local beats = state.len / sb
+        tempo = string.format("  ·  %g BPM (%s)  ·  %.2f bars",
+                              math.floor(state.src_bpm * 100 + 0.5) / 100,
+                              WHY_LBL[state.src_why or ""] or "?",
+                              beats / clipTsNum())
+    end
+    state.meta_line = string.format("%.3fs  ·  %dch  ·  %.1fk%s%s",
+        state.len, state.ch, state.sr / 1000, tempo,
         state.mode == "file" and "  ·  file (view/slice)" or "")
     return state.meta_line
 end
@@ -1102,6 +1201,13 @@ local function openClip(c)
     if c.kind == "audio" and c.path and c.path ~= "" then
         if not setFile(c.path) then return end
         if c.name and c.name ~= "" then state.name = c.name end
+        -- ON GARDE LA CASE, pas seulement son fichier. C'est ce qui manquait
+        -- pour que le decoupage puisse rentrer chez lui : l'editeur ouvrait la
+        -- region d'une case et n'avait ensuite plus aucun moyen de dire de QUI
+        -- elle etait. Champ distinct de `state.clip`, qui appartient au mode
+        -- case MIDI et a tout ce qui s'y branche — historique, lane vivante,
+        -- accolade. Les deux ne sont jamais poses ensemble.
+        state.cell_clip = c
         if c.offs and c.len and c.len > 0 and state.len > 0 then
             state.sel_a = math.max(0, c.offs)
             state.sel_b = math.min(state.len, c.offs + c.len)
@@ -1114,6 +1220,49 @@ local function openClip(c)
         end
     elseif c.kind == "midi" then
         setClip(c)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- L'ACCOLADE D'UNE CASE SON — le decoupage, renvoye chez lui
+-- ---------------------------------------------------------------------------
+-- « Les samples de ma banque ne commencent pas exactement ou il faut, il faut
+-- decaler le debut. Sur l'arrangeur c'etait facile, mais ici ? »
+--
+-- Ici, un clip n'a pas de position : il a une REGION dans son fichier, et le
+-- decalage se fait donc en amont, une fois pour toutes, pas en glissant l'objet
+-- sur une ligne de temps. `offs` et `len` portent cette region depuis toujours,
+-- Cells.Arm les lit, cellBars mesure la region et non le fichier, la
+-- serialisation les enregistre — TOUT le chemin existait sauf son retour :
+-- l'editeur ouvrait la region d'une case et n'avait aucun moyen de la rendre.
+--
+-- SANS SELECTION, ON REND LE FICHIER ENTIER. C'est le seul geste qui defait un
+-- decoupage sans exiger de reselectionner exactement tout, et il coute un clic.
+--
+-- LA LONGUEUR EN MESURES EST REPRISE A ZERO parce que c'est la REGION qui la
+-- decide (cellBars) : trimer une boucle de quatre mesures a deux doit donner
+-- une case de deux mesures, sinon la case tourne dans le vide sur la moitie de
+-- sa passe. Le message le DIT — une longueur qui change toute seule et en
+-- silence est ce qu'on passe une soiree a ne pas comprendre.
+local function applyAudioRegion()
+    local c = state.cell_clip
+    if not c then return end
+    local a, b = state.sel_a, state.sel_b
+    if a and b and b > a then
+        c.offs = (a > 0) and a or nil
+        c.len  = b - a
+    else
+        c.offs, c.len = nil, nil
+    end
+    c.bars = nil
+    Bus.Send(c.cell and "editor:apply:cell" or "editor:apply", c)
+    local secs = c.len or state.len
+    local sb = srcBeat()
+    if sb and sb > 0 then
+        flash(string.format("Cell region: %.3f s  ·  %.2f bars",
+                            secs, secs / sb / clipTsNum()))
+    else
+        flash(string.format("Cell region: %.3f s", secs))
     end
 end
 
@@ -1176,6 +1325,13 @@ end
 -- Target polling (arrange selection follow + cross-script open + validity)
 -- ---------------------------------------------------------------------------
 local function pollTarget()
+    -- LE TEMPO DU PROJET DECIDE DU TAUX, donc de deux des cinq sources de
+    -- SrcTempo : s'il bouge, la grille du fichier doit suivre. Une comparaison
+    -- de nombre par frame, et l'analyse seulement quand elle a change.
+    if state.mode == "file" and state.src_ref ~= r.Master_GetTempo() then
+        refreshSrcTempo()
+    end
+
     -- legacy "Open in Editor" channel (bare path, old publishers)
     local v = r.GetExtState("CP_Editor", "open")
     if v ~= "" and v ~= state.last_open then
@@ -1910,6 +2066,17 @@ local function barAudio(theme)
                       state.sel_a == nil) then selectionToPad() end
         if UI.BarIcon("sl_instr", "Piano", "To instrument",
                       state.path == "") then sendToInstrument() end
+        -- Present SEULEMENT quand la cible vient d'une case : ailleurs il n'y
+        -- aurait rien a rendre, et un bouton grise en permanence promet une
+        -- fonction que la fenetre n'a pas.
+        if state.cell_clip then
+            UI.BarSep()
+            if UI.BarIcon("cell_region", "Upload",
+                          "Send this region back to the session cell"
+                          .. " (no selection = the whole file)") then
+                applyAudioRegion()
+            end
+        end
         return
     end
 
@@ -1971,15 +2138,53 @@ end
 -- ---------------------------------------------------------------------------
 -- Ruler (labels cached per view — pan rebuilds, idle costs nothing)
 -- ---------------------------------------------------------------------------
-local ruler = { t0 = -1, t1 = -1, w = 0, n = 0, xs = {}, lbls = {} }
+local ruler = { t0 = -1, t1 = -1, w = 0, bpm = -1, n = 0, xs = {}, lbls = {} }
 local NICE = { 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
                1, 2, 5, 10, 30, 60, 120, 300 }
 
 local function rulerBuild()
-    if ruler.t0 == state.t0 and ruler.t1 == state.t1 and ruler.w == wave.w then
+    local kbpm = state.src_bpm or 0
+    if ruler.t0 == state.t0 and ruler.t1 == state.t1 and ruler.w == wave.w
+       and ruler.bpm == kbpm then
         return
     end
-    ruler.t0, ruler.t1, ruler.w = state.t0, state.t1, wave.w
+    ruler.t0, ruler.t1, ruler.w, ruler.bpm = state.t0, state.t1, wave.w, kbpm
+
+    -- ---------------------------------------------------------------------
+    -- EN MESURES QUAND LE FICHIER A UN TEMPO
+    -- ---------------------------------------------------------------------
+    -- « 1.71 s » ne dit rien de musical, et c'est tout ce que cette regle a
+    -- jamais affiche. Or la question qu'on se pose devant une boucle est
+    -- « combien de mesures fait-elle », et la reponse decide de tout le reste
+    -- — la longueur de la case, l'endroit ou couper, ce qu'il faut decaler.
+    -- « 3.1 » se lit mesure 3, temps 1, comme partout ailleurs.
+    local sb = (state.mode == "file") and srcBeat() or nil
+    if sb then
+        local tsn = clipTsNum()
+        -- Une graduation par temps tant qu'elles respirent, par mesure ensuite,
+        -- puis par paquets de mesures. Six reperes environ, comme en secondes.
+        local step = sb
+        if span() / step > 12 then
+            step = sb * tsn
+            while span() / step > 12 do step = step * 2 end
+        end
+        local n = 0
+        local t = math.ceil(state.t0 / step - 0.0001) * step
+        while t <= state.t1 and n < 16 do
+            n = n + 1
+            local beats = t / sb
+            local bar   = math.floor(beats / tsn + 0.0001)
+            local inbar = beats - bar * tsn
+            ruler.xs[n] = xAtTime(t)
+            ruler.lbls[n] = (step >= sb * tsn - 1e-9)
+                and string.format("%d", bar + 1)
+                or  string.format("%d.%d", bar + 1, math.floor(inbar + 1.0001))
+            t = t + step
+        end
+        ruler.n = n
+        return
+    end
+
     local target = span() / 6
     local step = NICE[#NICE]
     for i = 1, #NICE do
@@ -2003,19 +2208,47 @@ end
 -- TimeMap per line per frame would be a few hundred API calls for a picture
 -- that does not change between them.
 -- ---------------------------------------------------------------------------
-local wgrid = { t0 = -1, t1 = -1, w = 0, step = -1, mode = "", n = 0,
+local wgrid = { t0 = -1, t1 = -1, w = 0, step = -1, mode = "", bpm = -1, n = 0,
                 xs = {}, bar = {} }
 local WGRID_MAX = 400   -- denser than this says nothing: it is a grey wash
 
 local function wgridBuild()
     local step = gridStepQN()
+    -- Le tempo de la SOURCE entre dans la cle : deux fichiers ouverts l'un
+    -- apres l'autre dans la meme vue ont le meme mode et la meme division, et
+    -- la grille serait restee celle du premier.
+    local kbpm = state.src_bpm or 0
     if wgrid.t0 == state.t0 and wgrid.t1 == state.t1 and wgrid.w == wave.w
-       and wgrid.step == step and wgrid.mode == (state.mode or "") then
+       and wgrid.step == step and wgrid.mode == (state.mode or "")
+       and wgrid.bpm == kbpm then
         return
     end
     wgrid.t0, wgrid.t1, wgrid.w = state.t0, state.t1, wave.w
-    wgrid.step, wgrid.mode = step, state.mode or ""
+    wgrid.step, wgrid.mode, wgrid.bpm = step, state.mode or "", kbpm
     wgrid.n = 0
+
+    -- LES TEMPS DU FICHIER, pas ceux du projet. Reguliers par construction :
+    -- un fichier ne porte pas de carte de tempo, il porte UN tempo. Aucun
+    -- appel de TimeMap ici, donc — c'est a la fois plus juste et moins cher
+    -- que le chemin general.
+    local sb = (state.mode == "file") and srcBeat() or nil
+    if sb then
+        local ss = step * sb                      -- une division, en secondes de source
+        if ss <= 0 or (state.t1 - state.t0) / ss > WGRID_MAX then return end
+        local tsn = clipTsNum()
+        local bar = tsn * sb
+        local n = 0
+        local t = math.ceil(state.t0 / ss - 0.0001) * ss
+        while t <= state.t1 and n < WGRID_MAX do
+            n = n + 1
+            wgrid.xs[n] = xAtTime(t)
+            local inbar = t - math.floor(t / bar) * bar
+            wgrid.bar[n] = (inbar < 0.002 or inbar > bar - 0.002)
+            t = t + ss
+        end
+        wgrid.n = n
+        return
+    end
 
     local p0, rate, pos, soffs = srcToProj(state.t0)
     local p1 = srcToProj(state.t1)
