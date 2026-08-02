@@ -1614,6 +1614,28 @@ end
 -- ---------------------------------------------------------------------------
 -- Per-frame pump — the ONE call every host makes before reading anything
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- ⚠️ LE COMPTEUR D'ETAT DU PROJET EST PAR PROJET
+-- ---------------------------------------------------------------------------
+-- `GetProjectStateChangeCount(0)` compte les modifications DU PROJET DEVANT
+-- NOUS. Deux onglets ont donc deux compteurs qui avancent chacun de leur cote,
+-- et rien ne les relie : le projet B peut parfaitement se presenter avec le
+-- nombre que A venait d'afficher.
+--
+-- Le rafraichissement des destinations se comparait a ce seul nombre. Quand les
+-- deux coincidaient, un changement d'onglet ne rafraichissait RIEN : les
+-- colonnes restaient celles du projet precedent, pointant sur des pistes qui ne
+-- sont plus la, et la grille dessinait un projet par-dessus l'autre. Quand ils
+-- differaient, ca finissait par se remettre — au bout d'une demi-seconde, ce
+-- qui laissait juste le temps de rearmer les cases sur les pistes de l'ancien.
+-- C'est la meme faute que celle des identites (voir `Loop.RouterChanged`), et
+-- elle avait deja son avertissement ecrit trente lignes plus haut.
+--
+-- Un changement de projet ne se DEDUIT donc pas d'un compteur : il se CONSTATE,
+-- par le pointeur, et il vaut un rafraichissement immediat. Le delai d'une
+-- demi-seconde existe pour ne pas balayer les pistes a chaque frappe de
+-- clavier — pas pour retarder un changement d'onglet.
+local dest_proj = nil
 local dest_chg, dest_t = -1, 0
 
 -- L'ETAT D'UN CLIP APPARTIENT A CELUI QUI L'A LANCE, PAS AU TRANSPORT.
@@ -1667,8 +1689,15 @@ function Loop.Poll()
     snapshot()
     resolveLive()
     pollCapture()
-    local c = r.GetProjectStateChangeCount(0)
-    if c ~= dest_chg then
+    local pr = r.EnumProjects(-1)
+    local c  = r.GetProjectStateChangeCount(0)
+    if pr ~= dest_proj then
+        -- Le projet a change sous nous : voir l'en-tete au-dessus de dest_proj.
+        -- Immediat, et sans consommer le front de `RouterChanged` — celui-la
+        -- appartient a la fenetre, qui a bien plus a recharger que nous.
+        dest_proj, dest_chg, dest_t = pr, c, r.time_precise()
+        Loop.RefreshDests()
+    elseif c ~= dest_chg then
         local now = r.time_precise()
         if now - dest_t >= 0.5 then
             dest_chg, dest_t = c, now
