@@ -548,7 +548,10 @@ end
 local function setClipBars(bars)
     local c = state.clip
     if not c then return end
-    if bars < 1 then bars = 1 elseif bars > 32 then bars = 32 end
+    -- Le plancher est celui du MOTEUR (`lane_len_beats`), pas la mesure : une
+    -- case d'un quart de mesure fait sortir un coup quatre fois par mesure, sur
+    -- la grille, et c'est le seul moyen d'y arriver sans sortir de la grille.
+    if bars < 0.125 then bars = 0.125 elseif bars > 32 then bars = 32 end
     if bars == (c.bars or 4) then return end
     c.bars = bars
     state.len = bars * clipTsNum()
@@ -3019,8 +3022,9 @@ end
 -- Widget option tables, hoisted: built inline they would allocate per frame.
 -- `w` is a step on the bar's width ladder, not a pixel count — that is what
 -- keeps a dropdown the same width as the one three controls along.
-local BARS_ITEMS  = { "1 bar", "2 bars", "4 bars", "8 bars", "16 bars", "32 bars" }
-local BARS_VALS   = { 1, 2, 4, 8, 16, 32 }
+local BARS_ITEMS  = { "1/8 bar", "1/4 bar", "1/2 bar", "1 bar", "2 bars",
+                      "4 bars", "8 bars", "16 bars", "32 bars" }
+local BARS_VALS   = { 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32 }
 
 -- MIDI / clip bar. GRID and VIEW hold state, EDIT holds the two gestures used
 -- often enough to deserve a permanent home; everything rarer lives in the
@@ -3143,8 +3147,11 @@ local function barMidi(theme)
     -- here — so length and play/stop have to live here too.
     if state.mode == "clip" and state.clip then
         UI.BarSep()
-        local bars = math.floor((state.clip.bars or 4) + 0.5)
-        -- A combo, not two nudge buttons: six named lengths, and the wheel
+        -- ⚠️ PAS D'ARRONDI. Il ramenait un quart de mesure a zero puis a un :
+        -- la liste retombait sur « 1 bar » a chaque frame, donc une case plus
+        -- courte qu'une mesure ne pouvait pas exister ici.
+        local bars = state.clip.bars or 4
+        -- A combo, not two nudge buttons: named lengths, and the wheel
         -- walks them without opening anything.
         local bidx = 1
         for i = 1, #BARS_VALS do if BARS_VALS[i] == bars then bidx = i break end end
@@ -4068,10 +4075,41 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     end
     if in_vel and not state.mdrag then UI.SetCursor("vel") end
     if in_vel and Core_tk.MouseClicked(1) and Roll.count > 0 then
-        local best, best_d = nil, 6
+        -- QUELLE BARRE ON ATTRAPE quand plusieurs sont l'une SUR l'autre.
+        --
+        -- Elles sont dessinees a la MEME abscisse — c'est la meme note qui les
+        -- date — donc un accord empile ses barres au pixel pres, et « la plus
+        -- proche en X » revenait a prendre toujours la premiere du tableau,
+        -- c'est-a-dire la plus grave. Deux departages, dans cet ordre :
+        --
+        --  1. LA SELECTION GAGNE. Choisir une note puis regler sa valeur est le
+        --     geste meme ; que le clic reprenne une voisine le rend impossible.
+        --  2. Sinon, LA HAUTEUR DU DOIGT. Les barres empilees ont des sommets
+        --     differents — c'est ce qu'on voit — donc viser celui qu'on regarde
+        --     est la seule regle qui se devine sans qu'on l'explique.
+        local fdp = laneField()
+        local srcp = (fdp.id == "prob") and Roll.probs or Roll.vels
+        local vy0 = vy + LANE_HDR
+        local mind = 1e9
         for i = 1, Roll.count do
             local d = math.abs(xAtTime(Roll.starts[i]) - mx)
-            if d < best_d then best, best_d = i, d end
+            if d < mind then mind = d end
+        end
+        local best
+        if mind <= 6 then
+            local best_dy, best_sel = nil, false
+            for i = 1, Roll.count do
+                if math.abs(xAtTime(Roll.starts[i]) - mx) <= mind + 1 then
+                    local top = vy0 + VEL_H
+                                - ((srcp[i] or fdp.max) / fdp.max) * (VEL_H - 4)
+                    local dy  = math.abs(top - my)
+                    local sel = Roll.IsSel(i)
+                    if (not best) or (sel and not best_sel)
+                       or (sel == best_sel and dy < best_dy) then
+                        best, best_dy, best_sel = i, dy, sel
+                    end
+                end
+            end
         end
         if best then
             if not Roll.IsSel(best) then Roll.SelectOnly(best) end
@@ -4556,20 +4594,28 @@ local function drawRoll(theme, area_h)
         local src = (fd.id == "prob") and Roll.probs or Roll.vels
         local fmax = fd.max
         local ly, lh = vy + LANE_HDR, VEL_H
-        for i = 1, Roll.count do
-            local t0n = Roll.starts[i]
-            if t0n >= state.t0 and t0n <= state.t1 then
-                local x = math.floor(xAtTime(t0n))   -- same lattice as the note
-                local bh = ((src[i] or fmax) / fmax) * (lh - 4)
+        -- DEUX PASSES, LES CHOISIES EN DERNIER. Les barres d'un accord tombent
+        -- a la MEME abscisse : dessiner dans l'ordre du tableau cache celle
+        -- qu'on vient de choisir derriere une voisine plus haute, donc on ne
+        -- voit pas ce qu'on s'apprete a regler. Et elle est plus large de deux
+        -- pixels, pour se distinguer meme a valeur egale.
+        for pass = 1, 2 do
+            for i = 1, Roll.count do
+                local t0n = Roll.starts[i]
                 local sel = Roll.IsSel(i)
-                -- LA BARRE PORTE LA COULEUR DE SA NOTE : c'est la meme note, et
-                -- deux couleurs pour un seul objet obligent a chercher laquelle
-                -- appartient a laquelle.
-                local nr, ng, nb
-                if sel then nr, ng, nb = col_sel[1], col_sel[2], col_sel[3]
-                else nr, ng, nb = noteRGBA(i, col_acc) end
-                Core_tk.DrawRect(x, ly + lh - bh, 3, bh,
-                                 nr, ng, nb, sel and 1 or 0.85)
+                if ((sel and pass == 2) or ((not sel) and pass == 1))
+                   and t0n >= state.t0 and t0n <= state.t1 then
+                    local x = math.floor(xAtTime(t0n))   -- same lattice as the note
+                    local bh = ((src[i] or fmax) / fmax) * (lh - 4)
+                    -- LA BARRE PORTE LA COULEUR DE SA NOTE : c'est la meme note,
+                    -- et deux couleurs pour un seul objet obligent a chercher
+                    -- laquelle appartient a laquelle.
+                    local nr, ng, nb
+                    if sel then nr, ng, nb = col_sel[1], col_sel[2], col_sel[3]
+                    else nr, ng, nb = noteRGBA(i, col_acc) end
+                    Core_tk.DrawRect(x, ly + lh - bh, sel and 5 or 3, bh,
+                                     nr, ng, nb, sel and 1 or 0.85)
+                end
             end
         end
     end
@@ -4924,9 +4970,12 @@ local function frame(theme)
             end
             -- the lane's length can also change from the Looper's own
             -- button: follow it, or the roll would draw the wrong canvas
-            local lb = math.floor(Loop.GetLengthBars(state.clip_lane) + 0.5)
-            if lb >= 1 and state.clip
-               and lb ~= math.floor((state.clip.bars or 4) + 0.5) then
+            -- Ni arrondi ni plancher a la mesure ici non plus : la lane peut
+            -- porter un quart de mesure, et l'arrondir remettait la case a une
+            -- mesure a chaque frame — le reglage se defaisait tout seul.
+            local lb = Loop.GetLengthBars(state.clip_lane)
+            if lb >= 0.125 and state.clip
+               and math.abs(lb - (state.clip.bars or 4)) > 1e-6 then
                 state.clip.bars = lb
                 state.len = lb * clipTsNum()
                 fitView()
