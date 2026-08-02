@@ -61,7 +61,7 @@ Roll.init(r)
 Tracks.init(r)
 Kit.init(r, Tracks)
 Audition.init(r)
-Keymap.init(r, UI.Core)
+Keymap.init(r, UI.Core, UI.Keys)
 Insert.init(r)
 DragBus.init(r)
 Ident.init(r, Clip)
@@ -1368,6 +1368,30 @@ local function openSettings()
         -- d'un taux de lecture, d'une source sans fichier.
         { label = "Engine: " .. previewEngineLabel(), disabled = true },
         { separator = true },
+        -- LA CARTE DES GESTES, EN CLAIR. REAPER a eu reaper-kb.ini bien avant
+        -- d'avoir une fenetre pour le remplir, et c'est le bon ordre : un
+        -- fichier qu'on peut lire ET modifier vaut deja l'essentiel. Celui-ci
+        -- s'ecrit complet, chaque action commentee de son libelle, et se relit
+        -- sans fermer la fenetre.
+        { label = "Keyboard & mouse", children = {
+            { label = "Write the current map to CP_Config/CP_Keymap.lua",
+              action = function()
+                  local ok, path = Keymap.Export(KM)
+                  flash(ok and ("Written: " .. tostring(path))
+                        or ("Could not write: " .. tostring(path)))
+              end },
+            { label = "Reload it (after editing the file)",
+              action = function()
+                  Keymap.Reload(KM)
+                  flash("Keymap reloaded")
+              end },
+            { label = "Back to the defaults",
+              action = function()
+                  Keymap.Reset(KM)
+                  flash("Keymap back to defaults (the file still exists)")
+              end },
+        } },
+        { separator = true },
         -- The rule that says what a time selection MEANS to playback when the
         -- loop is off. With the loop on it loops; with this on it stops there;
         -- with both off the selection is only a range you act on, and the
@@ -2500,6 +2524,10 @@ end
 -- take, beats for a clip — the rollToQN/qnToRoll pair hides which.
 local midiCtx = {
     Roll = Roll, Keys = Keys,
+    -- Declarer le vocabulaire fait passer RollUI par Keymap ; sans ces deux
+    -- champs il retombe sur sa table historique, ce qui est exactement ce dont
+    -- CP_Looper a besoin tant qu'il n'a pas declare la sienne.
+    Keymap = Keymap, keymap = KM,
     Shift = Core_tk.ModShift, Ctrl = Core_tk.ModCtrl, Alt = Core_tk.ModAlt,
     flash = flash,
     audition = function(p, v) auditionNote(p, v) end,
@@ -3043,6 +3071,78 @@ local KEYMAP_ROWS = {
       label = "Select the notes inside the time selection" },
     { act = "ruler.clear_ts",      group = "Ruler", ctx = "ruler", g = "click", mods = "Alt",
       label = "Clear the time selection" },
+    -- ----- le clavier -------------------------------------------------------
+    -- LES CODES SONT CEUX QUE `gfx.getchar` REND, pas ceux qu'on deduirait :
+    -- Ctrl+A arrive en 1, et la ponctuation se deplace selon la disposition du
+    -- clavier. Une deduction serait fausse precisement sur les claviers qui ne
+    -- sont pas le notre.
+    { act = "play.cursor",   group = "Transport", k = Keys.SPACE, mods = "",
+      label = "Play from the edit cursor" },
+    { act = "play.sel",      group = "Transport", k = Keys.SPACE, mods = "Shift",
+      label = "Play the time selection" },
+    { act = "play.start",    group = "Transport", k = Keys.SPACE, mods = "Ctrl+Shift",
+      label = "Play from the start of the material" },
+    { act = "view.fit",      group = "View", k = Keys.HOME, mods = "",
+      label = "Fit the view" },
+    { act = "view.zoom_in",  group = "View", k = 43, mods = "",
+      label = "Zoom in" },
+    { act = "view.zoom_out", group = "View", k = 45, mods = "",
+      label = "Zoom out" },
+    { act = "audio.clear_sel", group = "Audio", k = Keys.ESCAPE, mods = "",
+      label = "Clear the time selection (audio)" },
+    { act = "audio.mark_add",  group = "Audio", k = 109, mods = "",
+      label = "Add a transient at the cursor" },
+    { act = "audio.mark_del",  group = "Audio", k = Keys.DELETE, mods = "",
+      label = "Remove the transient under the cursor" },
+    { act = "edit.undo",     group = "Edit", k = 26, mods = "Ctrl",
+      label = "Undo" },
+    { act = "edit.redo",     group = "Edit", k = 25, mods = "Ctrl",
+      label = "Redo" },
+    { act = "sel.all",       group = "Edit", k = 1,  mods = "Ctrl",
+      label = "Select all notes" },
+    { act = "edit.duplicate",group = "Edit", k = 4,  mods = "Ctrl",
+      label = "Duplicate" },
+    { act = "edit.copy",     group = "Edit", k = 3,  mods = "Ctrl", label = "Copy" },
+    { act = "edit.cut",      group = "Edit", k = 24, mods = "Ctrl", label = "Cut" },
+    { act = "edit.paste",    group = "Edit", k = 22, mods = "Ctrl", label = "Paste" },
+    { act = "edit.delete",   group = "Edit", k = Keys.DELETE, mods = "",
+      label = "Delete the selection" },
+    { act = "edit.quantize", group = "Edit", k = 113, mods = "",
+      label = "Quantize" },
+    { act = "sel.clear",     group = "Edit", k = Keys.ESCAPE, mods = "",
+      label = "Deselect" },
+    { act = "note.transpose_up",   group = "Notes", k = Keys.UP,   mods = "",
+      label = "Transpose +1 semitone" },
+    { act = "note.transpose_down", group = "Notes", k = Keys.DOWN, mods = "",
+      label = "Transpose -1 semitone" },
+    { act = "note.octave_up",      group = "Notes", k = Keys.UP,   mods = "Shift",
+      label = "Transpose +1 octave" },
+    { act = "note.octave_down",    group = "Notes", k = Keys.DOWN, mods = "Shift",
+      label = "Transpose -1 octave" },
+    { act = "note.scale_up",       group = "Notes", k = Keys.UP,   mods = "Ctrl",
+      label = "Transpose one scale step up" },
+    { act = "note.scale_down",     group = "Notes", k = Keys.DOWN, mods = "Ctrl",
+      label = "Transpose one scale step down" },
+    { act = "note.nudge_left",     group = "Notes", k = Keys.LEFT,  mods = "",
+      label = "Nudge one grid step left" },
+    { act = "note.nudge_right",    group = "Notes", k = Keys.RIGHT, mods = "",
+      label = "Nudge one grid step right" },
+    { act = "walk.prev_row",     group = "Walk", k = Keys.LEFT,  mods = "Alt",
+      label = "Previous note in the row" },
+    { act = "walk.next_row",     group = "Walk", k = Keys.RIGHT, mods = "Alt",
+      label = "Next note in the row" },
+    { act = "walk.prev",         group = "Walk", k = Keys.UP,    mods = "Alt",
+      label = "Previous note in time" },
+    { act = "walk.next",         group = "Walk", k = Keys.DOWN,  mods = "Alt",
+      label = "Next note in time" },
+    { act = "walk.ext_prev_row", group = "Walk", k = Keys.LEFT,  mods = "Shift+Alt",
+      label = "Extend to the previous note in the row" },
+    { act = "walk.ext_next_row", group = "Walk", k = Keys.RIGHT, mods = "Shift+Alt",
+      label = "Extend to the next note in the row" },
+    { act = "walk.ext_prev",     group = "Walk", k = Keys.UP,    mods = "Shift+Alt",
+      label = "Extend to the previous note in time" },
+    { act = "walk.ext_next",     group = "Walk", k = Keys.DOWN,  mods = "Shift+Alt",
+      label = "Extend to the next note in time" },
 }
 Keymap.Register(KM, KEYMAP_ROWS)
 
@@ -3965,31 +4065,40 @@ local function handleKeys()
     -- corruption). Mirrors the pollTarget mid-drag Sync guard.
     local midi_edit = midi and not state.mdrag
 
-    -- host navigation (all modes)
-    -- REAPER's three starts, on REAPER's three keys: the edit cursor, the
-    -- start of the time selection, the start of the material.
-    if char == Keys.SPACE then
-        local sh, ct = Core_tk.ModShift(), Core_tk.ModCtrl()
-        togglePlay((ct and sh) and "start" or (sh and "sel") or "cursor")
+    -- UNE SEULE QUESTION POSEE A LA TOUCHE : quelle action ? Ce qui vient
+    -- ensuite ne teste plus jamais un code — donc changer une liaison ne
+    -- demande de toucher a aucune de ces lignes, ce qui est tout l'objet du
+    -- tableau.
+    local a = Keymap.Key(KM, char)
+    if not a then return end
+
+    -- ----- ce qui vaut dans tous les modes ---------------------------------
+    if a == "play.cursor" or a == "play.sel" or a == "play.start" then
+        togglePlay(a == "play.start" and "start"
+                   or (a == "play.sel" and "sel") or "cursor")
         UI.ConsumeChar(); return
     end
-    if char == Keys.HOME then fitView(); UI.ConsumeChar(); return end
-    if char == 43 then zoomAt(wave.x + wave.w / 2, 1 / 1.5); UI.ConsumeChar(); return end
-    if char == 45 then zoomAt(wave.x + wave.w / 2, 1.5); UI.ConsumeChar(); return end
-    if char == Keys.ESCAPE and not midi and state.sel_a then
-        state.sel_a, state.sel_b = nil, nil; UI.ConsumeChar(); return
+    if a == "view.fit" then fitView(); UI.ConsumeChar(); return end
+    if a == "view.zoom_in" then
+        zoomAt(wave.x + wave.w / 2, 1 / 1.5); UI.ConsumeChar(); return
+    end
+    if a == "view.zoom_out" then
+        zoomAt(wave.x + wave.w / 2, 1.5); UI.ConsumeChar(); return
     end
 
-    -- Audio: transients as objects. M puts one on the edit cursor — exact, and
-    -- it works while the sample is playing, which a click never is. Delete
-    -- removes the one under the cursor. (The mouse has the other two: Ctrl+
-    -- click adds where you point, Alt+click on a flag removes it.)
-    if not midi and state.src then
-        if char == 109 or char == 77 then          -- m / M
+    -- ----- l'audio : les transitoires comme des objets ----------------------
+    -- M en pose un sur le curseur d'edition — exact, et ca marche PENDANT que
+    -- le son joue, ce qu'un clic n'est jamais.
+    if not midi then
+        if a == "audio.clear_sel" and state.sel_a then
+            state.sel_a, state.sel_b = nil, nil; UI.ConsumeChar(); return
+        end
+        if state.src and a == "audio.mark_add" then
             if markerAdd(state.cursor) then flash("Transient added") end
             UI.ConsumeChar(); return
         end
-        if char == Keys.DELETE and #state.markers > 0 and wave.w > 0 then
+        if state.src and a == "audio.mark_del"
+           and #state.markers > 0 and wave.w > 0 then
             local i = markerAt(state.cursor, 5 * span() / wave.w)
             if i then
                 table.remove(state.markers, i)
@@ -3997,45 +4106,36 @@ local function handleKeys()
                 UI.ConsumeChar(); return
             end
         end
+        return
     end
 
     if not midi_edit then return end
 
-    -- in-editor undo / redo. Un take passe par l'annulation de REAPER ; une
-    -- case a la sienne, parce qu'elle vit dehors (pas d'item a retenir). pollTarget re-validates + re-syncs
-    -- the roll next frame, so don't touch it here.
-    if state.mode == "midi" then
-        if char == 26 then r.Undo_DoUndo2(0); UI.ConsumeChar(); return end   -- Ctrl+Z
-        if char == 25 then r.Undo_DoRedo2(0); UI.ConsumeChar(); return end   -- Ctrl+Y
-    elseif state.mode == "clip" and state.clip then
-        -- UNE CASE A SON PROPRE HISTORIQUE, parce qu'elle vit hors de celui de
-        -- REAPER : pas d'item, donc rien que Undo_OnStateChange puisse
-        -- retenir. Ctrl+Z n'est plus reserve au mode take, et un Quantize dans
-        -- une case cesse d'etre definitif.
-        if char == 26 then
-            if histUndo(state.clip) then
+    -- ----- l'annulation, qui n'appartient pas au meme historique ------------
+    -- Un take passe par celle de REAPER ; une case a la sienne, parce qu'elle
+    -- vit dehors — pas d'item, donc rien que Undo_OnStateChange puisse retenir.
+    if a == "edit.undo" or a == "edit.redo" then
+        local undo = (a == "edit.undo")
+        if state.mode == "midi" then
+            if undo then r.Undo_DoUndo2(0) else r.Undo_DoRedo2(0) end
+            UI.ConsumeChar(); return
+        elseif state.clip then
+            local ok = undo and histUndo(state.clip) or histRedo(state.clip)
+            if ok then
                 Roll.ClearSel()
                 Roll.Sync()
                 scheduleApply()
-                flash("Undo")
-            else
+                flash(undo and "Undo" or "Redo")
+            elseif undo then
                 flash("Nothing to undo in this cell")
             end
             UI.ConsumeChar(); return
         end
-        if char == 25 then
-            if histRedo(state.clip) then
-                Roll.ClearSel()
-                Roll.Sync()
-                scheduleApply()
-                flash("Redo")
-            end
-            UI.ConsumeChar(); return
-        end
+        return
     end
 
-    -- shared note-editing commands (identical keyboard map in CP_Looper)
-    if RollUI.HandleKey(char, midiCtx) then
+    -- ----- les notes : une seule mise en oeuvre, partagee avec CP_Looper -----
+    if RollUI.Do(a, midiCtx) then
         state.row_hi = nil
         UI.ConsumeChar()
     end

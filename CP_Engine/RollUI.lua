@@ -120,94 +120,167 @@ local function doDuplicate(ctx)
 end
 
 -- ---------------------------------------------------------------------------
--- Keyboard map (note-editing commands only; the host keeps play/zoom/undo/home)
--- Returns true when it consumed the key.
+-- Clavier — la touche devient une ACTION, et l'action seule est executee
+--
+-- DEUX ENTREES, UNE SEULE MISE EN OEUVRE. Un hote qui a declare son
+-- vocabulaire (`ctx.keymap`) fait resoudre la touche par CP_Engine/Keymap, donc
+-- ses raccourcis sont configurables ; un hote qui n'en a pas declare passe par
+-- la table historique ci-dessous et ne change pas d'un poil. Ce qui compte est
+-- que le CORPS des actions ne soit ecrit qu'une fois : dupliquer la mise en
+-- oeuvre « pour ne pas casser l'autre fenetre » est exactement la facon dont
+-- deux editeurs finissent par ne plus se comporter pareil.
+--
+-- Renvoie true quand la touche a ete consommee.
 -- ---------------------------------------------------------------------------
-function RollUI.HandleKey(char, ctx)
-    local Roll, Keys = ctx.Roll, ctx.Keys
-    if not Roll.backend then return false end
-    local shift = ctx.Shift and ctx.Shift()
-    local ctrl  = ctx.Ctrl and ctx.Ctrl()
-    local alt   = ctx.Alt and ctx.Alt()
+
+-- La table historique, telle qu'elle etait — devenue une simple traduction
+-- (touche, modificateurs) → nom d'action.
+local function legacyAct(char, Keys, shift, ctrl, alt)
+    if alt and (char == Keys.LEFT or char == Keys.RIGHT
+                or char == Keys.UP or char == Keys.DOWN) then
+        if char == Keys.LEFT  then return shift and "walk.ext_prev_row" or "walk.prev_row" end
+        if char == Keys.RIGHT then return shift and "walk.ext_next_row" or "walk.next_row" end
+        if char == Keys.UP    then return shift and "walk.ext_prev" or "walk.prev" end
+        return shift and "walk.ext_next" or "walk.next"
+    end
+    if char == 1  then return "sel.all" end
+    if char == 4  then return "edit.duplicate" end
+    if char == 3  then return "edit.copy" end
+    if char == 24 then return "edit.cut" end
+    if char == 22 then return "edit.paste" end
+    if char == Keys.DELETE then return "edit.delete" end
+    if char == 113 or char == 81 then return "edit.quantize" end
+    if char == Keys.ESCAPE then return "sel.clear" end
+    if char == Keys.UP or char == Keys.DOWN then
+        local up = (char == Keys.UP)
+        if ctrl  then return up and "note.scale_up"  or "note.scale_down" end
+        if shift then return up and "note.octave_up" or "note.octave_down" end
+        return up and "note.transpose_up" or "note.transpose_down"
+    end
+    if char == Keys.LEFT  then return "note.nudge_left" end
+    if char == Keys.RIGHT then return "note.nudge_right" end
+    return nil
+end
+
+-- LA MARCHE DE NOTE EN NOTE. Une passe O(n) par frappe, sans tri, qui reboucle
+-- aux extremites. La note atteinte s'auditionne, donc on peut ecouter une
+-- phrase en la parcourant.
+local function walk(ctx, fwd, row_only, extend)
+    local Roll = ctx.Roll
+    if Roll.count == 0 then return true end
+    local anchor = Roll.sel
+    local as = anchor and Roll.starts[anchor]
+    local ap = anchor and Roll.pitches[anchor]
+    local rowOnly = (row_only and anchor) and ap or nil
+    local function lt(s1, p1, s2, p2)          -- ordre lexical (depart, hauteur)
+        return s1 < s2 or (s1 == s2 and p1 < p2)
+    end
+    local best, ext                            -- la suivante, et le bout ou boucler
+    for i = 1, Roll.count do
+        if i ~= anchor and (not rowOnly or Roll.pitches[i] == rowOnly) then
+            local sp, pp = Roll.starts[i], Roll.pitches[i]
+            local ok
+            if not anchor then ok = true
+            elseif fwd then ok = lt(as, ap, sp, pp)
+            else ok = lt(sp, pp, as, ap) end
+            if ok and (not best
+                       or (fwd and lt(sp, pp, Roll.starts[best], Roll.pitches[best]))
+                       or (not fwd and lt(Roll.starts[best], Roll.pitches[best], sp, pp))) then
+                best = i
+            end
+            if not ext
+               or (fwd and lt(sp, pp, Roll.starts[ext], Roll.pitches[ext]))
+               or (not fwd and lt(Roll.starts[ext], Roll.pitches[ext], sp, pp)) then
+                ext = i
+            end
+        end
+    end
+    local tgt = best or ext
+    if tgt then
+        if extend and anchor then Roll.AddSel(tgt) else Roll.SelectOnly(tgt) end
+        if ctx.audition then ctx.audition(Roll.pitches[tgt], Roll.vels[tgt]) end
+    end
+    return true
+end
+
+-- Le corps des actions. Ecrit une fois, atteint par les deux entrees.
+function RollUI.Do(act, ctx)
+    local Roll = ctx.Roll
+    if not act or not Roll.backend then return false end
     local function flash(m) if ctx.flash then ctx.flash(m) end end
     local ref = (Roll.sel and Roll.starts[Roll.sel]) or 0
 
-    -- Keyboard note-navigation (the "focus walk"): Alt+←/→ walks the notes
-    -- of the anchor's pitch row (drum-row friendly), Alt+↑/↓ walks all notes
-    -- in time order; Shift+Alt extends the selection instead of replacing
-    -- it. One O(n) pass per keypress, no sort, wraps at the ends. The
-    -- focused note auditions, so you can hear a phrase by walking it.
-    if alt and Roll.count > 0
-       and (char == Keys.LEFT or char == Keys.RIGHT
-            or char == Keys.UP or char == Keys.DOWN) then
-        local anchor = Roll.sel
-        local as = anchor and Roll.starts[anchor]
-        local ap = anchor and Roll.pitches[anchor]
-        local fwd = (char == Keys.RIGHT or char == Keys.DOWN)
-        local rowOnly = anchor and (char == Keys.LEFT or char == Keys.RIGHT)
-                        and ap or nil
-        local function lt(s1, p1, s2, p2)          -- (start, pitch) lex order
-            return s1 < s2 or (s1 == s2 and p1 < p2)
-        end
-        local best, ext                            -- next note, and wrap end
-        for i = 1, Roll.count do
-            if i ~= anchor and (not rowOnly or Roll.pitches[i] == rowOnly) then
-                local s, p = Roll.starts[i], Roll.pitches[i]
-                local ok
-                if not anchor then ok = true
-                elseif fwd then ok = lt(as, ap, s, p)
-                else ok = lt(s, p, as, ap) end
-                if ok and (not best
-                           or (fwd and lt(s, p, Roll.starts[best], Roll.pitches[best]))
-                           or (not fwd and lt(Roll.starts[best], Roll.pitches[best], s, p))) then
-                    best = i
-                end
-                if not ext
-                   or (fwd and lt(s, p, Roll.starts[ext], Roll.pitches[ext]))
-                   or (not fwd and lt(Roll.starts[ext], Roll.pitches[ext], s, p)) then
-                    ext = i
-                end
-            end
-        end
-        local tgt = best or ext                    -- ext = wrap around the end
-        if tgt then
-            if shift and anchor then Roll.AddSel(tgt)
-            else Roll.SelectOnly(tgt) end
-            if ctx.audition then ctx.audition(Roll.pitches[tgt], Roll.vels[tgt]) end
-        end
-        return true
-    end
+    if act == "walk.prev_row"     then return walk(ctx, false, true,  false) end
+    if act == "walk.next_row"     then return walk(ctx, true,  true,  false) end
+    if act == "walk.prev"         then return walk(ctx, false, false, false) end
+    if act == "walk.next"         then return walk(ctx, true,  false, false) end
+    if act == "walk.ext_prev_row" then return walk(ctx, false, true,  true) end
+    if act == "walk.ext_next_row" then return walk(ctx, true,  true,  true) end
+    if act == "walk.ext_prev"     then return walk(ctx, false, false, true) end
+    if act == "walk.ext_next"     then return walk(ctx, true,  false, true) end
 
-    if char == 1 then                                   -- Ctrl+A: select all
-        Roll.SelectAll(); return true
-    elseif char == 4 then                               -- Ctrl+D: duplicate
-        flash(doDuplicate(ctx)); return true
-    elseif char == 3 then                               -- Ctrl+C: copy
-        local n = Roll.Copy(); flash(n .. " copied"); return true
-    elseif char == 24 then                              -- Ctrl+X: cut
-        local n = Roll.Cut(); flash(n .. " cut"); return true
-    elseif char == 22 then                              -- Ctrl+V: paste
+    if act == "sel.all" then Roll.SelectAll() return true end
+    if act == "sel.invert" then Roll.SelectInvert() return true end
+    if act == "sel.clear" then
+        if Roll.seln == 0 then return false end
+        Roll.ClearSel() return true
+    end
+    if act == "edit.duplicate" then flash(doDuplicate(ctx)) return true end
+    if act == "edit.copy"  then flash(Roll.Copy() .. " copied") return true end
+    if act == "edit.cut"   then flash(Roll.Cut() .. " cut") return true end
+    if act == "edit.paste" then
         local at = ctx.pasteAt and ctx.pasteAt() or ref
-        local n = Roll.Paste(at); flash(n .. " pasted"); return true
-    elseif char == Keys.DELETE and Roll.seln > 0 then   -- delete selection
+        flash(Roll.Paste(at) .. " pasted") return true
+    end
+    if act == "edit.delete" then
+        if Roll.seln == 0 then return false end
         if Roll.seln > 1 then Roll.DeleteSel() else Roll.Delete(Roll.sel) end
         return true
-    elseif char == 113 or char == 81 then               -- q / Q: quantize
-        local n = Roll.Quantize(ctx.snap); flash(n .. " quantized"); return true
-    elseif char == Keys.ESCAPE and Roll.seln > 0 then   -- deselect
-        Roll.ClearSel(); return true
-    elseif Roll.seln > 0 and (char == Keys.UP or char == Keys.DOWN) then
-        local dir = (char == Keys.UP) and 1 or -1
-        if ctrl and Roll.scale_on then Roll.TransposeInScale(dir)
-        elseif shift then Roll.Transpose(dir * 12)
-        else Roll.Transpose(dir) end
-        if ctx.audition and Roll.sel then ctx.audition(Roll.pitches[Roll.sel], Roll.vels[Roll.sel]) end
-        return true
-    elseif Roll.seln > 0 and (char == Keys.LEFT or char == Keys.RIGHT) then
-        local dir = (char == Keys.RIGHT) and 1 or -1
-        Roll.Nudge(dir * ctx.gridStep(ref)); return true
     end
+    if act == "edit.quantize" then
+        flash(Roll.Quantize(ctx.snap) .. " quantized") return true
+    end
+    if act == "edit.legato" then flash(Roll.Legato(0) .. " legato") return true end
+
+    local function transpose(d, in_scale)
+        if Roll.seln == 0 then return false end
+        if in_scale and Roll.scale_on then Roll.TransposeInScale(d)
+        else Roll.Transpose(d) end
+        if ctx.audition and Roll.sel then
+            ctx.audition(Roll.pitches[Roll.sel], Roll.vels[Roll.sel])
+        end
+        return true
+    end
+    if act == "note.transpose_up"   then return transpose(1) end
+    if act == "note.transpose_down" then return transpose(-1) end
+    if act == "note.octave_up"      then return transpose(12) end
+    if act == "note.octave_down"    then return transpose(-12) end
+    if act == "note.scale_up"       then return transpose(1, true) end
+    if act == "note.scale_down"     then return transpose(-1, true) end
+
+    if act == "note.nudge_left" or act == "note.nudge_right" then
+        if Roll.seln == 0 then return false end
+        local dir = (act == "note.nudge_right") and 1 or -1
+        Roll.Nudge(dir * ctx.gridStep(ref))
+        return true
+    end
+    if act == "note.len_double" then Roll.ScaleLen(2) return true end
+    if act == "note.len_halve"  then Roll.ScaleLen(0.5) return true end
     return false
+end
+
+function RollUI.HandleKey(char, ctx)
+    local Roll, Keys = ctx.Roll, ctx.Keys
+    if not Roll.backend then return false end
+    local act
+    if ctx.keymap and ctx.Keymap then
+        act = ctx.Keymap.Key(ctx.keymap, char)
+    else
+        act = legacyAct(char, Keys,
+                        ctx.Shift and ctx.Shift(), ctx.Ctrl and ctx.Ctrl(),
+                        ctx.Alt and ctx.Alt())
+    end
+    return RollUI.Do(act, ctx) and true or false
 end
 
 -- ---------------------------------------------------------------------------

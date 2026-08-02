@@ -101,12 +101,29 @@ end
 -- reste le CODE. Une table de noms qui se tromperait n'abimerait donc rien
 -- d'autre qu'une etiquette, ce qui est exactement le niveau de confiance qu'on
 -- peut accorder a une correspondance code → nom sur un clavier inconnu.
-local KEY_NAMES = {
-    [8] = "Backspace", [9] = "Tab", [13] = "Enter", [27] = "Esc", [32] = "Space",
-    [6579564] = "Delete", [6579567] = "Down", [6579565] = "End", [6582632] = "Home",
-    [6909555] = "Insert", [1818584692] = "Left", [1919379572] = "Right",
-    [30064] = "PageUp", [1885828464] = "PageDown", [30362] = "Up",
-}
+-- LES CODES VIENNENT DE CP_Toolkit/Keys, PAS D'ICI. Une seconde table de
+-- constantes recopiees a la main est une table qui finira par diverger, et on
+-- ne s'en apercevrait que sur la touche qu'on n'a pas testee. L'hote passe la
+-- sienne a l'init ; en son absence on n'affiche que « #code », ce qui est laid
+-- mais jamais faux.
+local KEY_NAMES = {}
+local function buildNames(Keys)
+    if type(Keys) ~= "table" then return end
+    local pretty = {
+        BACKSPACE = "Backspace", TAB = "Tab", ENTER = "Enter",
+        ESCAPE = "Esc", SPACE = "Space", DELETE = "Delete",
+        INSERT = "Insert", HOME = "Home", END = "End",
+        PAGE_UP = "PageUp", PAGE_DOWN = "PageDown",
+        UP = "Up", DOWN = "Down", LEFT = "Left", RIGHT = "Right",
+    }
+    for k, label in pairs(pretty) do
+        if type(Keys[k]) == "number" then KEY_NAMES[Keys[k]] = label end
+    end
+    for i = 1, 12 do
+        local v = Keys["F" .. i]
+        if type(v) == "number" then KEY_NAMES[v] = "F" .. i end
+    end
+end
 
 function Keymap.KeyLabel(k, mask)
     if not k then return "—" end
@@ -223,13 +240,29 @@ end
 
 -- L'action liee a cette touche. Le code ET le masque viennent de la machine :
 -- on ne reconstruit ni l'un ni l'autre.
+-- SUR UN CARACTERE IMPRIMABLE, SHIFT EST DEJA DANS LE CODE.
+--
+-- Le piege coute une touche entiere et ne se voit pas a la relecture : sur un
+-- clavier francais, « + » se tape Shift+=. `gfx.getchar` rend donc 43 AVEC le
+-- bit Shift leve, et une liaison declaree « 43, aucun modificateur » ne
+-- correspond jamais. On tente donc l'accord exact d'abord — pour que
+-- Shift+Fleche reste distinct de Fleche — puis, pour les caracteres
+-- imprimables SEULEMENT, le meme code sans Shift. Les touches non imprimables
+-- (fleches, Suppr, Espace) ne beneficient pas du repli : la, Shift veut dire
+-- quelque chose.
 function Keymap.Key(name, char, mask)
     local m = mods_reg[name]
     if not m or not char then return nil end
     if m.dirty then reindex(m) end
     local kk = m.keys[char]
     if not kk then return nil end
-    return kk[mask or Keymap.Mods()]
+    mask = mask or Keymap.Mods()
+    local a = kk[mask]
+    if a then return a end
+    if char > 32 and char < 127 and (mask & 2) ~= 0 then
+        return kk[mask & ~2]
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -332,11 +365,34 @@ function Keymap.ApplyOverrides(name)
     if type(s) ~= "table" then m.dirty = true return end
     for act, v in pairs(s) do
         if m.by_act[act] and type(v) == "table" then
-            m.bind[act] = { ctx = v.ctx, g = v.g, k = v.k,
-                            mods = v.mods or 0 }
+            -- Le fichier ecrit « Ctrl+Shift » parce qu'il se relit ; la table
+            -- travaille en masque. Les deux entrent.
+            local mask = type(v.mods) == "number" and v.mods
+                         or Keymap.ParseMods(v.mods)
+            m.bind[act] = { ctx = (v.ctx ~= "" and v.ctx) or nil,
+                            g = (v.g ~= "" and v.g) or nil,
+                            k = v.k, mods = mask }
         end
     end
     m.dirty = true
+end
+
+-- RELIRE LE FICHIER SANS RELANCER LE SCRIPT. C'est la moitie du confort d'un
+-- fichier de configuration : on l'ouvre a cote, on change une ligne, on relit.
+-- Sans ca il faut fermer et rouvrir la fenetre a chaque essai, et personne ne
+-- fait trois essais dans ces conditions.
+function Keymap.Reload(name)
+    store = nil
+    if name then
+        Keymap.Reset(name)
+        Keymap.ApplyOverrides(name)
+        return true
+    end
+    for n in pairs(mods_reg) do
+        Keymap.Reset(n)
+        Keymap.ApplyOverrides(n)
+    end
+    return true
 end
 
 function Keymap.Save(name)
@@ -355,9 +411,68 @@ function Keymap.Save(name)
     return Core.SaveConfig(CONFIG_ID, s) and true or false
 end
 
-function Keymap.init(reaper_api, core)
+-- ---------------------------------------------------------------------------
+-- LA CARTE, ECRITE EN CLAIR — la premiere forme de « configurable »
+-- ---------------------------------------------------------------------------
+-- REAPER a reaper-kb.ini bien avant d'avoir une fenetre pour le remplir, et
+-- c'est le bon ordre : un fichier qu'on peut lire ET modifier vaut deja
+-- l'essentiel, alors qu'une fenetre sur des liaisons qui n'existent pas ne vaut
+-- rien. Celui-ci s'ecrit avec la carte COMPLETE, chaque action commentee de son
+-- libelle, et se relit tel quel au demarrage.
+--
+-- SEULS LES MODIFICATEURS SE CHANGENT SUR UN GESTE DE SOURIS. La zone et le
+-- geste sont la NATURE de l'action — « effacer une note » se fait sur une note
+-- et au clic, sinon c'est une autre action — et REAPER lui-meme ne permet pas
+-- de les deplacer. Sur une touche, le code ET les modificateurs se changent.
+function Keymap.Export(name)
+    local m = mods_reg[name]
+    if not m then return false, "unknown module" end
+    if m.dirty then reindex(m) end
+    local out = {}
+    local function w(l) out[#out + 1] = l end
+    w("-- CP_Keymap — la carte des raccourcis et des modificateurs de CP_Scripts")
+    w("--")
+    w("-- Se modifie a la main. `mods` accepte \"Ctrl\", \"Shift\", \"Alt\", \"Win\",")
+    w("-- separes par un +, ou une chaine vide pour aucun. `k` est le code que")
+    w("-- gfx.getchar rend REELLEMENT (Ctrl+A arrive en 1) ; `ctx` et `g` sont la")
+    w("-- nature du geste et ne se changent pas utilement.")
+    w("--")
+    w("-- Effacer une ligne rend son defaut a l'action. Effacer le fichier rend")
+    w("-- tous les defauts.")
+    w("return {")
+    w("  [\"" .. name .. "\"] = {")
+    local group
+    for i = 1, #m.rows do
+        local row = m.rows[i]
+        local b = m.bind[row.act]
+        if row.group ~= group then
+            group = row.group
+            w("")
+            w("    -- ----- " .. tostring(group) .. " -----")
+        end
+        local slot
+        if b.k then
+            slot = string.format("k = %d, mods = %q", b.k, Keymap.ModsLabel(b.mods))
+        else
+            slot = string.format("ctx = %q, g = %q, mods = %q",
+                                 b.ctx or "", b.g or "", Keymap.ModsLabel(b.mods))
+        end
+        w(string.format("    [%q] = { %s },   -- %s", row.act, slot, row.label))
+    end
+    w("  },")
+    w("}")
+    local path = r.GetResourcePath() .. "/Scripts/CP_Scripts/CP_Config/CP_Keymap.lua"
+    local f = io.open(path, "w")
+    if not f then return false, path end
+    f:write(table.concat(out, "\n") .. "\n")
+    f:close()
+    return true, path
+end
+
+function Keymap.init(reaper_api, core, keys)
     r = reaper_api
     Core = core
+    buildNames(keys)
     return Keymap
 end
 
