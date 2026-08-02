@@ -153,6 +153,32 @@ slider70:0<-60,12,0.1>-Pad 62 volume
 slider71:0<-60,12,0.1>-Pad 63 volume
 slider72:0<-60,12,0.1>-Pad 64 volume
 
+// ---------------------------------------------------------------------------
+// ⚠️ TOUTE VARIABLE D'UN JSFX EST GLOBALE, ET LES SECTIONS NE TOURNENT PAS SUR
+// LE MEME FIL.
+// ---------------------------------------------------------------------------
+// @block et @sample tournent sur le FIL AUDIO. @gfx, @serialize et @slider
+// tournent sur le fil de l'INTERFACE. Elles partagent toutes le meme espace de
+// noms : un compteur de boucle nomme `i` dans @gfx est LE MEME que celui de
+// @block, et les deux fils l'ecrivent en meme temps.
+//
+// Ce que ca a coute, exactement. Le drain de l'anneau de reglages fait
+// `k = gmem[...]; pad(pi)[k] = valeur;` — `k` est L'INDEX DU CHAMP. @gfx s'en
+// servait comme compteur de lignes de sa liste. Un reglage de volume arrive
+// pendant que la fenetre dessine, et il atterrit dans P_LOADED, P_DATA,
+// P_FRAMES ou P_NCH selon la ligne en cours : le pad se tait, et sa ligne passe
+// a « chemin sans matiere » alors que personne n'y a touche. C'est le « plus
+// aucun pad ne sonne sauf le premier », et il n'a jamais eu besoin d'un
+// plantage pour arriver — juste d'une fenetre ouverte pendant qu'on regle.
+//
+// Le meme partage sur `i` faisait deborder la liste au-dela des 64 pads :
+// l'affichage montrait des lignes 65 a 77, qui lisent la table des VOIX.
+// C'est cette anomalie visible qui a fini par designer l'invisible.
+//
+// LA REGLE : une section qui ne tourne pas sur le fil audio prefixe ses
+// variables de travail (`gx_`, `sz_`). Les fonctions, elles, declarent leurs
+// locales et ne sont pas concernees.
+// ---------------------------------------------------------------------------
 @init
 ext_noinit = 1;
 
@@ -662,12 +688,12 @@ gm           = mailbox(0);
 // file_avail rend une valeur negative en ecriture : c'est ainsi qu'un JSFX
 // sait dans quel sens il travaille.
 file_var(0, ser_version);
-i = 0;
+sz_i = 0;
 loop(NPADS,
-  p = pad(i);
-  j = P_SAVE_LO;
-  loop(P_SAVE_HI - P_SAVE_LO + 1, file_var(0, p[j]); j += 1;);
-  i += 1;
+  sz_p = pad(sz_i);
+  sz_j = P_SAVE_LO;
+  loop(P_SAVE_HI - P_SAVE_LO + 1, file_var(0, sz_p[sz_j]); sz_j += 1;);
+  sz_i += 1;
 );
 file_mem(0, PATHS, NPADS * PATH_LEN);
 
@@ -1030,43 +1056,43 @@ gfx_set(0.42, 0.44, 0.48, 1);
 gfx_x = 12; gfx_y = 216;
 gfx_drawstr("@gfx tours "); gfx_drawnumber(dbg_gfx, 0);
 gfx_drawstr("   voix actives ");
-i = 0; k = 0;
-loop(NVOICES, voice(i)[V_ACT] ? k += 1; i += 1;);
-gfx_drawnumber(k, 0);
+gx_i = 0; gx_k = 0;
+loop(NVOICES, voice(gx_i)[V_ACT] ? gx_k += 1; gx_i += 1;);
+gfx_drawnumber(gx_k, 0);
 
 // La liste des pads qui portent quelque chose : index, note, images, canaux.
 gfx_set(0.55, 0.57, 0.61, 1);
 gfx_x = 12; gfx_y = 244; gfx_drawstr("pad   note   images   canaux   Hz");
-i = 0; k = 0;
+gx_i = 0; gx_k = 0;
 loop(NPADS,
-  (pad(i)[P_LOADED] || path_mem(i)[0]) && k < 12 ? (
-    gfx_y = 264 + k * 17; gfx_x = 12;
+  (pad(gx_i)[P_LOADED] || path_mem(gx_i)[0]) && gx_k < 12 ? (
+    gfx_y = 264 + gx_k * 17; gfx_x = 12;
     // UN PAD QUI ATTEND SA MATIERE N'EST PAS UNE ERREUR. Il l'etait a
     // l'ecran : pendant qu'un kit se recharge, toutes ses lignes passaient au
     // rouge le temps d'une frame, ce qui ressemble a une alerte qu'on n'a
     // meme pas le temps de lire. L'ambre dit « en cours », le rouge reste
     // pour ce qui ne se reparera pas tout seul.
-    pad(i)[P_LOADED] ? gfx_set(0.78, 0.80, 0.84, 1)
-    : (pending_load == i || reload_next >= 0
+    pad(gx_i)[P_LOADED] ? gfx_set(0.78, 0.80, 0.84, 1)
+    : (pending_load == gx_i || reload_next >= 0
        || gmem[gm + MB_LSEQ] != gmem[gm + MB_LACK])
         ? gfx_set(0.95, 0.80, 0.40, 1)
         : gfx_set(0.95, 0.45, 0.40, 1);
-    gfx_drawnumber(i, 0);
-    gfx_x = 60;  gfx_drawnumber(pad(i)[P_NLO], 0);
-    gfx_x = 120; gfx_drawnumber(pad(i)[P_FRAMES], 0);
-    gfx_x = 210; gfx_drawnumber(pad(i)[P_NCH], 0);
-    gfx_x = 280; gfx_drawnumber(pad(i)[P_SRATE], 0);
+    gfx_drawnumber(gx_i, 0);
+    gfx_x = 60;  gfx_drawnumber(pad(gx_i)[P_NLO], 0);
+    gfx_x = 120; gfx_drawnumber(pad(gx_i)[P_FRAMES], 0);
+    gfx_x = 210; gfx_drawnumber(pad(gx_i)[P_NCH], 0);
+    gfx_x = 280; gfx_drawnumber(pad(gx_i)[P_SRATE], 0);
     gfx_x = 360;
-    pad(i)[P_LOADED] ? gfx_drawstr("ok")
-    : (pending_load == i || reload_next >= 0
+    pad(gx_i)[P_LOADED] ? gfx_drawstr("ok")
+    : (pending_load == gx_i || reload_next >= 0
        || gmem[gm + MB_LSEQ] != gmem[gm + MB_LACK])
         ? gfx_drawstr("en attente")
         : gfx_drawstr("chemin sans matiere");
-    k += 1;
+    gx_k += 1;
   );
-  i += 1;
+  gx_i += 1;
 );
-k == 0 ? (
+gx_k == 0 ? (
   gfx_set(0.55, 0.55, 0.58, 1);
   gfx_x = 12; gfx_y = 266;
   gfx_drawstr("aucun pad n'a de chemin — rien n'est arrive de la fenetre");

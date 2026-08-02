@@ -165,6 +165,56 @@ for bad in ("file_open", "file_mem", "file_close", "file_riff", "memset",
 # chargement rendait l'instrument muet. Un clic une fois vaut mieux que le
 # silence. Ce qui reste interdit, c'est le disque dans @sample.
 
+# --- 6. LES DEUX FILS N'ECRIVENT PAS DANS LES MEMES VARIABLES --------------
+#
+# Toute variable d'un JSFX est GLOBALE, et les sections ne tournent pas sur le
+# meme fil : @block et @sample sur le fil AUDIO, @gfx / @serialize / @slider sur
+# celui de l'INTERFACE. Un compteur de boucle nomme `i` des deux cotes est LE
+# MEME, et les deux fils l'ecrivent en meme temps.
+#
+# Ce que ca a coute, le 2026-08-02 : le drain de l'anneau de reglages fait
+# `k = gmem[...]; pad(pi)[k] = valeur` — `k` est L'INDEX DU CHAMP. @gfx s'en
+# servait comme compteur de lignes. Un reglage arrive pendant que la fenetre
+# dessine, et il atterrit dans P_LOADED ou P_DATA : le pad se tait, et rien ne
+# l'explique. Trouve par une anomalie d'AFFICHAGE — des lignes de pad 65 a 77
+# alors qu'il n'y en a que 64 — qui etait la moitie visible du meme partage.
+#
+# La regle est donc mecanique : une variable ecrite par une section d'interface
+# ne doit pas l'etre par une section audio. Les fonctions declarent leurs
+# locales et ne sont pas concernees.
+ASSIGN = re.compile(r"(?<![\w.])([a-z_][a-z_0-9]*)\s*=(?!=)")
+STRLIT = re.compile(r'("(?:[^"\\]|\\.)*")')
+
+def assigned_in(name):
+    """Les variables SCALAIRES qu'une section affecte, hors chaines et
+    commentaires. `x[i] = v` n'en est pas une : c'est une ecriture memoire."""
+    out = set()
+    for raw in section_body(name).split("\n"):
+        code = raw.split("//")[0]
+        parts = STRLIT.split(code)
+        for j in range(0, len(parts), 2):
+            for m in ASSIGN.finditer(parts[j]):
+                # `nom[` est une ecriture memoire, pas une variable.
+                if parts[j][m.start(1):m.end(1) + 1].endswith("["):
+                    continue
+                out.add(m.group(1))
+    return out
+
+audio_vars = assigned_in("@block") | assigned_in("@sample")
+# `gfx_*` appartient au moteur graphique ; `gmem` et les champs declares ne
+# sont pas des variables de travail.
+IGNORE = {"gmem"}
+for ui in ("@gfx", "@serialize", "@slider"):
+    shared = (assigned_in(ui) & audio_vars) - IGNORE
+    shared = {v for v in shared if not v.startswith("gfx_")}
+    # `reload_next` est un SIGNAL delibere entre sections, pas un compteur de
+    # travail : @serialize le pose, @block le consomme. Il est nomme, unique, et
+    # sa nature est ecrite au-dessus de lui.
+    shared -= {"reload_next"}
+    for v in sorted(shared):
+        errs.append("%s et le fil audio ecrivent tous deux `%s` — "
+                    "prefixer celle de %s (gx_, sz_)" % (ui, v, ui))
+
 # --- verdict ----------------------------------------------------------------
 print("fonctions definies : %d" % len(defined))
 print("champs declares    : %d" % len(decl))
