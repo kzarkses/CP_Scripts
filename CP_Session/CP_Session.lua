@@ -856,8 +856,9 @@ end
 -- fait douze pixels de haut et partage la case avec le nom du clip.
 local WHY_SHORT = {
     declared = "set",       -- quelqu'un l'a decide, ici ou dans le projet
-    analysed = "read",      -- REAPER a lu le fichier (tempo embarque compris)
+    embedded = "file",      -- l'entete du fichier le porte (ACID, TBPM...)
     named    = "name",      -- le nom du fichier l'annonce
+    analysed = "read",      -- l'ajustement de REAPER sur la duree
     inferred = "guess",     -- deduit de la seule duree, et sous garde
 }
 
@@ -1499,6 +1500,27 @@ local function applyEdit(ac)
         -- new table under the same number.
         cells[t][s] = ac
         Ident.Bind(ac)
+        -- UNE CASE SON NE SE REARME PAS COMME UNE CASE MIDI. Ce qui revient de
+        -- l'editeur est alors une REGION (`offs`/`len`) et non une liste de
+        -- notes : `Loop.ApplyClip` n'aurait rien trouve a poser, et la case
+        -- aurait garde son ancien decoupage tout en affichant le nouveau.
+        --
+        -- `ensureBars` d'abord, parce que l'editeur efface la longueur en
+        -- mesures quand il change la region : c'est la REGION qui la decide, et
+        -- il n'appartient pas a une fenetre distante de la recalculer — elle ne
+        -- connait ni la signature de la colonne ni la grille de mesures d'ici.
+        if isAudio(ac) then
+            ensureTempo(ac)
+            local lane = Loop.LaneOfTag(t, cellTag(t, s))
+            -- `armLane` fait deja les six gestes : la longueur en mesures, le
+            -- chargement du fichier dans les voix de CETTE moitie, la note
+            -- unique, le mute, la longueur de passe et l'etiquette. Les
+            -- reecrire ici en aurait oublie un — c'est toujours celui-la qui
+            -- coute la soiree.
+            if lane then armLane(lane, ac, t, s) end
+            saveGrid()
+            return true
+        end
         saveGrid()
         -- refresh the lane that HOLDS this cell — playing or merely staged —
         -- and not whatever the track happens to be playing right now
