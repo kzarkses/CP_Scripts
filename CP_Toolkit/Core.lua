@@ -1695,10 +1695,14 @@ end
 -- curseur sans risque, et c'est la raison pour laquelle cette table peut
 -- accueillir des noms qu'on n'a pas encore verifies.
 --
--- ⚠️ LES NOMS DE REAPER NE SE DEVINENT PAS. Ils ne sont pas documentes, et un
--- nom faux est SILENCIEUX : on obtient le repli, et on croit que le curseur
--- n'existe pas. `CP_Tools/CP_CursorProbe.lua` sert a les identifier a l'oeil,
--- ce qui est la seule facon honnete de remplir la seconde colonne.
+-- LES NOMS SONT CEUX DE REAPER, tires de sa documentation de theming — le
+-- dossier `Cursors` du chemin de ressources, ou un .cur du meme nom remplace
+-- celui d'origine. Ce sont donc les MEMES curseurs que ceux de l'arrangement et
+-- de l'editeur MIDI natifs, pas des approximations ; et un theme qui les
+-- remplace remplace aussi les notres, ce qui est exactement ce qu'on veut.
+--
+-- Un nom faux resterait SILENCIEUX : on obtiendrait le repli, et on croirait
+-- que le curseur n'existe pas. `CP_Tools/CP_CursorProbe.lua` sert a le voir.
 --
 -- 32512 = arrow, 32513 = ibeam, 32514 = wait, 32515 = cross
 -- 32516 = uparrow, 32642 = sizenwse, 32643 = sizenesw
@@ -1715,12 +1719,22 @@ local CURSOR_IDS = {
     size_all = 32646,  -- move ✥
     size_nwse = 32642, -- diagonal ↘
     size_nesw = 32643, -- diagonal ↗
-    -- Les gestes que Windows ne sait pas dire. Le repli est le moins mauvais
-    -- des standards ; le badge dessine au pointeur (CP_Editor) porte le sens.
-    copy     = 32512,  -- dupliquer
-    erase    = 32512,  -- gommer
-    stretch  = 32644,  -- etirer un groupe
-    draw     = 32515,  -- peindre
+    -- Les gestes que Windows ne sait pas dire. Le repli reste le moins mauvais
+    -- des standards, pour le jour ou un nom ne resout pas.
+    copy       = 32512,  -- dupliquer en glissant
+    erase      = 32512,  -- gommer
+    stretch    = 32644,  -- etirer un groupe
+    draw       = 32515,  -- peindre
+    note       = 32512,  -- une note, sous le pointeur
+    note_edge  = 32644,  -- son bord
+    move_h     = 32644,  -- deplacement verrouille en temps
+    move_v     = 32645,  -- deplacement verrouille en hauteur
+    keys       = 32649,  -- le clavier / la colonne des pads
+    vel        = 32645,  -- la lane de velocite
+    marquee    = 32515,  -- le rectangle de selection
+    pan        = 32646,  -- le panoramique au bouton du milieu
+    ts_edge    = 32644,  -- un bord de selection temporelle
+    ts_move    = 32646,  -- deplacer la selection temporelle
 }
 
 -- Declares AVANT ce qui les ecrit : `Core.SetCursorName` les remet a zero pour
@@ -1728,10 +1742,27 @@ local CURSOR_IDS = {
 -- GLOBALES a la place — le curseur ne changerait pas et rien ne le dirait.
 local _last_cursor_id, _last_cursor_name = nil, nil
 
--- Le nom REAPER de chaque curseur, quand on l'a IDENTIFIE. Vide tant qu'on ne
--- l'a pas vu : ecrire un nom probable ici donnerait un repli silencieux et
--- l'illusion d'avoir traite la question.
-local CURSOR_NAMES = {}
+-- LE NOM REAPER DE CHAQUE ROLE. Le vocabulaire de REAPER et le notre disent
+-- la meme chose parce qu'ils decrivent le meme geste : `arrange_dd_copy` est
+-- litteralement « (Ctrl) Click to drag and drop a copy of the item », `delete`
+-- « (Alt) Delete an envelope point », `arrange_pencil` « (Ctrl) Pencil draw
+-- item ». On ne traduit pas, on branche.
+local CURSOR_NAMES = {
+    copy       = "arrange_dd_copy",
+    erase      = "delete",
+    stretch    = "arrange_rightstretch",
+    draw       = "arrange_pencil",
+    note       = "midi_note",
+    note_edge  = "arrange_rightresize",
+    move_h     = "midi_move_horz",
+    move_v     = "midi_move_vert",
+    keys       = "midi_kb",
+    vel        = "midi_vel",
+    marquee    = "arrange_marquee",
+    pan        = "arrange_handscroll",
+    ts_edge    = "ruler_timesel",
+    ts_move    = "timesel_move",
+}
 
 -- Poser un nom REAPER sur un curseur, une fois qu'on l'a identifie a l'oeil.
 -- Ecrit depuis la configuration plutot que dans ce fichier : le toolkit ne doit

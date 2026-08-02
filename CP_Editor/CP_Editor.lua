@@ -3301,7 +3301,7 @@ local function snapshotSel()
     for i in pairs(Roll.selset) do
         n = n + 1
         move_snap[n] = { i = i, s = Roll.starts[i], p = Roll.pitches[i],
-                         l = Roll.lens[i] }
+                         l = Roll.lens[i], v = Roll.vels[i] }
     end
     for k = #move_snap, n + 1, -1 do move_snap[k] = nil end
     return n
@@ -3359,11 +3359,11 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     if in_ruler and not state.ruler_drag then
         if (tsa and math.abs(mx - xAtTime(tsa)) <= 6)
            or (tsb and math.abs(mx - xAtTime(tsb)) <= 6) then
-            UI.SetCursor("size_we")
+            UI.SetCursor("ts_edge")
         elseif tsa and tsb and mx > xAtTime(tsa) and mx < xAtTime(tsb) then
-            UI.SetCursor("size_all")
+            UI.SetCursor("ts_move")
         elseif math.abs(mx - xAtTime(ecur)) <= 5 then
-            UI.SetCursor("size_we")
+            UI.SetCursor("ts_edge")
         end
     end
     if in_ruler and Core_tk.MouseClicked(1) then
@@ -3418,7 +3418,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 if na < 0 then na = 0 end
                 setTimeSel(na, na + rd.len)
             end
-            UI.SetCursor(rd.mode == "move" and "size_all" or "size_we")
+            UI.SetCursor(rd.mode == "move" and "ts_move" or "ts_edge")
             rd.last = ct
         else
             -- Une seconde fois, au relachement : le scrub suit la ou le doigt
@@ -3433,7 +3433,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     -- labels lane (piano key / drum header): left-click selects the whole
     -- pitch row, right-click auditions the note (play the pad / key).
     if in_lane and pitch then
-        UI.SetCursor("hand")
+        UI.SetCursor("keys")
         if Core_tk.MouseClicked(1) then
             local a = act("click")
             if a == "lane.select_row" or a == "lane.select_row_add" then
@@ -3501,7 +3501,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 state.t1 = state.t1 + dt
                 clampView()
             end
-            UI.SetCursor("size_all")
+            UI.SetCursor("pan")
         end
     end
 
@@ -3591,18 +3591,23 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                                     multi = n > 0 and n or nil, px = mx, py = my,
                                     a0 = spanStart(), t0 = midiSnap(t) }
                 else
+                    -- LE CLIC A BASCULE, LE GLISSER NE DOIT PAS EN PATIR.
+                    -- Si la note attrapee etait deja selectionnee, Ctrl vient
+                    -- de l'en sortir ; on la remet avant de photographier, ou
+                    -- la copie porterait sur tout SAUF celle qu'on tient.
+                    local copy = (da == "note.copy")
+                    if copy and not Roll.IsSel(idx) then Roll.AddSel(idx) end
+                    -- La photo est prise MEME POUR UNE SEULE NOTE quand on
+                    -- copie : c'est elle qui dira, au relachement, ou reposer
+                    -- l'original.
+                    local nsnap = (Roll.seln > 1 or copy) and snapshotSel() or nil
                     state.mdrag = { mode = "move", zone = "note",
                                     idx = idx, moved = false,
                                     grab = t - Roll.starts[idx],
                                     free_act = "note.move_free",
                                     axis_act = "note.move_axis",
-                                    -- LA COPIE ATTEND QUE LE GESTE BOUGE. A la
-                                    -- prise on ne sait pas encore si c'est un
-                                    -- clic ou un glisser, et dupliquer tout de
-                                    -- suite poserait une note par-dessus une
-                                    -- autre a chaque Ctrl+clic de selection.
-                                    copy = (da == "note.copy"),
-                                    multi = Roll.seln > 1 and snapshotSel() or nil,
+                                    copy = copy, copy_n = copy and nsnap or nil,
+                                    multi = Roll.seln > 1 and nsnap or nil,
                                     px = mx, py = my,
                                     op = Roll.starts[idx], opp = Roll.pitches[idx] }
                 end
@@ -3629,9 +3634,13 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                                     chord = (da == "roll.paint_chord") }
                     return
                 elseif da == "roll.copy_sel" then
-                    if Roll.seln > 0 and Roll.Duplicate(0, 0) > 0 then
-                        state.mdrag = { mode = "move", idx = Roll.sel, moved = false,
-                                        grab = 0, multi = snapshotSel(),
+                    if Roll.seln > 0 then
+                        local nsnap = snapshotSel()
+                        state.mdrag = { mode = "move", zone = "roll",
+                                        idx = Roll.sel, moved = false,
+                                        grab = 0, multi = nsnap,
+                                        copy = true, copy_n = nsnap,
+                                        free_act = "note.move_free",
                                         px = mx, py = my,
                                         op = midiSnap(t), opp = pitch }
                     end
@@ -3740,38 +3749,14 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
             local free = (md.free_act ~= nil and live == md.free_act)
             local axis = (md.axis_act ~= nil and live == md.axis_act)
 
-            -- LA COPIE, quand le geste a vraiment bouge. Duplicate re-trie et
-            -- re-selectionne : tout index tenu avant devient faux, donc la
-            -- photo du groupe se reprend apres, et jamais pendant.
-            if md.copy and not md.copied and md.px
-               and (math.abs(mx - md.px) > 3 or math.abs(my - md.py) > 3) then
-                md.copied = true
-                -- LE CLIC A BASCULE, LE GLISSER NE DOIT PAS EN PATIR.
-                --
-                -- Ctrl fait deux choses chez REAPER : basculer au clic, copier
-                -- au glisser. On applique la bascule a la prise, puisqu'on ne
-                -- sait pas encore lequel des deux gestes arrive — et si la note
-                -- attrapee etait DEJA selectionnee, la bascule vient de l'en
-                -- sortir. Copier maintenant copierait donc tout SAUF celle
-                -- qu'on tient, ce qui est le contraire de ce qu'on demande.
-                --
-                -- On la remet donc dans la selection avant de dupliquer. Avec
-                -- rien de selectionne au depart on copie une note ; avec cinq,
-                -- on copie les cinq — dans les deux cas celle du pointeur en
-                -- fait partie.
-                if md.idx and not Roll.IsSel(md.idx) then Roll.AddSel(md.idx) end
-                if Roll.Duplicate(0, 0) > 0 then
-                    md.idx = Roll.sel or md.idx
-                    md.multi = Roll.seln > 1 and snapshotSel() or nil
-                end
-            end
+
             if md.mode == "erase" then
                 if hit then Roll.Delete(hit) end
-                UI.SetCursor("arrow")
+                UI.SetCursor("erase")
             elseif md.mode == "paint" then
                 md.p1, md.t1 = pitch or md.p0, midiSnapFloor(t)
                 if md.t1 ~= md.t0 then md.moved = true end
-                UI.SetCursor("cross")
+                UI.SetCursor("draw")
             elseif md.mode == "stretch" or md.mode == "stretchpos" then
                 -- ETIRER : les positions se dilatent autour du DEBUT du groupe,
                 -- qui est le seul point fixe qui ne depende pas de la note
@@ -3802,7 +3787,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     end
                     md.moved = true
                 end
-                UI.SetCursor("size_we")
+                UI.SetCursor("stretch")
             elseif md.mode == "move" and md.idx then
                 local nt = t - (md.grab or 0)
                 if not free then nt = midiSnap(nt) end
@@ -3854,7 +3839,11 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     Roll.MoveLive(md.idx, nt, np)
                     md.moved = true
                 end
-                UI.SetCursor("size_all")
+                -- Le curseur suit ce que le geste FAIT maintenant : un axe
+                -- verrouille, une copie en cours, ou un simple deplacement.
+                UI.SetCursor(md.lock == "time" and "move_h"
+                             or md.lock == "pitch" and "move_v"
+                             or (md.copy and "copy") or "note")
             elseif md.mode == "resize" and md.idx then
                 local e = free and t or midiSnap(t)
                 -- a freshly drawn note may never shrink BELOW the cell it was
@@ -3881,7 +3870,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     Roll.ResizeLive(md.idx, len)
                     md.moved = true
                 end
-                UI.SetCursor("size_we")
+                UI.SetCursor("note_edge")
             elseif md.mode == "vel" and md.idx then
                 local vel = (vy + VEL_H - my) / VEL_H * 127
                 if md.multi and md.multi > 1 then
@@ -3908,6 +3897,14 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                         flash(n .. " painted")
                     end
                 end
+            elseif md.moved and md.copy then
+                -- LA COPIE SE POSE AU RELACHEMENT, la ou les notes ETAIENT.
+                -- On a deplace les originales ; on remet une copie a leur
+                -- place de depart. L'etat final est celui de REAPER, et rien
+                -- n'a eu a suivre des index pendant le geste.
+                Roll.Commit(md.mode == "resize" and "MIDI: resize note"
+                            or "MIDI: move note")
+                Roll.Stamp(move_snap, md.copy_n or 0)
             elseif md.moved and md.mode ~= "erase" then
                 Roll.Commit(md.mode == "vel" and "MIDI: velocity"
                             or md.mode == "resize" and "MIDI: resize note"
@@ -3939,13 +3936,9 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                or da == "note.stretch_pos" or da == "note.stretch_pos_free" then
             UI.SetCursor("stretch") state.hint = "stretch"
         elseif hit then
-            if on_edge then
-                UI.SetCursor("size_we")
-            else
-                UI.SetCursor("size_all")
-            end
+            UI.SetCursor(on_edge and "note_edge" or "note")
         else
-            UI.SetCursor("cross")
+            UI.SetCursor("draw")
         end
     end
 end
@@ -4241,15 +4234,14 @@ local function drawRoll(theme, area_h)
         drawVScroll(theme, wave.x + wave.w, wave.ry, sbar_w, grid_h)
     end
 
-    -- LE POINTEUR DIT CE QU'IL VA FAIRE, en toutes lettres.
+    -- LE BADGE, EN PLUS DU CURSEUR ET NON A SA PLACE.
     --
-    -- Windows n'a pas de curseur pour « dupliquer », « gommer » ni « etirer »,
-    -- et les curseurs de REAPER ne s'adressent que par des noms qui ne sont pas
-    -- documentes — s'en remettre a un nom devine donnerait le curseur de repli
-    -- sans le dire. On dessine donc le signe a cote du pointeur : c'est
-    -- certain, ca suit le theme, et ca ne depend d'aucun identifiant qu'on
-    -- n'aurait pas verifie. (`CP_Tools/CP_CursorProbe.lua` sert a identifier
-    -- les vrais ; le jour ou ils le sont, ce badge devient superflu.)
+    -- Les curseurs de REAPER sont maintenant poses par leur nom, donc le geste
+    -- est deja dit par le pointeur lui-meme. Le signe reste parce qu'il survit
+    -- a deux choses que le curseur ne survit pas : un theme qui a remplace le
+    -- .cur par quelque chose d'illisible, et un nom qui ne resoudrait pas sur
+    -- une version plus ancienne — auquel cas le repli est une simple fleche, et
+    -- plus rien ne distingue copier d'effacer.
     if state.hint then
         local hx, hy = Core_tk.GetMousePos()
         local g = HINT_GLYPH[state.hint]
