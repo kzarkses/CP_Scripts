@@ -344,22 +344,23 @@ qu'un raccourci est un `if char == 113` au milieu d'une fonction, il n'y a rien
       contexte)`. Un seul endroit qui sait lire une combinaison.
 - [x] **Le stockage dans `CP_Config/`**, comme le reste des réglages de Cédric
       — un fichier Lua lisible, pas un ExtState opaque.
-- [ ] **Une fenêtre d'édition**, une seule pour toute la suite, qui liste les
-      contextes et capture la frappe. `CP_Toolkit/CP_KeyDetector.lua` fait déjà
-      la capture : il existe précisément pour ça. **C'est le seul point du §6
-      encore ouvert** — sa règle est déjà tranchée et écrite dans
-      `Keymap.Export` : sur un geste de souris, SEULS les modificateurs se
-      changent, parce que la zone et le geste sont la *nature* de l'action
-      (REAPER lui-même ne permet pas de les déplacer) ; sur une touche, le code
-      et les modificateurs.
-      ⚠️ Le vrai obstacle n'est pas le dessin : les vocabulaires sont déclarés
-      **dans chaque script**, donc une fenêtre séparée ne les connaîtrait pas.
-      Il faut d'abord les sortir dans `CP_Engine/Keymaps/<module>.lua`, que
-      l'application ET la fenêtre chargent. C'est une heure, et ça se fait
-      avant le dessin, pas après.
-- [x] **Le point d'entrée est le 3.2** de ce document. Une fois que les
-      modificateurs de souris de CP_Editor sont une table, la même mécanique
-      sert aux touches, et le premier module est fait.
+- [x] **Une fenêtre d'édition** — `CP_Tools/CP_Keymap.lua` (2026-08-02).
+      Liste par groupe, filtre, marque les conflits, capture une nouvelle
+      liaison. L'obstacle n'était pas le dessin : les vocabulaires vivaient
+      **dans** les scripts, donc une fenêtre séparée — un autre état Lua — ne
+      les aurait jamais vus. Ils sont sortis dans
+      `CP_Engine/Keymaps/<module>.lua`, chargés par l'application **et** par la
+      fenêtre.
+      Trois décisions qui font que l'outil sert : l'échappatoire de la capture
+      est la **souris**, jamais une touche (toute touche doit pouvoir être
+      assignée, Échap comprise) ; la frappe est lue **avant** que le toolkit ne
+      la distribue, sinon Entrée validerait un champ au lieu d'être capturée ;
+      et un tampon ExtState fait relire les fenêtres déjà ouvertes une fois par
+      seconde — sans lui il faudrait fermer et rouvrir CP_Editor après chaque
+      réglage, c'est-à-dire ne jamais tester ce qu'on règle.
+- [ ] **Les autres modules.** Seul `editor` a un vocabulaire. CP_Session,
+      CP_Sampler et CP_Looper suivront le même chemin : un fichier dans
+      `CP_Engine/Keymaps/`, une ligne dans la liste des modules de la fenêtre.
 
 **Réserve honnête** : `gfx.getchar` ne rapporte pas tout. Certaines touches
 mortes et certaines combinaisons ne remontent pas, et le clavier AZERTY décale
