@@ -3392,6 +3392,13 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     end
 
     -- grid presses
+    -- UNE COMBINAISON NON ASSIGNEE RETOMBE SUR L'ACTION PAR DEFAUT, comme chez
+    -- REAPER : sa table a toujours une ligne « Default action », et les
+    -- combinaisons absentes y reviennent. C'est pour ca que « deplacer »,
+    -- « redimensionner », « inserer » et « poser le curseur » n'ont pas de
+    -- branche a leur nom — elles SONT le repli. `Tools/keymap_lint.py` les
+    -- connait par leur nom pour ne pas les signaler comme mortes.
+    --
     -- LA PRISE FAIT DEUX CHOSES A LA FOIS, et c'est ce que la table de REAPER
     -- decrit : l'action de CLIC s'applique tout de suite (selectionner,
     -- effacer, doubler une longueur) et l'action de GLISSER s'arme derriere
@@ -3403,7 +3410,8 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
             local ca, da = act("click"), act("drag")
             if hit then
                 -- ----- ce que le clic fait immediatement --------------------
-                if ca == "note.erase" or da == "note.erase_drag" then
+                if ca == "note.erase" or da == "note.erase_drag"
+                   or da == "note.erase_drag_free" then
                     Roll.Delete(hit)
                     state.row_hi = nil
                     state.mdrag = { mode = "erase", moved = true }
@@ -3460,12 +3468,14 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                                                 and snapshotSel() or nil,
                                         ol = Roll.lens[idx] }
                     end
-                elseif da == "note.stretch_pos" then
+                elseif da == "note.stretch_pos"
+                       or da == "note.stretch_pos_free" then
                     local n = snapshotSel()
                     state.mdrag = { mode = "stretchpos", zone = "note",
                                     idx = idx, moved = false,
+                                    free_act = "note.stretch_pos_free",
                                     multi = n > 0 and n or nil, px = mx, py = my,
-                                    a0 = spanStart(), t0 = t }
+                                    a0 = spanStart(), t0 = midiSnap(t) }
                 else
                     state.mdrag = { mode = "move", zone = "note",
                                     idx = idx, moved = false,
@@ -3485,10 +3495,12 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 auditionNote(pitch, Roll.vels[idx])
             else
                 -- ----- la grille vide ---------------------------------------
-                if ca == "roll.deselect" or da == "roll.erase_drag" then
+                local eraser = (da == "roll.erase_drag"
+                                or da == "roll.erase_drag_free")
+                if ca == "roll.deselect" or eraser then
                     Roll.ClearSel()
                     state.row_hi = nil
-                    if da == "roll.erase_drag" then
+                    if eraser then
                         state.mdrag = { mode = "erase", moved = true }
                     end
                     return
@@ -3787,7 +3799,8 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         -- gomme qui ressemble a un deplacement se decouvre en effacant une note
         -- qu'on ne voulait pas ; et c'est le seul retour qu'on a avant le clic.
         local da = act("drag")
-        if da == "note.erase_drag" or da == "roll.erase_drag" then
+        if da == "note.erase_drag" or da == "roll.erase_drag"
+           or da == "note.erase_drag_free" or da == "roll.erase_drag_free" then
             UI.SetCursor("arrow")
         elseif da == "roll.paint_line" or da == "roll.paint_chord" then
             UI.SetCursor("cross")

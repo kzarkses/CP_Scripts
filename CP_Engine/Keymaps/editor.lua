@@ -63,8 +63,17 @@ return {
       label = "Move note on one axis only" },
     { act = "note.erase_drag",     group = "Note", ctx = "note", g = "drag", mods = "Alt",
       label = "Erase notes" },
+    -- LA GOMME SANS MAGNETISME EXISTE DANS LA TABLE DE REAPER, et il faut la
+    -- declarer meme si elle fait exactement la meme chose : sans elle,
+    -- Shift+Alt ne trouve aucune liaison et retombe sur l'action par DEFAUT —
+    -- donc on deplace des notes en croyant les effacer. Une combinaison
+    -- absente n'est pas neutre, elle herite du defaut.
+    { act = "note.erase_drag_free", group = "Note", ctx = "note", g = "drag", mods = "Shift+Alt",
+      label = "Erase notes ignoring snap" },
     { act = "note.stretch_pos",    group = "Note", ctx = "note", g = "drag", mods = "Ctrl+Win",
       label = "Stretch note positions (arpeggiate)" },
+    { act = "note.stretch_pos_free", group = "Note", ctx = "note", g = "drag", mods = "Shift+Ctrl+Win",
+      label = "Stretch note positions ignoring snap" },
     -- ----- le bord d'une note -----------------------------------------------
     { act = "edge.resize",         group = "Note edge", ctx = "edge", g = "drag", mods = "",
       label = "Move note edge" },
@@ -89,6 +98,8 @@ return {
       label = "Copy the selected notes" },
     { act = "roll.erase_drag",     group = "Grid", ctx = "roll", g = "drag", mods = "Alt",
       label = "Erase notes" },
+    { act = "roll.erase_drag_free", group = "Grid", ctx = "roll", g = "drag", mods = "Shift+Alt",
+      label = "Erase notes ignoring snap" },
     { act = "roll.paint_line",     group = "Grid", ctx = "roll", g = "drag", mods = "Ctrl+Alt",
       label = "Paint a straight line of notes" },
     { act = "roll.paint_chord",    group = "Grid", ctx = "roll", g = "drag", mods = "Shift+Ctrl+Alt",
@@ -185,4 +196,15 @@ return {
       label = "Extend to the previous note in time" },
     { act = "walk.ext_next",     group = "Walk", k = Keys.DOWN,  mods = "Shift+Alt",
       label = "Extend to the next note in time" },
+
+    -- ----- SANS LIAISON PAR DEFAUT ------------------------------------------
+    -- Elles existent dans RollUI depuis toujours et n'etaient atteignables que
+    -- par le menu Transform. Les declarer ici ne leur donne pas de raccourci —
+    -- elle s'affichent « — » — mais les rend ASSIGNABLES, ce qui est
+    -- exactement ce que ce tableau doit servir a faire. Une action qui marche
+    -- et qu'on ne peut pas lier est invisible pour l'utilisateur.
+    { act = "edit.legato",   group = "Unbound", k = nil, mods = "",
+      label = "Legato (extend each note to the next)" },
+    { act = "sel.invert",    group = "Unbound", k = nil, mods = "",
+      label = "Invert the selection" },
 }

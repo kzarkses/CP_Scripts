@@ -210,7 +210,13 @@ function KeymapUI.Draw(S, theme, x, y, w, h)
             else
                 local row = e.row
                 local b = Keymap.Binding(S.module, row.act)
-                local is_key = b and b.k ~= nil
+                -- « Est-ce une touche ou un geste ? » se lit sur le DEFAUT de
+                -- l'action, pas sur sa liaison courante : une action sans
+                -- liaison n'a ni code ni zone, et la prendre pour un geste la
+                -- rendait inassignable — on demandait des modificateurs, et le
+                -- resultat n'avait pas de zone ou vivre.
+                local is_key = (b and b.k ~= nil)
+                    or (row.def and row.def.ctx == nil)
                 local hot = inside and my >= cy and my < cy + rh
                 local capturing = S.capture and S.capture.act == row.act
 
