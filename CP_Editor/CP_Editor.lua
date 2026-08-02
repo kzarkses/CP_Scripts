@@ -33,6 +33,8 @@ local Rows  = dofile(cp_root .. "CP_Engine/Rows.lua")
 -- il repond « quelle ACTION pour ce geste », et c'est tout ce qui separe un
 -- raccourci fige d'un raccourci qu'on peut changer.
 local Keymap = dofile(cp_root .. "CP_Engine/Keymap.lua")
+local Focus  = dofile(cp_root .. "CP_Engine/Focus.lua")
+Focus.init(r)
 -- LE PANNEAU DE RACCOURCIS EST UN MODULE, pas une autre fenetre. On regle les
 -- raccourcis de l'outil qu'on a sous la main : aller chercher un script dans la
 -- liste des actions pour regler CELUI-CI est un detour que personne ne fait
@@ -372,9 +374,22 @@ for i = 1, #GRID_CHOICES do
 end
 local GRID_BAR_OPTS = { w = 3 }
 
+-- LA GAMME DANS LA BARRE. Elle vivait dans le clic droit de la colonne de
+-- clavier : on ne la voyait pas, donc on ne savait pas si elle etait active.
+-- Depuis qu'elle CONTRAINT l'ecriture, ne pas le savoir est un piege — on
+-- poserait une note et elle atterrirait ailleurs sans explication. Deux listes
+-- posees la le disent en permanence, et se changent a la molette sans rien
+-- ouvrir.
+local ROOT_ITEMS = { "C", "C#", "D", "D#", "E", "F",
+                     "F#", "G", "G#", "A", "A#", "B" }
+local SCALE_ITEMS = { "Scale: off" }
+local ROOT_BAR_OPTS  = { w = 2 }
+local SCALE_BAR_OPTS = { w = 3 }
+
 -- "Grid 1/16" display label, cached until the division changes (read per
 -- frame — no concat in the frame path)
 local grid_lbl = { div = -1, s = "" }
+for i = 1, #Roll.SCALES do SCALE_ITEMS[i + 1] = Roll.SCALES[i].name end
 
 local function clampView()
     local sp = span()
@@ -2907,6 +2922,40 @@ local function barMidi(theme)
     end
     UI.BarSep()
 
+    -- LA FONDAMENTALE ET LA GAMME, cote a cote et toujours visibles.
+    --
+    -- La fondamentale reste reglable gamme eteinte : on choisit dans quel ton
+    -- on va travailler avant de decider si on s'y enferme, et l'ordre inverse
+    -- oblige a activer une gamme fausse pour pouvoir la corriger.
+    local rch, ri = UI.BarCombo("m_root", (Roll.scale_root or 0) + 1,
+                                ROOT_ITEMS, false, ROOT_BAR_OPTS)
+    if rch then
+        Roll.scale_root = (ri - 1) % 12
+        if Roll.scale_on then
+            Roll.SetScale(Roll.scale_root, Roll.scale_iv or Roll.SCALES[2].iv)
+        else
+            Roll.scale_ver = Roll.scale_ver + 1   -- la grille se redessine
+        end
+        markDirty()
+    end
+    -- Quelle gamme est active se lit par IDENTITE de la table d'intervalles :
+    -- c'est ce que `Roll.SetScale` retient maintenant, et c'est exact meme
+    -- quand deux gammes partagent un masque.
+    local sidx = 1
+    if Roll.scale_on then
+        for i = 1, #Roll.SCALES do
+            if Roll.SCALES[i].iv == Roll.scale_iv then sidx = i + 1 break end
+        end
+    end
+    local sch, si = UI.BarCombo("m_scale", sidx, SCALE_ITEMS, false,
+                                SCALE_BAR_OPTS)
+    if sch then
+        if si == 1 then Roll.ClearScale()
+        else Roll.SetScale(Roll.scale_root or 0, Roll.SCALES[si - 1].iv) end
+        markDirty()
+    end
+    UI.BarSep()
+
     local rows = rollRows()
     if UI.BarToggle("m_drum", "Drum", nil, rows.drum, "Drum rows") then
         state.drum_mode = not rows.drum
@@ -4535,6 +4584,28 @@ local function frame(theme)
     -- raccourci qu'on vient de regler ne prendrait qu'apres avoir ferme et
     -- rouvert celle-ci — c'est-a-dire jamais, en pratique.
     if Keymap.PollSync(KM) then flash("Keymap updated") end
+    -- LA BARRE D'ESPACE SUIT LE MODULE QUI MENE, PAS LA FENETRE QUI A LE FOCUS.
+    --
+    -- Une fenetre gfx ne recoit les touches que si elle a le focus. Tester une
+    -- boucle ici tout en chipotant un sample dans le Sampler coupait donc Space
+    -- a chaque changement de fenetre, ce qui rend le test impossible : on ne
+    -- peut pas ecouter et regler en meme temps si la moitie des touches change
+    -- de destinataire quand on regarde ailleurs.
+    --
+    -- CP_Editor est le premier de l'ordre : tant qu'il est ouvert, c'est lui
+    -- qui recoit, meme quand la frappe est tombee ailleurs. Il annonce sa
+    -- presence ici, et ramasse la ce que les autres lui ont passe.
+    Focus.Claim("editor")
+    do
+        local ch, md = Focus.Take("editor")
+        if ch then
+            local a = Keymap.Key(KM, ch, md)
+            if a == "play.cursor" or a == "play.sel" or a == "play.start" then
+                togglePlay(a == "play.start" and "start"
+                           or (a == "play.sel" and "sel") or "cursor")
+            end
+        end
+    end
     syncRange()
     Kit.Poll()
     Audition.Poll()

@@ -37,6 +37,8 @@ local Peaks   = dofile(cp_root .. "CP_Engine/Peaks.lua")
 local MediaDB = dofile(script_path .. "Modules/MediaDB.lua")
 local FXList  = dofile(script_path .. "Modules/FXList.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
+local Focus   = dofile(cp_root .. "CP_Engine/Focus.lua")
+Focus.init(r)
 local Clip    = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Bus     = dofile(cp_root .. "CP_Engine/Bus.lua")
 
@@ -699,11 +701,18 @@ local function handleKeys()
         end
         UI.ConsumeChar()
     elseif char == Keys.SPACE then
-        if opts.space_transport then
-            r.Main_OnCommand(40044, 0)  -- Transport: Play/stop
-        else
-            if Audition.IsPlaying() then Audition.Stop()
-            elseif node and not node.is_dir then doPreview(node) end
+        -- LE NAVIGATEUR EST LE DERNIER DE L'ORDRE. Tant qu'un module qui mene
+        -- est ouvert — CP_Editor, puis CP_Sampler — la barre d'espace lui
+        -- revient, meme si c'est ici qu'on l'a tapee. Ce n'est qu'en dernier
+        -- que le reglage local reprend ses droits, et il garde ses deux sens :
+        -- Cedric a choisi lequel, on ne choisit pas a sa place.
+        if not Focus.Route("media", char, Core_tk.Mods and Core_tk.Mods() or 0) then
+            if opts.space_transport then
+                r.Main_OnCommand(40044, 0)  -- Transport: Play/stop
+            else
+                if Audition.IsPlaying() then Audition.Stop()
+                elseif node and not node.is_dir then doPreview(node) end
+            end
         end
         UI.ConsumeChar()
     elseif char == Keys.F then

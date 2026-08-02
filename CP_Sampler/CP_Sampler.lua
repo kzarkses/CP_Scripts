@@ -37,6 +37,8 @@ local Audition = dofile(cp_root .. "CP_Engine/Audition.lua")
 local DragBus = dofile(cp_root .. "CP_Toolkit/DragBus.lua")
 local Clip    = dofile(cp_root .. "CP_Engine/Clip.lua")
 local Bus     = dofile(cp_root .. "CP_Engine/Bus.lua")
+local Focus   = dofile(cp_root .. "CP_Engine/Focus.lua")
+Focus.init(r)
 
 -- Soft dependency: the engine's peaks reader draws the region strip
 -- (falls back to a plain range slider when the package is absent).
@@ -2052,7 +2054,19 @@ local function handleKeys()
     elseif char == Keys.DOWN then
         if note - 4 >= Kit.BASE then state.sel = note - 4 end
         UI.ConsumeChar()
-    elseif char == Keys.ENTER or char == Keys.SPACE then
+    elseif char == Keys.SPACE then
+        -- ESPACE EST UNE TOUCHE DE TRANSPORT, PAS UNE TOUCHE DE PAD.
+        --
+        -- Elle declenchait le pad selectionne, ce qu'Entree fait deja juste en
+        -- dessous — et pendant qu'on regle un sample, la seule chose qu'on veut
+        -- vraiment de la barre d'espace, c'est qu'elle continue de piloter ce
+        -- qu'on ecoute. Si CP_Editor est ouvert, elle lui revient ; sinon elle
+        -- fait ce qu'elle fait partout ailleurs dans REAPER.
+        if not Focus.Route("sampler", char, Core_tk.Mods and Core_tk.Mods() or 0) then
+            r.Main_OnCommand(40044, 0)   -- Transport: Play/stop
+        end
+        UI.ConsumeChar()
+    elseif char == Keys.ENTER then
         padOn(note)
         if state.press_midi then
             -- keyboard has no key-up: schedule the note-off
