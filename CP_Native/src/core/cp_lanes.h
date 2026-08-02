@@ -193,6 +193,28 @@ struct Lane {
   // ou il choisit la frontiere — il connait `tq`, donc le decalage est exact du
   // premier echantillon.
   std::atomic<double> play_from;   // en beats, < 0 = aucun
+
+  // L'ACCOLADE DE BOUCLE — « je ne veux entendre que ces deux mesures-la ».
+  //
+  // Une sous-region de la case, en beats depuis son debut. `loop_b <= loop_a`
+  // veut dire « pas d'accolade », et c'est l'etat de toutes les lanes : une
+  // case boucle sur toute sa longueur tant qu'on ne lui a rien demande.
+  //
+  // CE N'EST PAS UNE PORTE, C'EST UNE LONGUEUR DE BOUCLE, et toute la valeur
+  // de la fonctionnalite tient dans cette distinction. Taire les notes du
+  // dehors aurait ete plus simple a ecrire : la case aurait continue de
+  // tourner sur ses quatre mesures en n'en faisant sonner que deux, donc deux
+  // mesures de musique suivies de deux mesures de silence. Le loop brace
+  // d'Ableton fait l'autre chose, la seule qui soit musicale : la case DEVIENT
+  // une boucle de deux mesures, qui revient deux fois plus souvent.
+  //
+  // Le verrouillage de phase y survit intact, parce que c'est exactement le
+  // meme verrou : une lane de longueur Ls ancree sur le beat zero du projet.
+  // On n'a pas ajoute une horloge, on a change une longueur — et c'est pour ca
+  // que ce champ ne coute rien au reste du moteur.
+  std::atomic<double> loop_a;      // en beats depuis le debut de la case
+  std::atomic<double> loop_b;      // <= loop_a : pas d'accolade
+
   std::atomic<int>    nbuf;        // tampon de notes PUBLIE (0 ou 1)
   std::atomic<int>    ncount[2];   // nombre de notes de chaque tampon
   // Les notes elles-memes vivent dans UN bloc, alloue une seule fois par
@@ -213,6 +235,13 @@ struct Lane {
   std::atomic<double> pend_target;
   std::atomic<double> phase;
   std::atomic<double> len_beats;
+  // La zone de lecture EFFECTIVE, apres bornage. Publiee et non recalculee en
+  // Lua : une accolade posee sur quatre mesures puis ramenee a une doit rendre
+  // la meme reponse des deux cotes, et deux copies de la regle de bornage
+  // finiraient par diverger sur le cas ou elle sert — celui ou l'accolade ne
+  // tient plus dans la case.
+  std::atomic<double> span_a;
+  std::atomic<double> span_len;
   // Incremente a CHAQUE debut de prise. C'est ainsi que Lua sait qu'il doit
   // vider la liste : le fil audio ne touche pas aux notes, il dit seulement
   // qu'une nouvelle prise commence.
@@ -292,6 +321,11 @@ class Lanes {
 
  private:
   double  lane_len_beats(int li, double ts_num) const;
+  // La zone de lecture effective d'une lane : `a` son debut dans la case,
+  // `len` sa longueur. Sans accolade, (0, longueur de la case). Tout ce qui
+  // LIT la lane passe par ici — un seul endroit sait ce qu'une accolade veut
+  // dire, et il est du cote du fil audio qui s'en sert.
+  void    lane_span(int li, double ts_num, double* a, double* len) const;
   double  launch_target(double pb, bool active) const;
   double  stop_target(double pb, bool active) const;
   void    emit(int port, frame_t at, unsigned char s, unsigned char d1,
@@ -301,7 +335,8 @@ class Lanes {
   // Consomme `play_from` : la lane part a `at_beat`, on veut qu'elle y soit a
   // la phase demandee. Appelee partout ou un mode devient « joue ».
   void    take_play_from(int li, double at_beat, double ts_num);
-  void    run_pendings(double pb, bool active, double ts_num, frame_t at);
+  void    run_pendings(double pb, bool active, double ts_num, frame_t at,
+                       double block_beats);
   void    run_gate(double pb, bool active, double ts_num, frame_t at,
                    int frames, double block_beats);
 

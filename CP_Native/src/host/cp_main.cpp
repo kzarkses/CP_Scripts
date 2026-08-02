@@ -82,7 +82,18 @@ using namespace cp;
 // que jusqu'a 9 ; apres, c'est la MAJEURE qui bouge. Ce n'est pas une rupture
 // de compatibilite, c'est une contrainte d'ecriture — et elle est ici pour que
 // personne n'ecrive 2.10 dans un an.
-static const double kEngineABI = 2.0;
+// ---------------------------------------------------------------------------
+// 2.1 : CP_LaneSet(lane, "loopa"|"loopb", beats) — l'accolade de boucle, la
+// sous-region qu'une case joue en boucle. `loopb <= loopa` = pas d'accolade.
+// Ce n'est pas une porte qui tairait les notes du dehors (la case tournerait
+// alors sur sa longueur entiere, moitie musique moitie silence) : c'est une
+// LONGUEUR DE BOUCLE. La case devient une boucle de deux mesures et revient
+// deux fois plus souvent — le loop brace d'Ableton, et la seule lecture
+// musicale. Le verrou de phase y survit parce que c'est le meme verrou, sur
+// une autre longueur.
+// CP_LaneGet(lane, "spana"|"spanlen") rend la zone EFFECTIVE, apres bornage
+// dans la case : c'est le moteur qui borne, et une seule fois.
+static const double kEngineABI = 2.1;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -915,7 +926,7 @@ bool CP_LaneBind(int lane, int port, int channel) {
   return true;
 }
 
-// param : bars | mute | tag | offset | playfrom
+// param : bars | mute | tag | offset | playfrom | loopa | loopb
 bool CP_LaneSet(int lane, const char* param, double value) {
   if (!lane_ok(lane) || !param) return false;
   Lane& L = g_eng->lanes().lane(lane);
@@ -924,10 +935,14 @@ bool CP_LaneSet(int lane, const char* param, double value) {
   if (!strcmp(param, "tag"))   { L.tag.store(value, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "offset")) { L.phase_off.store(value, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "playfrom")) { L.play_from.store(value, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "loopa")) { L.loop_a.store(value, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "loopb")) { L.loop_b.store(value, std::memory_order_relaxed); return true; }
   return false;
 }
 
 // param : mode | pending | target | phase | lenbeats | tag | nev | recgen
+//         bars | mute | port | offset | playfrom | loopa | loopb
+//         spana | spanlen
 double CP_LaneGet(int lane, const char* param) {
   if (!lane_ok(lane) || !param) return 0.0;
   const Lane& L = g_eng->lanes().lane(lane);
@@ -944,6 +959,10 @@ double CP_LaneGet(int lane, const char* param) {
   if (!strcmp(param, "port"))     return (double)L.port.load(std::memory_order_relaxed);
   if (!strcmp(param, "offset"))   return L.phase_off.load(std::memory_order_relaxed);
   if (!strcmp(param, "playfrom")) return L.play_from.load(std::memory_order_relaxed);
+  if (!strcmp(param, "loopa"))    return L.loop_a.load(std::memory_order_relaxed);
+  if (!strcmp(param, "loopb"))    return L.loop_b.load(std::memory_order_relaxed);
+  if (!strcmp(param, "spana"))    return L.span_a.load(std::memory_order_relaxed);
+  if (!strcmp(param, "spanlen"))  return L.span_len.load(std::memory_order_relaxed);
   return 0.0;
 }
 

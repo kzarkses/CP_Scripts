@@ -1111,6 +1111,280 @@ static void test_lane_play_from() {
         "elle est a la phase demandee des le premier bloc joue");
 }
 
+// ---------------------------------------------------------------------------
+// L'ACCOLADE DE BOUCLE — une longueur, pas une porte
+// ---------------------------------------------------------------------------
+// Ce qu'on prouve tient dans un COMPTE de notes, et c'est justement ce qui
+// separe les deux lectures possibles de « je ne veux entendre que ces deux
+// mesures ».
+//
+// Une PORTE laisserait la case tourner sur ses huit beats en n'en faisant
+// sonner que quatre : sur huit beats d'ecoute, chaque note de la zone partirait
+// UNE fois. Une LONGUEUR DE BOUCLE fait revenir la zone deux fois plus
+// souvent : chaque note part DEUX fois. Le test compte, donc il tranche — alors
+// que l'oreille, elle, entend surtout que « ca marche », dans les deux cas.
+static void test_lane_loop_brace() {
+  group("lanes : l'accolade raccourcit la boucle, elle ne bache pas des notes");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(0.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);   // un beat = 24000 frames
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(2.0, std::memory_order_relaxed);        // 8 beats
+  lane_note(L, 0, 0, 0.0, 0.5, 60, 100);
+  lane_note(L, 0, 1, 2.0, 0.5, 62, 100);
+  lane_note(L, 0, 2, 4.0, 0.5, 64, 100);
+  lane_note(L, 0, 3, 6.0, 0.5, 66, 100);
+  L.publish_notes(0, 4);
+
+  // La deuxieme moitie de la case, et rien d'autre.
+  l0.loop_a.store(4.0, std::memory_order_relaxed);
+  l0.loop_b.store(8.0, std::memory_order_relaxed);
+
+  // Un temoin de meme longueur EFFECTIVE, sans accolade : c'est contre lui
+  // qu'on verifie que le verrou de grille tient.
+  Lane& l1 = L.lane(1);
+  l1.port.store(1, std::memory_order_relaxed);
+  l1.bars.store(1.0, std::memory_order_relaxed);        // 4 beats
+  lane_note(L, 1, 0, 0.0, 0.5, 60, 100);
+  L.publish_notes(1, 1);
+
+  L.post(0, kLcSetMode, (double)kLanePlaying);
+  L.post(1, kLcSetMode, (double)kLanePlaying);
+
+  const int B = 512;                    // 0,0213333 beat a 120 BPM
+  LaneCap cap;
+  frame_t clk = 0;
+  int on[128];
+  for (int p = 0; p < 128; ++p) on[p] = 0;
+  double ph_lo = 1e9, ph_hi = -1e9;
+
+  // 370 blocs : 7,89 beat. Juste sous huit, pour que le front du beat 8 tombe
+  // hors de la mesure — un test qui compte des fronts doit choisir ses bornes
+  // loin d'un front, sinon c'est l'arrondi qu'il mesure.
+  for (int i = 0; i < 370; ++i) {
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      if ((cap.msg[k][0] & 0xF0) == 0x90 && cap.msg[k][2] > 0) {
+        on[cap.msg[k][1]]++;
+      }
+    }
+    const double ph = l0.phase.load(std::memory_order_relaxed);
+    if (ph < ph_lo) ph_lo = ph;
+    if (ph > ph_hi) ph_hi = ph;
+    clk += B;
+  }
+
+  check(on[60] == 0 && on[62] == 0,
+        "ce qui est hors de l'accolade ne sonne pas");
+  check(on[64] == 2, "la note du debut de zone revient DEUX fois en huit beats");
+  check(on[66] == 2, "celle du milieu de zone aussi");
+
+  // La phase publiee est en coordonnees de CASE : elle vit DANS l'accolade, et
+  // c'est ce qui fait que le trait de lecture se dessine au bon endroit et que
+  // la voix audio entre dans la bonne partie de la matiere.
+  check(ph_lo >= 4.0 - 1e-6, "la phase publiee ne descend pas sous l'accolade");
+  check(ph_hi < 8.0 + 1e-6, "et ne monte pas au-dessus");
+
+  // LE VERROU DE GRILLE TIENT. Vingt passes plus loin, l'ecart avec un temoin
+  // de meme longueur vaut toujours la meme chose : on a change une longueur,
+  // pas ajoute une horloge.
+  for (int i = 0; i < 4000; ++i) {
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    lane_pull(L, 1, clk, B, &cap);
+    clk += B;
+  }
+  const double d = l0.phase.load(std::memory_order_relaxed)
+                 - l1.phase.load(std::memory_order_relaxed);
+  check_near(d, 4.0, 1e-6, "l'accolade reste verrouillee sur la grille");
+
+  // UNE ACCOLADE QUI NE TIENT PLUS DANS LA CASE NE LA FAIT PAS TAIRE. C'est le
+  // cas qui arrive vraiment : on la pose sur les mesures 3 et 4, puis on
+  // raccourcit la boucle. Le silence serait la pire des reponses, parce que
+  // rien dans le geste ne l'a demande — on revient donc a la case entiere.
+  l0.loop_a.store(10.0, std::memory_order_relaxed);
+  l0.loop_b.store(12.0, std::memory_order_relaxed);
+  for (int p = 0; p < 128; ++p) on[p] = 0;
+  for (int i = 0; i < 800; ++i) {       // 17 beats : deux passes pleines
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      if ((cap.msg[k][0] & 0xF0) == 0x90 && cap.msg[k][2] > 0) on[cap.msg[k][1]]++;
+    }
+    clk += B;
+  }
+  check(on[60] > 0 && on[62] > 0 && on[64] > 0 && on[66] > 0,
+        "hors bornes, on rejoue la case entiere plutot que rien");
+
+  // Et l'effacer rend exactement la case d'avant.
+  l0.loop_a.store(0.0, std::memory_order_relaxed);
+  l0.loop_b.store(-1.0, std::memory_order_relaxed);
+  e.tick(B);
+  check_near(l0.span_len.load(std::memory_order_relaxed), 8.0, 1e-9,
+             "sans accolade, la zone est la case");
+}
+
+// ---------------------------------------------------------------------------
+// MODE SUIVI : LA DATE EXACTE D'UNE NOTE, EN ECHANTILLONS
+// ---------------------------------------------------------------------------
+// Cedric mesure « 45 ms d'avance » sur chaque note. 45 ms a 48 kHz, c'est
+// 2160 echantillons — soit, a une poignee pres, UN BLOC de 2048. Un ecart qui
+// vaut exactement un bloc ne se discute pas : il se localise. Ce test refait la
+// scene avec le bloc qu'il utilise, et il RAPPORTE un nombre plutot qu'un
+// « ok » : c'est la mesure qui doit designer le coupable, pas le raisonnement.
+static void test_lane_follow_timing() {
+  group("lanes : en suivi, une note tombe sur SON echantillon");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(false);           // on SUIT l'hote : c'est le cas de Cedric
+  L.set_launch_q(4.0);            // Q : une mesure
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);      // 4 beats = 96000 frames
+  lane_note(L, 0, 0, 0.0, 0.5, 60, 100);
+  lane_note(L, 0, 1, 1.0, 0.5, 61, 100);
+  lane_note(L, 0, 2, 2.0, 0.5, 62, 100);
+  lane_note(L, 0, 3, 3.0, 0.5, 63, 100);
+  L.publish_notes(0, 4);
+  l0.mode.store(kLaneStopped, std::memory_order_relaxed);
+
+  const int B = 2048;             // le bloc qui vaut 42,7 ms
+  const double SPB = 24000.0;     // frames par beat a 120 BPM
+
+  LaneCap cap;
+  frame_t clk = 0;
+  double worst = 0.0;
+  int seen = 0;
+
+  for (int i = 0; i < 200; ++i) {
+    // L'HOTE PUBLIE SON ANCRE A CHAQUE BLOC, comme Loop.Poll le fait : le beat
+    // du projet, et le frame auquel il vaut ca.
+    L.publish_transport(120.0, (double)clk / SPB, 1, 4.0, clk, 1.0);
+    if (i == 3) L.post(0, kLcPlay, 0.0);
+
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      if ((cap.msg[k][0] & 0xF0) == 0x90 && cap.msg[k][2] > 0) {
+        // La note de hauteur p commence au beat (p - 60) de la boucle, donc sur
+        // la grille du projet toutes les quatre beats.
+        double d = (double)cap.at[k] / SPB - (double)(cap.msg[k][1] - 60);
+        d -= std::floor(d / 4.0) * 4.0;
+        if (d > 2.0) d -= 4.0;                 // ramene dans [-2, +2]
+        const double ms = d * 500.0;           // un beat = 500 ms a 120 BPM
+        if (seen < 6) {
+          std::printf("        note %d : %+.3f ms (%+.0f echantillons)\n",
+                      (int)cap.msg[k][1], ms, d * SPB);
+        }
+        if (std::fabs(ms) > std::fabs(worst)) worst = ms;
+        seen++;
+      }
+    }
+    clk += B;
+  }
+
+  check(seen > 0, "des notes sont sorties");
+  std::printf("        pire ecart : %+.3f ms sur %d notes\n", worst, seen);
+  check(std::fabs(worst) < 1.0,
+        "aucune note ne s'ecarte d'une milliseconde de son beat");
+}
+
+// ---------------------------------------------------------------------------
+// L'ARRET DU TRANSPORT, PUIS SA REPRISE
+// ---------------------------------------------------------------------------
+// « Le clock follow n'attend plus le Q une fois que ca a ete stop une premiere
+// fois. » Ce test dit ce que le moteur FAIT, sans prejuger de ce qu'il devrait
+// faire : quel mode pendant l'arret, et la note tombe-t-elle toujours sur son
+// echantillon a la reprise.
+static void test_lane_transport_stop_resume() {
+  group("lanes : arret du transport, puis reprise");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(false);
+  L.set_launch_q(4.0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);
+  lane_note(L, 0, 0, 0.0, 0.5, 60, 100);
+  L.publish_notes(0, 1);
+  l0.mode.store(kLaneStopped, std::memory_order_relaxed);
+
+  const int B = 2048;
+  const double SPB = 24000.0;
+  LaneCap cap;
+  frame_t clk = 0;
+
+  for (int i = 0; i < 60; ++i) {
+    L.publish_transport(120.0, (double)clk / SPB, 1, 4.0, clk, 1.0);
+    if (i == 3) L.post(0, kLcPlay, 0.0);
+    e.tick(B); lane_pull(L, 0, clk, B, &cap); clk += B;
+  }
+  check(l0.mode.load(std::memory_order_relaxed) == kLanePlaying,
+        "la lane joue avant l'arret");
+  std::printf("        decalage de phase apres lancement : %.6f beat\n",
+              l0.phase_off.load(std::memory_order_relaxed));
+
+  // --- le transport s'arrete, le beat du projet gele -------------------------
+  const frame_t stop_at = clk;
+  for (int i = 0; i < 30; ++i) {
+    L.publish_transport(120.0, (double)stop_at / SPB, 0, 4.0, stop_at, 1.0);
+    e.tick(B); lane_pull(L, 0, clk, B, &cap); clk += B;
+  }
+  std::printf("        pendant l'arret : mode %d, pending %d\n",
+              l0.mode.load(std::memory_order_relaxed),
+              l0.pending.load(std::memory_order_relaxed));
+  // CE QU'ON ATTEND, et non ce qu'on observe : la case reste ALLUMEE mais
+  // redevient EN FILE. C'est la difference entre « ce clip est allume » et
+  // « ce clip est en train de sonner », et c'est elle qui manquait.
+  check(l0.mode.load(std::memory_order_relaxed) == kLaneStopped,
+        "l'arret rend la case a l'etat arrete...");
+  check(l0.pending.load(std::memory_order_relaxed) == kPendPlay,
+        "...mais TOUJOURS EN FILE : allumee, donc entouree et non pleine");
+  check_near(l0.phase_off.load(std::memory_order_relaxed), 0.0, 1e-12,
+             "et le decalage tombe avec le geste de jeu qui l'avait pose");
+
+  // --- le transport repart d'ou il s'est arrete ------------------------------
+  // L'horloge d'echantillons, elle, n'a jamais cesse d'avancer : c'est
+  // exactement la situation ou une ancre mal appariee se voit.
+  const frame_t resume_clk = clk;
+  frame_t first_on = -1;
+  for (int i = 0; i < 120; ++i) {
+    const double beat = (double)(stop_at + (clk - resume_clk)) / SPB;
+    L.publish_transport(120.0, beat, 1, 4.0, clk, 1.0);
+    e.tick(B); lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      if ((cap.msg[k][0] & 0xF0) == 0x90 && cap.msg[k][2] > 0 && first_on < 0) {
+        first_on = cap.at[k];
+      }
+    }
+    clk += B;
+  }
+  check(first_on >= 0, "la lane rejoue apres la reprise");
+  if (first_on >= 0) {
+    const double pbeat = (double)(stop_at + (first_on - resume_clk)) / SPB;
+    double d = pbeat - std::floor(pbeat / 4.0) * 4.0;
+    if (d > 2.0) d -= 4.0;
+    std::printf("        premiere note : beat projet %.4f, ecart %+.3f ms\n",
+                pbeat, d * 500.0);
+    check(std::fabs(d * 500.0) < 1.0, "et elle tombe toujours sur son beat");
+    // ET SUR UNE FRONTIERE DE QUANTIZE, pas au bloc qui suit la reprise :
+    // c'est toute la plainte — « le clock follow n'attend plus le Q ».
+    const double onq = pbeat / 4.0;
+    check(std::fabs(onq - std::floor(onq + 0.5)) < 1e-6,
+          "la reprise attend la frontiere de quantize");
+  }
+}
+
 static void test_lane_no_alloc() {
   group("lanes : zero allocation dans le fil audio");
   Engine e;
@@ -1124,6 +1398,12 @@ static void test_lane_no_alloc() {
     l.port.store(li, std::memory_order_relaxed);
     l.bars.store(1.0, std::memory_order_relaxed);
     for (int k = 0; k < 64; ++k) lane_note(L, li, k, k * 0.0625, 0.05, 40 + k, 100);
+    // La moitie des lanes porte une accolade : le chemin borne doit passer sous
+    // le compteur lui aussi, sans quoi on aurait mesure l'autre.
+    if (li < 4) {
+      l.loop_a.store(1.0, std::memory_order_relaxed);
+      l.loop_b.store(3.0, std::memory_order_relaxed);
+    }
     L.publish_notes(li, 64);
     L.post(li, kLcSetMode, (double)kLanePlaying);
   }
@@ -1199,6 +1479,9 @@ int main() {
   test_lane_playrate();
   test_lane_phase_offset();
   test_lane_play_from();
+  test_lane_loop_brace();
+  test_lane_follow_timing();
+  test_lane_transport_stop_resume();
   test_lane_no_alloc();
 
   std::printf("\n=====================================\n");

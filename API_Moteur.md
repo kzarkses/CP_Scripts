@@ -355,8 +355,8 @@ l'autre.
 |---|---|
 | `CP_LaneCount()` | nombre de lanes servies (32) |
 | `CP_LaneBind(lane, port, chan)` | bool — où cette lane parle. `port` −1 = nulle part |
-| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) |
-| `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` |
+| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) `loopa` `loopb` (**2.1**) |
+| `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` `offset` `playfrom` `loopa` `loopb` `spana` `spanlen` (**2.1**) |
 | `CP_LaneCmd(lane, cmd, arg)` | bool |
 | `CP_LaneSetNote(lane, i, start, len, pitch, vel)` | bool — écrit dans le tampon **qui dort** |
 | `CP_LanePublish(lane, count)` | bool — échange les deux tampons |
@@ -447,6 +447,103 @@ Côté Lua, `Loop.PlayClipFrom(lane, beat)` fait le calcul et incrémente un
 compteur que `Cells` relit : une voix audio tient une date de départ en frames
 et finirait sa passe, alors que le MIDI saute au bloc suivant. Sans ça on
 entendrait les notes sauter et le son rester.
+
+### 3.3 quater L'accolade de boucle — `loopa` / `loopb` (ABI 2.1)
+
+`CP_LaneSet(lane, "loopa"|"loopb", beats)` définit la sous-région qu'une case
+joue en boucle, en beats depuis son début. `loopb <= loopa` l'efface.
+
+**Ce n'est pas une porte, c'est une longueur de boucle**, et toute la valeur de
+la fonctionnalité tient dans cette distinction. Taire les notes du dehors aurait
+été plus simple à écrire : la case aurait continué de tourner sur ses quatre
+mesures en n'en faisant sonner que deux — donc deux mesures de musique suivies
+de deux mesures de silence. Le *loop brace* d'Ableton fait l'autre chose, la
+seule qui soit musicale : **la case devient une boucle de deux mesures**, qui
+revient deux fois plus souvent.
+
+Le verrouillage de phase y survit intact parce que c'est exactement le même
+verrou, sur une autre longueur : une lane de longueur `Ls` ancrée sur le beat
+zéro du projet. On n'a pas ajouté d'horloge, on a changé une longueur — et
+c'est pour ça que le champ ne coûte rien aux lanes qui ne s'en servent pas.
+
+**Ce que le moteur publie, et pourquoi deux paires plutôt qu'une :**
+
+| lecture | ce que c'est |
+|---|---|
+| `loopa` / `loopb` | ce qui a été **demandé**, tel quel — pour l'afficher et le modifier |
+| `spana` / `spanlen` | ce qui est **joué**, après bornage dans la case |
+
+Les deux diffèrent dans le cas qui arrive vraiment : on pose l'accolade sur les
+mesures 3 et 4, puis on raccourcit la boucle à une mesure. Le moteur ramène
+alors l'accolade dans la case et, s'il n'en reste pas une durée musicale, revient
+à la case entière. **Une accolade qui déborde ne doit jamais rendre une case
+muette** — rien dans le geste ne l'a demandé, et c'est le genre de silence qu'on
+attribue au moteur. Le bornage vit donc d'un seul côté, et Lua lit son résultat
+au lieu d'en tenir une deuxième copie qui aurait divergé exactement sur ce cas.
+
+**`phase` est publiée en coordonnées de CASE**, accolade comprise : elle vaut
+`spana + (phase dans la zone)`. C'est ce que le lecteur demande — où dans le
+clip on se trouve, pour le trait de lecture de l'éditeur et pour l'endroit où la
+voix audio doit entrer dans la matière. `lenbeats` reste la longueur de la
+**case** : une accolade ne raccourcit pas le clip, et c'est le contrat que tous
+les lecteurs ont déjà.
+
+**Persistée, contrairement au décalage de phase**, et la différence est de
+nature : un décalage est un geste de jeu, une accolade est une édition, au même
+titre que la longueur de boucle ou les notes. La perdre à la fermeture en aurait
+fait un brouillon. Format de sérialisation **7**.
+
+Le harnais compte des notes plutôt que d'écouter : sur huit beats, une zone de
+quatre fait partir chacune de ses notes **deux** fois. Une porte en aurait donné
+une seule — c'est le test qui tranche entre les deux lectures, là où l'oreille
+entend surtout que « ça marche », dans les deux cas.
+
+Côté Lua : `Loop.SetLoopRange`, `Loop.GetLoopRange`, `Loop.Span`. Et `Cells`
+suit, parce que « longueur de la case » et « longueur d'une passe » s'y
+confondaient — sans quoi les notes auraient tourné sur deux mesures et le son
+sur quatre.
+
+### 3.3 quinquies Un arrêt de transport remet la case **en file**
+
+En mode Suivre, l'arrêt du transport ne laisse plus une case en « joue ». Elle
+repasse **arrêtée + en file** (`mode = 2`, `pending = 1`) : allumée, donc
+dessinée **entourée** et non pleine, et elle repartira sur une frontière de
+quantize quand le transport reviendra.
+
+La distinction que ça règle est celle entre *« ce clip est allumé »* et *« ce
+clip est en train de sonner »*. Garder le mode à « joue » à travers l'arrêt —
+c'était l'intention, et elle était bonne — faisait repartir la case **au bloc
+suivant** le retour du transport, sans jamais repasser par la file : elle ne
+rattrapait donc aucune frontière et jouait contre l'arrangement.
+
+**Le décalage de phase tombe avec l'arrêt.** Il avait été calculé contre une
+frontière de lancement qui n'existe plus ; le garder ferait repartir la case à
+côté de la grille. Le document dit déjà qu'un décalage est un geste de **jeu** —
+un arrêt de transport termine ce geste.
+
+### 3.3 sexies Deux horizons, et ils ne sont pas le même
+
+Mesuré au harnais sur un bloc de 2048, et c'est la mesure qui a désigné les
+deux coupables — le raisonnement cherchait ailleurs.
+
+**Une transition en retard part au DÉBUT du bloc, pas à sa fin.** `phase_hit`
+rend le *prochain* instant où la phase vaut ce qu'on cherche ; au premier bloc
+d'un lancement le point est déjà passé, donc il repartait une boucle entière
+plus loin et le bornage à la fin du bloc datait la note **au plus tard
+possible**. La première note d'un lancement quantifié sortait **48 ms** après
+son temps. C'est la même règle que `drain_midi` applique déjà à un événement
+dépassé : mieux vaut un bloc de retard qu'un bloc et demi.
+
+**Ce qui COMMENCE se résout sur le bloc qui CONTIENT sa frontière**, pas sur le
+premier bloc qui l'a dépassée. La porte réconcilie sur la phase de **fin** de
+bloc : lui livrer une lane passée à « joue » au bloc *suivant* lui faisait
+manquer la frontière de quelques centaines d'échantillons. Ce qui **s'arrête**
+garde l'ancien horizon, et ce n'est pas un oubli — un arrêt résolu sur le bloc
+qui contient sa frontière couperait jusqu'à une taille de tampon **avant**
+elle, alors qu'un arrêt quantifié promet exactement le contraire.
+
+Après les deux : **0,000 ms d'écart sur chaque note**, et la première note
+d'une reprise de transport tombe sur sa frontière de quantize à l'échantillon.
 
 ### 3.3 bis Une note qui a un destinataire (ABI 1.8)
 
