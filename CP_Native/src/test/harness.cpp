@@ -1546,6 +1546,108 @@ static void test_lane_probability() {
   std::printf("      lanes 2 et 3 : %d fronts, %d en commun\n", seen, same);
 }
 
+// ---------------------------------------------------------------------------
+// UNE NOTE AUSSI LONGUE QUE LA ZONE NE SE FAIT PAS HACHER
+// ---------------------------------------------------------------------------
+// Trouve par une relecture adversariale, puis MESURE : avec une note dont la
+// longueur atteint la zone, `d` est ramene dans [0, Ls) et ne represente plus
+// « depuis quand elle sonne ». Le numero de passe avancait donc a chaque
+// frontiere alors que la note n'avait pas re-attaque, et le tirage etait refait
+// AU MILIEU d'elle : 47 attaques pour 46 coupures sur une note tenue a 50 %,
+// c'est-a-dire un hachage regulier au lieu d'une note.
+//
+// Une note qui couvre toute la boucle ne re-attaque jamais : il n'y a pas de
+// passe pour laquelle se taire. Elle joue, et c'est la seule lecture qui ne
+// produise pas d'artefact.
+static void test_lane_probability_held_note() {
+  group("lanes : une note aussi longue que la zone ne se fait pas hacher");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(0.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);          // 4 beats
+  // Une accolade d'UN beat, et une note de deux : elle deborde la zone.
+  l0.loop_a.store(0.0, std::memory_order_relaxed);
+  l0.loop_b.store(1.0, std::memory_order_relaxed);
+  lane_note(L, 0, 0, 0.0, 2.0, 60, 100, 50);
+  L.publish_notes(0, 1);
+  L.post(0, kLcSetMode, (double)kLanePlaying);
+
+  const int B = 512;
+  LaneCap cap;
+  frame_t clk = 0;
+  int on = 0, off = 0;
+  for (int i = 0; i < 1500; ++i) {           // ~16 beats
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      const int st = cap.msg[k][0] & 0xF0;
+      if (st == 0x90 && cap.msg[k][2] > 0) on++;
+      else if (st == 0x80 || (st == 0x90 && cap.msg[k][2] == 0)) off++;
+    }
+    clk += B;
+  }
+  std::printf("      note tenue a 50%% : %d attaques, %d coupures\n", on, off);
+  check(on == 1 && off == 0,
+        "elle attaque UNE fois et ne se coupe jamais");
+}
+
+// ---------------------------------------------------------------------------
+// LE BATTEMENT HONORE LES DEMANDES DE RETRAIT
+// ---------------------------------------------------------------------------
+// Depuis que le retrait est une demande, `collect` ne l'honore que si plus
+// personne ne tient le clip — et il lit `Clip::refs` pour le savoir. Ce compte
+// se deduit des voix : sans le rafraichir, une demande posee pendant qu'une
+// voix jouait restait gelee sur un compte perime et n'etait plus JAMAIS
+// honoree. Une fuite avec un drapeau dessus.
+//
+// Ce test passe par le CHEMIN DU BATTEMENT (refresh + collect), pas par
+// l'appel de dechargement, parce que c'est celui qui manquait.
+static void test_retire_honoured_by_heartbeat() {
+  group("le battement honore une demande de retrait laissee en attente");
+  EBox eb; Engine& e = *eb;
+  const int clip = make_ramp_clip(e, 48000, 2);
+  const voice_h v = e.voice_alloc(2);
+
+  Cmd c = mk(kCmdVoicePlay, v, 0);
+  c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayLoop;
+  e.post(2, c);
+
+  sample_t buf[64 * 2];
+  g_in_audio = true;
+  for (int b = 0; b < 4; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  // La demande est posee pendant que la voix joue : elle reste en attente.
+  e.refresh_clip_refs();
+  e.pool().retire(clip, e.block_index());
+  check_eq(e.pool().loaded_count(), 1, "la demande attend, la matiere reste");
+
+  // La voix s'arrete, et PLUS PERSONNE NE RAPPELLE CP_ClipUnload.
+  Cmd st_cmd = mk(kCmdVoiceStop, v, 0);
+  e.post(2, st_cmd);
+  g_in_audio = true;
+  for (int b = 0; b < 8; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  // Seul le battement tourne — exactement ce que fait CP_ClockSync par frame.
+  for (int b = 0; b < 6; ++b) {
+    e.refresh_clip_refs();
+    e.pool().collect(e.block_index());
+    g_in_audio = true;
+    e.render_port(2, buf, 64, 2); e.tick(64);
+    g_in_audio = false;
+  }
+  check_eq(e.pool().loaded_count(), 0,
+           "le battement seul suffit a rendre la memoire");
+  e.voice_release(v);
+}
+
 static void test_lane_no_alloc() {
   group("lanes : zero allocation dans le fil audio");
   Engine e;
@@ -1631,6 +1733,7 @@ int main() {
   test_alloc_cycle();
   test_clip_pulled_under_voice();
   test_retire_waits_for_the_voice();
+  test_retire_honoured_by_heartbeat();
   test_seek_and_live_loop();
   test_two_threads();
   test_clock();
@@ -1645,6 +1748,7 @@ int main() {
   test_lane_follow_timing();
   test_lane_transport_stop_resume();
   test_lane_probability();
+  test_lane_probability_held_note();
   test_lane_no_alloc();
 
   std::printf("\n=====================================\n");

@@ -30,9 +30,17 @@ Cédric qui écoute, et c'est la seule chose qui manque à cette liste.
 déclarés que rien ne lit, et le pitch à durée constante, qui demande un
 étirement qu'un fil audio de 2005 ne fera pas.
 
-**L'état du moteur** : ABI **2.3**, formats de sérialisation **10** (lanes) et
-**CPC1** (clips), **178 assertions** au harnais, zéro allocation dans le fil
+**L'état du moteur** : ABI **2.4**, formats de sérialisation **10** (lanes) et
+**CPC1** (clips), **181 assertions** au harnais, zéro allocation dans le fil
 audio.
+
+**Une relecture adversariale a suivi** (quatre angles, chaque trouvaille
+attaquée par un sceptique) : dix-sept trouvailles, quatre réfutées, **treize
+corrigées**. Les deux plus graves étaient de la même journée — le mute séparé
+dans des tables **locales à un état Lua** alors que la lane est partagée, et la
+phase **gelée** dans l'instantané alors qu'on l'apparie avec un instant vif. Le
+détail est au journal ; les deux leçons y sont nommées, parce que le dépôt les
+avait déjà payées sous d'autres noms.
 
 L'ordre reste écrit ci-dessous parce qu'il dit *pourquoi* chacun venait là, et
 que c'est ce qu'on relit — pas la case.

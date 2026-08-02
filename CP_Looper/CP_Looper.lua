@@ -144,14 +144,21 @@ local function makeLoopBackend(strip)
             Loop.SetNoteCount(lane, n - 1)
             Loop.BumpVer(lane)
         end,
-        setNote = function(i, t, len, pitch, vel)    -- 1-based, nil = keep
+        -- ⚠️ LA PROBABILITE FAIT PARTIE DE LA NOTE, ET CE CHEMIN LA RELIT POUR
+        -- LA REECRIRE. `Loop.GetNote` rend CINQ valeurs ; n'en prendre que
+        -- quatre faisait passer `nil` a `Loop.PutNote`, qui vaut cent par
+        -- defaut — donc chaque deplacement de note dans le piano roll du Looper
+        -- remettait sa probabilite a « joue toujours », en silence. Un
+        -- lire-modifier-reecrire doit relire TOUT ce qu'il reecrit.
+        setNote = function(i, t, len, pitch, vel, prob)
             local lane = LL(strip)
-            local s, l, p, v = Loop.GetNote(lane, i - 1)
+            local s, l, p, v, pr = Loop.GetNote(lane, i - 1)
             if t     ~= nil then s = t end
             if len   ~= nil then l = len end
             if pitch ~= nil then p = pitch end
             if vel   ~= nil then v = vel end
-            Loop.PutNote(lane, i - 1, s, l, p, v)
+            if prob  ~= nil then pr = prob end
+            Loop.PutNote(lane, i - 1, s, l, p, v, pr)
             Loop.BumpVer(lane)
         end,
         sort = function() end,

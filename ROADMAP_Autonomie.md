@@ -3658,3 +3658,109 @@ incomparablement moins cher qu'une lane coincee sans issue — et le mecanique s
 refait tout seul, puisque `armLane` le repose sur chaque case audio dans la meme
 frame que le rappel, avant qu'un seul bloc audio ne passe.
 
+## La relecture adversariale, et ce qu'elle a trouvé de moi
+
+Quatre relecteurs sur le diff du jour, chaque trouvaille attaquée par un
+sceptique dont le doute profitait au code. **Dix-sept trouvailles, quatre
+réfutées, treize confirmées** — et l'essentiel de ce qu'elle a trouvé, je
+venais de l'écrire.
+
+### Le mute séparé était séparé au mauvais endroit
+
+C'est la plus grave, et elle est humiliante de la bonne façon. J'ai déplacé la
+vérité du mute **du moteur vers deux tables Lua**, sans voir que `Loop.lua` est
+chargé **séparément par chaque fenêtre** : trois ReaScript, trois états Lua,
+trois paires de tables — pour **une** lane. Chaque fenêtre recomposait donc le OU
+à partir de la seule moitié des gestes qu'elle avait vue, et l'écrivait par
+dessus celle de l'autre. Résultat :
+
+- le mute du Looper n'atteignait **jamais** la voix de la case audio de la
+  Session — c'est-à-dire *exactement* le défaut que la séparation corrigeait ;
+- et `armLane`, en posant son mute mécanique, **effaçait** le mute musical qu'un
+  autre script venait de poser.
+
+C'est la leçon de gmem sous une autre forme : **deux copies d'une vérité
+divergent précisément sur le cas où elle sert.** Un fait partagé se range là où
+il est partagé — le champ est descendu dans le moteur (`umute`, ABI 2.4), et il
+ne reste en Lua ni table ni recomposition.
+
+Deux corollaires trouvés dans la foulée : le mute musical vaut pour la **paire**
+(la bande du Looper montre une piste, pas une lane — n'écrire que la moitié
+vivante le faisait disparaître au premier échange de clip), et il **salit
+l'état**, puisqu'il est désormais persisté.
+
+### La phase gelée : la faute que ce dépôt a déjà payée 28 ms
+
+L'instantané de frame y avait mis `phase`. Or `Cells.drive` calcule une date de
+départ en faisant la différence entre la phase et le beat du moteur, et
+`PlayClipFrom` un décalage de la même façon. **Les deux sont publiés ensemble, à
+la fin du même bloc audio** : geler l'un et laisser l'autre vif fait entrer dans
+le calcul tous les blocs qui se terminent entre les deux lectures — zéro, un, ou
+six selon ce que la frame a fait. Ce n'est même pas un retard constant qu'on
+pourrait compenser : c'est de la **gigue sur le point de boucle**.
+
+C'est mot pour mot `GetPlayPosition` contre `GetPlayPosition2`, sous un autre
+déguisement : **apparier deux instants différents**. Le commentaire que j'avais
+écrit pour justifier l'échange contenait la prémisse fausse — « une frame de
+defer dure plus longtemps qu'un bloc », ce qui rend justement *probable* qu'une
+frontière de bloc tombe dans la fenêtre.
+
+La règle est maintenant écrite au-dessus de `Loop.Phase`, qui est redevenue
+vive : **ce que le moteur republie à chaque bloc et qu'on apparie avec un instant
+se lit vif ; ce qui ne change qu'à un geste passe par l'instantané.** La phase et
+la cible d'attente, et rien d'autre. Le gain de l'instantané est intact : ce qui
+coûtait cher, c'était le tag, le mode et la file, lus par case.
+
+### Six autres, plus simples et tout aussi réelles
+
+**Un projet sans état CP n'est pas « rien à faire », c'est « tout vider ».**
+`Deserialize` sort à sa première ligne sur une chaîne vide, donc changer d'onglet
+vers un projet neuf laissait les seize lanes **jouer le set de l'ancien** dans
+les pistes du nouveau, pendant que la grille se dessinait vide. Le cas n'existait
+pas tant que personne ne détectait le changement de projet : il est né avec lui,
+ce matin.
+
+**L'accolade de boucle ne survivait à aucun aller-retour.** Elle était
+documentée en tête de `Clip.lua` et émise par `Loop.LaneToClip`, mais absente du
+registre de champs : `Clip.serialize` la jetait. Un champ documenté et non
+enregistré est pire qu'un champ absent — on construit dessus.
+
+**Le piano roll du Looper remettait toutes les probabilités à cent.** Son backend
+relit la note pour la réécrire, et ne prenait que quatre des cinq valeurs que
+`Loop.GetNote` rend désormais. Un lire-modifier-réécrire doit relire **tout** ce
+qu'il réécrit.
+
+**Une note aussi longue que la zone se faisait hacher.** Le numéro de passe est
+pris sur l'attaque via `d`, qui est ramené dans `[0, Ls)` : pour une note qui
+couvre la boucle, il ne représente plus « depuis quand elle sonne ». Le tirage
+était refait au milieu d'elle — mesuré au harnais : 47 attaques pour 46 coupures.
+Une note qui ne re-attaque jamais n'a pas de passe pour laquelle se taire ; elle
+joue. Assertion ajoutée.
+
+**Une demande de retrait n'était jamais honorée par le battement.** `collect`
+tourne à chaque frame, mais `refresh_clip_refs` n'était appelé que depuis le
+déchargement : la demande restait gelée sur un compte périmé, et le clip résident
+jusqu'à la fermeture. Une fuite avec un drapeau dessus. Assertion ajoutée, qui
+passe **par le chemin du battement** parce que c'est celui qui manquait.
+
+**`ABI_MIN` était resté à 1.7 pendant trois versions.** Contre un moteur plus
+ancien, aucun des trois manques n'échoue bruyamment : la probabilité est perdue,
+la signature de boucle ne prend pas, le mute musical ne tait rien. Trois
+fonctionnalités qui **ont l'air de marcher**. Il suit maintenant ce que ce
+fichier appelle réellement.
+
+**Et `Loop.LoadGlobals` rendait `false` pour toute sauvegarde récente** — son
+expression n'appariait que trois champs d'un en-tête qui en porte quatre depuis
+le format 8. Sans conséquence, son unique appelant enchaînant sur `LoadState` ;
+mais une fonction qui rend toujours faux est un piège armé pour le suivant.
+
+### Ce que je retiens
+
+Les treize confirmées se rangent en deux familles, et aucune n'est une étourderie
+locale. **Une vérité partagée qu'on privatise** (le mute), et **deux instants
+qu'on apparie sans vérifier qu'ils viennent du même bloc** (la phase). Le dépôt
+avait déjà payé les deux, sous d'autres noms — gmem, et `GetPlayPosition`. Les
+avertissements étaient écrits ; ils n'étaient pas écrits **là où je suis passé**.
+
+181 assertions au harnais, zéro échec, zéro allocation dans le fil audio.
+

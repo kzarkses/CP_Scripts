@@ -355,8 +355,8 @@ l'autre.
 |---|---|
 | `CP_LaneCount()` | nombre de lanes servies (32) |
 | `CP_LaneBind(lane, port, chan)` | bool — où cette lane parle. `port` −1 = nulle part |
-| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) `loopa` `loopb` (**2.1**) `tsnum` (**2.3**) |
-| `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` `offset` `playfrom` `loopa` `loopb` `spana` `spanlen` (**2.1**) `tsnum` (**2.3**) |
+| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) `loopa` `loopb` (**2.1**) `tsnum` (**2.3**) `umute` (**2.4**) |
+| `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` `offset` `playfrom` `loopa` `loopb` `spana` `spanlen` (**2.1**) `tsnum` (**2.3**) `umute` (**2.4**) |
 | `CP_LaneCmd(lane, cmd, arg)` | bool |
 | `CP_LaneSetNote(lane, i, start, len, pitch, vel, prob)` | bool — écrit dans le tampon **qui dort** ; `prob` en pourcent, **100 = toujours** (**2.2**) |
 | `CP_LanePublish(lane, count)` | bool — échange les deux tampons |
@@ -415,11 +415,49 @@ Dégénérescence prévue : un tampon plus long que la boucle elle-même sautera
 des notes entières. Dans ce cas seul on revient à la phase de début de bloc, ce
 qui est exactement le comportement du JSFX — moins juste, jamais faux.
 
+> ⚠️ **`Loop.ABI_MIN` doit suivre ce que `Loop.lua` APPELLE, pas ce dont il a
+> vaguement besoin.** Il est resté à 1.7 pendant trois versions d'ABI, et aucun
+> des trois manques n'échouait bruyamment contre un moteur plus ancien : la
+> probabilité était perdue, la signature de boucle ne prenait pas, le mute
+> musical ne taisait rien. **Trois fonctionnalités qui ont l'air de marcher.**
+> Refuser le moteur est la seule réponse honnête, et les fenêtres le disent déjà
+> (`cells: silent`, `engine native …`).
+
 > ⚠️ **La version de l'ABI est un `double`, donc sa mineure ne va pas au-delà
 > de 9.** `1.10` écrit dans le code **vaut 1.1** : l'extension charge très bien
 > et se fait refuser par tous les scripts, qui testent un minimum — plus une
 > note, plus un son, et rien n'a planté. Après 1.9 vient donc **2.0**, et ce
 > n'est pas une rupture de compatibilité : c'est une contrainte d'écriture.
+
+### 3.3 septies Les deux mutes — `mute` et `umute` (ABI 2.4)
+
+Le moteur tait une lane si **l'un OU l'autre** est posé, et il n'a pas à savoir
+lequel parle :
+
+- **`mute`, mécanique** — « le MIDI de cette lane ne doit pas sortir ». La
+  Session le pose sur une case **audio**, dont la lane porte une note unique qui
+  ne doit pas atteindre l'instrument de la colonne. C'est du câblage.
+- **`umute`, musical** — « tais cette lane ». C'est le bouton du Looper, et il
+  doit taire aussi la **voix** de la case audio, qui n'est pas une lane. C'est
+  Lua qui s'en charge, en lisant ce champ (`Cells.drive`).
+
+> ⚠️ **Pourquoi le moteur et pas Lua.** La séparation a d'abord été écrite dans
+> deux tables Lua, et c'était faux pour une raison invisible à la relecture :
+> `Loop.lua` est chargé **séparément par chaque fenêtre** — trois ReaScript,
+> trois états Lua, trois paires de tables — alors que la lane est **une**. Chaque
+> fenêtre recomposait donc le OU à partir de la seule moitié des gestes qu'elle
+> avait vue, et l'écrivait par-dessus celle de l'autre : le mute du Looper
+> n'atteignait jamais la case audio de la Session, c'est-à-dire *exactement* le
+> défaut que la séparation devait corriger.
+>
+> **Un fait partagé se range là où il est partagé.** C'est la même leçon que
+> gmem, sous une autre forme : deux copies d'une vérité divergent précisément
+> sur le cas où elle sert.
+
+Côté Lua, `Loop.SetUserMute` écrit **les deux moitiés de la paire** — la bande du
+Looper montre une piste, pas une lane, et la moitié vivante bascule sur sa
+jumelle à chaque échange de clip. `Loop.AdoptUserMute` restitue sans marquer
+l'état sale, comme `AdoptArmedLane`.
 
 ### 3.3 sexies La signature de la boucle — `tsnum` (ABI 2.3)
 

@@ -106,7 +106,13 @@ using namespace cp;
 // A L'ENDROIT OU LA TETE DE LECTURE SE TROUVE : une seule mesure en 3/4
 // quelque part changeait la longueur de TOUTES les lanes au moment ou le
 // transport la traversait, alors que les notes sont en beats absolus.
-static const double kEngineABI = 2.3;
+// ---------------------------------------------------------------------------
+// 2.4 : CP_LaneSet(lane, "umute", 0|1) — LE MUTE MUSICAL, distinct du mecanique.
+// Le moteur tait la lane si l'un OU l'autre est pose. La separation avait
+// d'abord ete tentee dans deux tables Lua : elle etait fausse, parce que
+// `Loop.lua` est charge separement par chaque fenetre alors que la lane est UNE,
+// donc chaque fenetre recomposait le OU a partir de la moitie qu'elle voyait.
+static const double kEngineABI = 2.4;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -848,6 +854,15 @@ double CP_ClockSync() {
   // des clips retires : le contrat dit qu'une fenetre appelle ceci une fois par
   // frame. Sans point de passage regulier, un clip decharge pendant qu'aucun
   // autre n'est charge garderait sa RAM jusqu'a la fermeture.
+  //
+  // ⚠️ LE COMPTE D'ABORD, SINON RIEN N'EST JAMAIS RENDU. Depuis que le retrait
+  // est une DEMANDE, `collect` ne l'honore que lorsque plus aucune voix ne tient
+  // le clip — et il lit `Clip::refs` pour le savoir. Ce compte se deduit des
+  // voix, donc il faut le refaire ici aussi : sans ca, un clip retire pendant
+  // qu'une voix le jouait restait gele sur un compte perime et n'etait plus
+  // JAMAIS libere. Une demande differee qu'on n'honore pas est une fuite avec un
+  // drapeau dessus.
+  g_eng->refresh_clip_refs();
   g_eng->pool().collect(g_eng->block_index());
   return (double)s;
 }
@@ -951,6 +966,7 @@ bool CP_LaneSet(int lane, const char* param, double value) {
   Lane& L = g_eng->lanes().lane(lane);
   if (!strcmp(param, "bars"))  { L.bars.store(value > 0.0 ? value : 1.0, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "mute"))  { L.muted.store(value != 0.0 ? 1 : 0, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "umute")) { L.user_muted.store(value != 0.0 ? 1 : 0, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "tag"))   { L.tag.store(value, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "offset")) { L.phase_off.store(value, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "playfrom")) { L.play_from.store(value, std::memory_order_relaxed); return true; }
@@ -976,6 +992,7 @@ double CP_LaneGet(int lane, const char* param) {
   if (!strcmp(param, "recgen"))   return (double)L.rec_gen.load(std::memory_order_relaxed);
   if (!strcmp(param, "bars"))     return L.bars.load(std::memory_order_relaxed);
   if (!strcmp(param, "mute"))     return L.muted.load(std::memory_order_relaxed) ? 1.0 : 0.0;
+  if (!strcmp(param, "umute"))    return L.user_muted.load(std::memory_order_relaxed) ? 1.0 : 0.0;
   if (!strcmp(param, "port"))     return (double)L.port.load(std::memory_order_relaxed);
   if (!strcmp(param, "offset"))   return L.phase_off.load(std::memory_order_relaxed);
   if (!strcmp(param, "playfrom")) return L.play_from.load(std::memory_order_relaxed);

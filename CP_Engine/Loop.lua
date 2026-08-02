@@ -95,7 +95,14 @@ Loop.LANE_TAG_BASE = 999000
 -- what-you-hear position, which puts every note out late by the device's output
 -- latency. Running against it would sound broken while claiming to work, so the
 -- honest answer is to decline the engine.
-local ABI_MIN = 1.7
+-- 2.4, et ce n'est pas de la prudence : ce fichier APPELLE des surfaces qui
+-- n'existent qu'a partir de la. `CP_LaneSetNote` avec son septieme argument
+-- (2.2), `CP_LaneSet(lane, "tsnum")` (2.3), `CP_LaneSet(lane, "umute")` (2.4).
+-- Contre un moteur plus ancien, aucune de ces trois n'echoue bruyamment : la
+-- probabilite est perdue, la signature de boucle ne prend pas, et le mute
+-- musical ne tait rien. Trois fonctionnalites qui ont l'air de marcher. Refuser
+-- le moteur est la seule reponse honnete, et les fenetres le DISENT deja.
+local ABI_MIN = 2.4
 local NATIVE  = false
 
 local EXT_SEC    = "CP_Loop"
@@ -915,37 +922,66 @@ end
 --
 -- Le moteur n'apprend rien de neuf : la separation est entierement Lua, parce
 -- que c'est ici que les deux intentions se rencontrent.
-local mech_mute = {}    -- [lane] cablage : ce MIDI ne doit pas sortir
-local user_mute = {}    -- [lane] musique : tais cette lane
-
-local function applyMute(lane)
-    if not NATIVE then return end
-    local on = mech_mute[lane] or user_mute[lane]
-    r.CP_LaneSet(lane, "mute", on and 1 or 0)
-end
-
--- L'intention MECANIQUE. C'est celle que CP_Session pose sur une case audio.
+-- ⚠️ LES DEUX INTENTIONS VIVENT DANS LE MOTEUR (ABI 2.4), PAS ICI.
+--
+-- La premiere version les tenait dans deux tables Lua de ce fichier, et c'etait
+-- FAUX pour une raison qui ne se voit pas a la relecture : `Loop.lua` est charge
+-- SEPAREMENT par chaque fenetre — trois ReaScript, trois etats Lua, trois paires
+-- de tables — alors que la lane est UNE. Chaque fenetre recomposait donc le OU a
+-- partir de la seule moitie des gestes qu'elle avait vue, et l'ecrivait
+-- par-dessus celle de l'autre :
+--
+--   · le mute du Looper n'atteignait jamais la voix de la case audio de la
+--     Session — c'est-a-dire exactement le defaut que la separation corrigeait ;
+--   · et `armLane`, en posant son mute mecanique, effacait le mute musical qu'un
+--     autre script venait de poser.
+--
+-- Un fait partage se range la ou il est partage. Le moteur fait le OU ; ici il
+-- ne reste que deux ecritures et deux lectures, sans etat.
 function Loop.SetMute(lane, on)
-    mech_mute[lane] = on and true or nil
-    applyMute(lane)
+    if NATIVE then r.CP_LaneSet(lane, "mute", on and 1 or 0) end
 end
 
 -- L'intention MUSICALE — le bouton du Looper. `Cells` la lit pour taire la voix
--- de la case audio de la meme colonne : c'est la moitie qui manquait, et elle
--- ne peut se brancher que sur celle-ci.
+-- de la case audio de la meme colonne : c'est la moitie qui manquait.
+--
+-- ELLE VAUT POUR LA PAIRE ENTIERE. La bande du Looper montre une PISTE, pas une
+-- lane, et la moitie vivante bascule sur sa jumelle a chaque echange de clip :
+-- n'ecrire que celle qu'on voit ferait disparaitre le mute au premier
+-- changement de case, sans que personne n'ait rien demande.
 function Loop.SetUserMute(lane, on)
-    user_mute[lane] = on and true or nil
-    applyMute(lane)
+    if not NATIVE then return end
+    local n = Loop.TRACKS
+    local a = (lane or 0) % n
+    r.CP_LaneSet(a, "umute", on and 1 or 0)
+    r.CP_LaneSet(a + n, "umute", on and 1 or 0)
+    -- IL EST PERSISTE (format 10), DONC IL SALIT. L'autosave ne surveille que
+    -- les notes et le mode : sans ceci, un mute pose puis sauve avec le projet
+    -- n'etait tout simplement pas ecrit.
+    Loop.MarkDirty()
 end
 
-function Loop.GetUserMute(lane) return user_mute[lane] == true end
-function Loop.GetMechMute(lane) return mech_mute[lane] == true end
+-- RESTITUER N'EST PAS UN GESTE. Le rappel repose le mute musical sans salir
+-- l'etat — sinon charger un projet declencherait aussitot une reecriture de ce
+-- qu'on vient de lire — et sans propager a la paire, parce que le blob dit
+-- lane par lane ce que chacune valait. Meme raison, meme forme que
+-- `Loop.AdoptArmedLane`.
+function Loop.AdoptUserMute(lane, on)
+    if NATIVE then r.CP_LaneSet(lane, "umute", on and 1 or 0) end
+end
 
--- Ce que le moteur fait EFFECTIVEMENT, c'est-a-dire le OU des deux. Lu depuis
--- le moteur et non depuis les tables : c'est lui qui joue, et deux verites qui
--- s'accordent presque valent moins qu'une seule.
-function Loop.GetMute(lane)
+function Loop.GetUserMute(lane)
+    return NATIVE and r.CP_LaneGet(lane, "umute") >= 0.5
+end
+function Loop.GetMechMute(lane)
     return NATIVE and r.CP_LaneGet(lane, "mute") >= 0.5
+end
+
+-- Ce que le moteur fait EFFECTIVEMENT, c'est-a-dire le OU des deux.
+function Loop.GetMute(lane)
+    if not NATIVE then return false end
+    return r.CP_LaneGet(lane, "mute") >= 0.5
+        or r.CP_LaneGet(lane, "umute") >= 0.5
 end
 
 -- The sound channel is gone with the router: a sound cell is a CP voice on its
@@ -1036,8 +1072,7 @@ end
 -- sans quoi une case armee puis dessinee dans la meme frame clignoterait au
 -- mauvais endroit pendant une frame.
 local sn_tag, sn_mode, sn_pend = {}, {}, {}
-local sn_ph, sn_len, sn_tgt    = {}, {}, {}
-local sn_sa, sn_slen           = {}, {}
+local sn_len, sn_sa, sn_slen   = {}, {}, {}
 
 local function snapshot()
     for lane = 0, Loop.MAX_LANES - 1 do
@@ -1045,15 +1080,13 @@ local function snapshot()
             sn_tag[lane]  = math.floor(r.CP_LaneGet(lane, "tag") + 0.5)
             sn_mode[lane] = math.floor(r.CP_LaneGet(lane, "mode") + 0.5)
             sn_pend[lane] = math.floor(r.CP_LaneGet(lane, "pending") + 0.5)
-            sn_ph[lane]   = r.CP_LaneGet(lane, "phase")
             sn_len[lane]  = r.CP_LaneGet(lane, "lenbeats")
-            sn_tgt[lane]  = r.CP_LaneGet(lane, "target")
             sn_sa[lane]   = r.CP_LaneGet(lane, "spana")
             sn_slen[lane] = r.CP_LaneGet(lane, "spanlen")
         else
             sn_tag[lane], sn_mode[lane], sn_pend[lane] = 0, 0, 0
-            sn_ph[lane], sn_len[lane], sn_tgt[lane]    = 0, 4, 0
-            sn_sa[lane], sn_slen[lane]                 = 0, 4
+            sn_len[lane] = 4
+            sn_sa[lane], sn_slen[lane] = 0, 4
         end
     end
 end
@@ -1137,7 +1170,24 @@ function Loop.GetLaneAudio() return false end
 -- 0 empty · 1 recording · 2 stopped · 3 playing · 4 armed · 5 overdubbing
 function Loop.Mode(lane)       return sn_mode[lane] or 0 end
 function Loop.NEv(lane)        return store(lane).n end
-function Loop.Phase(lane)      return sn_ph[lane] or 0 end
+
+-- ⚠️ LA PHASE N'EST PAS DANS L'INSTANTANE, ET C'EST LE CONTRE-EXEMPLE QUI
+-- DEFINIT LA REGLE.
+--
+-- Elle y a ete une heure, et c'etait la faute que ce depot a deja payee 28 ms :
+-- APPARIER DEUX INSTANTS DIFFERENTS. La phase et le beat du moteur sont publies
+-- ENSEMBLE, a la fin du meme bloc audio ; `Cells.drive` calcule une date de
+-- depart en faisant leur difference, et `PlayClipFrom` un decalage de la meme
+-- facon. Geler l'un et laisser l'autre vif fait entrer dans le calcul tous les
+-- blocs audio qui se terminent entre les deux lectures — soit zero, soit un, soit
+-- six selon ce que la frame a fait entre-temps. Ce n'est meme pas un retard
+-- constant qu'on pourrait compenser : c'est de la gigue sur le point de boucle.
+--
+-- LA REGLE, donc : ce que le moteur republie A CHAQUE BLOC et qu'on APPARIE avec
+-- un instant se lit VIF. Ce qui ne change qu'a un geste — le tag, le mode, la
+-- file, la longueur, la zone — passe par l'instantane. C'est la phase et la
+-- cible d'attente, et rien d'autre.
+function Loop.Phase(lane)      return NATIVE and r.CP_LaneGet(lane, "phase") or 0 end
 function Loop.LenBeats(lane)
     local v = sn_len[lane] or 0
     return v > 0 and v or 4
@@ -1146,13 +1196,17 @@ function Loop.EvtVersion(lane) return evtver[lane] or 0 end
 function Loop.HasContent(lane) return store(lane).n > 0 end
 -- queued launch: 0 none · 1 play · 2 stop · 3 rec · 4 stop-rec · 5 overdub
 function Loop.Pending(lane)       return sn_pend[lane] or 0 end
-function Loop.PendingTarget(lane) return sn_tgt[lane] or 0 end
+-- Vive, pour la meme raison que la phase : elle se compare a `Loop.EngineBeat()`
+-- pour afficher un decompte, et deux instants differents font un decompte faux.
+function Loop.PendingTarget(lane)
+    return NATIVE and r.CP_LaneGet(lane, "target") or 0
+end
 
 -- A queued launch with no date: it is waiting for the CLOCK itself and fires
 -- with its first block. The UI says so instead of counting down to a beat that
 -- has no date.
 function Loop.PendingWaitsClock(lane)
-    return (sn_tgt[lane] or 0) < -1e8
+    return NATIVE and r.CP_LaneGet(lane, "target") < -1e8
 end
 
 -- ---------------------------------------------------------------------------
@@ -1923,10 +1977,10 @@ function Loop.Deserialize(str)
             -- ce rappel, avant qu'un seul bloc audio ne passe.
             if v10 then
                 Loop.SetMute(lane, muted)
-                Loop.SetUserMute(lane, umute)
+                Loop.AdoptUserMute(lane, umute)
             else
                 Loop.SetMute(lane, false)
-                Loop.SetUserMute(lane, false)
+                Loop.AdoptUserMute(lane, false)
             end
             -- AVANT l'accolade : c'est elle qui donne la longueur en beats
             -- contre laquelle le moteur borne la zone.
@@ -1955,7 +2009,7 @@ function Loop.Deserialize(str)
             Loop.SetLoopRange(lane, 0, -1)
             Loop.SetMode(lane, 0)
             Loop.SetMute(lane, false)
-            Loop.SetUserMute(lane, false)
+            Loop.AdoptUserMute(lane, false)
             Loop.SetLaneTsNum(lane, nil)
             Loop.BumpVer(lane)
         end
@@ -2002,12 +2056,41 @@ function Loop.LoadState(force)
             if Loop.NoteCount(lane) > 0 then return false end
         end
     end
-    return Loop.Deserialize(Loop.SavedState())
+    local blob = Loop.SavedState()
+    -- ⚠️ UN PROJET SANS ETAT CP N'EST PAS « RIEN A FAIRE », C'EST « TOUT VIDER ».
+    --
+    -- `Deserialize` sort a sa premiere ligne sur une chaine vide, donc les seize
+    -- lanes gardaient le set du projet PRECEDENT — et le moteur survit au
+    -- script, donc elles continuaient de jouer. Changer d'onglet vers un projet
+    -- neuf laissait la musique de l'ancien tourner dans les pistes du nouveau,
+    -- pendant que la grille se dessinait vide. Le cas n'existait pas tant que
+    -- personne ne detectait le changement de projet ; il est ne avec lui.
+    if blob == "" then
+        if not force then return false end
+        Loop.ClearAll()
+        for lane = 0, Loop.MAX_LANES - 1 do
+            Loop.SetMode(lane, 0)
+            Loop.SetMute(lane, false)
+            Loop.AdoptUserMute(lane, false)
+            Loop.SetLoopRange(lane, 0, -1)
+            Loop.SetLaneTsNum(lane, nil)
+            Loop.SetLaneOffset(lane, 0)
+        end
+        return true, 0
+    end
+    return Loop.Deserialize(blob)
 end
 
 -- Clock mode and armed lane are SESSION settings, not lane content, so they
 -- are restored unconditionally — unlike the notes, which decline to overwrite
 -- lanes that already hold something.
+-- ⚠️ QUATRE CHAMPS DEPUIS LE FORMAT 8. L'expression n'en appariait que trois,
+-- donc cette fonction rendait `false` pour toute sauvegarde recente et ne
+-- restituait plus ni l'horloge ni le quantize. Sans consequence visible — son
+-- unique appelant enchaine sur `LoadState`, qui refait le meme travail — mais
+-- une fonction qui rend toujours faux est un piege arme pour le prochain
+-- appelant. Le nombre de lanes est ignore ici : c'est `Deserialize` qui s'en
+-- sert, et lui seul en a besoin.
 function Loop.LoadGlobals()
     if not NATIVE then return false end
     local str = Loop.SavedState()
@@ -2015,12 +2098,28 @@ function Loop.LoadGlobals()
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     if fields[1] == "1" or not fields[2] then return false end
-    local fr, arm, lq = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)$")
+    -- QUATRE CHAMPS D'ABORD. Depuis le format 8 l'en-tete en porte quatre, et
+    -- cette expression n'en appariait que trois : elle rendait `false` pour
+    -- TOUTE sauvegarde recente, donc ni l'horloge ni le quantize n'etaient
+    -- restitues. Sans consequence visible — son unique appelant enchaine sur
+    -- `LoadState`, qui refait le meme travail — mais une fonction qui rend
+    -- toujours faux est un piege arme pour le prochain appelant.
+    local nl
+    local fr, arm, lq, n4 = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)|([^|]*)$")
+    if fr then nl = n4 else
+        fr, arm, lq = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)$")
+    end
     if not fr then fr, arm = fields[2]:match("^([^|]*)|([^|]*)$") end
     if not fr then return false end
     Loop.SetFreeRun(fr == "1")
+    local old_lanes = math.floor(tonumber(nl) or 0)
+    if old_lanes < 2 then old_lanes = LEGACY_LANES end
     local a = ((tonumber(fields[1]) or 0) >= 4)
               and math.floor(tonumber(arm) or -1) or -1
+    -- LE MEME PAS QUE PARTOUT AILLEURS. Une lane armee designe une lane, et le
+    -- nombre de colonnes a change : sans traduction, rouvrir un projet a quatre
+    -- colonnes armerait la jumelle d'une autre.
+    if a >= 0 then a = newOfLane(a, old_lanes) or -1 end
     Loop.AdoptArmedLane(a >= 0 and a or nil)
     if lq then Loop.SetLaunchQ(migrateQ(fields[1], tonumber(lq))) end
     return true

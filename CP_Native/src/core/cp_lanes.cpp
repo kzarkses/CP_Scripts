@@ -16,6 +16,7 @@ void Lane::reset() {
   channel.store(0, std::memory_order_relaxed);
   bars.store(1.0, std::memory_order_relaxed);
   muted.store(0, std::memory_order_relaxed);
+  user_muted.store(0, std::memory_order_relaxed);
   tag.store(0.0, std::memory_order_relaxed);
   phase_off.store(0.0, std::memory_order_relaxed);
   play_from.store(-1.0, std::memory_order_relaxed);
@@ -650,7 +651,12 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
     Lane& L = lanes_[li];
     const int m = L.mode.load(std::memory_order_relaxed);
     if (m != kLanePlaying && m != kLaneOverdub) continue;
-    if (L.muted.load(std::memory_order_relaxed)) { flush_lane(li, at); continue; }
+    // LE OU DES DEUX INTENTIONS, et le moteur n'a pas a savoir laquelle parle.
+    if (L.muted.load(std::memory_order_relaxed)
+        || L.user_muted.load(std::memory_order_relaxed)) {
+      flush_lane(li, at);
+      continue;
+    }
 
     const int port = L.port.load(std::memory_order_relaxed);
     if (port < 0) continue;
@@ -717,7 +723,20 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
         // LE TIRAGE, sur la passe de l'ATTAQUE. `pref - d` est l'instant ou
         // cette note a commence : constant tant qu'elle sonne, y compris quand
         // elle traverse la frontiere de boucle. Cent pour cent ne hache rien.
-        if (n.prob < 100) {
+        // ⚠️ UNE NOTE AUSSI LONGUE QUE LA ZONE NE TIRE PAS, ET C'EST MESURE.
+        //
+        // `d` est ramene dans [0, Ls) : pour une note dont la longueur atteint
+        // la zone, il ne represente plus « depuis quand elle sonne » mais
+        // « depuis la derniere frontiere ». `onset` avance donc d'un Ls a chaque
+        // tour alors que la note n'a pas re-attaque, et le tirage est refait au
+        // milieu d'elle — elle se fait HACHER a chaque frontiere au lieu de
+        // jouer ou de se taire. Le harnais l'a compte : 47 attaques pour
+        // 46 coupures sur une note tenue a 50 %.
+        //
+        // Une note qui couvre toute la boucle ne re-attaque jamais : il n'y a
+        // pas de passe pour laquelle se taire, donc elle joue. C'est la seule
+        // lecture qui ne produise pas un artefact.
+        if (n.prob < 100 && (double)n.len < Ls) {
           const double onset = pref - d;
           const long long pass = (long long)std::floor(onset / Ls);
           const unsigned h = note_hash((unsigned)k,

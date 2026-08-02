@@ -165,6 +165,12 @@ local FIELDS = {
     -- 3/4 quelque part dans le projet raccourcissait toutes les boucles au
     -- moment ou le transport la traversait.
     { "tsnum", "n" },
+    -- L'ACCOLADE DE BOUCLE. Elle etait documentee en tete de ce fichier et emise
+    -- par `Loop.LaneToClip`, mais elle n'etait PAS dans ce registre : chaque
+    -- aller-retour par le bus ou par le projet l'effacait en silence. Un champ
+    -- documente et non enregistre est pire qu'un champ absent — on construit
+    -- dessus.
+    { "loop_a", "n" }, { "loop_b", "n" },
     { "lmode", "s" },
     -- where the clip came from ("looper:2") — the editor:apply consumer
     -- routes the edited clip home with it, and the editor uses it to talk

@@ -166,7 +166,27 @@ struct Lane {
   std::atomic<int>    port;        // -1 = ne parle nulle part
   std::atomic<int>    channel;     // 0..15
   std::atomic<double> bars;        // longueur de boucle, en mesures
+  // DEUX MUTES, ET LE MOTEUR FAIT LEUR OU.
+  //
+  // `muted` est MECANIQUE : « le MIDI de cette lane ne doit pas sortir ». La
+  // Session le pose sur une case audio, dont la lane porte une note unique qui
+  // ne doit pas atteindre l'instrument de la colonne. C'est du cablage.
+  //
+  // `user_muted` est MUSICAL : « tais cette lane ». C'est le bouton du Looper,
+  // et il doit taire aussi la VOIX de la case audio, qui n'est pas une lane —
+  // c'est Lua qui s'en charge, en lisant ce champ.
+  //
+  // ⚠️ POURQUOI ICI ET NON EN LUA. La separation a d'abord ete ecrite dans deux
+  // tables Lua, et c'etait faux : `Loop.lua` est charge SEPAREMENT par chaque
+  // fenetre (trois ReaScript, trois etats Lua) alors que la lane est UNE. Chaque
+  // fenetre ne voyait donc que la moitie des gestes, et recomposait le OU a
+  // partir de ce qu'elle seule avait pose — en ecrasant l'autre moitie. Le mute
+  // du Looper n'atteignait jamais la case audio de la Session, c'est-a-dire
+  // exactement le defaut que la separation devait corriger.
+  //
+  // Un fait partage se range la ou il est partage.
   std::atomic<int>    muted;
+  std::atomic<int>    user_muted;
   std::atomic<double> tag;         // identite du clip que la lane tient
   // LE DECALAGE DE PHASE — « joue a partir d'ici ».
   //
