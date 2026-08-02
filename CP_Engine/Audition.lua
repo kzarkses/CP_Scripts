@@ -103,6 +103,10 @@ Audition.last_load_ms = 0
 -- pouvoir le DIRE : un son qui arrive par une autre porte que celle qu'on a
 -- choisie se cherche longtemps.
 Audition.out_fallback = false
+-- Une sortie a ete prise en flagrant delit de silence (voir `finished`). Le
+-- drapeau survit a la lecture qui l'a revele : c'est ce qui distingue « j'ai
+-- choisi la carte » de « on m'y a renvoye ».
+Audition.out_refused  = false
 
 -- ---------------------------------------------------------------------------
 -- Etat interne
@@ -142,6 +146,57 @@ local started  = false   -- la voix a-t-elle ete vue hors repos depuis le depart
 local start_t  = -1      -- quand on l'a lancee (r.time_precise)
 local START_GRACE = 0.5  -- s. Large : rater une fin de 0,5 s ne s'entend pas,
                          -- rater un depart ment sur toute la duree du son.
+
+-- ---------------------------------------------------------------------------
+-- ⚠️ UNE SORTIE PEUT ACCEPTER LA LIAISON ET NE JAMAIS TIRER LE SON
+-- ---------------------------------------------------------------------------
+-- LE MASTER N'EST PAS UNE DESTINATION D'APERCU. `PlayTrackPreview2Ex` comme
+-- `CF_Preview_SetOutputTrack` le prennent sans broncher — c'est un MediaTrack*
+-- parfaitement valide — mais personne ne vient jamais tirer les echantillons.
+-- La voix ne quitte donc jamais le repos, la fenetre voit un lancement qui n'a
+-- pas lieu, et le bouton revient sur Play : « le play ne se lance meme pas ».
+--
+-- C'EST LA TROISIEME FOIS QUE LE MASTER COUTE UNE SOIREE DANS CE MODULE, et les
+-- deux premieres ont ete traitees en corrigeant une VALIDATION DE POINTEUR —
+-- ici, dans `Voice.BindTrack`, dans `Preview.startPreview`. C'etait la mauvaise
+-- lecture a chaque fois : le pointeur a toujours ete bon, et les trois gardes
+-- ont raison de le laisser passer. LE GESTE REUSSISSAIT ; C'EST LE RESULTAT QUI
+-- MANQUAIT. La regle du depot le dit depuis la migration de kit — un garde-fou
+-- verifie le RESULTAT, pas le geste — et c'est exactement ici qu'elle
+-- s'appliquait.
+--
+-- On ne decide donc rien a l'avance, et surtout on n'interdit rien : on lance,
+-- et si le son n'a JAMAIS demarre au bout du delai de grace, la sortie est
+-- notee muette et la lecture repart par la carte. Une fois par sortie et par
+-- session — ensuite `resolveOut` ne la propose plus. Si REAPER sait le faire un
+-- jour, ou sur une autre machine, ce code ne se declenche jamais et rien n'est
+-- perdu : c'est une MESURE, pas une croyance.
+--
+-- Cle faible : une piste supprimee ne doit pas rester ici.
+local refused  = setmetatable({}, { __mode = "k" })
+local relaunch = false        -- une relance par la carte est armee
+-- CE QU'IL FAUT DIRE UNE FOIS. Un son qui change de porte tout seul se cherche
+-- longtemps ; l'ecrire dans un menu ne suffit pas, il faut le dire au moment ou
+-- ca arrive. Rendu UNE seule fois : deux fenetres ouvertes ne doivent pas le
+-- repeter en boucle, et la premiere qui le lit est celle qui le montre.
+local notice   = nil
+-- LA DEMANDE, RECOPIEE. L'appelant reutilise sa table d'options d'une frame a
+-- l'autre (`PLAY_OPTS` de l'editeur) : en garder la reference ferait relancer
+-- avec ce qu'elle contient une demi-seconde plus tard, pas avec ce qu'on a
+-- demande. Recopiee une fois pour toutes, donc, et sans allouer.
+local rq_path, rq_src = nil, nil
+local rq = {}
+local RQ_KEYS = { "start_s", "position", "end_s", "loop_start", "loop",
+                  "vol", "pitch", "rate", "rate_override", "ppitch",
+                  "fade_in", "fade_out", "out_track", "hw_out" }
+
+local function remember(path, src, opts)
+    rq_path, rq_src = path, src
+    for i = 1, #RQ_KEYS do
+        local k = RQ_KEYS[i]
+        rq[k] = opts and opts[k] or nil
+    end
+end
 
 -- Vivier local, indexe par chemin.
 local clips      = {}
@@ -247,13 +302,18 @@ local function resolveOut(opts)
             Audition.out_track = nil                -- la piste est morte
         end
     end
+    -- Une sortie deja prise en flagrant delit de silence n'est plus proposee.
+    if out and refused[out] then out = nil end
     if not out and Audition.route_track then
         out = r.GetSelectedTrack(0, 0)
-        if not trackOk(out) then out = nil end
+        if not trackOk(out) or refused[out] then out = nil end
     end
     -- LE DERNIER MOT : le master, pas le silence. Une sortie qu'on n'a pas
-    -- choisie doit rester une sortie qu'on ENTEND.
-    if not out and not Audition.hw_out then out = r.GetMasterTrack(0) end
+    -- choisie doit rester une sortie qu'on ENTEND — tant qu'elle rend le son.
+    if not out and not Audition.hw_out then
+        local m = r.GetMasterTrack(0)
+        if not refused[m] then out = m end
+    end
     return out
 end
 
@@ -275,6 +335,7 @@ local function ensurePort(opts)
     Audition.playing_path = nil
 
     local ok
+    local wanted_track = want ~= nil
     if want then ok = Voice.BindTrack(port, want) end
     -- UNE SORTIE QUI REFUSE NE DOIT PAS DEVENIR DU SILENCE. Si la piste
     -- demandee n'accepte pas l'apercu — elle vient d'etre supprimee, REAPER
@@ -285,7 +346,10 @@ local function ensurePort(opts)
         ok = Voice.BindOutput(port, 0)
         if ok then
             want = nil
-            Audition.out_fallback = true
+            -- « Repli » veut dire qu'on voulait une piste et qu'on ne l'a pas.
+            -- Choisir la carte n'est pas un repli, et le dire serait un
+            -- avertissement permanent pour un reglage volontaire.
+            Audition.out_fallback = wanted_track or Audition.out_refused
         end
     else
         Audition.out_fallback = false
@@ -425,6 +489,7 @@ end
 function Audition.Play(path, opts)
     if not path then return false end
     Audition.Stop()
+    remember(path, nil, opts)
 
     local section = opts and opts.end_s
 
@@ -519,6 +584,7 @@ end
 function Audition.PlaySource(src, opts)
     if not src then return false end
     Audition.Stop()
+    remember(nil, src, opts)
     if not Preview.available then return false end
     local ok = Audition.playThrough(function() return Preview.PlaySource(src, opts) end,
                                     opts)
@@ -540,7 +606,33 @@ function Audition.Stop()
 end
 
 -- Remet a zero l'etat visible quand la lecture s'est terminee d'elle-meme.
+--
+-- ET C'EST ICI QU'ON APPREND QU'UNE SORTIE EST MUETTE (voir l'en-tete du
+-- loquet). Cette fonction est le seul entonnoir par lequel passe « on a lance,
+-- le delai de grace est ecoule, et rien n'a jamais sonne » : `started` faux
+-- avec un depart date ne veut dire que ca. Une fin normale a forcement ete vue
+-- sonner, donc elle ne peut pas se confondre avec elle.
+--
+-- LA DUREE ATTENDUE SERT DE GARDE. Un one-shot de trente millisecondes peut
+-- naitre et mourir entre deux frames sans avoir ete vu : le prendre pour une
+-- sortie muette condamnerait le master sur un claquement de doigts. On ne
+-- conclut que sur un son assez long pour qu'on n'ait PAS pu le manquer, et
+-- jamais sur une source qu'on nous a tendue, dont on ne connait pas la duree.
 local function finished()
+    if start_t >= 0 and not started and not rq.hw_out and not rq_src then
+        local dest = (backend == "preview") and Preview.out_track or bound_to
+        local len = (backend == "native") and cur and cur.len
+                    or (rq_path and Preview.Meta(rq_path)) or nil
+        if dest and len and len >= START_GRACE then
+            refused[dest] = true
+            Audition.out_refused  = true
+            Audition.out_fallback = true
+            relaunch = true
+            notice = (dest == r.GetMasterTrack(0))
+                and "Master cannot carry a preview — playing through the sound card"
+                or  "That track did not carry the preview — playing through the sound card"
+        end
+    end
     backend = "none"
     cur = nil
     sect_end = nil
@@ -726,6 +818,20 @@ end
 -- ---------------------------------------------------------------------------
 function Audition.Tick()
     Voice.Sync()
+    -- LA RELANCE PAR LA CARTE, une fois, apres qu'une sortie a ete prise en
+    -- flagrant delit de silence. Elle est faite ICI et non depuis `finished`,
+    -- qui est appele depuis les chemins de DESSIN : relancer une lecture au
+    -- milieu d'une frame de rendu est le genre de detour dont on ne retrouve
+    -- plus l'origine six mois plus tard.
+    --
+    -- `rq.hw_out` est pose AVANT de rappeler, donc la garde de `finished` ne
+    -- peut pas rearmer : au pire on echoue une seconde fois, en silence et sans
+    -- boucler.
+    if relaunch then
+        relaunch = false
+        rq.hw_out = true
+        if rq_path then Audition.Play(rq_path, rq) end
+    end
     -- La section, quand c'est CF_Preview qui joue : il ne sait boucler que la
     -- source entiere, donc le retour appartient a cette boucle-ci. La voix
     -- native n'a besoin de rien — ses points de boucle sont dans le moteur, et
@@ -737,6 +843,14 @@ end
 -- l'autre module d'audition. Un seul battement par frame, quel que soit le
 -- nom par lequel on le demande.
 function Audition.Poll() Audition.Tick() end
+
+-- Le message a dire, ou nil. Delete-on-read : la fenetre qui le prend est celle
+-- qui l'affiche, et il ne se repete pas.
+function Audition.TakeNotice()
+    local n = notice
+    notice = nil
+    return n
+end
 
 -- ---------------------------------------------------------------------------
 -- Fermeture

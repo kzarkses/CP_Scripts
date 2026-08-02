@@ -5172,6 +5172,11 @@ local function frame(theme)
     syncRange()
     Kit.Poll()
     Audition.Poll()
+    -- Une sortie qui s'est revelee muette a renvoye le son par la carte. Il faut
+    -- le DIRE : sans ca, le son arrive par une autre porte que celle qu'on a
+    -- choisie et on cherche du cote du fichier.
+    local anotice = Audition.TakeNotice()
+    if anotice then flash(anotice) end
     pollSection()
     -- The drag-out lives OUTSIDE the window once it starts, so it is polled
     -- from the frame rather than from the wave's input pass.

@@ -2187,6 +2187,10 @@ local function frame(theme)
     -- celui de la carte son, et rend la memoire des clips retires. Une fois par
     -- frame, avant toute lecture de position.
     Audition.Tick()
+    -- Une sortie qui s'est revelee muette a renvoye le son par la carte. C'est
+    -- la fenetre ou l'ecoute est un geste continu : elle doit le dire.
+    local anotice = Audition.TakeNotice()
+    if anotice then flash(anotice) end
 
     if state.wsel and Audition.playing_path == state.wsel.path then
         local prog = Audition.Progress()
