@@ -588,8 +588,15 @@ end
 --
 -- C'est ce qui fait que le curseur veut dire quelque chose meme quand rien ne
 -- joue — sans ca, on le pose, on regarde, et il ne se passe rien.
-local function clipLaunch()
-    state.clip_launch_from = editCursor()
+local function clipLaunch(from)
+    -- OU COMMENCE LA LECTURE, sur les trois touches de REAPER. Le mode case n'a
+    -- pas de transport a lui : c'est le point de depart de la BOUCLE qu'on
+    -- choisit, et il vaut jusqu'au prochain lancement.
+    local at
+    if from == "start" then at = 0
+    elseif from == "sel" then local a = timeSel() at = a or editCursor()
+    else at = editCursor() end
+    state.clip_launch_from = at
     if not state.clip_track then
         flash("Clip has no live engine (open it from the Looper or Session)")
         return
@@ -618,6 +625,7 @@ local function clipLaunch()
         if live ~= lane and (Loop.IsRunning(live) or Loop.Pending(live) == 1) then
             Loop.StopClip(live)
         end
+        Loop.ArmPlayFrom(lane, state.clip_launch_from)
         Loop.Play(lane)
         return
     end
@@ -627,6 +635,7 @@ local function clipLaunch()
     -- one clip per track) and what you hear stop agreeing.
     local other = (lane == state.clip_track) and (state.clip_track + Loop.TRACKS)
                    or state.clip_track
+    Loop.ArmPlayFrom(lane, state.clip_launch_from)
     local p = Loop.Pending(lane)
     if p == 1 or p == 2 then
         if p == 1 and Loop.Pending(other) == 2 then Loop.Play(other) end
@@ -1267,7 +1276,11 @@ end
 -- from: "cursor" (default) | "sel" | "start"
 local function togglePlay(from)
     if state.mode == "clip" then
-        clipLaunch()   -- the clip plays in its origin engine (quantized)
+        -- Les trois departs de REAPER valent ici aussi : le curseur, le debut
+        -- de la zone, le debut de la matiere. Une case n'a pas de transport a
+        -- elle, donc « ou commence la lecture » veut dire « ou commence la
+        -- BOUCLE » — et c'est la meme question.
+        clipLaunch(from)
         return
     end
     if state.mode == "midi" then
@@ -1496,8 +1509,13 @@ local function openSettings()
         { label = "Keyboard & mouse", children = {
             { label = "Configure the keys and modifiers…",
               action = function()
-                  state.km = state.km or KeymapUI.NewState(KM)
-                  state.km_open = true
+                  -- UNE FENETRE A PART, jamais une page par-dessus celle-ci :
+                  -- on regle un raccourci en REGARDANT l'editeur, pas a sa
+                  -- place. Une page aurait oblige a fermer pour verifier et a
+                  -- rouvrir pour corriger, a chaque essai.
+                  if not KeymapUI.OpenWindow(KM) then
+                      flash("Could not open CP_Tools/CP_Keymap.lua")
+                  end
               end },
             { separator = true },
             { label = "Write the current map to CP_Config/CP_Keymap.lua",
@@ -3390,14 +3408,6 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     state.row_hi = nil
                     state.mdrag = { mode = "erase", moved = true }
                     return
-                elseif ca == "note.select_toggle" then
-                    Roll.ToggleSel(hit)
-                    state.row_hi = nil
-                    return
-                elseif ca == "note.select_range" then
-                    Roll.SelectRange(Roll.sel or hit, hit, false)
-                    state.row_hi = nil
-                    return
                 elseif ca == "note.select_measure" then
                     local a, b = measureAround(Roll.starts[hit])
                     flash(Roll.SelectBox(a, b, 0, 127, false) .. " selected")
@@ -3414,44 +3424,60 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     return
                 end
 
-                -- ----- sinon : selectionner, puis armer le glisser ----------
-                if not Roll.IsSel(hit) then Roll.SelectOnly(hit) end
+                -- ----- LES ACTIONS DE SELECTION S'APPLIQUENT ET LAISSENT
+                -- ----- LE GLISSER S'ARMER DERRIERE.
+                --
+                -- Elles ne terminent pas le geste, contrairement aux commandes
+                -- ci-dessus : chez REAPER, Ctrl bascule au CLIC et copie au
+                -- GLISSER, Shift ajoute une plage au clic et ignore le
+                -- magnetisme au glisser. Les faire sortir ici rendait la moitie
+                -- des glissers inatteignables — « Ctrl+drag ne copie pas »
+                -- n'etait pas un defaut de la copie, mais de cette sortie.
+                if ca == "note.select_toggle" then
+                    Roll.ToggleSel(hit)
+                elseif ca == "note.select_range" then
+                    Roll.SelectRange(Roll.sel or hit, hit, false)
+                elseif not Roll.IsSel(hit) then
+                    Roll.SelectOnly(hit)
+                end
                 state.row_hi = nil
                 local idx = hit
-                if da == "note.copy" then
-                    -- LA COPIE SE FAIT A LA PRISE, pas au relachement : ce
-                    -- qu'on deplace ensuite est la COPIE, et l'original reste
-                    -- ou il est. Duplicate re-selectionne les copies par leur
-                    -- identite, donc la note sous le pointeur est la nouvelle.
-                    if Roll.Duplicate(0, 0) > 0 then
-                        idx = Roll.At(t, pitch) or idx
-                    end
-                end
                 if on_edge then
-                    if da == "edge.stretch" then
+                    if da == "edge.stretch" or da == "edge.stretch_free" then
                         local n = snapshotSel()
-                        state.mdrag = { mode = "stretch", idx = idx, moved = false,
+                        state.mdrag = { mode = "stretch", zone = "edge",
+                                        idx = idx, moved = false,
+                                        free_act = "edge.stretch_free",
                                         multi = n > 0 and n or nil, px = mx, py = my,
-                                        a0 = spanStart(), t0 = t }
+                                        a0 = spanStart(), t0 = midiSnap(t) }
                     else
                         local solo = (da == "edge.resize_solo")
-                        state.mdrag = { mode = "resize", idx = idx, moved = false,
+                        state.mdrag = { mode = "resize", zone = "edge",
+                                        idx = idx, moved = false,
                                         px = mx, py = my,
-                                        free = (da == "edge.resize_free"),
+                                        free_act = "edge.resize_free",
                                         multi = (not solo) and Roll.seln > 1
                                                 and snapshotSel() or nil,
                                         ol = Roll.lens[idx] }
                     end
                 elseif da == "note.stretch_pos" then
                     local n = snapshotSel()
-                    state.mdrag = { mode = "stretchpos", idx = idx, moved = false,
+                    state.mdrag = { mode = "stretchpos", zone = "note",
+                                    idx = idx, moved = false,
                                     multi = n > 0 and n or nil, px = mx, py = my,
                                     a0 = spanStart(), t0 = t }
                 else
-                    state.mdrag = { mode = "move", idx = idx, moved = false,
+                    state.mdrag = { mode = "move", zone = "note",
+                                    idx = idx, moved = false,
                                     grab = t - Roll.starts[idx],
-                                    free = (da == "note.move_free"),
-                                    axis = (da == "note.move_axis"),
+                                    free_act = "note.move_free",
+                                    axis_act = "note.move_axis",
+                                    -- LA COPIE ATTEND QUE LE GESTE BOUGE. A la
+                                    -- prise on ne sait pas encore si c'est un
+                                    -- clic ou un glisser, et dupliquer tout de
+                                    -- suite poserait une note par-dessus une
+                                    -- autre a chaque Ctrl+clic de selection.
+                                    copy = (da == "note.copy"),
                                     multi = Roll.seln > 1 and snapshotSel() or nil,
                                     px = mx, py = my,
                                     op = Roll.starts[idx], opp = Roll.pitches[idx] }
@@ -3570,11 +3596,35 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local md = state.mdrag
     if md then
         if Core_tk.MouseDown(1) then
-            -- « Sans magnetisme » a ete decide A LA PRISE et voyage dans le
-            -- glisser. Le relire ici laissait changer d'avis en cours de geste,
-            -- ce qui parait souple et ne l'est pas : la note saute au moment ou
-            -- le doigt bouge sur le clavier, pas au moment ou on le voulait.
-            local free = md.free
+            -- LES MODIFICATEURS SONT VIVANTS PENDANT LE GESTE.
+            --
+            -- Je les avais figes a la prise, avec un argument qui sonnait bien
+            -- — « la note sauterait au moment ou le doigt bouge sur le clavier »
+            -- — et qui etait faux a l'usage : on attrape un bord, on voit que
+            -- ca accroche la grille, on presse Shift. C'est le geste naturel, et
+            -- il ne demandait qu'a etre entendu. REAPER fait pareil.
+            --
+            -- On repose donc la question au TABLEAU, pas aux touches : la zone
+            -- ou le geste a commence ne change pas, donc `Keymap.Mouse` rend
+            -- l'action que les modificateurs d'AUJOURD'HUI designent dans cette
+            -- zone, et on regarde si c'est la variante libre. Une liaison
+            -- rebranchee suit donc aussi en cours de geste, sans une ligne de
+            -- plus.
+            local live = md.zone and Keymap.Mouse(KM, md.zone, "drag", mods) or nil
+            local free = (md.free_act ~= nil and live == md.free_act)
+            local axis = (md.axis_act ~= nil and live == md.axis_act)
+
+            -- LA COPIE, quand le geste a vraiment bouge. Duplicate re-trie et
+            -- re-selectionne : tout index tenu avant devient faux, donc la
+            -- photo du groupe se reprend apres, et jamais pendant.
+            if md.copy and not md.copied and md.px
+               and (math.abs(mx - md.px) > 3 or math.abs(my - md.py) > 3) then
+                md.copied = true
+                if Roll.Duplicate(0, 0) > 0 then
+                    md.idx = Roll.sel or md.idx
+                    md.multi = Roll.seln > 1 and snapshotSel() or nil
+                end
+            end
             if md.mode == "erase" then
                 if hit then Roll.Delete(hit) end
                 UI.SetCursor("arrow")
@@ -3590,8 +3640,14 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 -- appelle arpeger, et la difference est exactement la.
                 local a = md.a0 or 0
                 local d0 = (md.t0 or 0) - a
+                -- L'ETIREMENT SE MAGNETISE, LUI AUSSI. Il ne le faisait pas :
+                -- le facteur se calculait sur la position brute du pointeur,
+                -- donc un groupe etire tombait entre deux cases et il fallait
+                -- le requantifier apres. Ce n'est pas un choix de conception,
+                -- c'est une ligne qui manquait.
+                local ct = free and t or midiSnap(t)
                 if math.abs(d0) > 1e-6 and md.multi then
-                    local f = (t - a) / d0
+                    local f = (ct - a) / d0
                     if f < 0.02 then f = 0.02 elseif f > 50 then f = 50 end
                     for k = 1, md.multi do
                         local e = move_snap[k]
@@ -3616,7 +3672,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 -- que le geste a une direction et jamais rediscute. Le decider
                 -- a chaque frame ferait osciller la note entre les deux des que
                 -- la main tremble sur la diagonale.
-                if md.axis then
+                if axis then
                     if not md.lock and md.px
                        and (math.abs(mx - md.px) > 4 or math.abs(my - md.py) > 4) then
                         md.lock = (math.abs(mx - md.px) >= math.abs(my - md.py))
@@ -3624,6 +3680,10 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     end
                     if md.lock == "time" then np = md.opp
                     elseif md.lock == "pitch" then nt = md.op end
+                else
+                    -- Relacher le verrou le relache VRAIMENT : sinon on garderait
+                    -- l'axe d'un geste qu'on a cesse de demander.
+                    md.lock = nil
                 end
                 if md.multi and md.multi > 1 then
                     -- group move: same delta on every snapshot note. Vertically
@@ -4167,16 +4227,6 @@ local function frame(theme)
             local m = math.floor(Loop.Mode(state.clip_lane) + 0.5)
             local p = Loop.Pending(state.clip_lane)
             if m ~= state.lane_mode or p ~= state.lane_pend then
-                -- LA CASE VIENT DE PARTIR : c'est ici, et seulement ici, que
-                -- « depuis le curseur » a une reponse exacte. La phase existe,
-                -- le decalage se calcule contre elle, et le son comme les notes
-                -- entrent au bon endroit.
-                if m == 3 and state.lane_mode ~= 3
-                   and state.clip_launch_from and state.clip_launch_from > 0
-                   and opts.ruler_scrub then
-                    Loop.PlayClipFrom(state.clip_lane, state.clip_launch_from)
-                end
-                if m == 3 then state.clip_launch_from = nil end
                 state.lane_mode, state.lane_pend = m, p
                 UI.RequestRedraw()
             end
@@ -4201,15 +4251,7 @@ local function frame(theme)
         flushApply()
     end
     if Peaks.Step() then UI.RequestRedraw() end
-    -- LA CAPTURE PASSE AVANT LES RACCOURCIS, et handleKeys se tait tant que le
-    -- panneau est ouvert. Sans cet ordre, appuyer sur « q » pour le reassigner
-    -- QUANTIFIERAIT : le raccourci qu'on essaie de changer se declencherait a
-    -- chaque tentative de le changer.
-    if state.km_open and state.km then
-        KeymapUI.PollCapture(state.km)
-    else
-        handleKeys()
-    end
+    handleKeys()
 
     -- deferred audition note-off (the note is held for 0.2 s, then released
     -- in the track it was played into)
@@ -4219,17 +4261,6 @@ local function frame(theme)
     end
 
     UI.SetWindowPadding(theme.pad_large or 10)
-
-    -- LE PANNEAU DE RACCOURCIS PREND LA FENETRE ENTIERE tant qu'il est ouvert.
-    -- Pas une boite modale posee par-dessus : regler un raccourci demande de la
-    -- place et de la lecture, et une liste de trente-huit actions dans un coin
-    -- se parcourt au chausse-pied. On y entre, on en sort — comme une page.
-    if state.km_open and state.km then
-        if not KeymapUI.Panel(UI, state.km, theme) then
-            state.km_open = false
-        end
-        return
-    end
 
     -- FOUR ZONES, each with its own ground and a seam between: the command
     -- bar, the identity line, the canvas, the status. The rail is gone — it

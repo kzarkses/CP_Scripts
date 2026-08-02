@@ -74,6 +74,8 @@ return {
       label = "Move note edge ignoring selection" },
     { act = "edge.stretch",        group = "Note edge", ctx = "edge", g = "drag", mods = "Alt",
       label = "Stretch notes" },
+    { act = "edge.stretch_free",   group = "Note edge", ctx = "edge", g = "drag", mods = "Shift+Alt",
+      label = "Stretch notes ignoring snap" },
     -- ----- la grille vide ---------------------------------------------------
     { act = "roll.insert",         group = "Grid", ctx = "roll", g = "click", mods = "",
       label = "Insert note" },
