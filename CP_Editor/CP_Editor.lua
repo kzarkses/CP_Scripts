@@ -3185,6 +3185,116 @@ local function spanStart()
     return (a < math.huge) and a or 0
 end
 
+-- ---------------------------------------------------------------------------
+-- L'ASCENSEUR VERTICAL DU PIANO ROLL
+-- ---------------------------------------------------------------------------
+-- La molette faisait defiler et zoomer depuis toujours, et ca reste le geste
+-- rapide. Mais un ascenseur dit deux choses qu'aucune molette ne dit : OU on
+-- est dans les cent vingt-huit hauteurs, et COMBIEN on en voit. Sans lui on
+-- roule jusqu'a retrouver ses notes.
+--
+-- Les deux boutons ne font pas defiler, ils ZOOMENT — c'est ce qui manquait le
+-- plus : le zoom vertical n'etait accessible qu'a la molette avec Ctrl, donc
+-- invisible. `+` resserre la fenetre sur moins de rangees, `-` l'ouvre.
+local SBAR_W = 14
+local SBAR_BTN = 14
+
+-- Le signe pose a cote du pointeur pour les gestes que le curseur systeme ne
+-- sait pas dire.
+local HINT_GLYPH = { copy = "+", erase = "x", stretch = "<>", draw = "/" }
+
+local function drawVScroll(theme, x, y, w, h)
+    local C = theme.colors
+    local col_tr = C.list_alt_bg or C.surface
+    local col_th = C.text_mute or C.text_disabled
+    local col_ed = C.border
+    local col_ac = C.accent
+
+    local vrows = state.view_rows or 30
+    local vhi = state.view_hi or 71
+    local vlo = vhi - vrows + 1
+
+    local mx, my = Core_tk.GetMousePos()
+    local over = mx >= x and mx < x + w
+    local down = Core_tk.MouseDown(1)
+    local click = Core_tk.MouseClicked(1)
+
+    Core_tk.DrawRect(x, y, w, h, col_tr[1], col_tr[2], col_tr[3], 0.5)
+    Core_tk.DrawRect(x, y, 1, h, col_ed[1], col_ed[2], col_ed[3], 0.6)
+
+    -- Les deux boutons, aux extremites. Le zoom est BORNE des deux cotes : six
+    -- rangees en dessous on ne voit plus assez pour jouer, cent au-dessus les
+    -- notes deviennent des traits.
+    local ty, by = y, y + h - SBAR_BTN
+    local hot_t = over and my >= ty and my < ty + SBAR_BTN
+    local hot_b = over and my >= by and my < by + SBAR_BTN
+    for _, b in ipairs({ { ty, "+", hot_t }, { by, "-", hot_b } }) do
+        if b[3] then
+            Core_tk.DrawRect(x + 1, b[1], w - 2, SBAR_BTN,
+                             col_ac[1], col_ac[2], col_ac[3], 0.3)
+        end
+        Core_tk.DrawText(b[2], x + (w - 5) * 0.5, b[1] + 2,
+                         col_th[1], col_th[2], col_th[3], 1)
+    end
+    if click and (hot_t or hot_b) then
+        local ns = math.floor(vrows * (hot_t and 0.8 or 1.25) + 0.5)
+        if ns < 6 then ns = 6 elseif ns > 100 then ns = 100 end
+        -- ON ZOOME AUTOUR DU CENTRE DE LA VUE, pas autour de son bord : zoomer
+        -- par le haut ferait fuir ce qu'on regarde vers le bas a chaque clic.
+        local mid = vhi - (vrows - 1) * 0.5
+        local nhi = math.floor(mid + (ns - 1) * 0.5 + 0.5)
+        if nhi > 127 then nhi = 127 end
+        if nhi - ns + 1 < 0 then nhi = ns - 1 end
+        state.view_hi, state.view_rows = nhi, ns
+        UI.RequestRedraw()
+    end
+
+    -- La glissiere, entre les deux boutons.
+    local ry, rh = y + SBAR_BTN, h - SBAR_BTN * 2
+    if rh < 20 then return end
+    local frac = vrows / 128
+    local th = math.max(18, rh * frac)
+    -- 127 en haut, 0 en bas : la position du pouce suit la hauteur, pas
+    -- l'index de rangee.
+    local pos = (127 - vhi) / math.max(1, 128 - vrows)
+    local tyy = ry + (rh - th) * pos
+
+    local hot_th = over and my >= tyy and my < tyy + th
+    Core_tk.DrawRect(x + 2, tyy, w - 4, th,
+                     col_th[1], col_th[2], col_th[3],
+                     (hot_th or state.sbar_drag) and 0.9 or 0.6)
+
+    if click and over and my >= ry and my < ry + rh then
+        if hot_th then
+            state.sbar_drag = { grab = my - tyy }
+        else
+            -- Cliquer la glissiere saute d'une page, comme partout.
+            local dir = (my < tyy) and 1 or -1
+            local nhi = vhi + dir * vrows
+            if nhi > 127 then nhi = 127 end
+            if nhi - vrows + 1 < 0 then nhi = vrows - 1 end
+            state.view_hi = nhi
+            UI.RequestRedraw()
+        end
+    end
+    if state.sbar_drag then
+        if down then
+            local p = (my - state.sbar_drag.grab - ry) / math.max(1, rh - th)
+            if p < 0 then p = 0 elseif p > 1 then p = 1 end
+            local nhi = math.floor(127 - p * (128 - vrows) + 0.5)
+            if nhi > 127 then nhi = 127 end
+            if nhi - vrows + 1 < 0 then nhi = vrows - 1 end
+            state.view_hi = nhi
+            UI.SetCursor("size_ns")
+            UI.RequestRedraw()
+        else
+            state.sbar_drag = nil
+        end
+    elseif over then
+        UI.SetCursor("arrow")
+    end
+end
+
 local move_snap = {}
 local function snapshotSel()
     local n = 0
@@ -3232,6 +3342,10 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
               or (in_grid and "roll") or nil
     local mods = Keymap.Mods()
     local function act(gesture, z) return Keymap.Mouse(KM, z or zone, gesture, mods) end
+    -- Le badge du pointeur s'eteint des qu'on quitte la grille : il n'est pose
+    -- que par l'affordance de survol, qui ne s'execute pas ailleurs, et un
+    -- badge qui reste allume sur une barre d'outils est pire que pas de badge.
+    state.hint = nil
 
     -- ruler strip (top): real handles. Grab a time-selection EDGE to
     -- resize, its BODY to move it, the edit-cursor flag to drag it; an
@@ -3632,6 +3746,20 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
             if md.copy and not md.copied and md.px
                and (math.abs(mx - md.px) > 3 or math.abs(my - md.py) > 3) then
                 md.copied = true
+                -- LE CLIC A BASCULE, LE GLISSER NE DOIT PAS EN PATIR.
+                --
+                -- Ctrl fait deux choses chez REAPER : basculer au clic, copier
+                -- au glisser. On applique la bascule a la prise, puisqu'on ne
+                -- sait pas encore lequel des deux gestes arrive — et si la note
+                -- attrapee etait DEJA selectionnee, la bascule vient de l'en
+                -- sortir. Copier maintenant copierait donc tout SAUF celle
+                -- qu'on tient, ce qui est le contraire de ce qu'on demande.
+                --
+                -- On la remet donc dans la selection avant de dupliquer. Avec
+                -- rien de selectionne au depart on copie une note ; avec cinq,
+                -- on copie les cinq — dans les deux cas celle du pointeur en
+                -- fait partie.
+                if md.idx and not Roll.IsSel(md.idx) then Roll.AddSel(md.idx) end
                 if Roll.Duplicate(0, 0) > 0 then
                     md.idx = Roll.sel or md.idx
                     md.multi = Roll.seln > 1 and snapshotSel() or nil
@@ -3799,11 +3927,17 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         -- gomme qui ressemble a un deplacement se decouvre en effacant une note
         -- qu'on ne voulait pas ; et c'est le seul retour qu'on a avant le clic.
         local da = act("drag")
+        state.hint = nil
         if da == "note.erase_drag" or da == "roll.erase_drag"
            or da == "note.erase_drag_free" or da == "roll.erase_drag_free" then
-            UI.SetCursor("arrow")
+            UI.SetCursor("erase") state.hint = "erase"
         elseif da == "roll.paint_line" or da == "roll.paint_chord" then
-            UI.SetCursor("cross")
+            UI.SetCursor("draw") state.hint = "draw"
+        elseif da == "note.copy" or da == "roll.copy_sel" then
+            UI.SetCursor("copy") state.hint = "copy"
+        elseif da == "edge.stretch" or da == "edge.stretch_free"
+               or da == "note.stretch_pos" or da == "note.stretch_pos_free" then
+            UI.SetCursor("stretch") state.hint = "stretch"
         elseif hit then
             if on_edge then
                 UI.SetCursor("size_we")
@@ -3825,9 +3959,19 @@ local function drawRoll(theme, area_h)
     if grid_h < 60 then grid_h = 60 end
     local row_h = grid_h / rows.n
 
+    -- L'ASCENSEUR VERTICAL prend sa place AVANT que quoi que ce soit ne
+    -- mesure la vue : `wave.w` sert a timeAtX, xAtTime, zoomAt et a toutes les
+    -- limites de clic. Le poser apres coup ferait dessiner les notes sous
+    -- l'ascenseur et repondre « dans la grille » a un clic qui est dessus.
+    --
+    -- En mode batterie il n'y a rien a faire defiler : les rangees sont la
+    -- liste des pads, elles tiennent toutes. On rend donc la place au lieu de
+    -- montrer un ascenseur inerte.
+    local sbar_w = rows.drum and 0 or SBAR_W
+
     -- the shared view rect (timeAtX/xAtTime/zoomAt all reuse it)
     wave.x, wave.y = gx + lane_w, gy
-    wave.w, wave.h = aw - lane_w, area_h
+    wave.w, wave.h = aw - lane_w - sbar_w, area_h
     wave.ry, wave.rh = gy + RULER_H, grid_h
     local vy = wave.ry + grid_h + 4
 
@@ -4090,6 +4234,32 @@ local function drawRoll(theme, area_h)
                                      col_acc[1], col_acc[2], col_acc[3], 0.35)
                 end
             end
+        end
+    end
+
+    if sbar_w > 0 then
+        drawVScroll(theme, wave.x + wave.w, wave.ry, sbar_w, grid_h)
+    end
+
+    -- LE POINTEUR DIT CE QU'IL VA FAIRE, en toutes lettres.
+    --
+    -- Windows n'a pas de curseur pour « dupliquer », « gommer » ni « etirer »,
+    -- et les curseurs de REAPER ne s'adressent que par des noms qui ne sont pas
+    -- documentes — s'en remettre a un nom devine donnerait le curseur de repli
+    -- sans le dire. On dessine donc le signe a cote du pointeur : c'est
+    -- certain, ca suit le theme, et ca ne depend d'aucun identifiant qu'on
+    -- n'aurait pas verifie. (`CP_Tools/CP_CursorProbe.lua` sert a identifier
+    -- les vrais ; le jour ou ils le sont, ce badge devient superflu.)
+    if state.hint then
+        local hx, hy = Core_tk.GetMousePos()
+        local g = HINT_GLYPH[state.hint]
+        if g then
+            Core_tk.DrawRect(hx + 11, hy + 3, 15, 15,
+                             col_bg[1], col_bg[2], col_bg[3], 0.85)
+            Core_tk.DrawRect(hx + 11, hy + 3, 15, 15,
+                             col_acc[1], col_acc[2], col_acc[3], 0.9, false)
+            Core_tk.DrawText(g, hx + 15, hy + 5,
+                             col_acc[1], col_acc[2], col_acc[3], 1)
         end
     end
 
