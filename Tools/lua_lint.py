@@ -31,7 +31,12 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DEFAULT = ["CP_Engine", "CP_Sampler", "CP_Session", "CP_Editor"]
+# Les vocabulaires de gestes vivent dans un SOUS-dossier de CP_Engine, et le
+# balayage n'est pas recursif : sans cette ligne ils ne seraient verifies par
+# personne, ce qui est exactement le sort d'un fichier de donnees — on n'y
+# pense qu'apres l'erreur.
+DEFAULT = ["CP_Engine", "CP_Engine/Keymaps", "CP_Sampler", "CP_Session",
+           "CP_Editor", "CP_Tools"]
 
 
 def strip(src):

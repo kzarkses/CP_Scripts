@@ -469,6 +469,30 @@ function Keymap.Export(name)
     return true, path
 end
 
+-- ---------------------------------------------------------------------------
+-- LA CARTE A CHANGE AILLEURS — une fenetre ouverte doit l'apprendre
+-- ---------------------------------------------------------------------------
+-- La fenetre de reglages est un AUTRE script : elle ecrit le fichier, et les
+-- fenetres deja ouvertes ne le savent pas. Les fermer une par une apres chaque
+-- reglage est ce que personne ne fait — donc les reglages ne se testent jamais,
+-- donc la fenetre ne sert a rien. Un tampon dans l'ExtState suffit : elle
+-- l'incremente, les autres le lisent une fois par seconde et relisent le
+-- fichier quand il bouge.
+local sync_v, sync_t = nil, 0
+
+function Keymap.PollSync(name)
+    if not r then return false end
+    local now = r.time_precise()
+    if now < sync_t then return false end
+    sync_t = now + 1.0
+    local v = r.GetExtState("CP_Keymap", "version")
+    if sync_v == nil then sync_v = v return false end
+    if v == sync_v then return false end
+    sync_v = v
+    Keymap.Reload(name)
+    return true
+end
+
 function Keymap.init(reaper_api, core, keys)
     r = reaper_api
     Core = core
