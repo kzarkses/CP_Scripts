@@ -69,7 +69,20 @@ using namespace cp;
 // n'y ait pas deux horloges. On arme donc l'intention ; le moteur la consomme
 // a l'instant ou il choisit la frontiere, contre `tq` et non contre le debut
 // du bloc.
-static const double kEngineABI = 1.10;
+// ---------------------------------------------------------------------------
+// UNE VERSION QUI EST UN NOMBRE NE PEUT PAS AVOIR DE MINEURE A DEUX CHIFFRES.
+//
+// J'ai ecrit `1.10` apres `1.9`, et un double ne connait pas les numeros de
+// version : 1.10 VAUT 1.1. Tous les scripts testent un MINIMUM (Loop exige
+// 1.7, Voice 1.5), donc l'extension chargeait parfaitement et se faisait
+// refuser par tout le monde — plus une note, plus un son, plus de moteur de
+// boucles. Le symptome ne designe pas la cause : rien n'avait plante.
+//
+// La lecon est dans le type. Tant que l'ABI est un double, sa mineure ne monte
+// que jusqu'a 9 ; apres, c'est la MAJEURE qui bouge. Ce n'est pas une rupture
+// de compatibilite, c'est une contrainte d'ecriture — et elle est ici pour que
+// personne n'ecrive 2.10 dans un an.
+static const double kEngineABI = 2.0;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur

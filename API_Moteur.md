@@ -355,7 +355,7 @@ l'autre.
 |---|---|
 | `CP_LaneCount()` | nombre de lanes servies (32) |
 | `CP_LaneBind(lane, port, chan)` | bool — où cette lane parle. `port` −1 = nulle part |
-| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) |
+| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) |
 | `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` |
 | `CP_LaneCmd(lane, cmd, arg)` | bool |
 | `CP_LaneSetNote(lane, i, start, len, pitch, vel)` | bool — écrit dans le tampon **qui dort** |
@@ -414,6 +414,12 @@ plus ou moins un tampon.
 Dégénérescence prévue : un tampon plus long que la boucle elle-même sauterait
 des notes entières. Dans ce cas seul on revient à la phase de début de bloc, ce
 qui est exactement le comportement du JSFX — moins juste, jamais faux.
+
+> ⚠️ **La version de l'ABI est un `double`, donc sa mineure ne va pas au-delà
+> de 9.** `1.10` écrit dans le code **vaut 1.1** : l'extension charge très bien
+> et se fait refuser par tous les scripts, qui testent un minimum — plus une
+> note, plus un son, et rien n'a planté. Après 1.9 vient donc **2.0**, et ce
+> n'est pas une rupture de compatibilité : c'est une contrainte d'écriture.
 
 ### 3.3 ter Lire à partir d'ici — `offset` (ABI 1.9)
 

@@ -89,6 +89,27 @@ for m in REG.finditer(s):
               "separateur qui la precede sera avale" % (name, help_txt[:1]))
         bad += 1
 
+# --- 3. LA VERSION DE L'ABI, LUE COMME UN TEXTE -----------------------------
+#
+# Elle est un `double`, donc sa mineure ne va pas au-dela de 9 : ecrit apres
+# 1.9, `1.10` VAUT 1.1. L'extension charge parfaitement et se fait refuser par
+# tous les scripts, qui testent un minimum — plus une note, plus un son, plus de
+# moteur de boucles, et rien n'a plante. Le symptome ne designe pas la cause.
+#
+# Aucun controle sur la VALEUR ne peut l'attraper : 1.1 est un nombre
+# parfaitement valide. Il faut donc regarder le TEXTE, ici, avant de compiler.
+m = re.search(r"kEngineABI\s*=\s*([0-9]+)\.([0-9]+)\s*;", s)
+if not m:
+    print("check_defs: kEngineABI introuvable")
+    bad += 1
+elif len(m.group(2)) > 1:
+    print("check_defs: ABI %s.%s — la mineure a %d chiffres. Un double ne "
+          "connait pas les numeros de version : %s.%s vaut %g. Apres .9 vient "
+          "la MAJEURE suivante."
+          % (m.group(1), m.group(2), len(m.group(2)), m.group(1), m.group(2),
+             float(m.group(0).split("=")[1].strip(" ;"))))
+    bad += 1
+
 if bad:
     print("check_defs: %d defstrings, %d probleme(s)" % (n, bad))
     sys.exit(1)
