@@ -3796,6 +3796,22 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 elseif not Roll.IsSel(hit) then
                     Roll.SelectOnly(hit)
                 end
+                -- LE CURSEUR SE POSE AU DEBUT DE LA NOTE QU'ON CHOISIT.
+                --
+                -- C'est le reglage « Move edit cursor to start of note » de
+                -- REAPER, et ce qu'il donne vaut plus que la commodite : tout ce
+                -- qui part du curseur — coller, lire a partir d'ici, poser une
+                -- borne — vise alors une note plutot qu'un pixel.
+                --
+                -- MODE TAKE/ITEM SEULEMENT, et c'est une decision, pas un
+                -- oubli. En mode case, ce curseur est aussi le point de depart
+                -- de la BOUCLE : le deplacer a chaque note qu'on selectionne
+                -- ferait repartir la lecture d'ailleurs a chaque clic
+                -- d'edition, ce qui est le contraire de ce qu'on demande a un
+                -- point de depart.
+                if state.mode == "midi" and not Core_tk.HasPopup() then
+                    setEditCursor(math.max(0, Roll.starts[hit]))
+                end
                 state.row_hi = nil
                 local idx = hit
                 if on_edge then
@@ -4145,6 +4161,23 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     -- draw-then-drag: a fresh insert only sets length once the
                     -- pointer actually moves (a plain click keeps the one cell)
                     Roll.ResizeLive(md.idx, len)
+                    md.moved = true
+                end
+                -- LE GLISSER D'INSERTION CHANGE AUSSI LA HAUTEUR.
+                --
+                -- Il ne reglait que la longueur : poser une note une rangee
+                -- trop bas obligeait a la lacher, la reprendre et la deplacer —
+                -- trois gestes pour une erreur d'un pixel, sur le geste le plus
+                -- frequent de l'editeur. Tant que le bouton est enfonce, la
+                -- note suit la rangee sous le pointeur.
+                --
+                -- Seulement sur une note FRAICHE : sur une note existante, ce
+                -- glisser est un redimensionnement, et lui faire changer de
+                -- hauteur en meme temps rendrait impossible d'allonger une note
+                -- sans risquer de la transposer.
+                if md.fresh and pitch and pitch ~= Roll.pitches[md.idx] then
+                    Roll.MoveLive(md.idx, Roll.starts[md.idx], pitch)
+                    auditionNote(Roll.pitches[md.idx], Roll.vels[md.idx])
                     md.moved = true
                 end
                 UI.SetCursor("note_edge")

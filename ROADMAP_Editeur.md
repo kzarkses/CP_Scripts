@@ -70,14 +70,14 @@ les deux hôtes **dans le même changement**.
 > qui a fondé le plan, et un relevé qu'on repeint au fur et à mesure ne prouve
 > plus rien. Ce qui est fait se lit aux cases cochées du §3. Sont encore ✗
 > aujourd'hui : les quatre lignes « loop points » du glisser de règle (§7 — on
-> ne les copie pas), et le changement de hauteur pendant le glisser
-> d'insertion (§3.7).
+> ne les copie pas). Le changement de hauteur pendant le glisser d'insertion
+> (§3.7) et le curseur posé au début de la note (§4) sont faits depuis.
 
 ### MIDI note — clic gauche
 
 | modificateur | comportement REAPER | CP_Editor |
 |---|---|---|
-| (aucun) | Select note and move edit cursor | sélectionne — **ne bouge pas le curseur** |
+| (aucun) | Select note and move edit cursor | sélectionne **et pose le curseur** (mode take/item) |
 | Shift | Add a **range** of notes to selection | ajoute **une** note |
 | Ctrl | Toggle note selection | ✗ |
 | Shift+Ctrl | Select note and move edit cursor ignoring snap | ✗ |
@@ -244,8 +244,13 @@ Les plus gros, et les seuls qui demandent de vraies fonctions dans `Roll`.
 - [x] **Arpéger** (Ctrl+Win) — étirer les *positions* d'un groupe sans toucher
       aux longueurs. `Roll.Reverse` et `Roll.Legato` montrent la forme :
       une passe sur la sélection, une seule écriture.
-- [ ] Le glisser d'insertion doit aussi **changer la hauteur** en montant ou
-      descendant, pas seulement la longueur. *(reste à faire)*
+- [x] Le glisser d'insertion **change aussi la hauteur** en montant ou
+      descendant. Poser une note une rangée trop bas obligeait à la lâcher, la
+      reprendre et la déplacer — trois gestes pour une erreur d'un pixel, sur
+      le geste le plus fréquent de l'éditeur. **Sur une note fraîche
+      seulement** : sur une note existante ce glisser est un
+      redimensionnement, et lui faire changer de hauteur en même temps
+      rendrait impossible d'allonger une note sans risquer de la transposer.
 
 ---
 
@@ -255,8 +260,11 @@ Trois lignes de la config de Cédric le déplacent (clic sur une note, clic dans
 la règle, Ctrl+clic dans le vide). CP_Editor ne le déplace que depuis la règle,
 et **jamais en mode clip**.
 
-- [ ] Le clic sur une note pose le curseur à son début (mode take/item).
-      *(reste à faire — le seul point de la section 4 encore ouvert)*
+- [x] Le clic sur une note pose le curseur à son début (mode take/item).
+      **Mode take/item seulement, et c'est une décision** : en mode case ce
+      curseur est aussi le point de départ de la boucle, et le déplacer à
+      chaque note sélectionnée ferait repartir la lecture d'ailleurs à chaque
+      clic d'édition.
 - [x] Ctrl+clic dans le vide : désélectionne **et** pose le curseur, sans
       magnétisme.
 
