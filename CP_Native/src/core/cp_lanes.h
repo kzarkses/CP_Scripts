@@ -116,7 +116,14 @@ struct LaneNote {
   float         len;     // en beats
   unsigned char pitch;
   unsigned char vel;
-  unsigned char pad[2];
+  // CHANCE DE JOUER, en pourcent, 0..100. Cent = toujours, et c'est le chemin
+  // rapide : la porte ne hache rien pour une note qui n'a pas de probabilite,
+  // c'est-a-dire pour l'immense majorite d'entre elles.
+  //
+  // Elle a pris UN DES DEUX OCTETS DE BOURRAGE, donc `sizeof(LaneNote)` ne
+  // bouge pas et la liste tient toujours dans le meme megaoctet.
+  unsigned char prob;
+  unsigned char pad;
 };
 
 struct LaneCmd {

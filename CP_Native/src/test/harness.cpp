@@ -741,13 +741,17 @@ static void test_clock() {
 // C'est precisement la faute que le portage Lua des cases audio avait faite, et
 // elle avait mis une session entiere a se voir.
 // ---------------------------------------------------------------------------
+// `prob` vaut 100 par defaut, comme partout ailleurs : un tampon fraichement
+// alloue est a zero, et zero veut dire « ne sonne jamais ». Chaque ecrivain de
+// note doit donc le poser explicitement, sinon le silence est le defaut.
 static void lane_note(Lanes& L, int li, int k, double start, double len,
-                      int pitch, int vel) {
+                      int pitch, int vel, int prob = 100) {
   LaneNote* b = L.write_buf(li);
   b[k].start = (float)start;
   b[k].len   = (float)len;
   b[k].pitch = (unsigned char)pitch;
   b[k].vel   = (unsigned char)vel;
+  b[k].prob  = (unsigned char)(prob < 0 ? 0 : (prob > 100 ? 100 : prob));
 }
 
 // Le harnais joue le role de PortSource : il vient chercher les evenements du
@@ -1385,6 +1389,100 @@ static void test_lane_transport_stop_resume() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// LA PROBABILITE PAR NOTE — ce qu'on peut prouver parce que le tirage est
+// REPRODUCTIBLE
+// ---------------------------------------------------------------------------
+// Un vrai generateur aleatoire aurait rendu ce test impossible a ecrire : on
+// n'aurait pu verifier qu'une moyenne, sur beaucoup de passes, sans jamais
+// savoir si une note s'etait allumee au milieu d'elle-meme. Le hachage de
+// (note, passe) permet les trois questions qui comptent :
+//
+//   1. les BORNES : 100 sonne toujours, 0 ne sonne jamais ;
+//   2. la DISTRIBUTION : 50 tombe autour de la moitie des passes ;
+//   3. la CONSTANCE : autant de coupures que d'attaques. C'est celle-la qui
+//      compte vraiment — une note qui retirerait au sort a mi-chemin laisserait
+//      une attaque sans coupure, donc une note tenue jusqu'a la fin des temps.
+//
+// Et une quatrieme, qui ne se voit qu'a deux lanes : deux lanes portant les
+// MEMES notes ne doivent pas tirer a l'identique, sinon ce n'est pas du hasard,
+// c'est un motif.
+static void test_lane_probability() {
+  group("lanes : la probabilite par note, tiree sans un octet d'etat");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(0.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);   // un beat = 24000 frames
+
+  // Quatre lanes d'une mesure, une note chacune, quatre probabilites.
+  const int PROB[4] = { 100, 0, 50, 50 };
+  for (int li = 0; li < 4; ++li) {
+    Lane& l = L.lane(li);
+    l.port.store(li, std::memory_order_relaxed);
+    l.bars.store(1.0, std::memory_order_relaxed);       // 4 beats
+    // Les lanes 2 et 3 portent EXACTEMENT la meme note : c'est la graine par
+    // lane, et rien d'autre, qui doit les separer.
+    lane_note(L, li, 0, 0.0, 1.0, 60, 100, PROB[li]);
+    L.publish_notes(li, 1);
+    L.post(li, kLcSetMode, (double)kLanePlaying);
+  }
+
+  const int B  = 512;
+  const int NP = 64;                    // 64 passes de 4 beats
+  const int NB = (int)(NP * 4.0 * 24000.0 / B);
+  LaneCap cap;
+  frame_t clk = 0;
+  int on[4], off[4];
+  for (int i = 0; i < 4; ++i) { on[i] = 0; off[i] = 0; }
+  // La suite de decisions de la lane 2, passe par passe, pour la comparer a
+  // celle de la lane 3.
+  int same = 0, seen = 0;
+  int last_on2 = 0, last_on3 = 0;
+
+  for (int i = 0; i < NB; ++i) {
+    e.tick(B);
+    for (int li = 0; li < 4; ++li) {
+      lane_pull(L, li, clk, B, &cap);
+      for (int k = 0; k < cap.n; ++k) {
+        const int st = cap.msg[k][0] & 0xF0;
+        if (st == 0x90 && cap.msg[k][2] > 0) on[li]++;
+        else if (st == 0x80 || (st == 0x90 && cap.msg[k][2] == 0)) off[li]++;
+      }
+    }
+    // Un front sur l'une ou l'autre : on compare les deux suites au meme
+    // instant, sans avoir a savoir ou tombent les frontieres de passe.
+    if (on[2] != last_on2 || on[3] != last_on3) {
+      seen++;
+      if ((on[2] - last_on2) == (on[3] - last_on3)) same++;
+      last_on2 = on[2];
+      last_on3 = on[3];
+    }
+    clk += B;
+  }
+
+  check(on[0] >= NP - 1 && on[0] <= NP,
+        "prob 100 : la note sonne a chaque passe");
+  check(on[1] == 0, "prob 0 : la note ne sonne jamais");
+  check(on[2] > NP / 5 && on[2] < (NP * 4) / 5,
+        "prob 50 : ni toujours ni jamais");
+  std::printf("      prob 50 : %d passes jouees sur %d\n", on[2], NP);
+
+  // LA VRAIE QUESTION. Une decision qui changerait a mi-note laisserait une
+  // attaque sans sa coupure — et une note tenue indefiniment est le seul defaut
+  // de cette fonctionnalite qui ne se rattrape pas tout seul.
+  for (int li = 0; li < 4; ++li) {
+    check(off[li] == on[li] || off[li] == on[li] - 1,
+          "chaque attaque a sa coupure (la derniere peut etre en vol)");
+  }
+
+  // Deux lanes, memes notes, meme probabilite : la graine doit les separer.
+  check(seen > 8 && same < seen,
+        "deux lanes identiques ne tirent pas la meme suite");
+  std::printf("      lanes 2 et 3 : %d fronts, %d en commun\n", seen, same);
+}
+
 static void test_lane_no_alloc() {
   group("lanes : zero allocation dans le fil audio");
   Engine e;
@@ -1482,6 +1580,7 @@ int main() {
   test_lane_loop_brace();
   test_lane_follow_timing();
   test_lane_transport_stop_resume();
+  test_lane_probability();
   test_lane_no_alloc();
 
   std::printf("\n=====================================\n");

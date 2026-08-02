@@ -20,13 +20,20 @@
 -- undo immediately.
 --
 -- Backend contract (all indices 1-based into the cache):
---   be.readAll()           -> count ; fills Roll.starts/lens/pitches/vels
+--   be.readAll()           -> count ; fills Roll.starts/lens/pitches/vels/probs
 --   be.insertNote(t,p,l,v) -- unsorted insert (Roll calls be.sort() after)
 --   be.deleteNote(i)       -- remove cache note i
---   be.setNote(i,t,l,p,v)  -- live write; nil field = unchanged; may read the
+--   be.setNote(i,t,l,p,v,pr) -- live write; nil field = unchanged; may read the
 --                             cache for the endpoints it does not receive
 --   be.sort()              -- normalize order to match a fresh readAll()
 --   be.undo(desc)          -- mint an undo / persistence point
+--
+-- LA PROBABILITE N'EXISTE QU'EN MODE CASE, et le contrat le dit plutot que de
+-- le cacher : le MIDI de REAPER n'a AUCUN champ par note ou la ranger. Sur une
+-- prise, il faudrait la coder dans un evenement de notation, la voir se perdre
+-- a chaque glisser, et l'expliquer. Le backend de prise repond donc cent pour
+-- chaque note et ignore une ecriture — une limite enoncee vaut mieux qu'un
+-- reglage qui a l'air de marcher.
 
 local Roll = {}
 
@@ -39,6 +46,9 @@ Roll.starts  = {}   -- cache unit (seconds for a take, beats for a loop)
 Roll.lens    = {}
 Roll.pitches = {}   -- 0..127
 Roll.vels    = {}   -- 1..127
+-- CHANCE DE JOUER, en pourcent (0..100). Cent partout par defaut, et sur une
+-- prise cent TOUJOURS : voir la note du contrat ci-dessus.
+Roll.probs   = {}
 Roll.sel     = nil  -- primary selected note (1-based index) or nil
 Roll.selset  = {}   -- multi-selection: set { [idx] = true }
 Roll.seln    = 0    -- count in selset
@@ -69,6 +79,7 @@ local function makeTakeBackend(take, item)
             Roll.lens[j]    = t1 - t0
             Roll.pitches[j] = pitch
             Roll.vels[j]    = vel
+            Roll.probs[j]   = 100      -- une prise n'a pas de champ pour ca
         end
         return notecnt
     end
@@ -83,6 +94,9 @@ local function makeTakeBackend(take, item)
 
     -- nil t & len = leave timing; if t given the note moves (length kept via
     -- the cache unless len is also given); if only len given, the end moves.
+    -- `prob` est accepte et IGNORE, exprès : l'appelant est le meme code que
+    -- pour une case, et lui faire tester le mode a chaque ecriture aurait
+    -- disperse la limite au lieu de la tenir en un point.
     function be.setNote(i, t, len, pitch, vel)
         local sppq, eppq
         if t ~= nil then
@@ -128,8 +142,13 @@ local function guardScale(be)
         end
     end
     if set then
-        be.setNote = function(i, t, len, pitch, vel)
-            return set(i, t, len, pitch and Roll.SnapPitch(pitch) or pitch, vel)
+        -- ⚠️ LA SIGNATURE ENTIERE, `prob` COMPRIS. Une enveloppe qui oublie un
+        -- argument le fait disparaitre en silence pour TOUS les appelants, et
+        -- le symptome serait « la probabilite ne s'ecrit jamais » sans que rien
+        -- dans le chemin d'ecriture ne l'explique.
+        be.setNote = function(i, t, len, pitch, vel, prob)
+            return set(i, t, len, pitch and Roll.SnapPitch(pitch) or pitch,
+                       vel, prob)
         end
     end
     be.scale_guarded = true
@@ -382,6 +401,28 @@ function Roll.SetVelLive(i, vel)
     vel = math.floor(vel + 0.5)
     Roll.backend.setNote(i, nil, nil, nil, vel)
     Roll.vels[i] = vel
+end
+
+-- LA CHANCE DE JOUER, de 0 a 100. Zero est une valeur legitime — « cette note
+-- est ecrite mais ne sonne pas » — donc elle n'est pas ramenee a un, contrairement
+-- a la velocite ou zero veut dire une coupure.
+--
+-- ⚠️ LE CACHE EST ECRIT MEME QUAND LE BACKEND NE SAIT PAS ECRIRE. Il le faut :
+-- c'est le cache que le dessin lit, et la barre resterait immobile sous le
+-- doigt. Sur une prise, `Roll.CanProb()` repond faux et l'hote ne propose pas
+-- le reglage — la limite se dit AVANT le geste, pas pendant.
+function Roll.SetProbLive(i, prob)
+    if not Roll.backend or i < 1 or i > Roll.count then return end
+    if prob < 0 then prob = 0 elseif prob > 100 then prob = 100 end
+    prob = math.floor(prob + 0.5)
+    Roll.backend.setNote(i, nil, nil, nil, nil, prob)
+    Roll.probs[i] = prob
+end
+
+-- Ce backend sait-il ranger une probabilite ? Une seule question, un seul
+-- endroit, et c'est le backend qui repond — pas l'hote en devinant son mode.
+function Roll.CanProb()
+    return (Roll.backend and Roll.backend.can_prob) and true or false
 end
 
 function Roll.Commit(desc)

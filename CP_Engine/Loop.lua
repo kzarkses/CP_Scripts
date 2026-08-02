@@ -122,14 +122,19 @@ local Tracks  -- optional Engine/Tracks
 -- the whole list over in one atomic swap; that is the contract the double
 -- buffer needs, and it is what an editor does anyway.
 -- ---------------------------------------------------------------------------
-local notes = {}          -- [lane] = { s={}, l={}, p={}, v={}, n=0 }
+-- `pr` est la CHANCE DE JOUER en pourcent, 0..100. Cent est le defaut partout,
+-- et il faut y penser a chaque ecriture : le moteur lit un octet dont le zero
+-- veut dire « jamais », donc omettre le champ rend la lane muette au lieu de la
+-- laisser telle quelle. C'est le seul champ de cette liste dont l'absence n'est
+-- pas neutre.
+local notes = {}          -- [lane] = { s={}, l={}, p={}, v={}, pr={}, n=0 }
 local evtver = {}         -- [lane] = bumped on every change
 local seen_recgen = {}    -- [lane] = the take generation we last acted on
 
 local function store(lane)
     local t = notes[lane]
     if not t then
-        t = { s = {}, l = {}, p = {}, v = {}, n = 0 }
+        t = { s = {}, l = {}, p = {}, v = {}, pr = {}, n = 0 }
         notes[lane] = t
     end
     return t
@@ -139,7 +144,8 @@ local function publish(lane)
     if not NATIVE then return end
     local t = store(lane)
     for i = 1, t.n do
-        r.CP_LaneSetNote(lane, i - 1, t.s[i], t.l[i], t.p[i], t.v[i])
+        r.CP_LaneSetNote(lane, i - 1, t.s[i], t.l[i], t.p[i], t.v[i],
+                         t.pr[i] or 100)
     end
     r.CP_LanePublish(lane, t.n)
 end
@@ -1131,19 +1137,22 @@ end
 function Loop.GetNote(lane, i)
     local t = store(lane)
     local k = i + 1
-    return t.s[k], t.l[k], t.p[k], t.v[k]
+    return t.s[k], t.l[k], t.p[k], t.v[k], t.pr[k] or 100
 end
 
 -- Write note i (0-based). Does NOT publish: the caller owns the count, and
 -- publishing per note would hand the engine a half-written list once per note
 -- instead of a whole one once.
-function Loop.PutNote(lane, i, start, len, pitch, vel)
+function Loop.PutNote(lane, i, start, len, pitch, vel, prob)
     local t = store(lane)
     local k = i + 1
     t.s[k], t.l[k], t.p[k], t.v[k] = start, len, pitch, vel
+    -- CENT PAR DEFAUT, EXPLICITEMENT. Un appelant qui ne connait pas encore la
+    -- probabilite doit obtenir « joue toujours » et non « ne joue jamais ».
+    t.pr[k] = prob or 100
 end
 
-function Loop.ReadNotes(lane, out_start, out_len, out_pitch, out_vel)
+function Loop.ReadNotes(lane, out_start, out_len, out_pitch, out_vel, out_prob)
     local t = store(lane)
     local n = Loop.NoteCount(lane)
     for i = 1, n do
@@ -1151,6 +1160,7 @@ function Loop.ReadNotes(lane, out_start, out_len, out_pitch, out_vel)
         out_len[i]   = t.l[i]
         out_pitch[i] = t.p[i]
         out_vel[i]   = t.v[i]
+        if out_prob then out_prob[i] = t.pr[i] or 100 end
     end
     return n
 end
@@ -1199,6 +1209,10 @@ local function addNote(lane, start, len, pitch, vel)
     if len > Lb then len = Lb end
     t.n = t.n + 1
     t.s[t.n], t.l[t.n], t.p[t.n], t.v[t.n] = start, len, pitch, vel
+    -- Une note qu'on vient de JOUER sonne toujours. Sans cette ligne, chaque
+    -- prise serait enregistree a zero pour cent — donc muette a la relecture,
+    -- avec ses notes bien visibles dans l'editeur.
+    t.pr[t.n] = 100
 end
 
 -- Close every note still held on this lane, at `phase`.
@@ -1415,8 +1429,8 @@ end
 function Loop.LaneToClip(lane)
     local n = Loop.NoteCount(lane)
     if n <= 0 then return nil end
-    local s, l, p, v = {}, {}, {}, {}
-    Loop.ReadNotes(lane, s, l, p, v)
+    local s, l, p, v, pr = {}, {}, {}, {}, {}
+    Loop.ReadNotes(lane, s, l, p, v, pr)
     local tag = math.floor(Loop.GetLaneTag(lane) or 0)
     if tag == 0 then
         tag = Loop.LANE_TAG_BASE + lane
@@ -1436,7 +1450,7 @@ function Loop.LaneToClip(lane)
         kind   = "midi",
         id     = tag,
         name   = "Lane " .. (lane + 1),
-        notes  = { s = s, l = l, p = p, v = v },
+        notes  = { s = s, l = l, p = p, v = v, pr = pr },
         bars   = Loop.GetLengthBars(lane),
         q      = "bar",
         lmode  = "loop",
@@ -1454,8 +1468,13 @@ function Loop.ApplyClip(lane, clip)
     local n = (nt and nt.s and #nt.s) or 0
     if n > Loop.MAX_NOTES then return false end
     local t = store(lane)
+    local np = nt.pr
     for i = 1, n do
         t.s[i], t.l[i], t.p[i], t.v[i] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+        -- Un descripteur ecrit avant la probabilite n'a pas de `pr`, et l'ecart
+        -- entre « pas de champ » et « zero » est ici l'ecart entre une lane qui
+        -- joue et une lane muette.
+        t.pr[i] = (np and np[i]) or 100
     end
     t.n = n
     publish(lane)
@@ -1489,9 +1508,9 @@ end
 -- not depend on a track surviving a copy-paste.
 --
 -- Wire format, one string, printable separators only:
---   "5;<global>;<lane>;<lane>;…"                    5 = format version
---   global = "freerun|armedlane|launchq"
---   lane   = "bars|muted|mode|n|s,l,p,v|s,l,p,v|…"
+--   "9;<global>;<lane>;<lane>;…"                    9 = format version
+--   global = "freerun|armedlane|launchq|nlanes"
+--   lane   = "bars|muted|mode|tag|loopa|loopb|n|s,l,p,v[,prob]|…"
 -- v1..v4 (the router-track era) are still read: a project saved before this
 -- change opens with its loops.
 -- ---------------------------------------------------------------------------
@@ -1503,6 +1522,13 @@ local function migrateQ(ver, q)
 end
 
 function Loop.Serialize()
+    -- FORMAT 9 : LA PROBABILITE entre dans l'enregistrement d'une note.
+    --
+    -- Cinquieme champ, et ecrit SEULEMENT quand il vaut autre chose que cent :
+    -- l'immense majorite des notes n'ont pas de probabilite, et un fichier de
+    -- projet n'a pas a grossir pour une valeur qui est le defaut. Le lecteur
+    -- essaie donc cinq champs, puis quatre.
+    --
     -- FORMAT 8 : LE NOMBRE DE LANES entre dans l'en-tete.
     --
     -- Le bloc est ORDONNE PAR LANE, et une lane basse est la moitie vivante
@@ -1535,7 +1561,7 @@ function Loop.Serialize()
     -- lane. Un lecteur ancien ignore le champ (les champs inconnus sont
     -- ignores), un lecteur neuf sur un projet ancien lit 0 — ce qui est
     -- exactement ce que le tag valait avant.
-    local out = { "8",
+    local out = { "9",
                   (Loop.GetFreeRun() and "1" or "0") .. "|"
                   .. (Loop.GetArmedLane() or -1) .. "|" .. num(Loop.GetLaunchQ())
                   .. "|" .. Loop.MAX_LANES }
@@ -1553,10 +1579,13 @@ function Loop.Serialize()
                         num(la or 0), num(lb or -1),
                         tostring(n) }
         for i = 0, n - 1 do
-            local s, l, p, v = Loop.GetNote(lane, i)
-            parts[#parts + 1] = num(s) .. "," .. num(l) .. ","
-                             .. string.format("%d,%d", math.floor((p or 0) + 0.5),
-                                                       math.floor((v or 100) + 0.5))
+            local s, l, p, v, pr = Loop.GetNote(lane, i)
+            local rec = num(s) .. "," .. num(l) .. ","
+                     .. string.format("%d,%d", math.floor((p or 0) + 0.5),
+                                               math.floor((v or 100) + 0.5))
+            pr = math.floor((pr or 100) + 0.5)
+            if pr ~= 100 then rec = rec .. "," .. pr end
+            parts[#parts + 1] = rec
         end
         out[#out + 1] = table.concat(parts, "|")
     end
@@ -1568,7 +1597,7 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if not ver or not ver:match("^[1-8]$") then return false end
+    if not ver or not ver:match("^[1-9]$") then return false end
     local v2 = (ver ~= "1")
 
     -- Combien de lanes celui qui a ECRIT ceci avait. Le format 8 le dit ; avant
@@ -1638,11 +1667,20 @@ function Loop.Deserialize(str)
             for i = 1, n do
                 local rec = t[hdr + i]
                 if rec then
-                    local s, l, p, v = rec:match("^([^,]*),([^,]*),([^,]*),([^,]*)$")
+                    -- Cinq champs d'abord, quatre ensuite. L'ordre compte :
+                    -- l'expression a quatre champs est ancree en fin de chaine,
+                    -- donc elle refuserait un enregistrement a cinq — et la
+                    -- note serait perdue en silence, ce qui est precisement ce
+                    -- que la version doit empecher.
+                    local s, l, p, v, pr =
+                        rec:match("^([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)$")
+                    if not s then
+                        s, l, p, v = rec:match("^([^,]*),([^,]*),([^,]*),([^,]*)$")
+                    end
                     if s then
                         Loop.PutNote(lane, written, tonumber(s) or 0,
                                      tonumber(l) or 0.25, tonumber(p) or 60,
-                                     tonumber(v) or 100)
+                                     tonumber(v) or 100, tonumber(pr) or 100)
                         written = written + 1
                     end
                 end

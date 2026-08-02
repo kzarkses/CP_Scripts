@@ -114,6 +114,13 @@ end
 -- path containing the separator survives; numbers go through %.14g (times
 -- and rates round-trip well below any audible epsilon). MIDI notes pack
 -- as "s,l,p,v;s,l,p,v;…" — one quad per note, Roll order preserved.
+--
+-- LA PROBABILITE N'ENTRE PAS DANS LE QUADRUPLET, elle a sa propre cle. Le
+-- registre de champs ci-dessous IGNORE ce qu'il ne connait pas, donc une cle
+-- separee est lue par les versions futures et sautee par les anciennes — alors
+-- qu'un cinquieme membre dans le quadruplet aurait fait rater l'expression
+-- d'un lecteur ancien, qui aurait perdu la note ENTIERE plutot que son seul
+-- champ neuf. Elle n'est ecrite que si au moins une note s'en sert.
 -- ---------------------------------------------------------------------------
 local function esc(s)
     return (s:gsub("[%%|=\n]", function(c)
@@ -173,6 +180,19 @@ function Clip.serialize(c)
                     .. num(nt.p[i]) .. "," .. num(nt.v[i])
         end
         out[#out + 1] = "notes=" .. table.concat(quads, ";")
+        local pr, any = nt.pr, false
+        if pr then
+            for i = 1, #nt.s do
+                if (pr[i] or 100) ~= 100 then any = true break end
+            end
+        end
+        if any then
+            local ps = {}
+            for i = 1, #nt.s do
+                ps[i] = string.format("%d", math.floor((pr[i] or 100) + 0.5))
+            end
+            out[#out + 1] = "probs=" .. table.concat(ps, ";")
+        end
     end
     return table.concat(out, "|")
 end
@@ -183,6 +203,11 @@ function Clip.deserialize(str)
     if first ~= Clip.VERSION then return nil, "bad header: " .. tostring(first) end
 
     local c = Clip.new()
+    -- Les deux cles sont independantes et RIEN NE GARANTIT LEUR ORDRE : le
+    -- registre autorise explicitement un ecrivain a poser ses champs comme il
+    -- veut. On recolte donc les probabilites de cote et on les pose a la fin,
+    -- plutot que de dependre du fait qu'aujourd'hui `notes` vient en premier.
+    local pending = nil
     for pair in str:sub(#first + 2):gmatch("[^|]+") do
         local k, v = pair:match("^([^=]+)=(.*)$")
         if k == "kind" then
@@ -195,11 +220,25 @@ function Clip.deserialize(str)
                 p[#p + 1]   = tonumber(d)
                 vel[#vel + 1] = tonumber(e)
             end
-            c.notes = { s = s, l = l, p = p, v = vel }
+            c.notes = { s = s, l = l, p = p, v = vel, pr = {} }
+        elseif k == "probs" then
+            pending = {}
+            for a in v:gmatch("[^;]+") do
+                pending[#pending + 1] = tonumber(a) or 100
+            end
         elseif k and FIELD_KIND[k] then
             c[k] = FIELD_KIND[k] == "n" and tonumber(v) or unesc(v)
         end
         -- unknown keys: skipped on purpose (see the registry note)
+    end
+    -- CENT POUR CE QUI N'EN A PAS. Un clip ecrit avant que la probabilite
+    -- existe n'a pas de cle `probs`, et l'absence doit valoir « joue toujours »
+    -- — pas nil, que le moteur lirait comme un zero.
+    if c.notes and c.notes.s then
+        local pr = c.notes.pr
+        for i = 1, #c.notes.s do
+            pr[i] = (pending and pending[i]) or 100
+        end
     end
     return c
 end

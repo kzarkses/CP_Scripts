@@ -36,12 +36,15 @@ fichier.
    construire.
 2. **Huit colonnes** (`Loop.MAX_LANES` 8 → 16). Voir « Les corrections d'une
    ligne » : ça casse le format de session, plafond dur à 15.
-3. **La probabilité par note**, plus les **en-têtes de catégories** de la
-   section sous les notes — vélocité et probabilité pour l'instant, et la
-   structure prévue pour celles qui suivront. Conception arrêtée dans
-   `ROADMAP_Editeur.md` §5 bis : tirage **sans état**, un hachage de
-   (note, passe), donc reproductible et prouvable au harnais. **Mode case
-   seulement** — le MIDI de REAPER n'a pas de champ où la ranger.
+3. ~~**La probabilité par note**~~ — **faite le 2026-08-02** (ABI 2.2,
+   format 9). Tirage **sans état** : un hachage de (note, passe), la passe prise
+   sur l'**attaque** pour qu'attaque et coupure soient d'accord. Le harnais
+   prouve les bornes, la distribution, l'égalité coupures/attaques, et que deux
+   lanes identiques ne tirent pas la même suite. **Mode case seulement** — le
+   MIDI de REAPER n'a pas de champ où la ranger, et l'en-tête de la section le
+   **dit** au lieu de laisser glisser une barre qui ne survivrait pas.
+   La section sous les notes a désormais ses **en-têtes de catégories** :
+   vélocité et probabilité, le nom ouvre la liste, le chevron replie.
 4. **Le registre des défauts.** Dix-sept lignes, et Cédric le dit : *« c'est
    important de corriger les bugs en priorité »*. Sept touchent la perte de
    données ou le mauvais son.

@@ -358,9 +358,9 @@ l'autre.
 | `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) `loopa` `loopb` (**2.1**) |
 | `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` `offset` `playfrom` `loopa` `loopb` `spana` `spanlen` (**2.1**) |
 | `CP_LaneCmd(lane, cmd, arg)` | bool |
-| `CP_LaneSetNote(lane, i, start, len, pitch, vel)` | bool — écrit dans le tampon **qui dort** |
+| `CP_LaneSetNote(lane, i, start, len, pitch, vel, prob)` | bool — écrit dans le tampon **qui dort** ; `prob` en pourcent, **100 = toujours** (**2.2**) |
 | `CP_LanePublish(lane, count)` | bool — échange les deux tampons |
-| `CP_LaneGetNote(lane, i)` | ok, start, len, pitch, vel — lit le tampon **publié** |
+| `CP_LaneGetNote(lane, i)` | ok, start, len, pitch, vel, prob (**2.2**) — lit le tampon **publié** |
 | `CP_TransportSync(tempo, beat, playing, tsNum)` | — l'ancre, **une fois par frame** |
 | `CP_SetFreeRun(on)` / `CP_GetFreeRun()` | horloge libre ou transport de l'hôte |
 | `CP_SetLaunchQ(beats)` / `CP_GetLaunchQ()` | quantize de lancement, 0 = tout de suite |
@@ -420,6 +420,57 @@ qui est exactement le comportement du JSFX — moins juste, jamais faux.
 > et se fait refuser par tous les scripts, qui testent un minimum — plus une
 > note, plus un son, et rien n'a planté. Après 1.9 vient donc **2.0**, et ce
 > n'est pas une rupture de compatibilité : c'est une contrainte d'écriture.
+
+### 3.3 quinquies La probabilité par note — `prob` (ABI 2.2)
+
+Le septième argument de `CP_LaneSetNote` est une **chance de jouer en pourcent**,
+de 0 à 100. Cent est le défaut et le chemin rapide : la porte ne hache rien pour
+une note qui n'a pas de probabilité, c'est-à-dire pour l'immense majorité d'entre
+elles. Le champ a pris **un des deux octets de bourrage** de `LaneNote`, donc la
+structure ne grossit pas et la liste tient dans le même mégaoctet.
+
+**Le tirage est SANS ÉTAT, et c'est ce qui le rend possible dans le fil audio.**
+Une note tirée au sort doit garder sa décision pendant toute la passe, sinon elle
+s'allume et s'éteint en cours de note. Ça semble demander une mémoire par note et
+par passe — c'est-à-dire de l'état, dans le fil audio, remis à zéro par un
+évènement que ce fil ne connaît pas. Ça n'est pas nécessaire :
+
+```
+onset = pref - d                       // l'instant où CETTE note a commencé
+pass  = floor(onset / Ls)
+h     = hash(index_de_note, pass ^ graine_de_lane)
+if (h % 100) >= prob  →  cette note se tait CE TOUR-CI
+```
+
+Le hachage ne dépend que de `(note, passe)`, donc il est **constant pendant toute
+la passe** et **identique pour l'attaque et pour la coupure**. Zéro octet d'état,
+zéro allocation, et le harnais peut prouver la distribution — ce qu'un vrai
+générateur aléatoire n'aurait pas permis.
+
+**Le numéro de passe se prend sur l'ATTAQUE, pas sur l'instant courant.** Une
+note qui traverse la frontière de boucle est encore dans la passe où elle a
+commencé ; la dater sur maintenant lui ferait retirer au sort à mi-note, et la
+coupure d'une note qui n'a jamais sonné serait laissée en l'air — une note tenue
+jusqu'à la fin des temps, qui est le seul défaut de cette fonctionnalité qui ne
+se rattrape pas tout seul. C'est l'assertion que le harnais vérifie en comptant
+**autant de coupures que d'attaques**.
+
+**La graine se déduit de l'indice de lane** : rien à stocker, rien à sérialiser,
+et deux lanes portant les mêmes notes ne tirent pas la même suite — ce qui
+s'entendrait tout de suite comme un motif et non comme du hasard.
+
+> ⚠️ **Le septième argument a un défaut côté C++, et c'est obligatoire.** `argi`
+> rend **zéro** hors plage, et zéro veut dire « cette note ne sonne jamais » : un
+> script antérieur à 2.2, qui appelle avec six arguments, aurait rendu toutes ses
+> lanes muettes sans un mot. Le pont teste donc `narg` et non la valeur. Dans
+> l'autre sens — script neuf, extension ancienne — le septième est ignoré et la
+> probabilité est simplement inerte.
+
+**Elle n'existe qu'en mode case.** Le MIDI de REAPER n'a aucun champ par note où
+la ranger ; sur une prise il faudrait la coder dans un évènement de notation, la
+voir se perdre à chaque glisser, et l'expliquer. `Roll.CanProb()` répond pour le
+backend, et l'éditeur le **dit dans l'en-tête de la section** — une limite
+énoncée avant le geste vaut mieux qu'un réglage qui a l'air de marcher.
 
 ### 3.3 ter Lire à partir d'ici — `offset` (ABI 1.9)
 

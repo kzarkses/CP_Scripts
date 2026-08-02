@@ -1567,11 +1567,15 @@ local function copyCell(c)
     for k, v in pairs(c) do d[k] = v end
     local nt = c.notes
     if nt then
-        local s, l, p, v = {}, {}, {}, {}
+        local s, l, p, v, pr = {}, {}, {}, {}, {}
         for i = 1, #(nt.s or {}) do
             s[i], l[i], p[i], v[i] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+            -- La copie doit emporter la probabilite, sinon dupliquer une case
+            -- rend une case qui joue tout : le champ manquant vaut cent, et
+            -- « cent » est precisement la valeur que l'original n'avait pas.
+            pr[i] = (nt.pr and nt.pr[i]) or 100
         end
-        d.notes = { s = s, l = l, p = p, v = v }
+        d.notes = { s = s, l = l, p = p, v = v, pr = pr }
     end
     d.cell, d.origin = nil, nil   -- it belongs to wherever it lands, not here
     -- A COPY IS ANOTHER CLIP. Carrying the identity across would give two

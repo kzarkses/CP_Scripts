@@ -3318,3 +3318,104 @@ sur la case `(t+1, 0)`. À huit colonnes le défaut passait de trois collisions 
 frame à sept, dans la boucle de dessin que ce cache existe pour vider. La clé
 réserve désormais une ligne de plus que la grille.
 
+## Une note qui ne sonne pas toujours, et pas un octet pour s'en souvenir
+
+ABI 2.2, format 9. La conception était arrêtée depuis le matin dans
+`ROADMAP_Editeur.md` §5 bis ; elle s'est vérifiée telle quelle, à un détail
+près, et ce détail était le seul endroit où elle pouvait être fausse.
+
+**Le problème qui n'en est pas un.** Une note tirée au sort doit garder sa
+décision pendant toute la passe, sinon elle s'allume et s'éteint en cours de
+note. Ça *semble* demander une mémoire par note et par passe — donc de l'état,
+dans le fil audio, remis à zéro par un évènement que ce fil ne connaît pas. Le
+tirage ne dépend que de `(numéro de note, numéro de passe)` : il est constant
+pendant toute la passe et identique pour l'attaque et pour la coupure, par
+construction. Zéro octet, zéro écriture, zéro allocation.
+
+**Le détail : la passe se prend sur l'ATTAQUE.** `pref - d` est l'instant où
+cette note a commencé ; `pref` est l'instant courant. Une note qui traverse la
+frontière de boucle est encore dans la passe où elle a commencé — la dater sur
+maintenant lui ferait retirer au sort à mi-note, et la coupure d'une note qui
+n'a jamais sonné serait laissée en l'air. **Une note tenue jusqu'à la fin des
+temps est le seul défaut de cette fonctionnalité qui ne se rattrape pas tout
+seul**, et c'est pour ça que le harnais compte les coupures et les attaques
+plutôt que de se contenter d'une moyenne.
+
+**Ce qu'un vrai générateur aléatoire aurait coûté.** Il aurait rendu ce test
+inécrivable : on n'aurait pu vérifier qu'une moyenne, sur beaucoup de passes,
+sans jamais savoir si une note s'était rallumée au milieu d'elle-même. Le
+hachage étant reproductible, le harnais pose les quatre questions qui comptent —
+les bornes (100 sonne toujours, 0 jamais), la distribution (32 passes sur 64 à
+prob 50), l'égalité coupures/attaques, et le fait que **deux lanes portant les
+mêmes notes ne tirent pas la même suite** (47 fronts, 20 en commun). Sans cette
+dernière, ce ne serait pas du hasard, ce serait un motif. La graine se déduit de
+l'indice de lane : rien à stocker, rien à sérialiser.
+
+174 assertions, zéro échec, zéro allocation dans le fil audio.
+
+### Un octet dont l'absence n'est pas neutre
+
+`prob` a pris un des deux octets de bourrage de `LaneNote`, donc la structure ne
+grossit pas. Mais **zéro veut dire « ne sonne jamais »**, et c'est ce qui rend ce
+champ différent de tous les autres de la liste : l'oublier quelque part ne laisse
+pas les choses en l'état, il rend muet. Il fallait donc le poser explicitement à
+cent à *chaque* point d'écriture — la capture live, l'insertion d'une note dans
+une case, la désérialisation d'un projet ancien, la copie d'une case, le
+harnais — et pas seulement là où on y pense.
+
+**Le pire cas était côté ABI**, et il ne se voyait pas du tout. `argi` rend zéro
+hors plage. Un script antérieur à 2.2, appelant `CP_LaneSetNote` avec six
+arguments, aurait donc écrit `prob = 0` dans chaque note : toutes les lanes
+muettes, sans un mot, sans une erreur, avec les notes bien visibles dans
+l'éditeur. Le pont teste `narg` et non la valeur. Dans l'autre sens — script
+neuf, extension ancienne — le septième argument est ignoré et la probabilité est
+simplement inerte, ce qui est la bonne dégradation.
+
+### Deux choix de format, et ils ne sont pas les mêmes
+
+**Le blob des lanes prend un cinquième champ** dans l'enregistrement d'une note,
+écrit seulement quand il vaut autre chose que cent, avec **format 9** pour le
+dire. Le lecteur essaie cinq champs puis quatre, dans cet ordre — l'expression à
+quatre champs est ancrée en fin de chaîne, donc elle refuserait un
+enregistrement à cinq et la note serait perdue en silence.
+
+**Le descripteur de clip prend une clé séparée** (`probs=`), et pas un cinquième
+membre dans le quadruplet. La raison est dans le format lui-même : son registre
+de champs ignore ce qu'il ne connaît pas, donc une clé nouvelle est sautée par un
+lecteur ancien — alors qu'un cinquième membre aurait fait rater l'expression, et
+le lecteur aurait perdu la note **entière** plutôt que son seul champ neuf. Deux
+formats, deux mécanismes de compatibilité, deux décisions différentes.
+
+### La section sous les notes gagne son en-tête de catégorie
+
+La liste de ce qui s'y règle était depuis le matin dans *une* variable, en
+attendant d'avoir une deuxième entrée — « le jour où il y en a deux, c'est une
+entrée de plus et aucune géométrie à refaire ». C'est ce qui s'est passé : la
+géométrie n'a pas bougé.
+
+**Le chevron replie, le nom choisit.** Deux gestes dans treize pixels, séparés
+parce qu'ils ne visent pas le même endroit — un seul rectangle pour les deux
+aurait replié la section chaque fois qu'on veut changer de catégorie. Un
+triangle **dessiné** et non un caractère Unicode : les polices de REAPER ne
+rendent pas les flèches partout, et un glyphe manquant dans un en-tête de treize
+pixels ne se remarque qu'une fois la fenêtre livrée.
+
+**La hauteur maximale appartient à la catégorie, pas à la lane** : 127 est une
+vélocité MIDI, 100 est un pourcentage. Les confondre aurait dessiné une
+probabilité de 100 aux quatre cinquièmes de la hauteur — juste assez faux pour
+qu'on ne le voie pas.
+
+**Et la limite se dit avant le geste.** Sur une prise MIDI il n'y a nulle part où
+ranger une probabilité, donc c'est le *backend* qui répond (`Roll.CanProb`), pas
+l'hôte en devinant son mode, et l'en-tête l'écrit en toutes lettres. Une barre
+qui glisse sous le doigt et qui ne survit pas à la fermeture aurait été pire que
+pas de barre du tout.
+
+**Trouvé en écrivant** : `guardScale` enveloppe `setNote` pour la contrainte de
+gamme, avec une signature à cinq arguments. Elle aurait fait **disparaître** le
+sixième pour tous les appelants, et le symptôme aurait été « la probabilité ne
+s'écrit jamais » sans que rien dans le chemin d'écriture ne l'explique. Et le
+**tri** doit emporter la probabilité avec les notes : la laisser en place aurait
+donné les probabilités à des notes qui ne sont plus les leurs, à chaque
+déplacement.
+

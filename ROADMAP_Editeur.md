@@ -367,9 +367,15 @@ collapsable »*.
       pixels qui portent le chevron et le nom de ce qu'on règle. Une section
       qu'on replie sans laisser de poignée est une section qu'on a perdue.
       L'état est persisté avec les autres réglages de fenêtre.
-- [ ] **Une liste dans l'en-tête** pour choisir ce qu'on règle. Elle attend
-      d'avoir deux entrées : un sélecteur à un seul choix ment sur ce qui
-      existe.
+- [x] **Une liste dans l'en-tête** pour choisir ce qu'on règle. Elle attendait
+      d'avoir deux entrées ; elle en a deux. Le **chevron replie, le nom
+      choisit** — deux gestes dans treize pixels, séparés parce qu'ils ne visent
+      pas le même endroit : un seul rectangle pour les deux aurait replié la
+      section chaque fois qu'on veut changer de catégorie. Le clic droit replie
+      partout, y compris sur le nom.
+      La hauteur maximale appartient à la catégorie et non à la lane : 127 est
+      une vélocité MIDI, 100 est un pourcentage, et les confondre aurait dessiné
+      une probabilité de 100 aux quatre cinquièmes de la hauteur.
 
 ### La probabilité — le chantier, et il est décidé
 
@@ -404,10 +410,30 @@ l'identique, ce qui s'entendrait immédiatement comme un artefact.
 format de sérialisation (**8**), et la lane de la section ci-dessus qui
 l'édite. Rien dans `Cells` : une case audio n'a pas de notes.
 
-**Pourquoi ce n'est pas fait le 2026-08-02** : le moteur venait de recevoir
-deux corrections de datation le même soir, et empiler un tirage dans la porte
-avant que Cédric ait entendu les premières aurait mélangé deux causes dans le
-même symptôme. C'est exactement ce qui a coûté la soirée de l'ABI 1.10.
+**FAIT — ABI 2.2, format 9 (2026-08-02, plus tard le même jour).** Ce qui était
+écrit ci-dessus s'est vérifié tel quel : `pass` se prend sur l'**attaque**
+(`pref - d`), pas sur l'instant courant, sinon une note qui traverse la frontière
+de boucle retire au sort à mi-chemin et laisse une coupure en l'air.
+
+Le harnais prouve les trois choses qu'un vrai générateur aléatoire aurait rendues
+invérifiables : les bornes (100 sonne toujours, 0 jamais), la distribution
+(32 passes sur 64 à prob 50), et surtout **autant de coupures que d'attaques** —
+c'est celle-là qui compte, parce qu'une note tenue jusqu'à la fin des temps est
+le seul défaut de cette fonctionnalité qui ne se rattrape pas tout seul. Une
+quatrième vérifie que deux lanes portant les mêmes notes ne tirent pas la même
+suite : 47 fronts, 20 en commun.
+
+**Ce que l'écriture a ajouté au plan** : le septième argument d'ABI a un **défaut
+côté C++**, parce que `argi` rend zéro hors plage et que zéro veut dire « ne
+sonne jamais » — un script antérieur aurait rendu toutes ses lanes muettes sans
+un mot. Et le champ vaut cent par défaut **à chaque point d'écriture** (capture
+live, insertion, désérialisation, copie de case), parce que c'est le seul champ
+de cette liste dont l'absence n'est pas neutre.
+
+**Pourquoi ce n'était pas fait plus tôt dans la journée** : le moteur venait de
+recevoir deux corrections de datation le même soir, et empiler un tirage dans la
+porte avant que Cédric ait entendu les premières aurait mélangé deux causes dans
+le même symptôme. C'est exactement ce qui a coûté la soirée de l'ABI 1.10.
 
 ---
 

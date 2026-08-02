@@ -111,6 +111,11 @@ local opts = {
     -- velocite, et un reglage qu'on ne voit pas est un reglage qui n'existe
     -- pas tant qu'on n'a pas appris qu'il etait la.
     lane_open  = cfg.lane_open ~= false,
+    -- CE QUE LA SECTION REGLE. « velocity » ou « prob » — et la liste attendait
+    -- d'avoir DEUX entrees pour exister : un selecteur a un seul choix ment sur
+    -- ce qui existe. Persiste, parce qu'on travaille une probabilite sur toute
+    -- une session et qu'on ne veut pas la rechoisir a chaque ouverture.
+    lane_field = cfg.lane_field or "velocity",
     -- Comment les notes se colorent : "flat" (la couleur du theme, comme
     -- depuis toujours), "pitch" ou "velocity" — les deux axes que le MIDI
     -- editor de REAPER propose et qui disent quelque chose qu'on ne peut pas
@@ -220,6 +225,7 @@ local function persistConfig()
     cfg.grid_div  = opts.grid_div
     cfg.note_names = opts.note_names
     cfg.lane_open  = opts.lane_open
+    cfg.lane_field = opts.lane_field
     cfg.note_color = opts.note_color
     cfg.audition   = opts.audition
     cfg.out_mode   = opts.out_mode
@@ -797,30 +803,46 @@ end
 
 local function makeClipBackend(c)
     local nt = c.notes
+    -- LE SEUL BACKEND QUI SAIT RANGER UNE PROBABILITE. La lane est notre format ;
+    -- une prise MIDI de REAPER n'a aucun champ par note ou la mettre. Le drapeau
+    -- vit ici plutot que dans une question « quel est le mode ? » posee par
+    -- l'hote : c'est le stockage qui sait ce qu'il peut stocker.
+    --
+    -- `nt.pr` peut manquer sur un descripteur ecrit avant ce jour ; il est
+    -- rempli a cent une fois, ici, parce que c'est le point d'entree unique.
+    if not nt.pr then nt.pr = {} end
+    for i = 1, #nt.s do if nt.pr[i] == nil then nt.pr[i] = 100 end end
     return {
+        can_prob = true,
         readAll = function()
             local n = #nt.s
             for i = 1, n do
                 Roll.starts[i], Roll.lens[i], Roll.pitches[i], Roll.vels[i]
                     = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+                Roll.probs[i] = nt.pr[i] or 100
             end
             return n
         end,
         insertNote = function(t, pitch, len, vel)
             local n = #nt.s + 1
             nt.s[n], nt.l[n], nt.p[n], nt.v[n] = t, len, pitch, vel
+            -- Une note qu'on vient de POSER sonne. Sans cette ligne elle
+            -- naitrait a zero pour cent, donc visible et muette.
+            nt.pr[n] = 100
         end,
         deleteNote = function(i)
             table.remove(nt.s, i)
             table.remove(nt.l, i)
             table.remove(nt.p, i)
             table.remove(nt.v, i)
+            table.remove(nt.pr, i)
         end,
-        setNote = function(i, t, len, pitch, vel)
+        setNote = function(i, t, len, pitch, vel, prob)
             if t ~= nil then nt.s[i] = t end
             if len ~= nil then nt.l[i] = len end
             if pitch ~= nil then nt.p[i] = pitch end
             if vel ~= nil then nt.v[i] = vel end
+            if prob ~= nil then nt.pr[i] = prob end
         end,
         -- (start, pitch) order keeps Sync's selection-by-identity stable
         sort = function()
@@ -830,12 +852,17 @@ local function makeClipBackend(c)
                 if nt.s[a] ~= nt.s[b] then return nt.s[a] < nt.s[b] end
                 return nt.p[a] < nt.p[b]
             end)
-            local s, l, p, v = {}, {}, {}, {}
+            local s, l, p, v, pr = {}, {}, {}, {}, {}
             for k = 1, #idx do
                 local i = idx[k]
                 s[k], l[k], p[k], v[k] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+                -- LE TRI DOIT EMPORTER LA PROBABILITE. La laisser en place
+                -- rendrait les probabilites a des notes qui ne sont plus les
+                -- leurs — et un tri se declenche a chaque deplacement, donc
+                -- l'erreur se serait promenee a chaque geste.
+                pr[k] = nt.pr[i] or 100
             end
-            nt.s, nt.l, nt.p, nt.v = s, l, p, v
+            nt.s, nt.l, nt.p, nt.v, nt.pr = s, l, p, v, pr
         end,
         -- be.undo est appele APRES le geste : la photo prise ici est donc
         -- l'etat qui en resulte, et la pile part de l'etat initial pose au
@@ -2666,11 +2693,24 @@ local VEL_H  = 44     -- la lane elle-meme, ouverte
 -- porter le chevron et le nom de ce qu'on regle, et de quoi le rouvrir sans
 -- aller le chercher dans un menu.
 local LANE_HDR = 13
--- Ce qu'accompagne une note — la velocite aujourd'hui, la probabilite et le
--- reste quand ils existeront — se regle ici. La liste de ce qui s'y montre est
--- volontairement dans UNE variable : le jour ou il y en a deux, c'est une
--- entree de plus et aucune geometrie a refaire.
-local LANE_NAME = "Velocity"
+-- CE QU'ACCOMPAGNE UNE NOTE. La liste etait dans UNE variable en attendant
+-- d'avoir une deuxieme entree ; elle en a deux, donc elle devient une liste et
+-- l'en-tete devient un choix. La geometrie n'a pas bouge — c'etait tout l'objet
+-- de l'avoir ecrite comme ca.
+--
+-- `max` est ce que vaut le haut de la barre, et il n'est PAS le meme pour les
+-- deux : 127 est une velocite MIDI, 100 est un pourcentage. Les melanger aurait
+-- dessine une probabilite de 100 aux quatre cinquiemes de la hauteur.
+local LANE_FIELDS = {
+    { id = "velocity", name = "Velocity",    max = 127 },
+    { id = "prob",     name = "Probability", max = 100 },
+}
+local function laneField()
+    for i = 1, #LANE_FIELDS do
+        if LANE_FIELDS[i].id == opts.lane_field then return LANE_FIELDS[i], i end
+    end
+    return LANE_FIELDS[1], 1
+end
 local function laneH()
     return LANE_HDR + (opts.lane_open and VEL_H or 0)
 end
@@ -3973,7 +4013,33 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                     and my >= vy and my < vy + LANE_HDR
     if in_lane_hdr then
         UI.SetCursor("arrow")
+        -- LE CHEVRON REPLIE, LE NOM CHOISIT. Deux gestes dans treize pixels, et
+        -- ils ne se marchent pas dessus parce qu'ils ne visent pas le meme
+        -- endroit : le chevron tient les dix-huit premiers pixels, le nom ce
+        -- qui suit. Un seul rectangle pour les deux aurait fait replier la
+        -- section chaque fois qu'on veut changer de categorie.
+        local on_name = mx >= wave.x - lane_w + 18
         if Core_tk.MouseClicked(1) then
+            if on_name then
+                local items = {}
+                for i = 1, #LANE_FIELDS do
+                    local f = LANE_FIELDS[i]
+                    items[i] = {
+                        label = f.name,
+                        checked = (f.id == opts.lane_field),
+                        action = function()
+                            opts.lane_field = f.id
+                            opts.lane_open = true
+                            markDirty()
+                        end,
+                    }
+                end
+                UI.NativeMenu(items)
+            else
+                opts.lane_open = not opts.lane_open
+                markDirty()
+            end
+        elseif Core_tk.MouseClicked(2) then
             opts.lane_open = not opts.lane_open
             markDirty()
         end
@@ -4182,15 +4248,33 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 end
                 UI.SetCursor("note_edge")
             elseif md.mode == "vel" and md.idx then
-                local vel = (vy + LANE_HDR + VEL_H - my) / VEL_H * 127
-                if md.multi and md.multi > 1 then
-                    for k = 1, md.multi do Roll.SetVelLive(move_snap[k].i, vel) end
+                -- LA MEME POIGNEE ECRIT LA CATEGORIE AFFICHEE. Le geste est le
+                -- meme, la hauteur est la meme, seule la destination change —
+                -- c'est ce qui fait qu'il n'y a rien de nouveau a apprendre
+                -- quand la liste gagne une entree.
+                local fd = laneField()
+                local val = (vy + LANE_HDR + VEL_H - my) / VEL_H * fd.max
+                if fd.id == "prob" then
+                    if Roll.CanProb() then
+                        if md.multi and md.multi > 1 then
+                            for k = 1, md.multi do
+                                Roll.SetProbLive(move_snap[k].i, val)
+                            end
+                        else
+                            Roll.SetProbLive(md.idx, val)
+                        end
+                        md.moved = true
+                    end
                 else
-                    Roll.SetVelLive(md.idx, vel)
+                    if md.multi and md.multi > 1 then
+                        for k = 1, md.multi do Roll.SetVelLive(move_snap[k].i, val) end
+                    else
+                        Roll.SetVelLive(md.idx, val)
+                    end
+                    state.last_vel = Roll.vels[md.idx]
+                    md.moved = true
                 end
-                state.last_vel = Roll.vels[md.idx]
                 UI.SetCursor("vel")
-                md.moved = true
             end
         else
             if md.mode == "paint" then
@@ -4420,16 +4504,41 @@ local function drawRoll(theme, area_h)
         local d = opts.lane_open and -3 or 3
         UI.DrawTriangle(cx - 4, cy - d, cx + 4, cy - d, cx, cy + d,
                         col_mute[1], col_mute[2], col_mute[3], 0.9)
-        Core_tk.DrawText(LANE_NAME, gx + 18, vy + 1,
+        local fd = laneField()
+        -- LE NOM DIT AUSSI QU'IL SE CLIQUE. Un intitule qui ouvre une liste et
+        -- qui ressemble a une etiquette est une liste que personne ne trouve ;
+        -- le chevron du repliement est deja pris a gauche, donc c'est le petit
+        -- triangle a droite du mot qui porte la difference. UN TRIANGLE DESSINE
+        -- ET NON UN CARACTERE : les polices de REAPER ne rendent pas les fleches
+        -- Unicode partout, et un glyphe manquant dans un en-tete de treize
+        -- pixels ne se remarque qu'une fois la fenetre livree.
+        Core_tk.DrawText(fd.name, gx + 18, vy + 1,
                          col_mute[1], col_mute[2], col_mute[3], 1)
+        local nw = Core_tk.MeasureText(fd.name) or 0
+        local tx, ty = gx + 24 + nw, vy + math.floor(LANE_HDR / 2) - 1
+        UI.DrawTriangle(tx - 3, ty, tx + 3, ty, tx, ty + 3,
+                        col_mute[1], col_mute[2], col_mute[3], 0.8)
+        -- LA LIMITE SE DIT AVANT LE GESTE. Sur une prise MIDI il n'y a nulle
+        -- part ou ranger une probabilite, donc la section le dit au lieu de
+        -- laisser glisser une barre qui ne survivrait pas a la fermeture.
+        if fd.id == "prob" and not Roll.CanProb() then
+            UI.SetFontCaption()
+            Core_tk.DrawText("cell clips only - a MIDI take has no field for it",
+                             tx + 12, vy + 2,
+                             col_mute[1], col_mute[2], col_mute[3], 0.7)
+            UI.SetFontBody()
+        end
     end
     if opts.lane_open then
+        local fd = laneField()
+        local src = (fd.id == "prob") and Roll.probs or Roll.vels
+        local fmax = fd.max
         local ly, lh = vy + LANE_HDR, VEL_H
         for i = 1, Roll.count do
             local t0n = Roll.starts[i]
             if t0n >= state.t0 and t0n <= state.t1 then
                 local x = math.floor(xAtTime(t0n))   -- same lattice as the note
-                local bh = (Roll.vels[i] / 127) * (lh - 4)
+                local bh = ((src[i] or fmax) / fmax) * (lh - 4)
                 local sel = Roll.IsSel(i)
                 -- LA BARRE PORTE LA COULEUR DE SA NOTE : c'est la meme note, et
                 -- deux couleurs pour un seul objet obligent a chercher laquelle

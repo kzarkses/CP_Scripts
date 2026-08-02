@@ -596,6 +596,45 @@ static inline frame_t hit_frame(double d, double bpf, double block_beats,
   return (f < at) ? at : ((f > last) ? last : f);
 }
 
+// ---------------------------------------------------------------------------
+// LE TIRAGE D'UNE NOTE — sans etat, et c'est ce qui le rend possible ici
+// ---------------------------------------------------------------------------
+// Une note tiree au sort doit garder sa decision PENDANT TOUTE LA PASSE, sinon
+// elle s'allume et s'eteint en cours de note. Ca semble demander une memoire
+// par note et par passe — c'est-a-dire de l'etat, dans le fil audio, remis a
+// zero par un evenement que ce fil ne connait pas. Ca n'est pas necessaire.
+//
+// Le tirage ne depend que de (numero de note, numero de passe). Il est donc
+// CONSTANT pendant toute la passe et IDENTIQUE pour l'attaque et pour la
+// coupure — ce qui est exactement la propriete demandee, obtenue en zero octet
+// et sans une seule ecriture.
+//
+// LE NUMERO DE PASSE SE PREND SUR L'ATTAQUE, PAS SUR L'INSTANT COURANT. Une
+// note qui traverse la frontiere de boucle est encore dans la passe ou elle a
+// commence ; la dater sur maintenant lui ferait retirer au sort a mi-note, et
+// la coupure d'une note qui n'a jamais sonne serait laissee en l'air.
+//
+// LA GRAINE PAR LANE empeche deux lanes portant les memes notes de tirer a
+// l'identique — ce qui s'entendrait tout de suite comme un artefact et non
+// comme du hasard. Elle se DEDUIT de l'indice de lane : rien a stocker, rien a
+// serialiser, et le harnais peut donc prouver la distribution.
+//
+// C'est un mixage entier a la Wang/Jenkins : quelques operations sur registres,
+// pas de division, pas de table.
+static inline unsigned lane_seed(int li) {
+  return (unsigned)li * 2654435761u + 0x9E3779B9u;
+}
+
+static inline unsigned note_hash(unsigned k, unsigned pass_seed) {
+  unsigned h = k * 0x85EBCA6Bu + pass_seed;
+  h ^= h >> 15;
+  h *= 0xC2B2AE35u;
+  h ^= h >> 13;
+  h *= 0x27D4EB2Fu;
+  h ^= h >> 16;
+  return h;
+}
+
 void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
                      int frames, double block_beats) {
   if (!active) return;
@@ -655,6 +694,7 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
     for (int p = 0; p < 128; ++p) { desire[p] = 0; dvel[p] = 0; }
 
     const double pr = pref - std::floor(pref / Ls) * Ls;
+    const unsigned seed = lane_seed(li);
     for (int k = 0; k < nev; ++k) {
       const LaneNote& n = notes[k];
       // Une note qui COMMENCE hors de la zone de lecture est hors du clip :
@@ -668,6 +708,16 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
       double d = pr - ns;
       d -= std::floor(d / Ls) * Ls;
       if (d < (double)n.len) {
+        // LE TIRAGE, sur la passe de l'ATTAQUE. `pref - d` est l'instant ou
+        // cette note a commence : constant tant qu'elle sonne, y compris quand
+        // elle traverse la frontiere de boucle. Cent pour cent ne hache rien.
+        if (n.prob < 100) {
+          const double onset = pref - d;
+          const long long pass = (long long)std::floor(onset / Ls);
+          const unsigned h = note_hash((unsigned)k,
+                                       (unsigned)((unsigned long long)pass) ^ seed);
+          if ((h % 100u) >= (unsigned)n.prob) continue;
+        }
         const int p = n.pitch & 0x7F;
         desire[p] = (int16_t)(k + 1);
         dvel[p]   = n.vel;

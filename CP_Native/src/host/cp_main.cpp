@@ -93,7 +93,7 @@ using namespace cp;
 // une autre longueur.
 // CP_LaneGet(lane, "spana"|"spanlen") rend la zone EFFECTIVE, apres bornage
 // dans la case : c'est le moteur qui borne, et une seule fois.
-static const double kEngineABI = 2.1;
+static const double kEngineABI = 2.2;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -976,7 +976,7 @@ bool CP_LaneCmd(int lane, int cmd, double arg) {
 }
 
 bool CP_LaneSetNote(int lane, int i, double start, double len,
-                           int pitch, int vel) {
+                           int pitch, int vel, int prob) {
   if (!lane_ok(lane) || i < 0 || i >= kMaxLaneNotes) return false;
   LaneNote* b = g_eng->lanes().write_buf(lane);
   if (!b) return false;
@@ -984,6 +984,7 @@ bool CP_LaneSetNote(int lane, int i, double start, double len,
   b[i].len   = (float)(len > 0.0 ? len : 0.0);
   b[i].pitch = (unsigned char)(pitch < 0 ? 0 : (pitch > 127 ? 127 : pitch));
   b[i].vel   = (unsigned char)(vel < 1 ? 1 : (vel > 127 ? 127 : vel));
+  b[i].prob  = (unsigned char)(prob < 0 ? 0 : (prob > 100 ? 100 : prob));
   return true;
 }
 
@@ -994,7 +995,7 @@ bool CP_LanePublish(int lane, int count) {
 }
 
 bool CP_LaneGetNote(int lane, int i, double* startOut, double* lenOut,
-                           double* pitchOut, double* velOut) {
+                           double* pitchOut, double* velOut, double* probOut) {
   if (!lane_ok(lane) || i < 0) return false;
   const LaneNote* b = g_eng->lanes().read_buf(lane);
   if (!b || i >= g_eng->lanes().note_count(lane)) return false;
@@ -1002,6 +1003,7 @@ bool CP_LaneGetNote(int lane, int i, double* startOut, double* lenOut,
   if (lenOut)   *lenOut   = b[i].len;
   if (pitchOut) *pitchOut = b[i].pitch;
   if (velOut)   *velOut   = b[i].vel;
+  if (probOut)  *probOut  = b[i].prob;
   return true;
 }
 
@@ -1133,9 +1135,13 @@ VA(CP_LaneBind)    { return retb(CP_LaneBind(argi(arg, narg, 0), argi(arg, narg,
 VA(CP_LaneSet)     { return retb(CP_LaneSet(argi(arg, narg, 0), (const char*)argp(arg, narg, 1), argd(arg, narg, 2))); }
 VA(CP_LaneGet)     { return retd(CP_LaneGet(argi(arg, narg, 0), (const char*)argp(arg, narg, 1))); }
 VA(CP_LaneCmd)     { return retb(CP_LaneCmd(argi(arg, narg, 0), argi(arg, narg, 1), argd(arg, narg, 2))); }
-VA(CP_LaneSetNote) { return retb(CP_LaneSetNote(argi(arg, narg, 0), argi(arg, narg, 1), argd(arg, narg, 2), argd(arg, narg, 3), argi(arg, narg, 4), argi(arg, narg, 5))); }
+// ⚠️ LE SEPTIEME ARGUMENT A UN DEFAUT, ET C'EST OBLIGATOIRE. `argi` rend ZERO
+// hors plage, et zero veut dire « cette note ne sonne jamais » : un script plus
+// ancien que l'ABI 2.2, qui appelle avec six arguments, aurait rendu toutes ses
+// lanes muettes sans un mot. On teste donc `narg` et non la valeur.
+VA(CP_LaneSetNote) { return retb(CP_LaneSetNote(argi(arg, narg, 0), argi(arg, narg, 1), argd(arg, narg, 2), argd(arg, narg, 3), argi(arg, narg, 4), argi(arg, narg, 5), (narg > 6) ? argi(arg, narg, 6) : 100)); }
 VA(CP_LanePublish) { return retb(CP_LanePublish(argi(arg, narg, 0), argi(arg, narg, 1))); }
-VA(CP_LaneGetNote) { return retb(CP_LaneGetNote(argi(arg, narg, 0), argi(arg, narg, 1), (double*)argp(arg, narg, 2), (double*)argp(arg, narg, 3), (double*)argp(arg, narg, 4), (double*)argp(arg, narg, 5))); }
+VA(CP_LaneGetNote) { return retb(CP_LaneGetNote(argi(arg, narg, 0), argi(arg, narg, 1), (double*)argp(arg, narg, 2), (double*)argp(arg, narg, 3), (double*)argp(arg, narg, 4), (double*)argp(arg, narg, 5), (double*)argp(arg, narg, 6))); }
 VA(CP_TransportSync) { CP_TransportSync(argd(arg, narg, 0), argd(arg, narg, 1), argi(arg, narg, 2), argd(arg, narg, 3)); return nullptr; }
 VA(CP_SetFreeRun)  { CP_SetFreeRun(argi(arg, narg, 0) != 0); return nullptr; }
 VA(CP_GetFreeRun)  { (void)arg; (void)narg; return retb(CP_GetFreeRun()); }
@@ -1198,9 +1204,9 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_LaneSet, "bool\0int,const char*,double\0lane,param,value\0param: bars mute tag.");
   REG(CP_LaneGet, "double\0int,const char*\0lane,param\0param: mode pending target phase lenbeats tag nev recgen bars mute port.");
   REG(CP_LaneCmd, "bool\0int,int,double\0lane,cmd,arg\0cmd: 1 rec 2 stop-rec 3 clear 4 panic 5 play 6 stop 7 clear-all 8 overdub 9 set-mode(arg). Tout ce qui est ecrit avant le bloc suivant est draine ensemble.");
-  REG(CP_LaneSetNote, "bool\0int,int,double,double,int,int\0lane,i,start,len,pitch,vel\0Ecrit dans le tampon qui dort. Ecrire TOUTE la liste, puis CP_LanePublish.");
+  REG(CP_LaneSetNote, "bool\0int,int,double,double,int,int,int\0lane,i,start,len,pitch,vel,prob\0Ecrit dans le tampon qui dort. `prob` en pourcent (100 = toujours). Ecrire TOUTE la liste, puis CP_LanePublish.");
   REG(CP_LanePublish, "bool\0int,int\0lane,count\0Echange les deux tampons : la liste devient visible du fil audio d'un seul coup.");
-  REG(CP_LaneGetNote, "bool\0int,int,double*,double*,double*,double*\0lane,i,startOut,lenOut,pitchOut,velOut\0Lit la liste PUBLIEE.");
+  REG(CP_LaneGetNote, "bool\0int,int,double*,double*,double*,double*,double*\0lane,i,startOut,lenOut,pitchOut,velOut,probOut\0Lit la liste PUBLIEE.");
   REG(CP_TransportSync, "void\0double,double,int,double\0tempo,beat,playing,tsNum\0Ancre de transport. A appeler une fois par frame, comme CP_ClockSync.");
   REG(CP_SetFreeRun, "void\0int\0on\0Horloge libre (1) ou transport de l'hote (0).");
   REG(CP_GetFreeRun, "bool\0\0\0");
