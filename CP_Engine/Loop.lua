@@ -761,6 +761,23 @@ end
 local reseat = {}
 function Loop.ReseatVersion(lane) return reseat[lane] or 0 end
 
+-- ARMER UN DEPART, plutot que de poser un decalage apres coup.
+--
+-- Poser `offset` depuis ici ne peut pas marcher pour un lancement : on ne voit
+-- le depart qu'APRES coup — le premier bloc a deja sonne a l'ancien endroit,
+-- d'ou le sursaut d'une frame — et on ne peut pas le PREVOIR non plus,
+-- puisque la frontiere de quantize est choisie dans le moteur exactement pour
+-- qu'il n'y ait pas deux horloges qui divergent.
+--
+-- On arme donc l'intention. Le moteur la consomme a l'instant ou il choisit la
+-- frontiere, contre CETTE frontiere et non contre le debut du bloc.
+function Loop.ArmPlayFrom(lane, beat)
+    if NATIVE then r.CP_LaneSet(lane, "playfrom", beat or -1) end
+end
+function Loop.GetPlayFrom(lane)
+    return NATIVE and r.CP_LaneGet(lane, "playfrom") or -1
+end
+
 function Loop.PlayClipFrom(lane, beat)
     if not NATIVE or not lane then return false end
     local lb = Loop.LenBeats(lane)

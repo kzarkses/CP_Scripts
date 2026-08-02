@@ -533,8 +533,23 @@ local function drive(t, half, gate)
             -- boucle suivante — et decale de la phase qu'aura la lane a cet
             -- instant. C'etait la faute : un lancement quantifie entrait au
             -- prochain multiple de la longueur, et depuis le debut du fichier.
-            playAt(slot, beatToFrame(tgt), tgt - math.floor(tgt / lenb) * lenb,
-                   lenb, gate)
+            --
+            -- ET LE DECALAGE COMPTE ICI AUSSI. Cette ligne calcule la phase de
+            -- la frontiere elle-meme, sans passer par celle que le moteur
+            -- publie — donc sans rien savoir d'un « pars d'ici ». Le MIDI
+            -- serait parti au bon endroit et le son au mauvais, ce qui est la
+            -- seule facon de rater ce genre de fonctionnalite sans le voir.
+            --
+            -- Un depart ARME l'emporte sur le decalage courant : c'est ce qui
+            -- va etre pose, et il ne l'est pas encore.
+            local pf = Loop.GetPlayFrom(lane)
+            local ph0
+            if pf >= 0 then ph0 = pf - math.floor(pf / lenb) * lenb
+            else
+                local a = tgt + (Loop.GetLaneOffset(lane) or 0)
+                ph0 = a - math.floor(a / lenb) * lenb
+            end
+            playAt(slot, beatToFrame(tgt), ph0, lenb, gate)
             slot.armed = true
             slot.dated = true    -- ce depart est date : rien a rattraper
         end

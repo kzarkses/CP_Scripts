@@ -178,6 +178,21 @@ struct Lane {
   // DELIBEREMENT NON PERSISTE. C'est un geste de jeu, comme un scrub ; le
   // retrouver a la reouverture d'un projet serait une surprise, pas un service.
   std::atomic<double> phase_off;   // en beats
+
+  // « QUAND CETTE LANE PARTIRA, QU'ELLE PARTE D'ICI. » En beats, ou < 0 pour
+  // « rien de demande ».
+  //
+  // Poser `phase_off` depuis Lua a la place ne peut pas marcher, et le symptome
+  // le dit : le clip demarre a l'ANCIEN endroit pendant une frame, puis saute.
+  // Lua ne voit le lancement qu'apres coup — le mode a deja bascule, le premier
+  // bloc a deja sonne. Et il ne peut pas non plus le PREVOIR : la frontiere de
+  // quantize est choisie ici, exactement pour qu'il n'y ait pas deux horloges
+  // qui pourraient diverger.
+  //
+  // On arme donc l'intention, et c'est le moteur qui la consomme a l'instant
+  // ou il choisit la frontiere — il connait `tq`, donc le decalage est exact du
+  // premier echantillon.
+  std::atomic<double> play_from;   // en beats, < 0 = aucun
   std::atomic<int>    nbuf;        // tampon de notes PUBLIE (0 ou 1)
   std::atomic<int>    ncount[2];   // nombre de notes de chaque tampon
   // Les notes elles-memes vivent dans UN bloc, alloue une seule fois par
@@ -282,7 +297,10 @@ class Lanes {
   void    emit(int port, frame_t at, unsigned char s, unsigned char d1,
                unsigned char d2);
   void    flush_lane(int li, frame_t at);
-  void    drain_cmds(double pb, bool active, frame_t at);
+  void    drain_cmds(double pb, bool active, double ts_num, frame_t at);
+  // Consomme `play_from` : la lane part a `at_beat`, on veut qu'elle y soit a
+  // la phase demandee. Appelee partout ou un mode devient « joue ».
+  void    take_play_from(int li, double at_beat, double ts_num);
   void    run_pendings(double pb, bool active, double ts_num, frame_t at);
   void    run_gate(double pb, bool active, double ts_num, frame_t at,
                    int frames, double block_beats);

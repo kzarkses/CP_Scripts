@@ -18,6 +18,7 @@ void Lane::reset() {
   muted.store(0, std::memory_order_relaxed);
   tag.store(0.0, std::memory_order_relaxed);
   phase_off.store(0.0, std::memory_order_relaxed);
+  play_from.store(-1.0, std::memory_order_relaxed);
   nbuf.store(0, std::memory_order_relaxed);
   ncount[0].store(0, std::memory_order_relaxed);
   ncount[1].store(0, std::memory_order_relaxed);
@@ -230,7 +231,23 @@ void Lanes::all_notes_off() {
 // d'autre d'une frontiere de quantize — la moitie d'une scene partant une
 // mesure avant l'autre n'est pas un quantize, c'est un bug poli.
 // ---------------------------------------------------------------------------
-void Lanes::drain_cmds(double pb, bool active, frame_t at) {
+// « Elle part a CE beat, et on la veut a CETTE phase. » Le decalage est donc
+// la difference, ramenee dans la boucle. Une seule ligne de calcul, mais elle
+// doit vivre la ou la frontiere est CHOISIE : c'est le seul endroit du systeme
+// qui connaisse `at_beat` avant que le premier echantillon ne sorte.
+void Lanes::take_play_from(int li, double at_beat, double ts_num) {
+  Lane& L = lanes_[li];
+  const double want = L.play_from.load(std::memory_order_relaxed);
+  if (want < 0.0) return;
+  L.play_from.store(-1.0, std::memory_order_relaxed);
+  const double Lb = lane_len_beats(li, ts_num);
+  if (Lb <= 0.0) return;
+  double off = want - at_beat;
+  off -= std::floor(off / Lb) * Lb;
+  L.phase_off.store(off, std::memory_order_relaxed);
+}
+
+void Lanes::drain_cmds(double pb, bool active, double ts_num, frame_t at) {
   LaneCmd c;
   while (cmds_.pop(c)) {
     const int li = c.lane;
@@ -315,6 +332,7 @@ void Lanes::drain_cmds(double pb, bool active, frame_t at) {
             L.pending.store(kPendPlay, std::memory_order_relaxed);
             L.pend_target.store(tq, std::memory_order_relaxed);
           } else {
+            take_play_from(li, pb, ts_num);
             L.mode.store(kLanePlaying, std::memory_order_relaxed);
           }
         }
@@ -427,7 +445,14 @@ void Lanes::run_pendings(double pb, bool active, double ts_num, frame_t at) {
       if (pb >= tgt - 0.0005) {
         switch (pnd) {
           case kPendPlay:
-            if (m == kLaneStopped) L.mode.store(kLanePlaying, std::memory_order_relaxed);
+            if (m == kLaneStopped) {
+              // `tgt`, PAS `pb` : la frontiere est celle que le moteur a
+              // choisie, et c'est contre elle que le decalage doit etre exact.
+              // Contre `pb` on serait faux de la fraction de beat qui separe le
+              // debut du bloc de la frontiere — audible sur une boucle courte.
+              take_play_from(li, tgt, ts_num);
+              L.mode.store(kLanePlaying, std::memory_order_relaxed);
+            }
             break;
           case kPendStop:
             if (m == kLanePlaying || m == kLaneOverdub) {
@@ -707,7 +732,7 @@ void Lanes::tick(frame_t clock, int frames) {
   }
   prev_active_ = active ? 1 : 0;
 
-  drain_cmds(pb, active, clock);
+  drain_cmds(pb, active, ts_num, clock);
   run_pendings(pb, active, ts_num, clock);
   run_gate(pb, active, ts_num, clock, frames, block_beats);
 

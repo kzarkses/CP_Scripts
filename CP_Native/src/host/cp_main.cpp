@@ -61,7 +61,15 @@ using namespace cp;
 // constant garde la lane sur la grille, a distance fixe, et ne derive pas.
 // Lu au meme endroit par le portail MIDI et par la phase publiee, donc le son
 // et les notes bougent ensemble.
-static const double kEngineABI = 1.9;
+// 1.10 : CP_LaneSet(lane, "playfrom", beats) — « quand cette lane partira,
+// qu'elle parte d'ici ». Poser `offset` depuis Lua ne pouvait pas marcher : il
+// ne voit le lancement qu'APRES coup (le premier bloc a deja sonne a l'ancien
+// endroit, d'ou un sursaut d'une frame) et il ne peut pas le PREVOIR, puisque
+// la frontiere de quantize est choisie dans le moteur exactement pour qu'il
+// n'y ait pas deux horloges. On arme donc l'intention ; le moteur la consomme
+// a l'instant ou il choisit la frontiere, contre `tq` et non contre le debut
+// du bloc.
+static const double kEngineABI = 1.10;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -894,7 +902,7 @@ bool CP_LaneBind(int lane, int port, int channel) {
   return true;
 }
 
-// param : bars | mute | tag | offset
+// param : bars | mute | tag | offset | playfrom
 bool CP_LaneSet(int lane, const char* param, double value) {
   if (!lane_ok(lane) || !param) return false;
   Lane& L = g_eng->lanes().lane(lane);
@@ -902,6 +910,7 @@ bool CP_LaneSet(int lane, const char* param, double value) {
   if (!strcmp(param, "mute"))  { L.muted.store(value != 0.0 ? 1 : 0, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "tag"))   { L.tag.store(value, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "offset")) { L.phase_off.store(value, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "playfrom")) { L.play_from.store(value, std::memory_order_relaxed); return true; }
   return false;
 }
 
@@ -921,6 +930,7 @@ double CP_LaneGet(int lane, const char* param) {
   if (!strcmp(param, "mute"))     return L.muted.load(std::memory_order_relaxed) ? 1.0 : 0.0;
   if (!strcmp(param, "port"))     return (double)L.port.load(std::memory_order_relaxed);
   if (!strcmp(param, "offset"))   return L.phase_off.load(std::memory_order_relaxed);
+  if (!strcmp(param, "playfrom")) return L.play_from.load(std::memory_order_relaxed);
   return 0.0;
 }
 

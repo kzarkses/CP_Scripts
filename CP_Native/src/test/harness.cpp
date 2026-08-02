@@ -1067,6 +1067,50 @@ static void test_lane_phase_offset() {
              "remis a zero, les deux lanes retombent l'une sur l'autre");
 }
 
+// ---------------------------------------------------------------------------
+// « QU'ELLE PARTE D'ICI » — arme avant, consomme au lancement
+// ---------------------------------------------------------------------------
+// Ce qu'on prouve : le decalage est exact DES LE PREMIER BLOC ou la lane joue,
+// et il l'est contre la FRONTIERE choisie, pas contre le debut du bloc. C'est
+// tout l'objet du champ : pose depuis Lua, il arrivait une frame trop tard et
+// le clip demarrait a l'ancien endroit avant de sauter.
+static void test_lane_play_from() {
+  group("lanes : « qu'elle parte d'ici » est exact des le premier bloc");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(4.0);           // une frontiere a attendre : le cas qui compte
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);   // 4 beats
+  lane_note(L, 0, 0, 0.0, 0.5, 60, 100);
+  L.publish_notes(0, 1);
+  L.lane(0).mode.store(kLaneStopped, std::memory_order_relaxed);
+
+  l0.play_from.store(3.0, std::memory_order_relaxed);
+  L.post(0, kLcPlay, 0.0);
+
+  const int B = 512;
+  int guard = 0;
+  while (l0.mode.load(std::memory_order_relaxed) != kLanePlaying && guard < 4000) {
+    e.tick(B); guard++;
+  }
+  check(guard < 4000, "la lane a fini par partir");
+  // Le champ est CONSOMME : une seconde lecture ne doit pas le reappliquer.
+  check_near(l0.play_from.load(std::memory_order_relaxed), -1.0, 1e-9,
+             "l'intention est consommee, pas gardee");
+  // Et la phase vaut ce qu'on a demande, au bloc pres.
+  const double ph = l0.phase.load(std::memory_order_relaxed);
+  double d = ph - 3.0;
+  d -= std::floor(d / 4.0) * 4.0;
+  if (d > 2.0) d -= 4.0;
+  check(d >= -0.05 && d <= 0.35,
+        "elle est a la phase demandee des le premier bloc joue");
+}
+
 static void test_lane_no_alloc() {
   group("lanes : zero allocation dans le fil audio");
   Engine e;
@@ -1154,6 +1198,7 @@ int main() {
   test_lane_panic_and_clear();
   test_lane_playrate();
   test_lane_phase_offset();
+  test_lane_play_from();
   test_lane_no_alloc();
 
   std::printf("\n=====================================\n");
