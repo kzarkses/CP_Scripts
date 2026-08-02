@@ -375,14 +375,41 @@ Elles ne sont pas des chantiers et changent l'usage quotidien.
       **Deux assertions de plus au harnais** — dont une qui mesure la fenêtre
       elle-même, parce que l'ancien test passait à 0,45 beat de la frontière et
       aurait donc mesuré autre chose que ce qu'il annonçait.
-- [ ] **Huit colonnes.** `Loop.MAX_LANES = 16`. Le calcul de ports que personne
-      n'avait fait : audio prend le port `t`, le MIDI `PORT_BASE + lane`,
-      l'audition le 31 — donc huit colonnes tiennent **sans rien d'autre**
-      (audio 0-7, MIDI 8-23). À douze, le MIDI atteint 31 et percute l'audition.
-      ⚠️ Le pas de la paire déplace les lanes jumelles : il faut la remontée de
-      format v5 → v6 (`dest<lane>`, la lane armée persistée, le blob ordonné par
-      lane) **dans le même changement**, sinon les projets existants rechargent
-      leurs boucles dans des lanes vides, en silence.
+- [x] **Huit colonnes.** `Loop.MAX_LANES = 16`.
+
+      **Le calcul de ports était faux dans les deux sens, et l'écrire a suffi à
+      le voir** : le MIDI ne prend pas `PORT_BASE + lane` mais `PORT_BASE + t`
+      — les deux moitiés d'une paire partagent un port, parce qu'une paire est
+      *une* piste musicale. Donc audio `0..TRACKS-1`, MIDI `8..8+TRACKS-1`, et
+      **huit est exactement le plafond** : à neuf, le son de la colonne 8 prend
+      le port 8, qui est le MIDI de la colonne 0. Les deux plages se touchent
+      sans se recouvrir, pile. Aller au-delà demande `PORT_BASE = 16`, et le
+      plafond devient alors quinze — là, le MIDI atteint le 31, l'audition.
+
+      **La remontée est faite, et elle porte un NOMBRE plutôt qu'un drapeau.**
+      Le bloc de rappel est ordonné par lane, et le pas qui sépare une moitié
+      vivante de sa jumelle *vaut le nombre de colonnes*. **Format 8** : le
+      nombre de lanes entre dans l'en-tête, donc un blob se remonte depuis
+      n'importe quelle valeur passée et vers n'importe quelle valeur future avec
+      la même ligne. Un drapeau « ancien / récent » aurait tenu jusqu'au
+      changement suivant. Les `dest<lane>`, eux, n'ont nulle part où porter ce
+      nombre : `Loop.MigrateLayout` les déplace une fois, et le marqueur
+      `CP_Loop/lanes` dit **comment ce projet range**, pas « ce projet a été
+      migré » — c'est la seule formulation qui empêche de remonter deux fois un
+      projet écrit par la version d'après.
+
+      **Trois choses que l'écriture a rendues nécessaires**, et qu'aucune ne
+      figurait au plan : la remontée vit dans `RefreshDests` et non à
+      l'initialisation, parce qu'un `defer` survit à un changement d'onglet et
+      que le second projet aurait été lu avec la disposition du premier ; la
+      lane **armée** subit le même pas, sinon rouvrir un projet arme la jumelle
+      d'une autre colonne ; et une lane que le blob ne couvre pas doit être
+      **vidée**, parce que le moteur survit au script et que les quatre colonnes
+      neuves se seraient allumées avec le set du projet précédent.
+
+      **Et la migration du routeur traduit elle-même.** Elle arrive *après* le
+      marqueur — celui-ci est posé dès l'ouverture d'une fenêtre, elle attend un
+      `Setup` — donc s'appuyer sur `MigrateLayout` l'aurait rendue inerte.
 
 ---
 
@@ -427,6 +454,14 @@ matin ; le fond tient.
       La grille du projet A peut s'écrire dans le projet B. **Demande une
       décision** : détecter le changement, ou assumer que ces fenêtres sont
       liées à un projet.
+- [x] **Une lane du Looper portait l'identité du premier clip de la grille.**
+      `LaneToClip` frappait `1000000 + lane` — c'est-à-dire `Ident.BASE + lane`,
+      et la toute première identité d'un projet est `BASE + 1`. Deux clips
+      répondaient à un seul tag, et le commentaire affirmait l'inverse : *« ne
+      peut collisionner avec aucun autre »*. La bande est descendue **sous**
+      `Ident.BASE` (`Loop.LANE_TAG_BASE`), là où le compteur ne peut par
+      construction jamais descendre, et au-dessus de tout tag positionnel
+      possible. Trouvé en relisant les espaces de numéros pour huit colonnes.
 - [ ] **Collisions d'identité entre projets.** `Ident` assume la collision et la
       déclare inoffensive parce que `Ident.Get` filtre — mais `Loop.LaneOfTag`
       compare des nombres bruts sans passer par le registre. Deux projets dans
@@ -477,9 +512,11 @@ matin ; le fond tient.
 - [ ] **`audioSub` fait un `io.open` par frame et par case en stretch**
       (`Warp.State` → `PathFor` → `fileExists`). Un accès disque dans une
       boucle de dessin.
-- [ ] **Collision de clé dans le cache de troncature** : `cellLabel(t, SCENES,…)`
-      et la case `(t+1, scène 0)` calculent le même emplacement, donc chacun
-      invalide l'autre à chaque frame.
+- [x] **Collision de clé dans le cache de troncature.** La clé réserve
+      maintenant une ligne de plus que la grille (`t * (SCENES + 1) + s`), parce
+      que l'en-tête de colonne appelle `cellLabel` avec `s = SCENES` et tombait
+      donc exactement sur la case `(t+1, 0)`. Fermé en passant à huit colonnes,
+      où le défaut passait de trois collisions par frame à sept.
 - [ ] **`pollCapture` fait un `CP_LaneGet` par événement et par lane** pendant
       une prise — jusqu'à 1024 appels d'ABI pour 128 événements, alors que la
       liste des lanes en capture est déjà connue.
@@ -595,9 +632,11 @@ tout l'écart, et il est structurel — pas une question de soin.
 
 ## Les décisions qui appartiennent à Cédric
 
-- **Le nombre de colonnes.** Huit tient sans rien changer d'autre que le format
-  de session. Douze demande de bouger `PORT_BASE` et une largeur minimale de
-  cellule ou un défilement horizontal.
+- **Le nombre de colonnes.** Huit est fait (2026-08-02), et c'est le plafond
+  exact de la carte des ports actuelle. Au-delà il faut monter `PORT_BASE` à 16,
+  ce qui porte le plafond à quinze — et, à ce nombre-là, une largeur minimale de
+  cellule ou un défilement horizontal. À huit, la grille tient encore dans une
+  fenêtre de 240 px : c'est le plancher existant, pas un nouveau.
 - **Le sort du chantier 2 si le plugin arrive vite.** Replier le kit sur une
   piste avec des RS5K, puis remplacer les RS5K par le plugin, c'est deux
   migrations. Les faire d'un coup est possible — au prix d'attendre le plugin.

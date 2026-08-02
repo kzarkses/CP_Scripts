@@ -570,8 +570,15 @@ local function playsLabel(n)
 end
 
 -- Truncation allocates, so the cut string is cached against (name, width).
+--
+-- LA CLE RESERVE UNE LIGNE DE PLUS QUE LA GRILLE, et ce n'est pas de la marge :
+-- l'EN-TETE de colonne appelle cette fonction avec `s = SCENES`, donc a
+-- `t * SCENES + s` il calculait exactement l'emplacement de la case (t+1, 0).
+-- Les deux s'invalidaient l'un l'autre a chaque frame — une troncature par
+-- colonne et par frame, dans la boucle de dessin que ce cache existe pour
+-- vider. A huit colonnes le defaut passait de trois collisions a sept.
 local function cellLabel(t, s, name, w)
-    local k = t * SCENES + s
+    local k = t * (SCENES + 1) + s
     local c = cell_lbl[k]
     if not c then c = {}; cell_lbl[k] = c end
     if c.src ~= name or c.w ~= w then

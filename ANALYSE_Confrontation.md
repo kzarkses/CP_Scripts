@@ -324,11 +324,14 @@ Vérifié sur les manuels.
    humaine est en retard de 40 à 120 ms. Passer à une fraction de Q (1/8 =
    250 ms à Q: Bar) est **une ligne de C++**, et c'est le meilleur rapport
    effet/effort du document.
-6. **Plus de quatre colonnes.** Le calcul de ports que personne n'avait fait :
-   audio prend le port `t`, le MIDI `PORT_BASE + lane`, l'audition le 31. Donc
-   **huit colonnes tiennent sans rien d'autre** (audio 0-7, MIDI 8-23). À douze,
-   le MIDI atteint 31 et percute l'audition. Le vrai coût est la largeur
-   d'écran, pas l'architecture.
+6. **Plus de quatre colonnes.** *Fait le 2026-08-02 — et le calcul ci-dessous
+   était faux.* Le MIDI prend `PORT_BASE + t`, pas `PORT_BASE + lane` : les deux
+   moitiés d'une paire partagent un port, parce qu'une paire est *une* piste
+   musicale. Donc audio `0..TRACKS-1`, MIDI `8..8+TRACKS-1`, et **huit est le
+   plafond exact** — à neuf, le son de la colonne 8 prend le port 8, qui est le
+   MIDI de la colonne 0. Le coût réel n'était ni la largeur d'écran ni
+   l'architecture : c'était la **remontée de disposition**, parce que le pas qui
+   sépare une moitié vivante de sa jumelle vaut le nombre de colonnes.
 7. **Capture and Insert Scene** (Ableton, Ctrl+Shift+I) : copier ce qui joue
    dans une nouvelle scène *« with no audible interruption »*. Ici c'est
    exact par construction et non par chance, parce que le tag de lane est de la

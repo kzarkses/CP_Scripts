@@ -1357,9 +1357,19 @@ seule piste routeur** : chaque lane parlait sur son canal, une case audio prenai
 les canaux 9 à 12, l'aperçu de la suite prenait le 16.
 
 Un port n'est pas un canal. Chaque lane écrit dans le sien, pré-FX, et le moteur
-en sert 32. Le nombre de colonnes est redevenu ce qu'il aurait toujours dû être :
-une décision sur la largeur de la fenêtre. `Loop.MAX_LANES` reste à 8 (quatre
-colonnes) — pas par contrainte, par abstention.
+en sert 32.
+
+**Ce qui décide vraiment, c'est la carte des ports** — et il a fallu passer à
+huit colonnes pour le voir (2026-08-02). Le MIDI ne prend pas `PORT_BASE + lane`
+mais `PORT_BASE + t` : les deux moitiés d'une paire partagent un port, parce
+qu'une paire est *une* piste musicale. Donc audio `0..TRACKS-1`, MIDI
+`8..8+TRACKS-1`, et les deux plages se touchent **pile** à huit colonnes : à
+neuf, le son de la colonne 8 prendrait le port 8, qui est le MIDI de la
+colonne 0. `Loop.MAX_LANES = 16`, et le plafond suivant est quinze, avec
+`PORT_BASE = 16` — au-delà, le MIDI atteint le port 31, l'audition partagée.
+
+Ce n'est donc ni le moteur ni l'écran : c'est cette carte, et elle est écrite
+dans `CP_Engine/Loop.lua`, là où on viendra la changer.
 
 ## 14.6 La migration n'est pas du rangement
 
@@ -1392,5 +1402,8 @@ l'inventer.** Voir §14.2.
   entendue. C'est la première chose à faire.
 - La campagne de session longue (`WIP/CP_SoakProbe`) n'a toujours pas tourné, et
   elle ne couvre pas encore les lanes.
-- Le nombre de colonnes reste à 4 alors que le moteur en sert 32.
+- ~~Le nombre de colonnes reste à 4~~ — huit depuis le 2026-08-02, avec la
+  remontée de disposition (format 8, `Loop.MigrateLayout`) dans le même
+  changement : le pas qui sépare une moitié vivante de sa jumelle **vaut le
+  nombre de colonnes**, donc le doubler déplace tout ce qui est rangé par lane.
 - Phase 7 (livraison ReaPack) n'est pas commencée, comme convenu.

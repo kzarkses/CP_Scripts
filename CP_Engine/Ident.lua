@@ -42,16 +42,24 @@ local r = reaper
 -- ---------------------------------------------------------------------------
 -- THE TWO NUMBER SPACES, AND WHY THEY MUST NOT MEET
 --
--- A legacy positional tag is t*1000 + s + 1, so with four columns and eight
--- scenes it lives in 1 .. 4009. Real identities start at BASE, far above any
--- grid this UI could grow to, so a reader can tell which kind of number it is
--- holding WITHOUT being told — which is the whole reason the migration costs
--- nothing: old projects keep writing positional tags into their lanes and new
--- ones write identities, into the same slot, at the same time.
+-- A legacy positional tag is t*1000 + s + 1, so with eight columns and eight
+-- scenes it lives in 1 .. 7008 (15008 at the port map's hard ceiling of
+-- fifteen). Real identities start at BASE, far above any grid this UI could
+-- grow to, so a reader can tell which kind of number it is holding WITHOUT
+-- being told — which is the whole reason the migration costs nothing: old
+-- projects keep writing positional tags into their lanes and new ones write
+-- identities, into the same slot, at the same time.
 --
 -- BASE also has to stay small enough that BASE + n is exact in a double after
 -- passing through gmem or the engine's lane field. 2^53 is the limit; a
 -- million and a counter will not approach it in this century.
+--
+-- IL Y EN A UNE TROISIEME, ET ELLE N'EST PAS ICI : `Loop.LANE_TAG_BASE`, pour
+-- les lanes du Looper, qui n'ont pas de case. Elle vit sous BASE, la ou le
+-- compteur ne peut par construction jamais descendre, et elle est declaree chez
+-- celui qui la FRAPPE. Elle valait `BASE + lane` — donc la lane 1 portait le
+-- meme numero que le premier clip cree dans le projet, et deux clips
+-- repondaient a un seul tag.
 -- ---------------------------------------------------------------------------
 Ident.BASE = 1000000
 

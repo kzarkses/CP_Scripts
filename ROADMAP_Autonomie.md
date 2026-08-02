@@ -3228,3 +3228,93 @@ un groupe (`scene.*`) que son expression régulière ne connaissait pas. Trois
 actions déclarées et « jamais exécutées » — exactement le cas (1) pour lequel il
 existe, sauf que le trou était en lui. Un mot ajouté à la liste des préfixes.
 
+## Huit colonnes, et le pas de la paire qui bouge avec
+
+Une ligne dans le plan, une soirée dans le fichier — et c'était annoncé : *« il
+faut la remontée de format dans le même changement, sinon les projets existants
+rechargent leurs boucles dans des lanes vides, en silence »*.
+
+**Le calcul de ports du plan était faux, et l'écrire a suffi à le voir.** Il
+disait que le MIDI prend `PORT_BASE + lane`. Il prend `PORT_BASE + t` : les deux
+moitiés d'une paire partagent un port, parce qu'une paire est *une* piste
+musicale et qu'un échange de clip ne doit pas déplacer le son vers un autre
+instrument à mi-passe. La conséquence est meilleure que prévu et plus serrée à
+la fois — audio `0..TRACKS-1`, MIDI `8..8+TRACKS-1`, donc **huit est exactement
+le plafond** : à neuf, le son de la colonne 8 prendrait le port 8, qui est le
+MIDI de la colonne 0. Les deux plages se touchent sans se recouvrir, pile. Ce
+n'est plus l'écran qui décide du nombre de colonnes, ni le moteur qui en sert
+32 : c'est cette carte, et elle est maintenant écrite là où on viendra la
+changer.
+
+**Le pas de la paire est le nombre de colonnes.** Une lane basse `t` est la
+moitié vivante de la colonne t, la haute `t + TRACKS` sa jumelle silencieuse.
+Doubler les colonnes déplace donc toutes les jumelles : un projet écrit à quatre
+colonnes range ses jumelles en 4..7, là où huit colonnes rangent les moitiés
+**vivantes** des colonnes 4 à 7. Relu tel quel, il rend quatre colonnes muettes
+et quatre qui rejouent la jumelle de quelqu'un d'autre. Rien ne plante, rien ne
+se dit.
+
+**Format 8 : on écrit le NOMBRE, pas un drapeau.** Le bloc de rappel porte
+désormais son nombre de lanes dans l'en-tête, donc il se remonte depuis
+n'importe quelle valeur passée et vers n'importe quelle valeur future avec la
+même ligne de code. Un drapeau « ancien / récent » aurait tenu jusqu'au
+changement suivant, et le changement suivant est déjà écrit dans le plan
+(`PORT_BASE = 16`, quinze colonnes).
+
+**Le marqueur des destinations ne dit pas « ce projet a été migré ».** Les clés
+`dest<lane>` n'ont nulle part où porter un nombre, donc `Loop.MigrateLayout` les
+déplace une fois et pose `CP_Loop/lanes`. La formulation compte : un marqueur
+« déjà migré » n'aurait rien dit d'un projet **créé** par la nouvelle version —
+il a des clés `dest`, il n'a pas de marqueur — et on l'aurait remonté une
+seconde fois, ce qui l'aurait cassé pour de bon. « Ce projet range comme ceci »
+est la seule formulation qui tienne dans les deux sens.
+
+### Trois choses que l'écriture a rendues nécessaires
+
+**La remontée vit dans `RefreshDests`, pas à l'initialisation.** Un `defer`
+survit à un changement d'onglet de projet : la fenêtre ouverte passe d'un projet
+à l'autre sans repasser par `init`, et le second aurait été lu avec la
+disposition du premier. `RefreshDests` est rejoué dès que le compteur d'état du
+projet bouge — donc pour chaque projet que cette fenêtre voit.
+
+**La lane armée subit le même pas.** C'est un seul nombre dans l'en-tête, et il
+désigne une lane : sans le traduire, rouvrir un projet à quatre colonnes arme la
+jumelle d'une autre colonne.
+
+**Une lane que le blob ne couvre pas doit être VIDÉE.** Le cas n'existait pas
+tant que le bloc couvrait toujours toutes les lanes ; il existe dès qu'un blob
+peut en couvrir moins. Le moteur survit au script : une lane qu'on n'écrit pas
+garde ce que le projet *précédent* y avait mis, et les quatre colonnes neuves se
+seraient donc allumées avec le set d'avant.
+
+**Et la migration du routeur traduit elle-même.** Elle arrive après le
+marqueur — celui-ci est posé dès l'ouverture d'une fenêtre, elle attend un
+`Setup` — donc s'appuyer sur `MigrateLayout` l'aurait rendue inerte, sans que
+rien ne le dise.
+
+### Deux défauts trouvés en relisant les espaces de numéros
+
+**Une lane du Looper portait l'identité du premier clip de la grille.**
+`LaneToClip` frappait `1000000 + lane` pour une lane sans tag. Or
+`Ident.BASE = 1000000` et la toute première identité d'un projet est `BASE + 1` :
+la lane 1 du Looper portait donc **exactement** le même numéro que le premier
+clip créé dans la grille. Deux clips répondaient à un seul tag, et l'éditeur
+pouvait éditer l'un en croyant tenir l'autre. Le commentaire d'origine affirmait
+le contraire — *« un identifiant qui ne peut collisionner avec aucun autre »* —
+et c'est la meilleure façon de ne jamais vérifier. La bande est descendue
+**sous** `Ident.BASE`, là où le compteur ne peut par construction jamais
+descendre. Le défaut est antérieur aux huit colonnes ; ce sont elles qui ont
+obligé à relire.
+
+**Les gardes de version comparaient des chaînes de caractères déguisées.**
+`ver == "6" or ver == "7"` : il fallait penser à y ajouter chaque nouvelle
+version, et le format 8 les aurait rendues fausses en silence — une lane aurait
+relu son tag à la place de son nombre de notes. C'est la même leçon que
+`"10" < "4"`, déjà payée une fois sur ce fichier, sous une autre forme.
+
+**Et la collision de clé du cache de troncature est fermée en passant** :
+l'en-tête de colonne appelle `cellLabel` avec `s = SCENES` et tombait exactement
+sur la case `(t+1, 0)`. À huit colonnes le défaut passait de trois collisions par
+frame à sept, dans la boucle de dessin que ce cache existe pour vider. La clé
+réserve désormais une ligne de plus que la grille.
+

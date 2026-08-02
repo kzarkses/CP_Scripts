@@ -39,21 +39,56 @@ local r = reaper
 -- A musical TRACK is a PAIR of lanes: the half you hear and a silent twin, so
 -- a clip change lands exactly on the quantize boundary.
 --
--- Eight lanes = four columns. THE ENGINE NO LONGER CONSTRAINS THIS — it serves
--- 32 — so this number is now a decision about the grid's shape and nothing
--- else. Raising it is one line here; what it costs is screen width, which is
--- the author's call and not the engine's.
-Loop.MAX_LANES   = 8
+-- SEIZE LANES = HUIT COLONNES (2026-08-02). Le moteur n'a jamais contraint ce
+-- nombre — il en sert 32 — et ce n'est pas non plus l'ecran qui decide : c'est
+-- LA CARTE DES PORTS, et huit est exactement son plafond.
+--
+--   audio  : port = t              → 0 .. TRACKS-1
+--   MIDI   : port = PORT_BASE + t  → 8 .. 8+TRACKS-1
+--
+-- A TRACKS = 8 les deux plages se touchent sans se recouvrir (0..7 et 8..15) ;
+-- a neuf, le son de la colonne 8 prendrait le port 8, qui est le MIDI de la
+-- colonne 0. Aller plus loin demande donc de monter `PORT_BASE` a 16, et le
+-- plafond devient alors 15 colonnes — au-dela, le MIDI atteint le port 31, qui
+-- est l'audition partagee. Deux nombres, deux raisons, et aucune n'est
+-- l'ecran : c'est ecrit ici parce que c'est ici qu'on viendra le changer.
+--
+-- ⚠️ LE PAS DE LA PAIRE EST LE NOMBRE DE COLONNES, donc il vient de bouger.
+-- Tout ce qui est range PAR LANE dans un projet — les destinations `dest<lane>`
+-- et le bloc de rappel — a ete ecrit avec l'ancien pas. `Loop.MigrateLayout`
+-- et le format 8 s'en occupent ; ne pas toucher a l'un sans l'autre.
+Loop.MAX_LANES   = 16
 Loop.MAX_NOTES   = 1024
 Loop.NOTE_STRIDE = 4       -- start, length, pitch, vel (kept: callers use it)
 Loop.TRACKS      = Loop.MAX_LANES // 2
 
 -- Which port a column's MIDI goes out on. Sound cells hold ports 0..TRACKS-1
--- (Engine/Cells) and the shared audition holds 31, so the MIDI ports sit above
--- the audio ones with room to grow. BOTH halves of a pair use the same port:
--- a pair is one musical track, and a clip swap must not move the sound to
--- another instrument halfway through.
+-- (Engine/Cells) and the shared audition holds 31. BOTH halves of a pair use
+-- the same port: a pair is one musical track, and a clip swap must not move the
+-- sound to another instrument halfway through.
 Loop.PORT_BASE = 8
+
+-- ---------------------------------------------------------------------------
+-- LA TROISIEME BANDE DE NUMEROS — les lanes du Looper, qui ne sont pas des cases
+-- ---------------------------------------------------------------------------
+-- `Ident` en declare deux : les tags POSITIONNELS d'avant (t*1000 + s + 1, donc
+-- 1 .. 15008 meme a seize colonnes) et les IDENTITES (`Ident.BASE + n`, avec
+-- n >= 1 et croissant). Une lane du Looper n'est ni l'une ni l'autre : elle n'a
+-- pas de case, mais il lui faut un tag non nul pour que l'editeur sache y
+-- revenir.
+--
+-- ⚠️ ELLE VALAIT `1000000 + lane`, ET C'ETAIT `Ident.BASE + lane`. La toute
+-- premiere identite d'un projet est `BASE + 1` : la lane 1 du Looper portait
+-- donc EXACTEMENT le meme numero que le premier clip cree dans la grille, et
+-- deux clips repondaient a un seul tag. Le commentaire d'origine affirmait
+-- l'inverse — « ne peut collisionner avec aucun autre » — ce qui est la
+-- meilleure facon de ne jamais verifier.
+--
+-- La bande est donc SOUS `Ident.BASE`, ou le compteur ne peut par construction
+-- jamais descendre, et au-dessus de tout tag positionnel possible : `Ident.Get`
+-- la refuse (elle est sous BASE), `Ident.CellOf` la decode en colonne 999, qui
+-- n'existe pas et ne peut pas exister — le plafond des ports est a quinze.
+Loop.LANE_TAG_BASE = 999000
 
 -- 1.7 and not 1.6: this file now reads CP_ClockPos, and an engine that predates
 -- it does not merely lack a function — it anchors the transport on the
@@ -65,6 +100,13 @@ local NATIVE  = false
 
 local EXT_SEC    = "CP_Loop"
 local DATA_KEY   = "data"
+-- Combien de lanes le dernier ecrivain avait. Il n'existait pas avant le
+-- 2026-08-02 : absent veut donc dire HUIT, la seule valeur qui ait jamais ete
+-- livree. Ce marqueur est ce qui rend la remontee sure DANS LES DEUX SENS et
+-- pour n'importe quel nombre futur — un simple « c'est ancien / c'est recent »
+-- aurait recasse au changement suivant.
+local LAYOUT_KEY    = "lanes"
+local LEGACY_LANES  = 8
 -- The mark the router track wore. It exists here for ONE reason: finding that
 -- track in an old project so it can be read and then removed.
 local LEGACY_TAG = "CP_LOOPER"
@@ -144,6 +186,83 @@ end
 
 local function setDestGUID(lane, guid)
     r.SetProjExtState(0, EXT_SEC, destKey(lane), guid or "")
+end
+
+-- ---------------------------------------------------------------------------
+-- LE PAS DE LA PAIRE — la seule regle de remontee, ecrite une fois
+-- ---------------------------------------------------------------------------
+-- Une lane basse `t` est la moitie VIVANTE de la colonne t ; la haute
+-- `t + TRACKS` est sa jumelle silencieuse. Le pas vaut donc le nombre de
+-- colonnes — et quand ce nombre change, TOUT ce qui est range par lane dans un
+-- projet designe autre chose qu'avant.
+--
+-- Le mode d'echec est le pire qui soit : un projet ecrit a quatre colonnes range
+-- ses jumelles en 4..7, la ou huit colonnes rangent les moities VIVANTES des
+-- colonnes 4 a 7. Relu tel quel, il rend quatre colonnes muettes et quatre qui
+-- rejouent la jumelle de quelqu'un d'autre. Rien ne plante, rien ne se dit.
+--
+-- `srcOfLane` repond a la question dans le bon sens : « cette lane-ci, ou
+-- etait-elle ecrite ? ». Nil veut dire « cette colonne n'existait pas », ce qui
+-- n'est pas la meme chose que « elle etait vide » — voir Deserialize.
+local function srcOfLane(lane, old_lanes)
+    local ot = old_lanes // 2
+    if lane < ot then return lane end               -- moitie vivante, conservee
+    if lane >= Loop.TRACKS then
+        local k = lane - Loop.TRACKS
+        if k < ot then return ot + k end            -- la jumelle d'alors
+    end
+    return nil
+end
+
+-- Et dans l'autre sens, pour ce qui ne designe QU'UNE lane (la lane armee).
+local function newOfLane(lane, old_lanes)
+    local ot = old_lanes // 2
+    if lane < ot then return lane end
+    local k = lane - ot
+    return (k < Loop.TRACKS) and (Loop.TRACKS + k) or nil
+end
+
+-- ---------------------------------------------------------------------------
+-- La remontee des DESTINATIONS. Le bloc de rappel porte son propre nombre de
+-- lanes (format 8) et se relit donc sans etre reecrit ; les cles `dest<lane>`,
+-- elles, n'ont nulle part ou le porter. On les deplace, une fois, et le
+-- marqueur rend le geste idempotent — trois fenetres peuvent appeler ceci.
+--
+-- POURQUOI LE MARQUEUR S'ECRIT MEME QUAND IL N'Y A RIEN A BOUGER. Sans lui, un
+-- projet cree par la version a huit colonnes serait relu comme un projet a
+-- quatre — il a des cles `dest`, il n'a pas de marqueur — et on le remonterait
+-- une seconde fois, ce qui le casserait pour de bon. Le marqueur ne dit pas
+-- « ce projet a ete migre », il dit « ce projet a ete ecrit par une version qui
+-- range comme ceci », et c'est la seule formulation qui tienne dans les deux
+-- sens.
+-- ---------------------------------------------------------------------------
+function Loop.MigrateLayout()
+    local _, v = r.GetProjExtState(0, EXT_SEC, LAYOUT_KEY)
+    local old = math.floor(tonumber(v) or 0)
+    if old == Loop.MAX_LANES then return false end
+    if old <= 0 then old = LEGACY_LANES end
+    local moved = false
+    if old ~= Loop.MAX_LANES then
+        -- ON LIT TOUT AVANT D'ECRIRE. Les deux plages se recouvrent des que le
+        -- nombre de colonnes change, donc ecrire en avancant ecraserait la
+        -- source de l'entree suivante.
+        local g = {}
+        for l = 0, old - 1 do g[l] = getDestGUID(l) end
+        local hi = (old > Loop.MAX_LANES) and old or Loop.MAX_LANES
+        for l = 0, hi - 1 do
+            if getDestGUID(l) ~= "" then setDestGUID(l, "") end
+        end
+        for l = 0, Loop.MAX_LANES - 1 do
+            local src = srcOfLane(l, old)
+            local guid = src and g[src] or nil
+            if guid and guid ~= "" then
+                setDestGUID(l, guid)
+                moved = true
+            end
+        end
+    end
+    r.SetProjExtState(0, EXT_SEC, LAYOUT_KEY, tostring(Loop.MAX_LANES))
+    return moved
 end
 
 -- resolveGUID vivait ici et parcourait tout le projet pour UN identifiant.
@@ -300,6 +419,14 @@ function Loop.ColumnAt(i) return order[i] end
 local byguid = {}
 
 function Loop.RefreshDests()
+    -- LA REMONTEE DE DISPOSITION SE FAIT ICI, ET PAS A L'INITIALISATION. Un
+    -- `defer` survit a un changement d'onglet de projet : la fenetre ouverte
+    -- passe d'un projet a l'autre sans repasser par `init`, et le second serait
+    -- donc lu avec la disposition du premier. Ce rafraichissement, lui, est
+    -- rejoue des que le compteur d'etat du projet bouge — donc pour chaque
+    -- projet que cette fenetre voit. Le marqueur rend l'appel gratuit : une
+    -- lecture de ProjExtState, deux fois par seconde au plus.
+    Loop.MigrateLayout()
     for k in pairs(byguid) do byguid[k] = nil end
     for i = 0, r.CountTracks(0) - 1 do
         local tr = r.GetTrack(0, i)
@@ -327,6 +454,9 @@ function Loop.SyncSends()
 end
 
 function Loop.reconnect()
+    -- `RefreshDests` remonte la disposition avant de lire quoi que ce soit :
+    -- lire les cles `dest<lane>` d'abord ferait adopter huit colonnes pointant
+    -- sur quatre pistes, et l'adoption serait ecrite par-dessus l'ancienne.
     Loop.RefreshDests()
     return nil
 end
@@ -517,12 +647,20 @@ function Loop.MigrateLegacy()
         r.SetProjExtState(0, EXT_SEC, DATA_KEY, blob)
         moved = true
     end
+    -- LA PISTE ROUTEUR RANGEAIT SES DESTINATIONS AU PAS DE HUIT LANES, et ce
+    -- pas n'est plus le notre. Cette remontee-ci ne peut pas s'appuyer sur
+    -- `MigrateLayout` : elle arrive APRES lui (le marqueur est pose des
+    -- l'ouverture de la fenetre, la migration du routeur attend un `Setup`),
+    -- donc elle doit traduire elle-meme ou elle n'aurait jamais lieu.
     for lane = 0, Loop.MAX_LANES - 1 do
-        local _, g = r.GetSetMediaTrackInfo_String(
-            router, "P_EXT:" .. LEGACY_TAG .. "_DEST" .. lane, "", false)
-        if g and g ~= "" and getDestGUID(lane) == "" then
-            setDestGUID(lane, g)
-            moved = true
+        local src = srcOfLane(lane, LEGACY_LANES)
+        if src then
+            local _, g = r.GetSetMediaTrackInfo_String(
+                router, "P_EXT:" .. LEGACY_TAG .. "_DEST" .. src, "", false)
+            if g and g ~= "" and getDestGUID(lane) == "" then
+                setDestGUID(lane, g)
+                moved = true
+            end
         end
     end
     r.DeleteTrack(router)
@@ -1281,9 +1419,7 @@ function Loop.LaneToClip(lane)
     Loop.ReadNotes(lane, s, l, p, v)
     local tag = math.floor(Loop.GetLaneTag(lane) or 0)
     if tag == 0 then
-        -- Un identifiant qui ne peut collisionner avec aucun autre de la grille
-        -- (ceux-ci viennent d'Ident) : le numero de lane, decale tres haut.
-        tag = 1000000 + lane
+        tag = Loop.LANE_TAG_BASE + lane
         Loop.SetLaneTag(lane, tag)
     end
     -- L'ACCOLADE VOYAGE AVEC LA CASE, PAS AVEC LA LANE.
@@ -1367,6 +1503,20 @@ local function migrateQ(ver, q)
 end
 
 function Loop.Serialize()
+    -- FORMAT 8 : LE NOMBRE DE LANES entre dans l'en-tete.
+    --
+    -- Le bloc est ORDONNE PAR LANE, et une lane basse est la moitie vivante
+    -- d'une colonne tandis qu'une haute est sa jumelle : le pas qui les separe
+    -- vaut le nombre de colonnes. Ce nombre vient de doubler, donc un bloc ecrit
+    -- avant ne designe plus les memes lanes — et le relire tel quel est
+    -- exactement le genre de perte qui ne dit rien : quatre colonnes muettes,
+    -- quatre qui rejouent la jumelle d'une autre.
+    --
+    -- On ecrit donc le nombre PLUTOT qu'un drapeau « ancien / recent ». Un
+    -- drapeau aurait tenu jusqu'au prochain changement ; un nombre se remonte
+    -- depuis n'importe quelle valeur passee, et vers n'importe quelle valeur
+    -- future, avec la meme ligne de code.
+    --
     -- FORMAT 7 : L'ACCOLADE DE BOUCLE entre dans le bloc de chaque lane.
     --
     -- Elle se sauve, contrairement au decalage de phase — et la difference est
@@ -1385,9 +1535,10 @@ function Loop.Serialize()
     -- lane. Un lecteur ancien ignore le champ (les champs inconnus sont
     -- ignores), un lecteur neuf sur un projet ancien lit 0 — ce qui est
     -- exactement ce que le tag valait avant.
-    local out = { "7",
+    local out = { "8",
                   (Loop.GetFreeRun() and "1" or "0") .. "|"
-                  .. (Loop.GetArmedLane() or -1) .. "|" .. num(Loop.GetLaunchQ()) }
+                  .. (Loop.GetArmedLane() or -1) .. "|" .. num(Loop.GetLaunchQ())
+                  .. "|" .. Loop.MAX_LANES }
     for lane = 0, Loop.MAX_LANES - 1 do
         local n = Loop.NoteCount(lane)
         local m = math.floor(Loop.Mode(lane) + 0.5)
@@ -1417,13 +1568,20 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if not ver or not ver:match("^[1-7]$") then return false end
+    if not ver or not ver:match("^[1-8]$") then return false end
     local v2 = (ver ~= "1")
 
+    -- Combien de lanes celui qui a ECRIT ceci avait. Le format 8 le dit ; avant
+    -- lui, huit est la seule reponse possible, parce que c'est la seule valeur
+    -- qui ait jamais ete livree.
+    local old_lanes = LEGACY_LANES
     local base = v2 and 2 or 1
     if v2 and fields[2] then
-        local fr, arm, lq = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)$")
+        local fr, arm, lq, nl = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)|([^|]*)$")
+        if not fr then fr, arm, lq = fields[2]:match("^([^|]*)|([^|]*)|([^|]*)$") end
         if not fr then fr, arm = fields[2]:match("^([^|]*)|([^|]*)$") end
+        local n = math.floor(tonumber(nl) or 0)
+        if n >= 2 then old_lanes = n end
         if fr then
             Loop.SetFreeRun(fr == "1")
             -- Before v4 the arm was not a choice: the engine clamped it to a
@@ -1431,6 +1589,10 @@ function Loop.Deserialize(str)
             -- anything. Restoring it would re-arm lane 0 in every existing
             -- project, so it is dropped.
             local a = ((tonumber(ver) or 0) >= 4) and math.floor(tonumber(arm) or -1) or -1
+            -- La lane armee designe UNE lane, donc elle subit le meme pas que
+            -- le reste. Sans ce passage, rouvrir un projet a quatre colonnes
+            -- armerait la jumelle d'une autre colonne.
+            if a >= 0 then a = newOfLane(a, old_lanes) or -1 end
             -- ADOPTE, n'arme pas. Restaurer un etat n'est pas un geste de
             -- l'utilisateur : ouvrir un projet ne doit armer aucune piste.
             Loop.AdoptArmedLane(a >= 0 and a or nil)
@@ -1440,7 +1602,11 @@ function Loop.Deserialize(str)
 
     local loaded = 0
     for lane = 0, Loop.MAX_LANES - 1 do
-        local blk = fields[base + lane + 1]
+        -- « Cette lane-ci, ou etait-elle ecrite ? » et non l'inverse : c'est le
+        -- sens qui permet de repondre NIL pour une colonne qui n'existait pas
+        -- encore, et de la traiter comme telle plus bas.
+        local src = srcOfLane(lane, old_lanes)
+        local blk = src and fields[base + src + 1] or nil
         if blk then
             local t = {}
             for f in blk:gmatch("[^|]+") do t[#t + 1] = f end
@@ -1450,8 +1616,15 @@ function Loop.Deserialize(str)
             -- v6 glisse le TAG entre le mode et le nombre de notes. Avant lui,
             -- le tag n'etait nulle part : zero est donc la reponse juste pour
             -- un projet ancien, et c'est ce que la lane valait deja.
-            local v6   = (ver == "6" or ver == "7")
-            local v7   = (ver == "7")
+            --
+            -- ⚠️ COMPARER DES NOMBRES. Ces deux tests enumeraient les versions
+            -- (`ver == "6" or ver == "7"`) et il fallait donc penser a y ajouter
+            -- chaque nouvelle — le format 8 les aurait rendus faux en silence,
+            -- et une lane aurait relu son tag a la place de son nombre de notes.
+            -- C'est la meme lecon que les gardes de version : `"10" < "4"`.
+            local vn   = tonumber(ver) or 0
+            local v6   = (vn >= 6)
+            local v7   = (vn >= 7)
             local tag  = v6 and math.floor(tonumber(t[4]) or 0) or 0
             -- v7 glisse l'accolade entre le tag et le nombre de notes. Sur un
             -- projet plus ancien elle n'existe pas, et « pas d'accolade » est
@@ -1488,6 +1661,19 @@ function Loop.Deserialize(str)
             else Loop.SetMode(lane, 2) end
             Loop.BumpVer(lane)
             loaded = loaded + written
+        else
+            -- UNE COLONNE QUI N'EXISTAIT PAS DOIT ETRE VIDE, et non laissee
+            -- telle quelle. Le moteur SURVIT AU SCRIPT : une lane qu'on n'ecrit
+            -- pas garde ce que le projet precedent y avait mis, et les quatre
+            -- colonnes neuves se seraient donc allumees avec le set d'avant.
+            -- Le cas n'existait pas tant que le bloc couvrait toujours toutes
+            -- les lanes ; il existe des qu'un blob peut en couvrir moins.
+            Loop.SetNoteCount(lane, 0)
+            Loop.SetLaneTag(lane, 0)
+            Loop.SetLoopRange(lane, 0, -1)
+            Loop.SetMode(lane, 0)
+            Loop.SetMute(lane, false)
+            Loop.BumpVer(lane)
         end
     end
     return true, loaded
