@@ -240,6 +240,83 @@ reste. Ce qui reste à faire vit ici, et nulle part ailleurs.
 
 ---
 
+## Chantier 6 — La vue dédiée : vivre à la place de l'arrangeur
+
+**Mesuré, pas supposé.** J'avais répondu « ce n'est pas possible » en raisonnant,
+et Cédric a demandé qu'on teste. Trois sondes (`CP_Tools/CP_ArrangeProbe.lua`,
+`CP_ArrangeBand.lua`, `CP_ArrangePanel.lua`), et **j'avais tort sur les trois
+points**.
+
+### Ce que les sondes ont établi
+
+| question | réponse mesurée |
+|---|---|
+| masquer l'arrangeur tient-il ? | **oui** — `ShowWindow HIDE` survit aux deux passes de disposition |
+| REAPER remet-il la géométrie ? | **oui**, et c'est une bonne nouvelle (voir l'oracle) |
+| remet-il la **visibilité** ? | **pas sur une passe**, mais **oui pendant un glissement de séparateur** — 62 fois en 20 s |
+| tient-il le rectangle à jour **masqué** ? | **oui** : A `843,156 420x652` → fenêtre réduite → B `935,255 0x427` → remise → C **exactement A**, et 143 valeurs distinctes en tirant les séparateurs |
+| une fenêtre `gfx` reparentée dessine-t-elle ? | **oui** |
+| reçoit-elle la souris, dans ses repères ? | **oui** |
+| reçoit-elle le clavier ? | **oui, avec le focus qui suit la souris** — pris 6 / rendu 6, aucune fuite |
+| la remise en état est-elle fiable ? | **5/5** à chaque passage |
+
+**Aucune DLL.** `js_ReaScriptAPI` expose les mêmes appels Win32 qu'une extension
+ferait. Une DLL ne serait nécessaire que pour **intercepter** des messages — et
+il n'y a rien à intercepter.
+
+### L'idée, en une phrase
+
+> On ne touche **jamais** à la géométrie de REAPER. On masque la bande (ça
+> tient), on **lit** le rectangle qu'il continue de calculer, et on y pose nos
+> fenêtres. L'arrangeur invisible est notre **oracle de disposition**.
+
+C'est ce qui fait disparaître la seule objection sérieuse — « il faudra
+ré-appliquer sans arrêt contre le gestionnaire de disposition ». Il n'y a rien
+contre quoi lutter : on s'aligne.
+
+### Et une correction d'estimation
+
+J'avais dit qu'un hôte multi-panneaux imposerait de **fusionner les
+applications** dans un seul contexte gfx, et rendre `GetWindowSize` et les
+coordonnées de souris relatives au panneau. **C'est faux.** Chaque application
+garde sa fenêtre, sa boucle et son gfx ; l'hôte ne fait que de la **géométrie**.
+`gfx.w`/`gfx.h` suivent la taille réelle de la fenêtre, donc une application
+reparentée voit simplement « ma fenêtre a changé de taille » — ce qu'elle sait
+déjà gérer. **Zéro ligne à changer dans CP_Session.**
+
+### L'ordre, du plus utile au plus ambitieux
+
+1. **Une application, toute la bande.** Masquer, garder masqué, reparenter
+   CP_Session, suivre l'oracle, focus par la souris, tout rendre en sortant.
+   C'est la demande d'origine, et c'est à une centaine de lignes de la sonde 3.
+2. **Le découpage en panneaux.** Un arbre de séparations avec des ratios, un
+   rectangle par panneau, une application par panneau. Les coutures se
+   dessinent dans une fenêtre à nous placée **derrière** les panneaux (fond de
+   la pile z), qui reçoit donc la souris dans les interstices : c'est elle qui
+   porte le glissement des séparateurs.
+3. **Les boutons de disposition**, à la Ableton/FL. Ils commandent nos panneaux,
+   pas les screensets — ceux-ci restent utiles pour ce qui reste natif.
+
+### Ce qui n'est PAS résolu, et qu'il ne faut pas découvrir en route
+
+- **Le cycle de vie.** Que fait l'hôte si une application n'est pas lancée ? La
+  lancer suppose son identifiant de commande (`NamedCommandLookup`), donc un
+  registre. Et si elle est fermée pendant qu'elle est reparentée, il reste un
+  trou : l'hôte doit le voir.
+- **L'état dangereux : l'hôte meurt en laissant la bande masquée.** `atexit`
+  couvre l'arrêt du script ; un plantage de REAPER ne laisse rien de durable
+  (les fenêtres se recréent au démarrage). C'est borné, mais ça doit être écrit
+  au-dessus du code, pas découvert.
+- **Une fenêtre DOCKÉE ne doit pas être reparentée.** L'hôte doit exiger
+  qu'elles soient flottantes, ou le faire lui-même.
+- **La boucle gardienne est obligatoire** : 176 remises en visibilité pendant un
+  glissement de séparateur. Cinq lectures par frame, mais elle doit exister.
+- **Le « Track 1 [FX] none »** qui réapparaît pendant un glissement n'est pas
+  une fenêtre : c'est REAPER qui peint sur la fenêtre parente. Rien ne peut le
+  « recacher » — et ça devient sans objet dès qu'un panneau occupe la place.
+
+---
+
 ## Où on en est (2026-08-01)
 
 Le moteur natif est complet et l'autonomie est atteinte : plus aucune piste
