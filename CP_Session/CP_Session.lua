@@ -2490,19 +2490,21 @@ local MIX_FADW  = 21       -- the fader's own width (cap included)
 -- touches its own border reads as text that overflowed, even when it did not.
 local MIX_ROW   = 16
 local MIX_BAR   = 5        -- the scroll bar of a list that overflows
-local MIX_PAN   = 12       -- the pan bar
 local MIX_DB    = 11       -- the level readout, on a line of its own
 local MIX_SENDS = 4        -- most send slots shown before the list scrolls
-local MIX_FADMIN = 30
+-- Le plancher du bloc de fader vaut desormais la colonne de droite : pan, M et
+-- S l'un sur l'autre. En dessous, la colonne deborderait dans les envois.
+local MIX_FADMIN = MIX_BTN * 3 + 8
 local MIX_ROWS  = 24       -- most rows a list will ever draw (id/label tables)
 -- How much of a strip the two LISTS may take. The fader gets everything else:
 -- it is the control you reach for a hundred times an hour, and on a console it
 -- is the tallest thing in the strip for exactly that reason. A list that grew
 -- at its expense would be a directory with a fader stapled to it.
 local MIX_LISTS = 0.55
--- The shortest the zone can be: pan + a usable fader + M/S + the padding.
-local MIX_MIN   = MIX_PAD * 2 + MIX_H + MIX_GAP + MIX_PAN + MIX_GAP
-                  + MIX_DB + MIX_FADMIN
+-- The shortest the zone can be: a usable fader block + the readout + padding.
+-- Le pan et les deux boutons ne prennent plus de hauteur a eux : ils sont DANS
+-- le bloc de fader, en colonne a sa droite.
+local MIX_MIN   = MIX_PAD * 2 + MIX_DB + MIX_FADMIN
 -- …and what it opens at: enough for a chain, a couple of sends and a fader
 -- worth grabbing. It was opening at its MINIMUM, which showed the strip at its
 -- least useful and left the seam to be discovered before anything worked.
@@ -2515,6 +2517,10 @@ local mix_open  = Core.LoadPersistent("CP_Session", "mix", true)
 -- opened the window before the strip had anything in it
 local mix_h     = Core.LoadPersistent("CP_Session", "mixh2", MIX_DEF)
 local mix_moved = false    -- did the fader gesture in flight change anything
+-- QUELLE COLONNE A SON PAN SOUS LE DOIGT. Un bouton rond ne rend pas de
+-- « relache » comme un fader : il faut donc se souvenir qu'on en tourne un pour
+-- ne poser QU'UN point d'annulation a la fin du geste, et non un par frame.
+local pan_hot   = nil
 local mix_hot   = false    -- is any meter still above zero (so still falling)
 local mix_seam  = nil      -- { y0, h0 } while the seam is being dragged
 local fxdrag    = nil      -- { tr, i, t, x, y } an FX being carried
@@ -2559,9 +2565,13 @@ end
 local MIX_F_OPTS = { mark = Mix.UNITY, default = Mix.UNITY,
                      disabled = false, accent = nil,
                      tip = "Volume — Shift: fine, double-click: 0 dB, wheel: step" }
-local MIX_P_OPTS = { mark = 0.5, default = 0.5, text = nil,
+-- BIPOLAIRE : l'arc part du CENTRE et non de la butee gauche, et un repere y
+-- marque le zero. Sans ca, « fond a gauche » et « au centre » ne different que
+-- par la longueur d'une bande qui pousse du meme coin, donc rien ne dit de quel
+-- cote du milieu on se trouve — ce qui est la seule chose qu'un pan doit dire.
+local MIX_P_OPTS = { mark = 0.5, default = 0.5, text = nil, bipolar = true,
                      disabled = false, accent = nil,
-                     tip = "Pan — double-click: centre" }
+                     tip = "Pan — drag, double-click: centre, right-click: type" }
 local MIX_M_OPTS = { accent = nil, tip = "Mute this column's track" }
 local MIX_S_OPTS = { accent = nil,
     tip = "Solo — REAPER's solo, so the arrangement goes quiet too. Ctrl: exclusive" }
@@ -2688,9 +2698,7 @@ local function drawMix(theme, t, x, y, w, h)
     -- ---- geometry. Three sections, each with its own ground and a real gap
     -- between them: FX, then sends, then the fader block. A strip whose parts
     -- touch is a strip you have to decode before you can use it.
-    local ms_y  = y + h - MIX_H
-    local pan_y = ms_y - MIX_GAP - MIX_PAN
-    local db_y  = pan_y - MIX_GAP - MIX_DB       -- the readout has its own line
+    local db_y  = y + h - MIX_DB                 -- the readout has its own line
     local avail = db_y - SEC_GAP - y             -- lists + fader
 
     local nfx  = live and Mix.FxCount(tr) or 0
@@ -2896,30 +2904,22 @@ local function drawMix(theme, t, x, y, w, h)
         Core.DrawRect(x, sd_y, w, sd_h, bd[1], bd[2], bd[3], (bd[4] or 1) * 0.7, false)
     end
 
-    -- ---- pan
-    if live then
-        local pn = Mix.GetPan(tr)
-        MIX_P_OPTS.text = Mix.PanLabel(t, pn)
-        MIX_P_OPTS.disabled = false
-        MIX_P_OPTS.accent = dulled and C.mute or C.mod
-        local ch, nv, rel = UI.FaderAt(mix_id.p[t], x, pan_y, w, MIX_PAN, pn,
-                                       MIX_P_OPTS)
-        if ch then Mix.SetPan(tr, nv) mix_moved = true end
-        if rel then
-            if mix_moved then Mix.CommitPan() end
-            mix_moved = false
-        end
-    else
-        MIX_P_OPTS.text, MIX_P_OPTS.disabled, MIX_P_OPTS.accent = nil, true, nil
-        UI.FaderAt(mix_id.p[t], x, pan_y, w, MIX_PAN, 0.5, MIX_P_OPTS)
-    end
-
-    -- ---- fader + meter, side by side as on any console
+    -- ---- LE PIED DE TRANCHE : fader et VU cote a cote, et la colonne des
+    -- trois choses qu'on attrape en mixant — pan, mute, solo — A LEUR DROITE.
+    --
+    -- Elles occupaient trois LIGNES sous le fader : une barre de pan pleine
+    -- largeur, la lecture en decibels, la paire M/S. Trente-trois pixels pris a
+    -- la course du fader, c'est-a-dire a l'endroit meme ou vit sa precision —
+    -- et une bande qu'on lit de haut en bas au lieu de la saisir. En colonne a
+    -- droite elles ne coutent plus une seule ligne, et le fader recupere tout.
+    local col_w = MIX_BTN + 2
+    if w - col_w - MIX_GAP < MIX_FADW then col_w = 0 end   -- trop etroit : on renonce
+    local body_w = w - ((col_w > 0) and (col_w + MIX_GAP) or 0)
     local fw = MIX_FADW
     local met_w = MIX_MET
-    if fw + MIX_GAP + met_w > w then met_w = w - fw - MIX_GAP end
+    if fw + MIX_GAP + met_w > body_w then met_w = body_w - fw - MIX_GAP end
     if met_w < 4 then met_w = 0 end
-    local fx0 = x + floor((w - fw - (met_w > 0 and (met_w + MIX_GAP) or 0)) / 2)
+    local fx0 = x + floor((body_w - fw - (met_w > 0 and (met_w + MIX_GAP) or 0)) / 2)
     local n = Mix.GetNorm(tr)
     MIX_F_OPTS.disabled = not live
     MIX_F_OPTS.accent = dulled and C.mute or nil
@@ -2962,21 +2962,37 @@ local function drawMix(theme, t, x, y, w, h)
                       ink[1], ink[2], ink[3], 0.85)
     end
 
-    -- ---- M and S. Letters, not glyphs: they are a PAIR, and the two
-    -- universal letters of every console read at 18 px where two different
-    -- picture families would only read as two different things.
-    MIX_M_OPTS.accent = C.mute
-    MIX_S_OPTS.accent = C.solo
-    local bw = floor((w - 1) / 2)
-    if bw > MIX_BTN + 6 then bw = MIX_BTN + 6 end
-    local bx = x + floor((w - bw * 2 - 1) / 2)
-    if UI.ChipAt(mix_id.m[t], bx, ms_y, bw, MIX_H, nil, "M", muted, not live,
-                 MIX_M_OPTS) then
-        Mix.SetMute(tr, not muted)
-    end
-    if UI.ChipAt(mix_id.s[t], bx + bw + 1, ms_y, bw, MIX_H, nil, "S",
-                 soloed, not live, MIX_S_OPTS) then
-        Mix.SetSolo(tr, not soloed, Core.ModCtrl())
+    -- ---- la colonne de droite : pan, puis M, puis S, alignes sur le BAS du
+    -- fader. C'est le pied de tranche d'une console, et c'est la que la main
+    -- va. Le pan est un bouton ROND parce qu'il est bipolaire : son arc part du
+    -- centre, donc « a gauche » et « a droite » se lisent sans lire un nombre.
+    if col_w > 0 then
+        -- Les trois ordonnees, du bas vers le haut. Nommees `y_*` et non `my` :
+        -- dans ce fichier `mxp, myp` est la souris, et une variable qui s'appelle
+        -- `my` a cote se lit comme elle.
+        local cx  = x + w - col_w
+        local y_s = fad_y + fad_h - MIX_H
+        local y_m = y_s - MIX_H - 2
+        local y_k = y_m - MIX_BTN - 4
+        MIX_M_OPTS.accent = C.mute
+        MIX_S_OPTS.accent = C.solo
+        MIX_P_OPTS.disabled = not live
+        MIX_P_OPTS.accent = dulled and C.mute or C.mod
+        local pn = live and Mix.GetPan(tr) or 0.5
+        local pch, pnv = UI.KnobAt(mix_id.p[t], cx, y_k, MIX_BTN, pn, 0.5,
+                                   MIX_P_OPTS)
+        if pch and live then
+            Mix.SetPan(tr, pnv)
+            pan_hot = t          -- le point d'annulation attend la fin du geste
+        end
+        if UI.ChipAt(mix_id.m[t], cx, y_m, MIX_BTN, MIX_H, nil, "M", muted,
+                     not live, MIX_M_OPTS) then
+            Mix.SetMute(tr, not muted)
+        end
+        if UI.ChipAt(mix_id.s[t], cx, y_s, MIX_BTN, MIX_H, nil, "S",
+                     soloed, not live, MIX_S_OPTS) then
+            Mix.SetSolo(tr, not soloed, Core.ModCtrl())
+        end
     end
 
     -- what a carried thing would land on
@@ -2994,6 +3010,13 @@ end
 -- pixels: a click that wandered is still a click.
 local function pollMixDrag()
     local mx, my = Core.GetMousePos()
+    -- UN SEUL POINT D'ANNULATION PAR GESTE DE PAN. Un bouton rond ne dit pas
+    -- « relache » ; on le deduit du bouton de souris, ici, une fois toutes les
+    -- bandes dessinees.
+    if pan_hot and not Core.MouseDown(1) then
+        Mix.CommitPan()
+        pan_hot = nil
+    end
     if fxdrag then
         if not fxdrag.moved then
             local dx, dy = mx - fxdrag.x, my - fxdrag.y
