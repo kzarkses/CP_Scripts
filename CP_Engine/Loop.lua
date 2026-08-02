@@ -729,6 +729,49 @@ end
 -- The sound channel is gone with the router: a sound cell is a CP voice on its
 -- own port, and it never travelled a MIDI wire to begin with. These two stay
 -- as no-ops so a window that still calls them is not punished for it.
+-- ---------------------------------------------------------------------------
+-- LIRE A PARTIR D'ICI — le decalage de phase d'une lane (ABI 1.9)
+-- ---------------------------------------------------------------------------
+-- La phase d'une lane est ancree sur le beat ZERO du projet : c'est ce qui
+-- verrouille toutes les boucles sur la meme grille. Un decalage CONSTANT ne
+-- casse pas ce verrou, il le DEPLACE — la lane reste sur la grille, a distance
+-- fixe, et rien ne derive. Le harnais le prouve sur vingt passes.
+--
+-- Le moteur le lit au meme endroit pour le portail MIDI et pour la phase
+-- publiee, donc les notes et le son bougent ensemble.
+function Loop.SetLaneOffset(lane, beats)
+    if NATIVE then r.CP_LaneSet(lane, "offset", beats or 0) end
+end
+function Loop.GetLaneOffset(lane)
+    return NATIVE and r.CP_LaneGet(lane, "offset") or 0
+end
+
+-- LE SON DOIT RENTRER TOUT DE SUITE, LUI AUSSI.
+--
+-- Le MIDI saute a l'instant meme : le portail relit la phase a chaque bloc.
+-- Une case AUDIO, non — sa voix a recu une date de depart et une duree en
+-- frames, et elle finirait tranquillement sa passe avant de se raccrocher a la
+-- nouvelle phase. On entendrait donc les notes sauter et le son rester, ce qui
+-- est pire que de ne rien faire.
+--
+-- Un compteur suffit a le dire, et il reste en Lua : le moteur n'a pas a
+-- connaitre une decision d'interface. `Cells` le relit par frame et, quand il
+-- bouge, coupe sa voix — la frame suivante la fait rentrer sur la phase
+-- courante, ce que ce module sait deja faire depuis toujours.
+local reseat = {}
+function Loop.ReseatVersion(lane) return reseat[lane] or 0 end
+
+function Loop.PlayClipFrom(lane, beat)
+    if not NATIVE or not lane then return false end
+    local lb = Loop.LenBeats(lane)
+    if lb <= 0 then return false end
+    local ph  = Loop.Phase(lane) or 0
+    local off = Loop.GetLaneOffset(lane)
+    Loop.SetLaneOffset(lane, (off + (beat - ph)) % lb)
+    reseat[lane] = (reseat[lane] or 0) + 1
+    return true
+end
+
 function Loop.SetLaneAudio() end
 function Loop.GetLaneAudio() return false end
 

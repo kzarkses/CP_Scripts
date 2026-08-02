@@ -489,6 +489,18 @@ local function drive(t, half, gate)
     local slot = col[t].half[half]
     if not slot.clip then return end
 
+    -- ON A DEMANDE A CETTE LANE DE REPARTIR D'AILLEURS. Le MIDI y est deja —
+    -- le portail relit la phase a chaque bloc — mais la voix, elle, tient une
+    -- date de depart en frames et finirait sa passe. On la coupe donc, et la
+    -- suite de cette fonction la fait rentrer sur la phase courante : c'est le
+    -- chemin « personne ne nous avait annonce ce depart », qui existe deja.
+    local lane0 = (half == 0) and t or (t + TRACKS)
+    local rv = Loop.ReseatVersion(lane0)
+    if rv ~= slot.reseat then
+        slot.reseat = rv
+        if slot.running or slot.armed then stopSlot(slot) end
+    end
+
     -- L'HORLOGE S'EST ARRETEE : ON TAIT LE SON, ON NE TOUCHE PAS A L'ETAT.
     --
     -- Une lane arretee ne sonne plus d'elle-meme — elle n'a plus de beat qui

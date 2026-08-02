@@ -128,6 +128,12 @@ local opts = {
     -- default: a range you drew is a range you meant, and hearing the sound
     -- walk straight through it reads as the editor ignoring you.
     stop_at_sel = cfg.stop_at_sel ~= false,
+    -- CLIQUER DANS LA REGLE D'UNE CASE QUI JOUE LA FAIT REPARTIR DE LA. C'est
+    -- le geste qu'on cherche spontanement — « je clique dans le header en
+    -- pensant pouvoir lire a partir de la » — et c'est le scrub d'Ableton.
+    -- Actif par defaut : une regle sur laquelle on clique sans que rien ne se
+    -- passe est ce qu'on avait, et c'etait le defaut signale.
+    ruler_scrub = cfg.ruler_scrub ~= false,
 }
 Audition.volume = cfg.vol or 1.0
 
@@ -153,6 +159,16 @@ local state = {
     mdrag = nil,         -- {mode="move"|"resize"|"vel"|"erase", idx, grab, moved}
     marquee = nil,       -- right-drag box {x,y,cx,cy}
     ruler_drag = nil,    -- top-strip drag {t0} for time-selection
+    -- LE CURSEUR ET LA SELECTION D'UNE CASE, en beats de la case.
+    --
+    -- On a longtemps ecrit qu'une case « n'a ni curseur d'edition ni selection
+    -- temporelle, ce sont des concepts du PROJET ». C'etait vrai du curseur DU
+    -- PROJET, et faux de celui de la CASE — qui n'est que de l'etat de fenetre,
+    -- ne coute rien, et manquait a tout ce qui prend une plage : coller ici,
+    -- quantifier ceci, selectionner ce qui est dedans. La regle etait donc
+    -- inerte en mode case, et on cliquait dedans sans que rien ne se passe.
+    clip_cur = 0,
+    clip_sel_a = nil, clip_sel_b = nil,
     row_hi = nil,        -- pitch of the highlighted (selected) row
     last_vel = cfg.last_vel or 100,
     aud_note = nil,      -- pending audition note-off
@@ -188,6 +204,7 @@ local function persistConfig()
     cfg.wave_snap  = opts.wave_snap
     cfg.snap_trans = opts.snap_trans
     cfg.stop_at_sel = opts.stop_at_sel
+    cfg.ruler_scrub = opts.ruler_scrub
     UI.SaveConfig(CONFIG_ID, cfg)
 end
 
@@ -395,6 +412,10 @@ local function resetForTarget()
     -- "show me drum rows" chosen for a kit clip must not follow you onto the
     -- next clip, which may be a synth.
     state.drum_mode = nil
+    -- Le curseur et la selection d'une case appartiennent A CETTE case : les
+    -- laisser trainer ferait coller au milieu de la suivante.
+    state.clip_cur = 0
+    state.clip_sel_a, state.clip_sel_b = nil, nil
     state.sel_a, state.sel_b = nil, nil
     state.cursor = 0
     for i = #state.markers, 1, -1 do state.markers[i] = nil end
@@ -1399,6 +1420,9 @@ local function openSettings()
         { label = "Playback stops at the end of the time selection",
           checked = opts.stop_at_sel,
           action = function() opts.stop_at_sel = not opts.stop_at_sel markDirty() end },
+        { label = "Clicking a clip's ruler moves the playing clip there",
+          checked = opts.ruler_scrub,
+          action = function() opts.ruler_scrub = not opts.ruler_scrub markDirty() end },
     })
 end
 
@@ -2480,6 +2504,53 @@ local function itemPos()
     return r.GetMediaItemInfo_Value(state.item, "D_POSITION")
 end
 
+-- LE CURSEUR D'EDITION, ET IL Y EN A DEUX SORTES. Un item vit dans la
+-- timeline et emprunte donc celui de REAPER ; une case vit hors d'elle et
+-- porte le sien. Quatre fonctions le disent une fois, et plus rien en dessous
+-- n'a besoin de savoir laquelle des deux il regarde — c'est ce qui permet a la
+-- regle d'etre le MEME code dans les deux modes.
+local function editCursor()
+    if state.mode == "clip" then return state.clip_cur or 0 end
+    return r.GetCursorPosition() - itemPos()
+end
+
+local function setEditCursor(t)
+    if t < 0 then t = 0 end
+    if state.mode == "clip" then state.clip_cur = t return end
+    r.SetEditCurPos(itemPos() + t, false, false)
+end
+
+local function timeSel()
+    if state.mode == "clip" then
+        local a, b = state.clip_sel_a, state.clip_sel_b
+        if a and b and b > a + 1e-6 then return a, b end
+        return nil
+    end
+    local a, b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+    if b > a + 0.0001 then
+        local pos = itemPos()
+        return a - pos, b - pos
+    end
+    return nil
+end
+
+local function setTimeSel(a, b)
+    if state.mode == "clip" then
+        if not a or not b or b <= a + 1e-6 then
+            state.clip_sel_a, state.clip_sel_b = nil, nil
+        else
+            state.clip_sel_a, state.clip_sel_b = a, b
+        end
+        return
+    end
+    local pos = itemPos()
+    if not a or not b or b <= a + 0.0001 then
+        r.GetSet_LoopTimeRange(true, false, 0, 0, false)
+    else
+        r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
+    end
+end
+
 -- Roll time mapping. Item-backed modes: the cache unit is item-relative
 -- SECONDS, mapped through the project TimeMap (tempo maps respected).
 -- Clip mode: the cache unit IS beats (QN) — identity mapping.
@@ -2538,11 +2609,10 @@ local midiCtx = {
         local qn = rollToQN(t0)
         return qnToRoll(qn + div * 4) - qnToRoll(qn)
     end,
-    pasteAt = function()
-        if state.mode == "clip" then return 0 end
-        local at = r.GetCursorPosition() - itemPos()
-        return at < 0 and 0 or at
-    end,
+    -- ON COLLE AU CURSEUR, y compris dans une case — c'est precisement ce que
+    -- le curseur local rend possible. Il rendait 0 jusqu'ici, donc tout collage
+    -- retombait au debut de la boucle, quelle que soit l'intention.
+    pasteAt = function() return editCursor() end,
     -- Bar boundaries. Item mode goes through the measure map (tempo maps
     -- and odd meters come out right); clip mode is plain beat arithmetic
     -- on the project time signature.
@@ -3151,6 +3221,25 @@ Keymap.Register(KM, KEYMAP_ROWS)
 -- avec la signature que le moteur annonce. Un take, lui, demande a REAPER,
 -- parce que le projet peut changer de signature en cours de route et que la
 -- mesure « quatre beats » serait alors fausse.
+-- LIRE A PARTIR D'ICI. Une case qui joue repart de l'endroit clique : le
+-- moteur porte un decalage de phase par lane (ABI 1.9), et un decalage
+-- CONSTANT ne casse pas le verrouillage de la grille — il le deplace. La lane
+-- reste calee, a distance fixe, et rien ne derive.
+--
+-- On n'appelle PAS ceci a chaque frame d'un glisser : chaque appel fait
+-- rentrer la voix audio au nouvel endroit, et soixante rentrees par seconde
+-- s'entendent comme un bourdonnement. Une fois a la prise, une fois au
+-- relachement — c'est ce qu'on entend d'un scrub, et c'est tout ce qu'il faut.
+local function scrubTo(t)
+    if not opts.ruler_scrub then return end
+    if state.mode ~= "clip" or not state.clip_lane or not state.loop_att then
+        return
+    end
+    local m = math.floor((Loop.Mode(state.clip_lane) or 0) + 0.5)
+    if m ~= 3 and m ~= 5 then return end     -- seule une case qui SONNE se deplace
+    Loop.PlayClipFrom(state.clip_lane, math.max(0, t))
+end
+
 local function measureAround(t)
     if state.mode == "clip" then
         local n = clipTsNum()
@@ -3205,9 +3294,6 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     local in_lane = mx >= lane_x0 and mx < wave.x
                 and my >= wave.ry and my < wave.ry + wave.rh
     if Core_tk.HasPopup() then in_grid, in_vel, in_ruler, in_lane = false, false, false, false end
-    -- clip mode: the ruler is inert (edit cursor / time selection are
-    -- project concepts; a clip has neither)
-    if state.mode == "clip" then in_ruler = false end
 
     local t = timeAtX(mx)
     local row = math.floor((my - wave.ry) / row_h) + 1
@@ -3237,11 +3323,9 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
     -- empty click sets the cursor, an empty drag makes a new selection.
     -- Grid-snapped unless Ctrl.
     local rfree = act("click", "ruler") == "ruler.cursor_free"
-    local ts_a, ts_b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
-    local has_ts = ts_b > ts_a + 0.0001
-    local tsa = has_ts and (ts_a - pos) or nil
-    local tsb = has_ts and (ts_b - pos) or nil
-    local ecur = r.GetCursorPosition() - pos
+    local tsa, tsb = timeSel()
+    local has_ts = tsa ~= nil
+    local ecur = editCursor()
     -- hover affordance (cursor shape) over grabbable ruler handles
     if in_ruler and not state.ruler_drag then
         if (tsa and math.abs(mx - xAtTime(tsa)) <= 6)
@@ -3258,11 +3342,11 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         -- d'abord : ce sont des ordres, pas des prises de poignee.
         local ra = act("click", "ruler")
         if ra == "ruler.clear_ts" then
-            r.GetSet_LoopTimeRange(true, false, 0, 0, false)
+            setTimeSel(nil, nil)
             return
         elseif ra == "ruler.select_in_ts" then
             if has_ts then
-                local n = Roll.SelectBox(ts_a - pos, ts_b - pos, 0, 127, false)
+                local n = Roll.SelectBox(tsa, tsb, 0, 127, false)
                 state.row_hi = nil
                 flash(n .. " selected")
             end
@@ -3279,8 +3363,9 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         else
             local st = rfree and t or midiSnap(t)
             state.ruler_drag = { mode = "new", t0 = st }
-            r.SetEditCurPos(pos + math.max(0, st), false, false)
-            r.GetSet_LoopTimeRange(true, false, 0, 0, false)  -- clear
+            setEditCursor(math.max(0, st))
+            setTimeSel(nil, nil)
+            scrubTo(st)
         end
     end
     if state.ruler_drag then
@@ -3289,31 +3374,29 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
             local ct = rfree and t or midiSnap(t)
             if ct < 0 then ct = 0 end
             if rd.mode == "cursor" then
-                r.SetEditCurPos(pos + ct, false, false)
+                setEditCursor(ct)
             elseif rd.mode == "new" then
-                local a = math.min(rd.t0, ct)
-                local b = math.max(rd.t0, ct)
-                if b - a > 0.001 then
-                    r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
-                end
+                setTimeSel(math.min(rd.t0, ct), math.max(rd.t0, ct))
             elseif rd.mode == "resize_a" then
-                local a = math.min(ct, rd.anchor)
-                local b = math.max(ct, rd.anchor)
-                r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
+                setTimeSel(math.min(ct, rd.anchor), math.max(ct, rd.anchor))
             elseif rd.mode == "resize_b" then
-                local a = math.min(rd.anchor, ct)
-                local b = math.max(rd.anchor, ct)
-                r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
+                setTimeSel(math.min(rd.anchor, ct), math.max(rd.anchor, ct))
             elseif rd.mode == "move" then
                 -- snap the RESULT, not the grab point (like note-move) — else
                 -- the sub-grid grab offset lands the range off-grid
                 local na = t - rd.grab
                 if not rfree then na = midiSnap(na) end
                 if na < 0 then na = 0 end
-                r.GetSet_LoopTimeRange(true, false, pos + na, pos + na + rd.len, false)
+                setTimeSel(na, na + rd.len)
             end
             UI.SetCursor(rd.mode == "move" and "size_all" or "size_we")
+            rd.last = ct
         else
+            -- Une seconde fois, au relachement : le scrub suit la ou le doigt
+            -- s'arrete, sans avoir suivi les soixante positions du trajet.
+            if rd.last and (rd.mode == "cursor" or rd.mode == "new") then
+                scrubTo(rd.last)
+            end
             state.ruler_drag = nil
         end
     end
@@ -3489,9 +3572,7 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 elseif ca == "roll.cursor" then
                     Roll.ClearSel()
                     state.row_hi = nil
-                    if state.mode ~= "clip" then
-                        r.SetEditCurPos(pos + math.max(0, t), false, false)
-                    end
+                    setEditCursor(math.max(0, t))
                     return
                 elseif da == "roll.paint_line" or da == "roll.paint_chord" then
                     state.mdrag = { mode = "paint", moved = false,
@@ -3938,14 +4019,10 @@ local function drawRoll(theme, area_h)
     -- with grab handles (notches) at both edges in the ruler strip.
     -- Clip mode has no project time concepts: no time selection, no edit
     -- cursor, no transport playhead.
-    local ts_a, ts_b = 0, 0
-    if state.mode ~= "clip" then
-        ts_a, ts_b = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
-    end
-    if ts_b > ts_a then
-        local pos = itemPos()
-        local xaf = xAtTime(ts_a - pos)   -- true edge x (unclamped, for handles)
-        local xbf = xAtTime(ts_b - pos)
+    local dsa, dsb = timeSel()
+    if dsa then
+        local xaf = xAtTime(dsa)          -- true edge x (unclamped, for handles)
+        local xbf = xAtTime(dsb)
         local xa = math.max(xaf, wave.x)
         local xb = math.min(xbf, wave.x + wave.w)
         if xb > wave.x and xa < wave.x + wave.w then
@@ -3968,8 +4045,8 @@ local function drawRoll(theme, area_h)
     end
 
     -- edit cursor + a small flag handle at the top (grabbable)
-    if state.mode ~= "clip" then
-        local ec = r.GetCursorPosition() - itemPos()
+    do
+        local ec = editCursor()
         if ec >= state.t0 and ec <= state.t1 then
             local x = xAtTime(ec)
             Core_tk.DrawRect(x, gy, 1, RULER_H + grid_h,
