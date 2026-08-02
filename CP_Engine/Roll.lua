@@ -818,6 +818,37 @@ function Roll.Duplicate(dt, dp)
     return n
 end
 
+-- POSER DES NOTES A DES POSITIONS DONNEES, sans toucher a la selection.
+--
+-- `Roll.Duplicate(0, 0)` semblait faire l'affaire pour un copier-glisser, et
+-- ne le faisait pas : il re-selectionne les copies PAR LEUR IDENTITE (depart,
+-- hauteur), et une copie posee au meme endroit a exactement l'identite de son
+-- original. Les deux se retrouvaient donc selectionnes, le glisser les
+-- emmenait ENSEMBLE, et on voyait un simple deplacement — « Ctrl+glisser ne
+-- copie rien », alors que la duplication avait bien eu lieu.
+--
+-- D'ou cette fonction, et la facon de s'en servir : on laisse le glisser
+-- deplacer les notes d'ORIGINE, et au relachement on repose une copie la ou
+-- elles etaient. L'etat final est le meme que chez REAPER — l'original a sa
+-- place, la copie a destination — et la selection reste sur ce qu'on vient de
+-- deplacer, ce qui est ce qu'on veut pour enchainer.
+--
+-- Aucune identite a comparer, aucun index a suivre pendant le geste : une
+-- passe d'insertion, un tri, un point d'annulation.
+function Roll.Stamp(list, n)
+    if not Roll.backend or not n or n <= 0 then return 0 end
+    for k = 1, n do
+        local e = list[k]
+        if e and e.s and e.p then
+            Roll.backend.insertNote(e.s, e.p, e.l or 0.25, e.v or 100)
+        end
+    end
+    Roll.backend.sort()
+    Roll.Sync()
+    Roll.backend.undo("MIDI: copy notes")
+    return n
+end
+
 Roll.clip = { n = 0, s = {}, l = {}, p = {}, v = {} }
 function Roll.Copy()
     local c = Roll.clip
