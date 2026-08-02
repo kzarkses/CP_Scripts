@@ -2979,12 +2979,153 @@ exactement égal à celui qu'on venait de poser. Et `Cells` relit un compteur de
 replacement, parce qu'une voix audio tient une date de départ en frames et
 finirait sa passe — on entendrait les notes sauter et le son rester.
 
-## Ce qui reste, et c'est écrit
+## La fenêtre existe, et les vocabulaires sont sortis
 
-La fenêtre de capture des raccourcis. Sa règle est tranchée, mais son vrai
-obstacle n'est pas le dessin : les vocabulaires sont déclarés **dans chaque
-script**, donc une fenêtre séparée ne les connaîtrait pas. Il faut d'abord les
-sortir dans `CP_Engine/Keymaps/<module>.lua`. En attendant, `Keymap.Export`
-écrit la carte complète dans `CP_Config/CP_Keymap.lua`, commentée, et
-`Keymap.Reload` la relit sans fermer la fenêtre — REAPER a eu `reaper-kb.ini`
-bien avant d'avoir une fenêtre pour le remplir, et c'est le bon ordre.
+L'obstacle annoncé était le bon : les vocabulaires vivaient **dans** les
+scripts, donc une fenêtre séparée — un autre état Lua — ne les aurait jamais
+vus. Ils sont sortis dans `CP_Engine/Keymaps/<module>.lua`, chargés par
+l'application **et** par la fenêtre. `CP_Tools/CP_Keymap.lua` s'ouvre à côté de
+l'éditeur et non dedans : *on règle un raccourci en regardant l'éditeur, pas à
+sa place.*
+
+Trois décisions font que l'outil sert. L'échappatoire de la capture est la
+**souris**, jamais une touche — toute touche doit pouvoir être assignée, Échap
+comprise. La frappe est lue **avant** que le toolkit ne la distribue, sinon
+Entrée validerait un champ au lieu d'être capturée. Et un tampon ExtState fait
+relire les fenêtres déjà ouvertes une fois par seconde : sans lui il faudrait
+fermer et rouvrir CP_Editor après chaque réglage, c'est-à-dire ne jamais tester
+ce qu'on règle.
+
+## Trois défauts de la même famille, et le troisième a coûté le moteur
+
+J'ai écrit `1.10` après `1.9`. **Un double ne connaît pas les numéros de
+version : `1.10` vaut `1.1`.** Tous les scripts testent un *minimum* — Loop
+exige 1.7, Voice 1.5 — donc l'extension chargeait parfaitement et se faisait
+refuser par tout le monde. Plus une note, plus un son, plus de moteur de
+boucles, et **rien n'avait planté** : le symptôme ne désignait pas la cause.
+
+C'est le troisième d'une même famille — un octet NUL dans une *defstring*, une
+séquence octale, et maintenant ce double — où le compilateur est content,
+REAPER est content, et un *lecteur* refuse en silence. `check_defs.py` refuse
+désormais une mineure à deux chiffres, et la règle est écrite dans le type :
+tant que l'ABI est un double, sa mineure ne monte que jusqu'à 9.
+
+## Les curseurs étaient branchés, et l'appel les jetait
+
+Quatorze curseurs de REAPER, nommés d'après sa documentation de thème, câblés
+sur les bons gestes. Aucun ne s'affichait. Trois fois j'ai répondu « c'est
+câblé » en regardant le code qui *demande* le curseur, jamais celui qui le
+*pose*.
+
+`gfx.setcursor(id, nom)` ne pose **pas** le curseur nommé quand on lui donne
+aussi un identifiant : l'identifiant gagne. La doc dit « resource_id and/or
+custom_cursor_name » et j'avais lu « les deux ensemble ». Ce qui l'a tranché est
+une phrase de Cédric : *« sur cursor probe, tout fonctionne bien »*. La sonde
+appelle `gfx.setcursor(0, nom)`. La différence était dans les deux fichiers
+depuis le début, et je ne l'avais pas regardée parce que je tenais la question
+pour réglée.
+
+**Un nom ignoré ne rend pas d'erreur.** C'est exactement le genre de défaut que
+ce dépôt attrape d'habitude en *mesurant* — `CP_Tools/CP_CursorProbe.lua` existe
+pour ça — et je ne l'avais pas fait.
+
+## Une case ne joue que la zone qu'on lui montre
+
+L'accolade de boucle, **ABI 2.1**. Et la seule décision qui compte a été prise
+avant d'écrire une ligne : ce n'est **pas une porte, c'est une longueur de
+boucle**.
+
+Bâillonner les notes du dehors aurait été plus court à écrire et aurait eu
+l'air de marcher : la case aurait continué de tourner sur ses quatre mesures en
+n'en faisant sonner que deux. Deux mesures de musique, deux mesures de silence
+— et personne n'aurait su dire si c'était voulu. Ce que fait Ableton est l'autre
+chose, la seule musicale : la case **devient** une boucle de deux mesures, qui
+revient deux fois plus souvent. Le harnais compte donc des notes plutôt que
+d'écouter : sur huit beats, chaque note de la zone part **deux** fois. Une porte
+en aurait donné une seule. C'est le test qui tranche, là où l'oreille entend
+surtout que « ça marche », dans les deux cas.
+
+Le verrou de phase y survit intact parce que c'est le même verrou sur une autre
+longueur — une lane de longueur `Ls` ancrée sur le beat zéro du projet. On n'a
+pas ajouté d'horloge, on a changé une longueur, et le harnais le vérifie contre
+un témoin : l'écart reste constant vingt passes plus loin.
+
+Trois choses qu'on a dû décider en chemin, et qui n'étaient pas dans l'énoncé.
+**Une accolade qui déborde ne rend pas la case muette** : on la pose sur les
+mesures 3 et 4, on raccourcit la boucle à une, et le silence total serait la
+pire des réponses puisque rien dans le geste ne l'a demandé — on revient à la
+case. **La phase reste publiée en coordonnées de case**, accolade comprise,
+sans quoi le trait de lecture se dessinerait au début du clip et la voix audio
+entrerait dans la matière au mauvais endroit, d'exactement le décalage qu'on
+venait de poser. Et **`Cells` a dû suivre** : « longueur de la case » et
+« longueur d'une passe » s'y confondaient depuis toujours, ce qui aurait fait
+tourner les notes sur deux mesures et le son sur quatre — la seule façon de
+rater ce genre de fonctionnalité sans jamais la voir rater.
+
+Elle est **persistée** (format 7), contrairement au décalage de phase, et la
+différence est de nature : un décalage est un geste de jeu, une accolade est une
+édition. La perdre à la fermeture en aurait fait un brouillon, et personne ne
+construit sur un brouillon.
+
+Au passage, un défaut latent trouvé en relisant la porte : `phase_hit` recevait
+le beat du projet **nu** alors que la phase court sur une ligne décalée. Dès
+qu'un « pars d'ici » était armé, la date sous-bloc de chaque note tombait à
+côté — et comme elle est bornée au bloc, la note partait à son début ou à sa
+fin. Une gigue d'un bloc, visible seulement avec un décalage, donc jamais
+reproduite.
+
+## Ce que la mesure a trouvé pendant qu'on cherchait ailleurs
+
+Cédric rapporte deux choses en testant : le clip n'attend plus le quantize après
+un arrêt de transport, et **chaque note tombe ~45 ms avant son temps**. 45 ms à
+48 kHz, c'est un bloc de 2048. Un écart qui vaut exactement un bloc ne se
+discute pas — il se localise. J'ai donc écrit un test qui **rend un nombre**
+plutôt qu'un « ok », avec le bloc qu'il utilise.
+
+Il a désigné les coupables en une exécution, alors que le raisonnement cherchait
+depuis une heure du côté de l'ancre de transport.
+
+**Une transition en retard était datée à la FIN du bloc.** `phase_hit` rend le
+*prochain* instant où la phase vaut ce qu'on cherche. Au premier bloc d'un
+lancement, le point est déjà passé : il repartait une boucle entière plus loin,
+et le bornage au bloc mettait la note au plus tard possible. Mesuré : **+48 ms**
+sur la première note. Une transition en retard part maintenant au **début** du
+bloc — la même règle que `drain_midi` applique déjà à un événement dépassé.
+
+**Un lancement se résolvait APRÈS sa frontière, pas sur le bloc qui la
+contient.** La porte réconcilie sur la phase de *fin* de bloc ; lui livrer une
+lane passée à « joue » au bloc suivant lui faisait manquer la frontière. Ce qui
+**s'arrête** garde l'ancien horizon, et c'est délibéré : un arrêt résolu sur le
+bloc qui contient sa frontière couperait *avant* elle, alors qu'un arrêt
+quantifié promet le contraire. Après : **0,000 ms sur chaque note.**
+
+**Et un arrêt de transport remet la case en file.** C'était une confusion entre
+« ce clip est allumé » et « ce clip est en train de sonner ». Garder le mode à
+« joue » à travers l'arrêt le faisait repartir au bloc suivant, sans jamais
+repasser par la file — donc contre l'arrangement. « En file » dit les deux à la
+fois : la case reste allumée (entourée, pas pleine) et repartira sur une
+frontière. Le décalage de phase tombe avec l'arrêt, parce qu'il avait été
+calculé contre une frontière qui n'existe plus.
+
+## Deux défauts que la relecture a trouvés, et qu'aucun test n'aurait vus
+
+**L'accolade vivait sur la LANE, et une lane est un emplacement partagé.**
+`armLane` y charge une autre case sans rien effacer : la suivante n'aurait joué
+que les mesures 3 et 4 de la précédente, et la même case relancée sur la lane
+jumelle aurait perdu la sienne. L'accolade serait apparue et aurait disparu
+selon l'état de lecture au moment du lancement — la pire façon d'avoir tort.
+Elle voyage maintenant **dans le descripteur de case**, et `ApplyClip` l'écrit
+**toujours**, y compris quand la case n'en a pas : c'est le seul geste qui
+efface celle de l'occupant précédent.
+
+**La capture écrivait modulo la longueur de la case** alors que le moteur boucle
+sur la zone. Une note jouée en overdub sous accolade tombait donc hors d'elle et
+ne sonnait **jamais** : enregistrée, visible dans l'éditeur, muette. Le musicien
+joue sur la boucle qu'il entend et n'entend jamais revenir ce qu'il vient de
+jouer. Le décalage de phase entre aussi dans ce calcul, pour la même raison.
+
+Côté fenêtre, l'accolade a **sa propre bande** : les sept pixels du haut de la
+règle, en mode case seulement. Pas un modificateur de la règle, parce que les
+deux poignées se posent au même endroit — on fait une sélection, puis on en fait
+la zone de lecture. Un même pixel aurait porté les deux. C'est la bande de
+boucle de REAPER, et c'est la même raison.

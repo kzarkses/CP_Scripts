@@ -41,10 +41,11 @@ MAP = {
 FALLBACK = {
     "note.select", "note.move", "edge.resize",
     "roll.insert", "roll.insert_drag", "ruler.cursor",
+    "brace.edit",
 }
 
-PREFIX = (r'"((?:note|edge|roll|lane|ruler|vel|play|view|audio|edit|sel|walk)'
-          r'\.[a-z_0-9]+)"')
+PREFIX = (r'"((?:note|edge|roll|lane|ruler|vel|play|view|audio|edit|sel|walk'
+          r'|brace|clip)\.[a-z_0-9]+)"')
 
 
 def read(rel):

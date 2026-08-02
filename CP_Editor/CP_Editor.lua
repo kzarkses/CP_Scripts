@@ -192,6 +192,10 @@ local wave = { x = 0, y = 0, w = 0, h = 0, ry = 0, rh = 0 }
 
 local WAVE_BUF = 905
 local RULER_H  = 18
+-- La bande de l'accolade de boucle, prise dans le HAUT de la regle et en mode
+-- case seulement. Sept pixels : assez pour attraper une poignee sans souris de
+-- precision, assez peu pour que la regle garde ses graduations lisibles.
+local BRACE_H  = 7
 local PLAY_OPTS = {}
 
 local function persistConfig()
@@ -573,6 +577,37 @@ local function setTimeSel(a, b)
     else
         r.GetSet_LoopTimeRange(true, false, pos + a, pos + b, false)
     end
+end
+
+-- L'ACCOLADE DE BOUCLE — la zone qu'une case joue en boucle.
+--
+-- Elle vit DANS LE MOTEUR et non dans la fenetre. Ce n'est pas de la pudeur
+-- d'architecture : c'est lui qui la borne quand la boucle raccourcit sous elle,
+-- et c'est lui qui la joue. Une copie locale aurait a se resynchroniser apres
+-- chaque changement de longueur, et un miroir qu'on oublie de reparer une fois
+-- ment ensuite pour toujours. On la relit donc a chaque frame — deux lectures
+-- atomiques, a cote des trois que le trait de lecture demande deja.
+local function loopBrace()
+    if state.mode ~= "clip" or not state.clip_lane or not state.loop_att then
+        return nil
+    end
+    return Loop.GetLoopRange(state.clip_lane)
+end
+
+local function setLoopBrace(a, b)
+    if state.mode ~= "clip" or not state.clip_lane or not state.loop_att then
+        return false
+    end
+    Loop.SetLoopRange(state.clip_lane, a, b)
+    -- ET DANS LE DESCRIPTEUR, ou l'accolade appartient desormais. Sans cette
+    -- paire de lignes, le prochain `flushApply` reecrirait la lane avec la
+    -- valeur que la case portait AVANT le geste : on aurait pose l'accolade,
+    -- vu l'accolade, et elle aurait disparu une seconde plus tard sans qu'on
+    -- puisse dire pourquoi.
+    if state.clip then
+        state.clip.loop_a, state.clip.loop_b = a, b
+    end
+    return true
 end
 
 -- LANCER UNE CASE DEPUIS LE CURSEUR.
@@ -3330,6 +3365,14 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
                 and my >= wave.ry and my < wave.ry + wave.rh
     if Core_tk.HasPopup() then in_grid, in_vel, in_ruler, in_lane = false, false, false, false end
 
+    -- LA BANDE DE L'ACCOLADE mange le haut de la regle, donc elle la lui RETIRE
+    -- : sans cette ligne, un clic dans la bande poserait aussi le curseur
+    -- d'edition, et deux choses se passeraient pour un geste. C'est la meme
+    -- raison qui fait qu'elle existe separement.
+    local in_brace = in_ruler and my < wave.y + BRACE_H
+                     and state.mode == "clip" and state.clip_lane ~= nil
+    if in_brace then in_ruler = false end
+
     local t = timeAtX(mx)
     local row = math.floor((my - wave.ry) / row_h) + 1
     local pitch = rows.list[row]
@@ -3352,6 +3395,63 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
               or (in_grid and "roll") or nil
     local mods = Keymap.Mods()
     local function act(gesture, z) return Keymap.Mouse(KM, z or zone, gesture, mods) end
+
+    -- ----- la bande de l'accolade ------------------------------------------
+    -- Les memes quatre poignees que la regle, sur la meme grammaire : un bord
+    -- redimensionne, le corps deplace, le vide cree. On n'a rien invente ici,
+    -- et c'est voulu : une bande nouvelle qui se manipulerait autrement serait
+    -- une deuxieme chose a apprendre pour la meme idee.
+    local bra, brb = loopBrace()
+    if in_brace or state.brace_drag then
+        local bfree = act("click", "brace") == "brace.edit_free"
+        if in_brace and not state.brace_drag then
+            if (bra and math.abs(mx - xAtTime(bra)) <= 5)
+               or (brb and math.abs(mx - xAtTime(brb)) <= 5) then
+                UI.SetCursor("ts_edge")
+            elseif bra and mx > xAtTime(bra) and mx < xAtTime(brb) then
+                UI.SetCursor("ts_move")
+            else
+                UI.SetCursor("sel_time")
+            end
+        end
+        if in_brace and Core_tk.MouseClicked(1) then
+            if act("click", "brace") == "brace.clear" then
+                if setLoopBrace(nil, nil) then flash("Play range cleared") end
+            elseif bra and math.abs(mx - xAtTime(bra)) <= 5 then
+                state.brace_drag = { mode = "resize", anchor = brb }
+            elseif brb and math.abs(mx - xAtTime(brb)) <= 5 then
+                state.brace_drag = { mode = "resize", anchor = bra }
+            elseif bra and mx > xAtTime(bra) and mx < xAtTime(brb) then
+                state.brace_drag = { mode = "move", grab = t - bra,
+                                     len = brb - bra }
+            else
+                state.brace_drag = { mode = "new",
+                                     t0 = bfree and t or midiSnap(t) }
+            end
+        end
+        if state.brace_drag then
+            local bd = state.brace_drag
+            if Core_tk.MouseDown(1) then
+                local ct = bfree and t or midiSnap(t)
+                if ct < 0 then ct = 0 end
+                if bd.mode == "new" then
+                    setLoopBrace(math.min(bd.t0, ct), math.max(bd.t0, ct))
+                elseif bd.mode == "resize" then
+                    setLoopBrace(math.min(ct, bd.anchor), math.max(ct, bd.anchor))
+                elseif bd.mode == "move" then
+                    -- On magnetise le RESULTAT, pas le point de prise : sinon
+                    -- l'ecart sous-grille du doigt pose la zone hors grille.
+                    local na = t - bd.grab
+                    if not bfree then na = midiSnap(na) end
+                    if na < 0 then na = 0 end
+                    setLoopBrace(na, na + bd.len)
+                end
+                UI.SetCursor(bd.mode == "move" and "ts_move" or "ts_edge")
+            else
+                state.brace_drag = nil
+            end
+        end
+    end
 
     -- ruler strip (top): real handles. Grab a time-selection EDGE to
     -- resize, its BODY to move it, the edit-cursor flag to drag it; an
@@ -4150,6 +4250,40 @@ local function drawRoll(theme, area_h)
         end
     end
 
+    -- LA ZONE DE LECTURE D'UNE CASE — l'accolade de boucle.
+    --
+    -- Dessinee comme un DEHORS ETEINT, et non comme un dedans colore. Ce qu'on
+    -- doit lire d'un coup d'oeil, c'est ce qui ne sonnera pas ; et un dedans
+    -- colore se serait confondu avec la selection temporelle, qui vit sur la
+    -- meme regle et qu'on pose le plus souvent AU MEME ENDROIT — puisque c'est
+    -- comme ca qu'on fabrique l'accolade.
+    if state.mode == "clip" then
+        local ba, bb = loopBrace()
+        Core_tk.DrawRect(wave.x, gy, wave.w, BRACE_H,
+                         col_edge[1], col_edge[2], col_edge[3], 0.55)
+        if ba then
+            local xa = math.max(xAtTime(ba), wave.x)
+            local xb = math.min(xAtTime(bb), wave.x + wave.w)
+            local dim_y, dim_h = gy + BRACE_H, RULER_H - BRACE_H + grid_h
+            if xa > wave.x then
+                Core_tk.DrawRect(wave.x, dim_y, xa - wave.x, dim_h,
+                                 col_bg[1], col_bg[2], col_bg[3], 0.55)
+            end
+            if xb < wave.x + wave.w then
+                Core_tk.DrawRect(xb, dim_y, wave.x + wave.w - xb, dim_h,
+                                 col_bg[1], col_bg[2], col_bg[3], 0.55)
+            end
+            if xb > xa then
+                Core_tk.DrawRect(xa, gy, xb - xa, BRACE_H,
+                                 col_head[1], col_head[2], col_head[3], 0.85)
+                Core_tk.DrawRect(xa, gy, 1, RULER_H + grid_h,
+                                 col_head[1], col_head[2], col_head[3], 0.35)
+                Core_tk.DrawRect(xb - 1, gy, 1, RULER_H + grid_h,
+                                 col_head[1], col_head[2], col_head[3], 0.35)
+            end
+        end
+    end
+
     -- time selection (native loop/time range) painted over the grid + ruler,
     -- with grab handles (notches) at both edges in the ruler strip.
     -- Clip mode has no project time concepts: no time selection, no edit
@@ -4299,6 +4433,25 @@ local function handleKeys()
     if a == "play.cursor" or a == "play.sel" or a == "play.start" then
         togglePlay(a == "play.start" and "start"
                    or (a == "play.sel" and "sel") or "cursor")
+        UI.ConsumeChar(); return
+    end
+    -- LA ZONE DE LECTURE, AU CLAVIER. Le chemin que la feuille de route decrit :
+    -- une plage se choisit d'abord pour EDITER, et devient une zone de lecture
+    -- sur un geste — jamais toute seule, sans quoi selectionner trois notes
+    -- pour les transposer changerait ce qu'on entend.
+    if a == "clip.loop_set" or a == "clip.loop_clear" then
+        if state.mode ~= "clip" then
+            flash("Play range only exists on a clip")
+        elseif a == "clip.loop_clear" then
+            if setLoopBrace(nil, nil) then flash("Play range cleared") end
+        else
+            local ta, tb = timeSel()
+            if not ta then
+                flash("Select a time range first")
+            elseif setLoopBrace(ta, tb) then
+                flash(string.format("Play range: %.3g beats", tb - ta))
+            end
+        end
         UI.ConsumeChar(); return
     end
     if a == "view.fit" then fitView(); UI.ConsumeChar(); return end

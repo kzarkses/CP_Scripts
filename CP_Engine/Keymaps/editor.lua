@@ -122,6 +122,18 @@ return {
       label = "Move the edit cursor ignoring snap" },
     { act = "ruler.select_in_ts",  group = "Ruler", ctx = "ruler", g = "click", mods = "Shift",
       label = "Select the notes inside the time selection" },
+    -- ----- la bande de l'accolade de boucle (mode case) ---------------------
+    -- Sa propre zone, et non un modificateur de la regle : les deux poignees
+    -- vivent au meme endroit et se posent au meme endroit — on fait une
+    -- selection, puis on en fait la zone de lecture. Un meme pixel aurait porte
+    -- les deux, et c'est la bande de boucle de REAPER pour la meme raison.
+    { act = "brace.edit",          group = "Play range", ctx = "brace", g = "click", mods = "",
+      label = "Set / move / resize the play range" },
+    { act = "brace.edit_free",     group = "Play range", ctx = "brace", g = "click", mods = "Shift",
+      label = "Set / move / resize the play range ignoring snap" },
+    { act = "brace.clear",         group = "Play range", ctx = "brace", g = "click", mods = "Alt",
+      label = "Clear the play range" },
+
     { act = "ruler.clear_ts",      group = "Ruler", ctx = "ruler", g = "click", mods = "Alt",
       label = "Clear the time selection" },
     -- ----- le clavier -------------------------------------------------------
@@ -135,6 +147,14 @@ return {
       label = "Play the time selection" },
     { act = "play.start",    group = "Transport", k = Keys.SPACE, mods = "Ctrl+Shift",
       label = "Play from the start of the material" },
+    -- L'accolade au clavier : c'est le chemin que la feuille de route decrit —
+    -- on choisit une plage pour EDITER, puis on decide qu'elle est aussi ce
+    -- qu'on veut entendre. Deux gestes, parce que ce sont deux intentions.
+    { act = "clip.loop_set",   group = "Play range", k = 108, mods = "",
+      label = "Play range: use the time selection" },
+    { act = "clip.loop_clear", group = "Play range", k = 12, mods = "Ctrl",
+      label = "Play range: clear" },
+
     { act = "view.fit",      group = "View", k = Keys.HOME, mods = "",
       label = "Fit the view" },
     { act = "view.zoom_in",  group = "View", k = 43, mods = "",

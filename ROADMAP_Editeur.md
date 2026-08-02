@@ -318,11 +318,33 @@ C'est exactement ce que fait le *legato launch* d'Ableton, et c'est ce que
 Le début et la fin de boucle **dans** la case (le *loop brace* d'Ableton), qui
 est la version musicale de « je ne veux entendre que ces deux mesures ».
 
-- [ ] Réutiliser la sélection locale du 5.1 comme zone de lecture, sur un
+- [x] Réutiliser la sélection locale du 5.1 comme zone de lecture, sur un
       commutateur — pas automatiquement : une sélection sert d'abord à éditer.
-- [ ] Côté audio c'est **déjà là** : `loop_start` / `loop_end` en frames source
-      sont portés par la voix depuis le chantier 4a. Côté MIDI, c'est la
-      longueur de lane qui répond, donc il faut un vrai couple début/fin.
+      `L` en fait la zone de lecture, `Ctrl+L` l'efface.
+- [x] Un vrai couple début/fin par lane dans le C++ (`loopa` / `loopb`,
+      **ABI 2.1**), et le portail MIDI qui les honore.
+- [x] **Ce n'est pas une porte, c'est une longueur de boucle.** Bâillonner les
+      notes du dehors aurait laissé la case tourner sur ses quatre mesures en
+      n'en faisant sonner que deux — deux mesures de musique, deux de silence.
+      La case *devient* une boucle de deux mesures. Le harnais compte les notes
+      pour trancher entre les deux, parce que l'oreille ne le fait pas.
+- [x] **Sa propre bande**, les sept pixels du haut de la règle, en mode case
+      seulement. Pas un modificateur de la règle : les deux poignées se posent
+      au même endroit — on fait une sélection, puis on en fait la zone de
+      lecture — donc un même pixel aurait porté les deux. Un bord
+      redimensionne, le corps déplace, le vide crée, Alt efface.
+- [x] Dessinée comme un **dehors éteint** et non comme un dedans coloré : ce
+      qu'on doit lire d'un coup d'œil, c'est ce qui ne sonnera pas — et un
+      dedans coloré se confondrait avec la sélection temporelle.
+- [x] **Persistée** (format 7), contrairement au décalage de phase : un
+      décalage est un geste de jeu, une accolade est une édition.
+- [x] Le son suit : `Cells` confondait « longueur de la case » et « longueur
+      d'une passe », ce qui aurait fait tourner les notes sur deux mesures et
+      le son sur quatre.
+- [ ] Côté audio, la région en frames source (`loop_start` / `loop_end`, portée
+      par la voix depuis le chantier 4a) reste **indépendante** de l'accolade :
+      l'une découpe la matière, l'autre le temps. Les réunir dans une seule
+      interface est une question ouverte, pas un manque.
 
 ---
 
