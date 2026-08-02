@@ -295,12 +295,44 @@ end
 -- REAPER perdrait la barre d'espace chaque fois qu'on passe dessus. On
 -- chercherait alors du cote du transport un defaut qui vient d'ailleurs.
 --
--- Au clic, donc : cliquer dans la bande donne le clavier a l'application,
--- cliquer ailleurs le rend a REAPER. C'est la convention de toutes les
--- fenetres, donc il n'y a rien a apprendre. Passer au survol tient en une
--- constante, si l'usage le demande.
+-- ---------------------------------------------------------------------------
+-- ⚠️ « DANS LE RECTANGLE » N'EST PAS « SUR NOTRE FENETRE »
+-- ---------------------------------------------------------------------------
+-- La premiere version comparait la position du pointeur au RECTANGLE de la
+-- bande. Or la bande occupe presque tout l'ecran : n'importe quelle fenetre
+-- posee par-dessus — la liste des actions, un navigateur d'effets, une boite de
+-- dialogue — tombe dedans. On lui volait donc le focus a chaque clic, et elle
+-- devenait inutilisable : on tape, rien n'arrive, et la fenetre a l'air de
+-- clignoter sans raison.
+--
+-- La geometrie ne repond pas a la question « qui est sous le doigt ». Seul le
+-- gestionnaire de fenetres le sait, et il le dit : `JS_Window_FromPoint`. On
+-- remonte ensuite la chaine des parents, parce qu'un clic tombe sur une
+-- fenetre INTERNE a l'application, pas sur elle.
+--
+-- Et une garde avant tout le reste : si la fenetre de PREMIER PLAN n'est pas
+-- celle de REAPER, quelqu'un d'autre a la main et on ne touche a rien. Notre
+-- fenetre etant fille de la principale, le premier plan reste REAPER quand elle
+-- a le focus — la garde ne coute donc rien au cas normal.
+--
+-- ENFIN, ON NE REPREND PAS LE FOCUS A LA PLACE DE REAPER. Rendre le clavier a
+-- la fenetre principale des qu'on clique ailleurs paraissait symetrique, mais
+-- « ailleurs » inclut les fenetres DOCKEES — le navigateur, l'editeur — qui
+-- prennent le focus toutes seules et a qui on l'aurait aussitot repris. On ne
+-- le rend donc explicitement que pour un clic sur la fenetre principale
+-- ELLE-MEME ; partout ailleurs, REAPER fait deja ce qu'il faut.
 local HOVER_FOCUS = false
 local was_down = false
+
+local function isDescendant(w, of)
+    local hops = 0
+    while w and hops < 24 do
+        if w == of then return true end
+        w = r.JS_Window_GetParent(w)
+        hops = hops + 1
+    end
+    return false
+end
 
 local function focusPolicy()
     local ms = r.JS_Mouse_GetState(1)
@@ -308,15 +340,14 @@ local function focusPolicy()
     local edge = down and not was_down
     was_down = down
     if not (edge or HOVER_FOCUS) then return end
-    local l, t, w, h = bandRect()
-    if not w then return end
+    if r.JS_Window_GetForeground() ~= MAIN then return end
     local mx, my = r.GetMousePosition()
-    local inside = mx >= l and mx < l + w and my >= t and my < t + h
-    local f = r.JS_Window_GetFocus()
-    if inside and f ~= APP then
-        r.JS_Window_SetFocus(APP)
-    elseif not inside and f == APP then
-        r.JS_Window_SetFocus(MAIN)
+    local under = r.JS_Window_FromPoint(mx, my)
+    if not under then return end
+    if isDescendant(under, APP) then
+        if r.JS_Window_GetFocus() ~= APP then r.JS_Window_SetFocus(APP) end
+    elseif under == MAIN then
+        if r.JS_Window_GetFocus() == APP then r.JS_Window_SetFocus(MAIN) end
     end
 end
 
