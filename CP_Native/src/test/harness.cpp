@@ -580,6 +580,69 @@ static void test_clip_pulled_under_voice() {
 }
 
 // ---------------------------------------------------------------------------
+// LE RETRAIT EST UNE DEMANDE, PAS UN GESTE
+// ---------------------------------------------------------------------------
+// Le test precedent decrit le PLANCHER : si quelque chose retire brutalement,
+// la voix meurt proprement et l'emplacement revient. Celui-ci decrit ce qui doit
+// arriver en usage normal — le clip est demande au retrait pendant qu'une voix
+// le joue, et il NE BOUGE PAS. C'est la difference entre « un changement de mode
+// tempo coupe le son » et « un changement de mode tempo attend la fin ».
+//
+// Le compte de references se DEDUIT de ce que les voix publient : c'est
+// `refresh_clip_refs` qui le rafraichit, et son absence est exactement ce qui
+// rendait le garde-fou du vivier mort depuis toujours.
+static void test_retire_waits_for_the_voice() {
+  group("la matiere ne se retire pas sous une voix qui la joue");
+  EBox eb; Engine& e = *eb;
+  const int clip = make_ramp_clip(e, 48000, 2);
+  const voice_h v = e.voice_alloc(2);
+
+  Cmd c = mk(kCmdVoicePlay, v, 0);
+  c.a = 1.0; c.b = 1.0; c.u0 = (uint32_t)clip; c.u1 = kPlayLoop;
+  e.post(2, c);
+
+  sample_t buf[64 * 2];
+  g_in_audio = true;
+  for (int b = 0; b < 4; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  int st = 0;
+  e.voice_query(v, nullptr, &st);
+  check_eq(st, kVoicePlaying, "la voix joue");
+
+  // LE CHEMIN NORMAL : on recompte avant de demander le retrait.
+  e.refresh_clip_refs();
+  e.pool().collect(e.block_index());
+  e.pool().retire(clip, e.block_index());
+
+  g_in_audio = true;
+  for (int b = 0; b < 8; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  e.voice_query(v, nullptr, &st);
+  check_eq(st, kVoicePlaying, "la voix joue TOUJOURS : rien ne lui a ete retire");
+  check_eq(e.pool().loaded_count(), 1, "et la matiere est toujours residente");
+
+  // La voix s'arrete. La demande est alors honoree — et sans elle, le clip
+  // serait reste resident jusqu'a la fermeture : une fuite avec un drapeau.
+  Cmd st_cmd = mk(kCmdVoiceStop, v, 0);
+  e.post(2, st_cmd);
+  g_in_audio = true;
+  for (int b = 0; b < 8; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+
+  e.refresh_clip_refs();
+  e.pool().collect(e.block_index());   // honore la demande : masque, barriere
+  g_in_audio = true;
+  for (int b = 0; b < 4; ++b) { e.render_port(2, buf, 64, 2); e.tick(64); }
+  g_in_audio = false;
+  e.pool().collect(e.block_index());   // barriere franchie : la memoire rendue
+
+  check_eq(e.pool().loaded_count(), 0, "une fois la voix eteinte, la demande est honoree");
+  e.voice_release(v);
+}
+
+// ---------------------------------------------------------------------------
 // 9quater. DEUX FILS — l'instrument qui rend la course impossible a nier
 //
 // Un raisonnement sur les barrieres memoire ne prouve rien : c'est exactement le
@@ -1567,6 +1630,7 @@ int main() {
   test_voice_ownership();
   test_alloc_cycle();
   test_clip_pulled_under_voice();
+  test_retire_waits_for_the_voice();
   test_seek_and_live_loop();
   test_two_threads();
   test_clock();

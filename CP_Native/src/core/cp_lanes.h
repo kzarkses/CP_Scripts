@@ -222,6 +222,21 @@ struct Lane {
   std::atomic<double> loop_a;      // en beats depuis le debut de la case
   std::atomic<double> loop_b;      // <= loop_a : pas d'accolade
 
+  // ---------------------------------------------------------------------------
+  // LA SIGNATURE DE LA BOUCLE — 0 = suivre le projet
+  // ---------------------------------------------------------------------------
+  // La longueur d'une boucle valait `bars * ts_num`, ou `ts_num` etait la
+  // signature rythmique A L'ENDROIT OU LA TETE DE LECTURE SE TROUVE. Une seule
+  // mesure en 3/4 quelque part dans le projet changeait donc la longueur de
+  // TOUTES les lanes au moment ou le transport la traversait — alors que les
+  // notes, elles, sont en beats absolus. La musique se decalait toute seule, et
+  // rien ne pouvait l'expliquer depuis la fenetre.
+  //
+  // Une boucle porte donc la sienne. Zero veut dire « suis le projet », ce qui
+  // est le comportement d'avant et donc ce que valent tous les projets deja
+  // ecrits — la correction ne change rien tant que personne ne s'en sert.
+  std::atomic<double> ts_num;
+
   std::atomic<int>    nbuf;        // tampon de notes PUBLIE (0 ou 1)
   std::atomic<int>    ncount[2];   // nombre de notes de chaque tampon
   // Les notes elles-memes vivent dans UN bloc, alloue une seule fois par

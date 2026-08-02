@@ -93,7 +93,20 @@ using namespace cp;
 // une autre longueur.
 // CP_LaneGet(lane, "spana"|"spanlen") rend la zone EFFECTIVE, apres bornage
 // dans la case : c'est le moteur qui borne, et une seule fois.
-static const double kEngineABI = 2.2;
+// ---------------------------------------------------------------------------
+// 2.2 : CP_LaneSetNote / CP_LaneGetNote prennent un septieme champ, `prob` —
+// la chance de jouer en pourcent, 100 = toujours. Le tirage est SANS ETAT (un
+// hachage de la note et de la passe), donc constant pendant toute la passe et
+// identique pour l'attaque et pour la coupure. Voir API_Moteur.md §3.3
+// quinquies pour le defaut obligatoire du septieme argument.
+// ---------------------------------------------------------------------------
+// 2.3 : CP_LaneSet(lane, "tsnum", n) — LA SIGNATURE DE LA BOUCLE. Zero veut
+// dire « suis le projet », ce qui est le comportement d'avant. Sans elle, la
+// longueur d'une boucle valait `bars * ts_num` ou `ts_num` etait la signature
+// A L'ENDROIT OU LA TETE DE LECTURE SE TROUVE : une seule mesure en 3/4
+// quelque part changeait la longueur de TOUTES les lanes au moment ou le
+// transport la traversait, alors que les notes sont en beats absolus.
+static const double kEngineABI = 2.3;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -255,6 +268,12 @@ double CP_ClipLoad(const char* path) { return (double)decode_to_pool(path); }
 
 void CP_ClipUnload(double clip) {
   if (!g_eng) return;
+  // QUI TIENT QUOI, D'ABORD. Sans ce recompte, `retire` masquait la matiere
+  // meme quand une voix etait en train de la jouer : elle obtenait `nullptr` au
+  // bloc suivant et mourait sans fondu, au milieu d'un son, pour une operation
+  // qui ne la concernait pas — un changement de mode tempo, un rearmement. Le
+  // garde-fou existait dans le vivier depuis toujours ; personne ne l'alimentait.
+  g_eng->refresh_clip_refs();
   // collect() AVANT retire() : ce passage rend ce que le PRECEDENT retrait a
   // laisse derriere lui. Appele apres, il ne rendrait jamais rien — la barriere
   // de deux blocs n'est par construction jamais franchie dans le meme appel.
@@ -937,12 +956,13 @@ bool CP_LaneSet(int lane, const char* param, double value) {
   if (!strcmp(param, "playfrom")) { L.play_from.store(value, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "loopa")) { L.loop_a.store(value, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "loopb")) { L.loop_b.store(value, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "tsnum")) { L.ts_num.store(value, std::memory_order_relaxed); return true; }
   return false;
 }
 
 // param : mode | pending | target | phase | lenbeats | tag | nev | recgen
 //         bars | mute | port | offset | playfrom | loopa | loopb
-//         spana | spanlen
+//         spana | spanlen | tsnum
 double CP_LaneGet(int lane, const char* param) {
   if (!lane_ok(lane) || !param) return 0.0;
   const Lane& L = g_eng->lanes().lane(lane);
@@ -963,6 +983,7 @@ double CP_LaneGet(int lane, const char* param) {
   if (!strcmp(param, "loopb"))    return L.loop_b.load(std::memory_order_relaxed);
   if (!strcmp(param, "spana"))    return L.span_a.load(std::memory_order_relaxed);
   if (!strcmp(param, "spanlen"))  return L.span_len.load(std::memory_order_relaxed);
+  if (!strcmp(param, "tsnum"))    return L.ts_num.load(std::memory_order_relaxed);
   return 0.0;
 }
 

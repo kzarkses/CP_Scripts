@@ -427,13 +427,20 @@ matin ; le fond tient.
 - [x] **`Loop.SaveState` n'a aucun garde `NATIVE`.** Corrigé — une ligne de
       garde. Sans l'extension, la sérialisation produisait huit lanes vides et
       les écrivait par-dessus l'état du projet, à la fermeture de la fenêtre.
-- [ ] **Aucune annulation sur l'édition de notes d'une case.** Le contrat de
-      `Roll` prévoit `be.undo` et l'appelle à chaque geste structurel ; le
-      backend take le branche sur `Undo_OnStateChange`, le backend **clip** le
-      branche sur `scheduleApply()` — c'est-à-dire rien. Un Quantize, un
-      Euclidean ou une suppression dans une case sont **définitifs**. Et
-      Ctrl+Z est explicitement réservé au mode take.
-- [ ] **Alt+clic efface une case sans confirmation ni annulation.**
+- [x] **Aucune annulation sur l'édition de notes d'une case.** Une pile de
+      **photos** des notes (64 crans), remise à zéro en changeant de case —
+      mélanger deux historiques ferait annuler un geste dans une autre case, ce
+      qui est pire que de ne pas annuler. Pas un journal d'opérations : quelques
+      centaines de nombres se recopient pour rien, et un journal aurait demandé
+      à chaque geste **futur** de savoir se défaire.
+      ⚠️ **La photo prend tout ce qu'une note porte** — la probabilité comprise
+      depuis aujourd'hui. Une photo partielle fait de l'annulation une
+      destruction : elle remet les notes en place *sans* un réglage que le geste
+      annulé n'avait pas touché.
+- [x] **Alt+clic efface une case sans confirmation ni annulation.** La dernière
+      case effacée est gardée, Ctrl+Z la repose. **Une seule**, pas une pile : ce
+      geste se fait une fois et on le regrette tout de suite, et une pile aurait
+      fait croire à une annulation générale de la grille, qui elle n'existe pas.
 - [x] **Le tag de lane n'est pas sérialisé.** **Format 6** : le tag entre dans
       le bloc de chaque lane, entre le mode et le nombre de notes. Un lecteur
       ancien ignore le champ, un lecteur neuf sur un projet ancien lit 0 — ce
@@ -446,17 +453,28 @@ matin ; le fond tient.
       réponse. `LaneToClip` porte le tag de la lane, et lui en pose un
       (`1000000 + lane`, hors de portée des identités de la grille) quand elle
       n'en avait pas : c'est le seul moment où on peut le faire.
-- [ ] **Un slot libéré est réattribué avec ses clips.** Supprimer la piste de la
-      colonne 1 libère le slot ; la piste suivante l'adopte et arrive avec les
-      huit clips de l'ancienne. Le mécanisme d'adoption a été écrit pour que les
-      clips restent au slot ; il n'a pas prévu qu'un slot libéré change de
-      piste.
-- [ ] **Changement de projet, fenêtre ouverte.** `Loop.RouterChanged()` rend
-      `false` inconditionnellement, sur la prémisse « une instance par script,
-      par projet » — fausse, puisqu'un `defer` survit à un changement d'onglet.
-      La grille du projet A peut s'écrire dans le projet B. **Demande une
-      décision** : détecter le changement, ou assumer que ces fenêtres sont
-      liées à un projet.
+- [x] **Un slot libéré est réattribué avec ses clips.** **On n'efface pas, on
+      n'adopte pas** : un slot qui tient quelque chose (`Loop.SetSlotHeld`, que
+      seul l'hôte peut savoir) est sauté par l'adoption automatique. Il reste,
+      ses clips restent, et sa colonne se dessine en disant « no track » — ce
+      qui est l'état des choses, et ce que l'en-tête savait déjà montrer.
+      Effacer aurait été plus simple **et aurait détruit du travail pour réparer
+      un rangement**. Les slots orphelins passent en fin d'ordre d'affichage, et
+      *après* le tri : sans piste ils n'ont pas de numéro de piste, donc aucune
+      place dans un ordre qui suit le projet — et une colonne qu'on ne dessine
+      pas est un travail qu'on croit perdu.
+- [x] **Changement de projet, fenêtre ouverte.** La prémisse « une instance par
+      script, par projet » était fausse, et on l'avait écrite deux fois — dans
+      `Loop.RouterChanged` et au-dessus de l'autosave. **Un `defer` survit à un
+      changement d'onglet.** Trois conséquences, toutes silencieuses : l'autosave
+      écrivait le set de A dans le fichier de B ; `RefreshDests` rebranchait les
+      ports de A sur les pistes de B ; et les identités, qui sont par projet, se
+      résolvaient les unes sur les autres.
+      Le front est **détecté** (comparaison de pointeur de projet, une fois par
+      frame, sans allocation) et **consommé** : il suspend l'autosave *avant tout
+      le reste*, puis CP_Session relit la grille, les motions, la longueur de
+      prise, remet `Ident` à zéro et invalide ses caches. La décision demandée
+      est donc prise : ces fenêtres suivent le projet actif.
 - [x] **Une lane du Looper portait l'identité du premier clip de la grille.**
       `LaneToClip` frappait `1000000 + lane` — c'est-à-dire `Ident.BASE + lane`,
       et la toute première identité d'un projet est `BASE + 1`. Deux clips
@@ -465,21 +483,37 @@ matin ; le fond tient.
       `Ident.BASE` (`Loop.LANE_TAG_BASE`), là où le compteur ne peut par
       construction jamais descendre, et au-dessus de tout tag positionnel
       possible. Trouvé en relisant les espaces de numéros pour huit colonnes.
-- [ ] **Collisions d'identité entre projets.** `Ident` assume la collision et la
-      déclare inoffensive parce que `Ident.Get` filtre — mais `Loop.LaneOfTag`
-      compare des nombres bruts sans passer par le registre. Deux projets dans
-      la même instance de REAPER suffisent.
-- [ ] **Changer le mode tempo d'un son en cours décharge la matière sous la
-      voix** : `clipUnref` → `CP_ClipUnload` → `Pool::retire`, et la voix
-      obtient `nullptr` et meurt sans fondu. Le garde-fou du pool est du code
-      mort — `Clip::refs` n'est incrémenté nulle part.
-- [ ] **Une lane mutée dans le Looper coupe son MIDI mais pas sa case audio.**
-      ⚠️ **Ne pas corriger en branchant les voix sur `Loop.SetMute`** : la
-      Session se sert du même `mute` pour un autre sens — une case audio arme
-      une lane d'une seule note et la mute pour que cette note ne parte pas
-      dans l'instrument de la colonne. Taire la voix sur mute rendrait donc
-      **toute** case audio silencieuse. Il faut d'abord séparer les deux
-      intentions. C'est écrit dans `Loop.SetMute`, au-dessus du code.
+- [x] **Collisions d'identité entre projets.** Fermé par le point ci-dessus :
+      `Ident.Reset` vide le registre et le compteur sur le front de changement de
+      projet. La réponse n'est **pas** de rendre les identités globales — elles
+      appartiennent au projet — c'est que l'hôte remette le module à zéro quand
+      le projet change sous lui.
+- [x] **Changer le mode tempo d'un son en cours décharge la matière sous la
+      voix.** **Retirer est désormais une DEMANDE, pas un geste** : un clip
+      qu'une voix joue encore reste visible et résident, et la demande est
+      honorée dès que plus personne ne le tient.
+      Le garde-fou `Clip::refs` existait et n'était alimenté par personne. Il se
+      **déduit** maintenant de ce que les voix publient (`pub_clip`, un champ de
+      plus dans la publication de fin de bloc) plutôt que d'être tenu par le fil
+      audio : compter au démarrage et décompter à la mort aurait demandé quatre
+      chemins sans faute — démarrage, arrêt, vol de voix, enchaînement — et c'est
+      le genre de comptabilité qui finit par mentir une fois.
+      Deux assertions au harnais : le son continue pendant la demande, et la
+      mémoire est rendue une fois la voix éteinte (sans quoi ce serait une fuite
+      avec un drapeau dessus).
+- [x] **Une lane mutée dans le Looper coupe son MIDI mais pas sa case audio.**
+      Les deux intentions sont **séparées**, ce qui était le préalable écrit
+      au-dessus du code depuis le premier jour :
+      **mécanique** (`Loop.SetMute` — « ce MIDI ne doit pas sortir », ce que
+      CP_Session pose sur une case audio pour que sa note unique n'atteigne pas
+      l'instrument de la colonne) et **musicale** (`Loop.SetUserMute` — « tais
+      cette lane », le bouton du Looper). Le moteur reçoit leur **OU** : il n'a
+      qu'une case à cocher et n'a pas à savoir pourquoi.
+      `Cells.drive` lit l'intention musicale, et elle seule, pour taire la voix —
+      comme une horloge arrêtée : le son se tait, l'**état** ne bouge pas, et
+      démuter fait rentrer la voix sur la phase courante par le chemin qui
+      existait déjà. Le bouton du Looper affiche l'**intention** et non l'état
+      effectif : il s'allumait sur des lanes que personne n'avait tues.
 - [x] **Fuite de `PCM_source` dans `SrcTempo.FromAnalysis`.** Un seul point de
       sortie, parce que la fonction rendait à quatre endroits et qu'il en
       manquait quatre. Un kit de soixante-quatre pads en fuyait soixante-quatre
@@ -487,23 +521,40 @@ matin ; le fond tient.
 
 ### Ce qui trompe
 
-- [ ] **Sept champs morts voyagent dans chaque `.RPP`** : `gain`, `pitch`,
-      `rate`, `root`, `q`, `src_bpm` (et `lmode`, câblé le 1er août). Ils
-      **promettent un modèle** que rien n'implémente : on lit le format et on
-      croit que la fonctionnalité existe.
-- [ ] **La longueur d'une boucle n'appartient à personne.** Elle vaut
-      `bars × ts_num`, où `ts_num` est la signature rythmique **à l'endroit où
-      la tête de lecture se trouve en ce moment**. Une mesure en 3/4 quelque
-      part change la longueur de toutes les lanes quand le transport la
-      traverse, alors que les notes sont en beats absolus. Il n'existe nulle
-      part de signature **du clip** ; Ableton en a une.
+- [x] **Sept champs morts voyagent dans chaque `.RPP`** — il en restait
+      **quatre**, et ils sont partis : `pitch`, `rate`, `q`, `root`. `gain`,
+      `src_bpm` et `lmode` ont gagné des lecteurs en chemin (le découpage de
+      région, le tempo déclaré, one-shot/boucle), et c'est justement ce qui les
+      distingue. Les retirer est sans risque : le registre de champs ignore ce
+      qu'il ne connaît pas, donc un projet ancien les perd simplement à la
+      prochaine écriture.
+- [x] **La longueur d'une boucle n'appartient à personne.** Elle en a une
+      maintenant : **ABI 2.3**, `CP_LaneSet(lane, "tsnum", n)`, et le champ
+      `tsnum` du descripteur — donc elle voyage avec la CASE et non avec la
+      lane, exactement comme l'accolade, pour la même raison (une lane est un
+      emplacement partagé). **Zéro = suivre le projet**, ce qui est le
+      comportement d'avant : la correction est gratuite pour qui ne s'en sert
+      pas, et tous les projets existants s'ouvrent inchangés.
+      « Time signature » dans le menu d'une case. Poussée dans la lane **tout de
+      suite** quand la lane tient cette case : c'est la longueur de boucle qui
+      change, donc ce qu'on entend, et attendre le prochain lancement donnerait
+      un réglage qui « ne marche pas » jusqu'à ce qu'on relance.
 - [x] **Q et le mode d'horloge ne survivent qu'à une fermeture propre.** Les
       deux appellent `Loop.MarkDirty()` maintenant, comme CP_Looper le faisait
       déjà.
-- [ ] **`Mix.SendCreate` annonce « Send → X » sur un envoi déjà existant.**
-- [ ] **`Cells.LastOnsetError`** — l'écart mesuré entre la passe demandée et la
-      passe réellement jouée, construit exprès et **jamais appelé**. C'est
-      l'instrument qui aurait montré les 28 ms sans qu'on ait à les chercher.
+- [x] **`Mix.SendCreate` annonce « Send → X » sur un envoi déjà existant.** Elle
+      rend désormais l'index **et** si l'envoi vient d'être créé. Le message est
+      le seul retour de ce geste : il disait « c'est fait » à quelqu'un qui
+      venait de refaire ce qui était déjà là, et la fois d'après on ne savait
+      plus s'il y avait un envoi ou deux.
+- [x] **`Cells.LastOnsetError`** est lue, et son résultat s'affiche dans la zone
+      de statut : `onset +0.00 ms worst / N`. Le **pire** depuis l'ouverture, pas
+      le dernier — un écart qui n'arrive qu'une passe sur vingt est exactement
+      celui qu'on cherche, et montrer le dernier le fait disparaître avant qu'on
+      ait levé les yeux. Relevée **une fois par passe** et non par frame : la
+      vérité terrain est notée par la voix au démarrage et ne bouge plus, donc la
+      relire chaque frame coûterait un appel d'ABI par colonne pour un nombre qui
+      ne change pas.
 
 ### Performance (la cible est un PC de 2005, et le dépôt l'écrit partout)
 

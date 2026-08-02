@@ -470,19 +470,26 @@ end
 
 -- A send from src to dst, refusing the two that cannot exist: to itself, and
 -- one that already does. Returns the index (1-based) or nil.
+-- Rend l'index de l'envoi ET s'il vient d'etre CREE.
+--
+-- Les deux reponses etaient confondues en une : un envoi qui existait deja
+-- rendait son index, l'appelant y voyait un succes et annoncait « Send -> X ».
+-- Le message est le seul retour de ce geste, donc il disait « c'est fait » a
+-- quelqu'un qui venait de refaire ce qui etait deja la — et la fois d'apres, on
+-- ne sait plus si les deux envois existent ou un seul.
 function Mix.SendCreate(src, dst)
     if not valid(src) or not valid(dst) or src == dst then return nil end
     local n = r.GetTrackNumSends(src, 0)
     for i = 0, n - 1 do
         if r.GetTrackSendInfo_Value(src, 0, i, "P_DESTTRACK") == dst then
-            return i + 1
+            return i + 1, false
         end
     end
     r.Undo_BeginBlock()
     local i = r.CreateTrackSend(src, dst)
     r.Undo_EndBlock("Create send", 1)
     if not i or i < 0 then return nil end
-    return i + 1
+    return i + 1, true
 end
 
 return Mix

@@ -355,8 +355,8 @@ l'autre.
 |---|---|
 | `CP_LaneCount()` | nombre de lanes servies (32) |
 | `CP_LaneBind(lane, port, chan)` | bool — où cette lane parle. `port` −1 = nulle part |
-| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) `loopa` `loopb` (**2.1**) |
-| `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` `offset` `playfrom` `loopa` `loopb` `spana` `spanlen` (**2.1**) |
+| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) `playfrom` (**2.0**) `loopa` `loopb` (**2.1**) `tsnum` (**2.3**) |
+| `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` `offset` `playfrom` `loopa` `loopb` `spana` `spanlen` (**2.1**) `tsnum` (**2.3**) |
 | `CP_LaneCmd(lane, cmd, arg)` | bool |
 | `CP_LaneSetNote(lane, i, start, len, pitch, vel, prob)` | bool — écrit dans le tampon **qui dort** ; `prob` en pourcent, **100 = toujours** (**2.2**) |
 | `CP_LanePublish(lane, count)` | bool — échange les deux tampons |
@@ -420,6 +420,26 @@ qui est exactement le comportement du JSFX — moins juste, jamais faux.
 > et se fait refuser par tous les scripts, qui testent un minimum — plus une
 > note, plus un son, et rien n'a planté. Après 1.9 vient donc **2.0**, et ce
 > n'est pas une rupture de compatibilité : c'est une contrainte d'écriture.
+
+### 3.3 sexies La signature de la boucle — `tsnum` (ABI 2.3)
+
+`CP_LaneSet(lane, "tsnum", n)` fixe le nombre de beats par mesure de **cette
+lane**. Zéro veut dire « suis le projet », ce qui est le comportement d'avant —
+et donc ce que valent tous les projets déjà écrits.
+
+**La longueur d'une boucle n'appartenait à personne.** Elle valait
+`bars × ts_num`, où `ts_num` était la signature rythmique **à l'endroit où la
+tête de lecture se trouve en ce moment**. Une seule mesure en 3/4 quelque part
+dans le projet changeait donc la longueur de *toutes* les lanes au moment où le
+transport la traversait — alors que les notes, elles, sont en beats absolus. La
+musique se décalait toute seule, et rien dans la fenêtre ne pouvait l'expliquer.
+
+Côté Lua elle voyage **dans le descripteur de clip** (`clip.tsnum`) et non sur la
+lane, pour la même raison que l'accolade : une lane est un emplacement que toutes
+les cases d'une colonne se partagent, et `ApplyClip` l'écrit **toujours** — c'est
+le seul geste qui efface celle de l'occupant précédent. Elle est posée **avant**
+l'accolade, parce que c'est elle qui donne la longueur en beats contre laquelle
+le moteur borne la zone.
 
 ### 3.3 quinquies La probabilité par note — `prob` (ABI 2.2)
 

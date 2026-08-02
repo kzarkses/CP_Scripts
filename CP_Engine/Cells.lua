@@ -113,6 +113,7 @@ local function newSlot()
         running = false,
         last_start = -1,    -- diagnostic : frame demande de la derniere passe
         last_real = -1,     -- diagnostic : frame reellement atteint (verite terrain)
+        onset_seen = false, -- l'ecart de CETTE passe a deja ete releve
     }
 end
 
@@ -475,6 +476,7 @@ local function playAt(slot, at, phase, len_beats, gate, snap, p0)
 
     if Voice.PlayAtSample(h, slot.clip.id, at, opts) then
         slot.last_start = at
+        slot.onset_seen = false     -- une nouvelle passe : un nouvel ecart a relever
         -- `left * spb` est une duree de PROJET : a vitesse 2 elle se parcourt
         -- en deux fois moins d'echantillons.
         local dur = math.floor(left * spb * Voice.Srate() / prate + 0.5)
@@ -527,6 +529,25 @@ local function drive(t, half, gate)
     end
 
     local lane = (half == 0) and t or (t + TRACKS)
+
+    -- LE MUTE MUSICAL TAIT AUSSI LE SON, et c'est la moitie qui manquait.
+    --
+    -- Le mute d'une lane ne parlait qu'au moteur de LANES : il coupait le MIDI
+    -- et laissait sonner la case AUDIO de la meme colonne, qui est une voix et
+    -- non une lane. On ne pouvait pas brancher les voix sur le mute tel quel,
+    -- parce que CP_Session s'en sert pour un tout autre sens — empecher la note
+    -- unique d'une case audio de partir dans l'instrument de la colonne — et
+    -- toutes les cases audio seraient devenues muettes.
+    --
+    -- Les deux intentions vivent separement depuis (`Loop.SetUserMute`), donc
+    -- c'est l'intention MUSICALE qu'on lit ici, et elle seule. On coupe comme
+    -- une horloge arretee : le son se tait, l'ETAT ne bouge pas — demuter fait
+    -- rentrer la voix sur la phase courante par le chemin qui existe deja.
+    if Loop.GetUserMute(lane) then
+        if slot.running or slot.armed then stopSlot(slot) end
+        return
+    end
+
     local mode = math.floor((Loop.Mode(lane) or 0) + 0.5)
     local pend = Loop.Pending(lane) or 0
     local tgt  = Loop.PendingTarget(lane) or 0
@@ -624,6 +645,55 @@ local function drive(t, half, gate)
 end
 
 -- A appeler UNE fois par frame, apres Loop.Poll().
+-- ---------------------------------------------------------------------------
+-- L'ECART D'ATTAQUE, RELEVE — l'instrument qui aurait montre les 28 ms
+-- ---------------------------------------------------------------------------
+-- `Cells.LastOnsetError` a ete ecrite exprès pour ca et n'avait AUCUN appelant.
+-- C'est l'exemple le plus cher du dossier : la campagne du moteur a passe une
+-- soiree a chercher un retard constant que cette fonction affichait deja, si
+-- seulement quelqu'un l'avait appelee.
+--
+-- Elle est donc lue UNE FOIS PAR PASSE et non par frame : la verite terrain
+-- (`Voice.StartedAt`) est notee par la voix elle-meme au demarrage et ne bouge
+-- plus ensuite, donc la relire chaque frame coute un appel d'ABI par colonne
+-- pour un nombre qui ne change pas. Le drapeau `onset_seen` tombe a chaque
+-- nouvelle passe programmee, et c'est tout le mecanisme.
+--
+-- On garde le PIRE en valeur absolue, pas le dernier : un ecart qui n'arrive
+-- qu'une passe sur vingt est exactement celui qu'on cherche, et un affichage
+-- qui montre le dernier le fait disparaitre avant qu'on ait leve les yeux.
+local onset_worst = 0        -- en echantillons, signe
+local onset_n     = 0
+
+function Cells.OnsetWorst()
+    if onset_n <= 0 then return nil end
+    local sr = Voice.Srate()
+    if not sr or sr <= 0 then return nil end
+    return onset_worst / sr * 1000.0, onset_n     -- ms, et combien de passes vues
+end
+
+function Cells.OnsetReset() onset_worst, onset_n = 0, 0 end
+
+local function pollOnset()
+    for t = 0, TRACKS - 1 do
+        local c = col[t]
+        for half = 0, 1 do
+            local slot = c.half[half]
+            if slot.running and not slot.onset_seen and slot.last_start >= 0 then
+                local h = slot.v[(slot.vi == 1) and 2 or 1]
+                local real = h and Voice.StartedAt(h) or nil
+                if real and real >= 0 then
+                    slot.onset_seen = true
+                    slot.last_real = real
+                    local d = real - slot.last_start
+                    onset_n = onset_n + 1
+                    if math.abs(d) > math.abs(onset_worst) then onset_worst = d end
+                end
+            end
+        end
+    end
+end
+
 function Cells.Tick(gate)
     if not NATIVE then return end
     clock_on = Loop.ClockRunning()
@@ -675,6 +745,9 @@ function Cells.Tick(gate)
         drive(t, 0, gate)
         drive(t, 1, gate)
     end
+    -- APRES `drive`, jamais avant : c'est lui qui programme la passe, et la
+    -- verite terrain n'existe qu'une fois la voix partie.
+    pollOnset()
 end
 
 -- ---------------------------------------------------------------------------

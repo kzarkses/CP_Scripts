@@ -78,6 +78,11 @@ struct Voice {
   std::atomic<double>  pub_pos;
   std::atomic<int>     pub_state;
   std::atomic<int64_t> pub_started;
+  // QUEL CLIP CETTE VOIX TIENT, lisible depuis le fil principal. Il n'y avait
+  // aucune facon definie de le demander : `clip` appartient au fil audio, et le
+  // vivier devait donc DEVINER si sa matiere etait encore jouee. Il devinait
+  // « non » — le garde-fou `Clip::refs` n'etait incremente nulle part.
+  std::atomic<int>     pub_clip;
 
   void reset();
   bool active() const { return state != kVoiceIdle; }
@@ -88,6 +93,7 @@ struct Voice {
     pub_pos.store(pos, std::memory_order_relaxed);
     pub_state.store(state, std::memory_order_relaxed);
     pub_started.store((int64_t)started_at, std::memory_order_relaxed);
+    pub_clip.store((state == kVoiceIdle) ? -1 : clip, std::memory_order_relaxed);
   }
 
   // Rend et ADDITIONNE dans out (entrelace, nch canaux, frames images).

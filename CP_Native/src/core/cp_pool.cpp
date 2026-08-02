@@ -47,6 +47,9 @@ int Pool::acquire() {
       clips_[i].nch = 0;
       clips_[i].srate = 0.0;
       clips_[i].retire_at = 0;
+      // Un emplacement recycle ne doit pas heriter d'une demande de retrait :
+      // elle ferait disparaitre la matiere qu'on vient d'y charger.
+      clips_[i].retire_wanted = false;
       clips_[i].refs.store(0, std::memory_order_relaxed);
       clips_[i].gen++;
       return i;
@@ -100,18 +103,49 @@ void Pool::fail(int slot) {
   clips_[slot].state.store(kClipError, std::memory_order_release);
 }
 
+void Pool::clear_refs() {
+  for (int i = 0; i < kMaxClips; ++i)
+    clips_[i].refs.store(0, std::memory_order_relaxed);
+}
+
+void Pool::add_ref(int slot) {
+  if (slot < 0 || slot >= kMaxClips) return;
+  clips_[slot].refs.fetch_add(1, std::memory_order_relaxed);
+}
+
 void Pool::retire(int slot, frame_t audio_block_now) {
   if (slot < 0 || slot >= kMaxClips) return;
   Clip& c = clips_[slot];
+  c.retire_wanted = true;
+  // UNE VOIX LE JOUE ENCORE : on ne touche a rien. Le masquer ici lui ferait
+  // obtenir `nullptr` au bloc suivant, donc un silence brutal au milieu d'un
+  // son — pour une operation qui n'a rien a voir avec lui (un changement de
+  // mode tempo, un rearmement). La demande attend `collect`.
+  if (c.refs.load(std::memory_order_relaxed) > 0) return;
+  if (c.state.load(std::memory_order_acquire) != kClipReady) return;
   // Deux blocs : le fil audio peut etre EN TRAIN de rendre le bloc courant avec
   // ce clip, et un port peut encore l'avoir mis en cache localement.
   c.retire_at = audio_block_now + 2;
+  c.retire_wanted = false;
   c.state.store(kClipLoading, std::memory_order_release); // plus visible du fil audio
 }
 
 void Pool::collect(frame_t audio_block_now) {
   for (int i = 0; i < kMaxClips; ++i) {
     Clip& c = clips_[i];
+    // LES DEMANDES EN ATTENTE D'ABORD. Une voix a fini depuis : ce qui ne
+    // pouvait pas etre masque tout a l'heure peut l'etre maintenant, et sans
+    // ce passage la demande n'aurait jamais ete honoree — le clip resterait
+    // resident jusqu'a la fermeture, ce qui est une fuite avec un drapeau
+    // dessus.
+    if (c.retire_wanted
+        && c.refs.load(std::memory_order_relaxed) == 0
+        && c.state.load(std::memory_order_acquire) == kClipReady) {
+      c.retire_at = audio_block_now + 2;
+      c.retire_wanted = false;
+      c.state.store(kClipLoading, std::memory_order_release);
+      continue;                      // la barriere de deux blocs commence ici
+    }
     if (c.state.load(std::memory_order_acquire) != kClipLoading) continue;
     if (c.retire_at == 0) continue;                    // en cours de chargement
     if (audio_block_now < c.retire_at) continue;       // barriere non franchie

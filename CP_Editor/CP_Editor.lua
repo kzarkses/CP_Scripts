@@ -389,7 +389,7 @@ for i = 1, #GRID_CHOICES do
     GRID_ITEMS[i + 1] = "Grid " .. GRID_CHOICES[i][1]
     GRID_VALS[i + 1]  = GRID_CHOICES[i][2]
 end
-local GRID_BAR_OPTS = { w = 3 }
+
 
 -- LA GAMME DANS LA BARRE. Elle vivait dans le clic droit de la colonne de
 -- clavier : on ne la voyait pas, donc on ne savait pas si elle etait active.
@@ -402,9 +402,15 @@ local ROOT_ITEMS = { "C", "C#", "D", "D#", "E", "F",
 local SCALE_ITEMS = { "Scale: off" }
 local COLOR_ITEMS = { "Colour: flat", "Colour: pitch", "Colour: velocity" }
 local COLOR_VALS  = { "flat", "pitch", "velocity" }
-local COLOR_BAR_OPTS = { w = 3 }
-local ROOT_BAR_OPTS  = { w = 2 }
-local SCALE_BAR_OPTS = { w = 3 }
+-- Les largeurs des listes de la barre, dans UNE table — meme raison que `VOPT`
+-- ci-dessous : quatre constantes de meme nature valent quatre places au plafond
+-- des 200 locales de chunk, et une seule ici.
+local BAR_W = {
+    grid  = { w = 3 },
+    color = { w = 3 },
+    root  = { w = 2 },
+    scale = { w = 3 },
+}
 
 -- "Grid 1/16" display label, cached until the division changes (read per
 -- frame — no concat in the frame path)
@@ -753,21 +759,28 @@ end
 local HIST_MAX = 64
 local hist = { snaps = {}, top = 0, key = nil }
 
+-- ⚠️ LA PHOTO PREND TOUT CE QU'UNE NOTE PORTE, ou l'annulation devient une
+-- destruction. Ces deux fonctions ne connaissaient que s/l/p/v : annuler
+-- n'importe quel geste aurait remis les notes en place SANS leurs probabilites,
+-- c'est-a-dire en effacant un reglage que le geste annule n'avait pas touche.
+-- Toute categorie ajoutee a la section sous les notes doit passer par ici.
 local function histSnap(nt)
     local n = #nt.s
-    local s, l, p, v = {}, {}, {}, {}
+    local s, l, p, v, pr = {}, {}, {}, {}, {}
     for i = 1, n do
         s[i], l[i], p[i], v[i] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
+        pr[i] = (nt.pr and nt.pr[i]) or 100
     end
-    return { s = s, l = l, p = p, v = v }
+    return { s = s, l = l, p = p, v = v, pr = pr }
 end
 
 local function histRestore(nt, sn)
-    local s, l, p, v = {}, {}, {}, {}
+    local s, l, p, v, pr = {}, {}, {}, {}, {}
     for i = 1, #sn.s do
         s[i], l[i], p[i], v[i] = sn.s[i], sn.l[i], sn.p[i], sn.v[i]
+        pr[i] = (sn.pr and sn.pr[i]) or 100
     end
-    nt.s, nt.l, nt.p, nt.v = s, l, p, v
+    nt.s, nt.l, nt.p, nt.v, nt.pr = s, l, p, v, pr
 end
 
 -- La pile appartient a UNE case. Changer de case la remet a zero : melanger
@@ -1809,10 +1822,19 @@ end
 -- reset — but they wear the bar's form: a chip of the one height, filled to
 -- show how far along the value sits. A 30 px knob in a 22 px strip would have
 -- set the height of the whole window's chrome by itself.
-local V_GAIN = { format = "%.1f dB", step = 0.5, integer = false, default = 0, w = 4 }
-local V_PIT  = { format = "%d st",   step = 1,   default = 0, w = 3 }
-local V_RATE = { format = "%.2fx",   step = 0.05, integer = false, default = 1, w = 3 }
-local V_SENS = { format = "%d%%",    step = 1,   default = 50, w = 3 }
+-- Les reglages des champs numeriques de la barre, dans UNE table.
+--
+-- Ce n'est pas du rangement : le chunk d'un fichier Lua est une fonction, et
+-- Lua refuse plus de 200 variables locales par fonction. Ce fichier en etait a
+-- 195 — cinq de la falaise, ou il ne se compile plus du tout. Quatre constantes
+-- de meme nature qui deviennent une table, c'est trois places rendues sans que
+-- rien ne se lise moins bien. `Tools/lua_lint.py` previent maintenant a 180.
+local VOPT = {
+    gain = { format = "%.1f dB", step = 0.5, integer = false, default = 0, w = 4 },
+    pit  = { format = "%d st",   step = 1,   default = 0, w = 3 },
+    rate = { format = "%.2fx",   step = 0.05, integer = false, default = 1, w = 3 },
+    sens = { format = "%d%%",    step = 1,   default = 50, w = 3 },
+}
 
 local function barAudio(theme)
     local playing = Audition.IsPlaying()
@@ -1853,7 +1875,7 @@ local function barAudio(theme)
         end
     end
     local wch, wgi = UI.BarCombo("w_grid", widx, GRID_ITEMS, not opts.wave_snap,
-                                 GRID_BAR_OPTS)
+                                 BAR_W.grid)
     if wch then
         opts.grid_div = (wgi == 1) and nil or GRID_VALS[wgi]
         grid_lbl.div = -1
@@ -1880,13 +1902,13 @@ local function barAudio(theme)
     end
 
     local db = Ops.VolDB(state.take)
-    local gch, gdb = UI.BarValue("op_gain", nil, db, -60, 24, false, V_GAIN)
+    local gch, gdb = UI.BarValue("op_gain", nil, db, -60, 24, false, VOPT.gain)
     if gch then Ops.SetVolDB(state.item, state.take, gdb) end
     local pitch = r.GetMediaItemTakeInfo_Value(state.take, "D_PITCH")
-    local pch, npit = UI.BarValue("op_pitch", nil, pitch, -48, 48, false, V_PIT)
+    local pch, npit = UI.BarValue("op_pitch", nil, pitch, -48, 48, false, VOPT.pit)
     if pch then Ops.SetPitch(state.take, state.item, npit) end
     local rate = r.GetMediaItemTakeInfo_Value(state.take, "D_PLAYRATE")
-    local rch, nrate = UI.BarValue("op_rate", nil, rate, 0.25, 4, false, V_RATE)
+    local rch, nrate = UI.BarValue("op_rate", nil, rate, 0.25, 4, false, VOPT.rate)
     if rch then Ops.SetRate(state.item, state.take, nrate, true) end
     UI.BarSep()
 
@@ -1911,7 +1933,7 @@ local function barAudio(theme)
 
     local sch, sens = UI.BarValue("sl_sens", nil,
                                   math.floor(state.sens * 100 + 0.5), 0, 100,
-                                  false, V_SENS)
+                                  false, VOPT.sens)
     if sch then
         state.sens = sens / 100
         markDirty()
@@ -3021,7 +3043,7 @@ local function barMidi(theme)
             idx = i break
         end
     end
-    local gch, gi = UI.BarCombo("m_grid", idx, GRID_ITEMS, false, GRID_BAR_OPTS)
+    local gch, gi = UI.BarCombo("m_grid", idx, GRID_ITEMS, false, BAR_W.grid)
     if gch then
         opts.grid_div = (gi == 1) and nil or GRID_VALS[gi]
         grid_lbl.div = -1
@@ -3035,7 +3057,7 @@ local function barMidi(theme)
     -- on va travailler avant de decider si on s'y enferme, et l'ordre inverse
     -- oblige a activer une gamme fausse pour pouvoir la corriger.
     local rch, ri = UI.BarCombo("m_root", (Roll.scale_root or 0) + 1,
-                                ROOT_ITEMS, false, ROOT_BAR_OPTS)
+                                ROOT_ITEMS, false, BAR_W.root)
     if rch then
         Roll.scale_root = (ri - 1) % 12
         if Roll.scale_on then
@@ -3055,7 +3077,7 @@ local function barMidi(theme)
         end
     end
     local sch, si = UI.BarCombo("m_scale", sidx, SCALE_ITEMS, false,
-                                SCALE_BAR_OPTS)
+                                BAR_W.scale)
     if sch then
         if si == 1 then Roll.ClearScale()
         else Roll.SetScale(Roll.scale_root or 0, Roll.SCALES[si - 1].iv) end
@@ -3067,7 +3089,7 @@ local function barMidi(theme)
         if COLOR_VALS[i] == opts.note_color then cidx = i break end
     end
     local cch, ci = UI.BarCombo("m_ncol", cidx, COLOR_ITEMS, false,
-                                COLOR_BAR_OPTS)
+                                BAR_W.color)
     if cch then
         opts.note_color = COLOR_VALS[ci]
         markDirty()
@@ -3126,7 +3148,7 @@ local function barMidi(theme)
         -- walks them without opening anything.
         local bidx = 1
         for i = 1, #BARS_VALS do if BARS_VALS[i] == bars then bidx = i break end end
-        local bch, bi = UI.BarCombo("c_bars", bidx, BARS_ITEMS, false, GRID_BAR_OPTS)
+        local bch, bi = UI.BarCombo("c_bars", bidx, BARS_ITEMS, false, BAR_W.grid)
         if bch and BARS_VALS[bi] ~= bars then setClipBars(BARS_VALS[bi]) end
         if state.clip_track then
             local att = state.loop_att

@@ -146,6 +146,11 @@ class Engine {
 
   // --- diagnostic -----------------------------------------------------------
   int active_voices() const;
+  // Recompte, dans le vivier, combien de voix VIVANTES tiennent chaque clip —
+  // d'apres ce que les voix publient, donc sans que le fil audio ait rien a
+  // incrementer. A appeler juste avant de retirer ou de ramasser : c'est ce qui
+  // empeche la matiere de disparaitre sous un son en cours.
+  void refresh_clip_refs();
   int owned_voices() const;
   int port_voices(int port) const;
 

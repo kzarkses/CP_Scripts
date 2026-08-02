@@ -644,6 +644,9 @@ end
 -- allocates, and this one runs on every frame of a window that redraws
 -- continuously while clips play.
 local stat = { play = nil, bpm = -1, s = "" }
+-- Le pire ecart d'attaque, mis en forme une fois par valeur. Voir la zone de
+-- statut : ce nombre existait et n'etait affiche nulle part.
+local onset_lbl = { ms = nil, n = -1, s = "" }
 local STAT_HINT =
     "  ·  left strip = launch/stop/record · click the cell = edit in CP_Editor · triangle = scene"
 
@@ -662,6 +665,21 @@ end
 -- The grid, stored with the project (CPC1 per cell, one per line — the
 -- descriptor escapes newlines, so the split is safe)
 -- ---------------------------------------------------------------------------
+-- QUELS SLOTS TIENNENT QUELQUE CHOSE. Seul l'hote le sait — `Loop` ne connait
+-- pas les cases — et c'est ce qui empeche un slot LIBERE par la suppression de
+-- sa piste d'etre adopte par la piste suivante, qui arriverait avec les huit
+-- clips de l'ancienne. Ici plutot que dans une boucle de frame : ca ne change
+-- que quand la grille change, et c'est exactement ce que `saveGrid` signale.
+local function syncHeld()
+    for t = 0, TRACKS - 1 do
+        local any = false
+        for s = 0, SCENES - 1 do
+            if cells[t][s] then any = true break end
+        end
+        Loop.SetSlotHeld(t, any)
+    end
+end
+
 local function saveGrid()
     local out = {}
     for t = 0, TRACKS - 1 do
@@ -673,6 +691,7 @@ local function saveGrid()
         end
     end
     r.SetProjExtState(0, "CP_Session", "grid", table.concat(out, "\n"))
+    syncHeld()
 end
 
 local function loadGrid()
@@ -689,6 +708,11 @@ local function loadGrid()
             if c then cells[t][s] = c; Ident.Bind(c) end
         end
     end
+    -- AVANT LA PREMIERE ADOPTION, sinon elle a deja eu lieu : `Loop.reconnect`
+    -- tourne a l'initialisation du module, mais `RefreshDests` repasse toutes
+    -- les demi-secondes, et c'est ce passage-la qui doit trouver les slots deja
+    -- declares occupes.
+    syncHeld()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1768,6 +1792,21 @@ local function setCellLoop(t, s, on)
     if isAudio(c) then retune(t, s, c) end
 end
 
+-- LA SIGNATURE DE CETTE CASE, en beats par mesure. `nil` = suivre le projet.
+--
+-- Elle se pousse dans la lane TOUT DE SUITE quand la lane tient cette case :
+-- c'est la longueur de boucle qui change, donc ce qu'on entend, et attendre le
+-- prochain lancement pour l'appliquer donnerait un reglage qui « ne marche pas »
+-- jusqu'a ce qu'on relance — le genre de latence qu'on attribue a un bug.
+local function setCellTsNum(t, s, n)
+    local c = cells[t][s]
+    if not c then return end
+    c.tsnum = n
+    saveGrid()
+    local lane = Loop.LaneOfTag(t, cellTag(t, s))
+    if lane then Loop.SetLaneTsNum(lane, n) end
+end
+
 local function cellMenu(t, s)
     local c = cells[t][s]
     local has = c ~= nil
@@ -1830,11 +1869,31 @@ local function cellMenu(t, s)
           checked = (c.lmode == "loop"),
           action = function() setCellLoop(t, s, true) end },
     } or nil
+    -- LA SIGNATURE DE CETTE CASE. La longueur d'une boucle valait
+    -- `mesures × la signature SOUS LA TETE DE LECTURE` : une seule mesure en
+    -- 3/4 quelque part dans le projet raccourcissait toutes les boucles au
+    -- moment ou le transport la traversait, alors que les notes sont en beats
+    -- absolus. « Follow project » reste le defaut et le comportement d'avant.
+    local sigs = has and { {
+        label = "Follow project",
+        checked = (c.tsnum == nil),
+        action = function() setCellTsNum(t, s, nil) end,
+    } } or nil
+    if sigs then
+        for _, n in ipairs({ 2, 3, 4, 5, 6, 7, 8, 12 }) do
+            sigs[#sigs + 1] = {
+                label = n .. " beats per bar",
+                checked = (c.tsnum == n),
+                action = function() setCellTsNum(t, s, n) end,
+            }
+        end
+    end
     UI.NativeMenu({
         { label = "Edit in CP_Editor", action = function() editCell(t, s) end },
         { label = "Rename clip…", disabled = not has,
           action = function() renameCell(t, s) end },
         { label = "Color", disabled = not has, children = cols },
+        { label = "Time signature", disabled = not has, children = sigs },
         { label = "Tempo", disabled = not snd, children = tmodes },
         { label = "Playback", disabled = not snd, children = lmodes },
         { label = "Stop this track", action = function() stopTrack(t) end },
@@ -1842,6 +1901,53 @@ local function cellMenu(t, s)
         { label = "Clear cell", disabled = not has,
           action = function() clearCell(t, s) end },
     })
+end
+
+-- ---------------------------------------------------------------------------
+-- LE PROJET A CHANGE SOUS LA FENETRE
+-- ---------------------------------------------------------------------------
+-- Tout ce que cette fenetre tient appartient a UN projet : la grille, les
+-- motions, la longueur de prise, les identites de clip, et jusqu'aux caches de
+-- noms. Un `defer` survit a un changement d'onglet, donc rien de tout cela ne
+-- se recharge tout seul — et le mode d'echec n'est pas un affichage errone,
+-- c'est la grille du projet A qui s'ECRIT dans le projet B.
+--
+-- On relit donc dans l'ordre inverse de la dependance : on vide, on recharge,
+-- on invalide. `Loop` a deja suspendu son autosave sur le meme front.
+local function reloadProject()
+    for t = 0, TRACKS - 1 do
+        local row = cells[t]
+        for s = 0, SCENES - 1 do row[s] = nil end
+        cur[t] = nil
+        motion[t] = MOTION_STAY
+        local f = mot[t]
+        f.lane, f.tag, f.pz, f.armed, f.plays = -1, 0, 0, false, 0
+        -- Le cache de nom de colonne est clé sur le POINTEUR de piste, et deux
+        -- projets peuvent presenter le meme a des instants differents.
+        track_name[t].known = false
+    end
+    for k in pairs(cell_lbl) do cell_lbl[k] = nil end
+    erased, cdrag, rec = nil, nil, nil
+    sel.t, sel.s = 0, 0
+    -- LES IDENTITES SONT PAR PROJET, et `Loop.LaneOfTag` compare des nombres
+    -- bruts. Garder le registre de A ferait resoudre un tag de B sur un clip de
+    -- A — deux projets peuvent parfaitement porter le meme numero, puisque le
+    -- compteur appartient au projet.
+    if Ident.Reset then Ident.Reset() end
+    loadGrid()
+    loadMotion()
+    do
+        local _, v = r.GetProjExtState(0, "CP_Session", "rec_bars")
+        local n = tonumber(v)
+        rec_bars = 1
+        if n then
+            for i = 1, #REC_BARS do
+                if REC_BARS[i] == n then rec_bars = n break end
+            end
+        end
+    end
+    state.recalled = false
+    flash("Project changed — the grid was reloaded")
 end
 
 loadGrid()
@@ -2401,8 +2507,15 @@ local function sendMenu(t, tr, i)
             any = true
             items[#items + 1] = { label = "Send to " .. trackName(d),
                                   action = function()
-                                      if Mix.SendCreate(tr, dtr) then
-                                          flash("Send -> " .. trackName(d))
+                                      -- L'ENVOI EXISTAIT PEUT-ETRE DEJA, et le
+                                      -- dire vaut mieux qu'annoncer une
+                                      -- creation qui n'a pas eu lieu.
+                                      local ok, made = Mix.SendCreate(tr, dtr)
+                                      if ok then
+                                          flash(made
+                                                and ("Send -> " .. trackName(d))
+                                                or ("Already sending to "
+                                                    .. trackName(d)))
                                       end
                                   end }
         end
@@ -2821,8 +2934,12 @@ local function pollMixDrag()
                     local g = mix_col[t]
                     if g and t ~= snddrag.t and mx >= g.x and mx < g.x + g.w then
                         local dst = Loop.GetLaneDest(t)
-                        if Mix.Valid(dst) and Mix.SendCreate(snddrag.tr, dst) then
-                            flash("Send -> " .. trackName(t))
+                        if Mix.Valid(dst) then
+                            local ok, made = Mix.SendCreate(snddrag.tr, dst)
+                            if ok then
+                                flash(made and ("Send -> " .. trackName(t))
+                                      or ("Already sending to " .. trackName(t)))
+                            end
                         end
                         break
                     end
@@ -2918,13 +3035,14 @@ local function frame(theme)
     -- and the engine is empty, pull the project's saved set (the Looper
     -- does the same; the recall never overwrites a live set)
     --
-    -- The forced re-recall below guarded a hazard that is GONE rather than
-    -- fixed: the loops used to live in gmem, which belongs to the REAPER
-    -- session and not to the project, so switching projects left the previous
-    -- one's loops loaded — and since this window also WRITES lane state back,
-    -- keeping them would have put one project's set into another's file. The
-    -- notes are per-script and per-project now. RouterChanged answers false.
+    -- ⚠️ ET LE RAPPEL FORCE N'EST PAS UN RESTE : un `defer` SURVIT A UN
+    -- CHANGEMENT D'ONGLET DE PROJET. Cette fenetre passe du projet A au projet B
+    -- sans etre rechargee, et tout ce qu'elle tient — la grille, les motions,
+    -- les identites, les caches — appartient encore a A. `RouterChanged` detecte
+    -- le front et suspend l'autosave ; ce qui suit relit TOUT depuis le projet
+    -- qui est maintenant devant nous.
     local switched = Loop.RouterChanged()
+    if switched then reloadProject() end
     if attached and (not state.recalled or switched) then
         state.recalled = true
         local empty = true
@@ -3347,6 +3465,24 @@ local function frame(theme)
     msg = (msg ~= "" and (msg .. "   ·   ") or "") .. engineBadge()
     if ENGINE_OK and Cells.Armed() then
         msg = msg .. "   ·   " .. Cells.Diag()
+        -- L'ECART D'ATTAQUE, AFFICHE. Il etait mesure depuis toujours et
+        -- personne ne le lisait : la campagne du moteur a passe une soiree a
+        -- chercher un retard constant que ce nombre montrait deja. Le PIRE
+        -- depuis l'ouverture, pas le dernier — un ecart qui n'arrive qu'une
+        -- passe sur vingt est exactement celui qu'on cherche, et montrer le
+        -- dernier le fait disparaitre avant qu'on ait leve les yeux.
+        --
+        -- Reconstruit seulement quand il CHANGE : une chaine formatee par frame
+        -- dans une fenetre qui se redessine en continu est une allocation par
+        -- frame, ce que ce fichier passe son temps a eviter.
+        local ms, n = Cells.OnsetWorst()
+        if ms and n and n > 0 then
+            if ms ~= onset_lbl.ms or n ~= onset_lbl.n then
+                onset_lbl.ms, onset_lbl.n = ms, n
+                onset_lbl.s = string.format("onset %+.2f ms worst / %d", ms, n)
+            end
+            msg = msg .. "   ·   " .. onset_lbl.s
+        end
     end
     UI.AppStatus(msg)
 

@@ -14,27 +14,40 @@
 --   name, color
 --   path        source file                       (audio)
 --   offs, len   region, in SOURCE seconds        (audio)
---   root        reference note for repitch       (audio)
 --   tempo_mode  "none" | "repitch" | "stretch"   (audio)
 --   src_bpm     announced/detected source tempo  (audio)
---   gain, pitch, rate
---   notes       parallel arrays of the Roll model: s/l/p/v (start QN,
---               length QN, pitch, velocity)                     (midi)
+--   gain        linear, applied by the voice     (audio)
+--   notes       parallel arrays of the Roll model: s/l/p/v/pr (start QN,
+--               length QN, pitch, velocity, play chance %)      (midi)
 --   bars        loop length in measures                         (midi)
---   q           launch quantize: "none" | "beat" | "bar"
+--   tsnum       THIS clip's beats per bar; absent = follow the project (midi)
+--   loop_a/_b   the loop brace, in beats from the clip start    (midi)
 --   lmode       launch mode:    "oneshot" | "loop"
 
 local Clip = {}
 
 Clip.VERSION = "CPC1"
 
+-- ---------------------------------------------------------------------------
+-- QUATRE CHAMPS SONT PARTIS, ET C'EST UNE CORRECTION
+-- ---------------------------------------------------------------------------
+-- `pitch`, `rate`, `q` et `root` voyageaient dans chaque `.RPP` depuis toujours
+-- et n'avaient AUCUN consommateur. Ce n'est pas de l'encombrement : un format
+-- qui porte un champ PROMET un modele. On lit le descripteur, on y voit une
+-- transposition et une vitesse par clip, et on croit que la fonctionnalite
+-- existe — alors que la transposition d'un son vient de `tempo_mode` et de la
+-- vitesse calculee, et que le quantize est un reglage de FENETRE, pas de clip.
+--
+-- Les retirer est sans risque dans les deux sens : le registre de champs ignore
+-- ce qu'il ne connait pas, donc un projet ancien qui les porte encore les perd
+-- simplement a la prochaine ecriture, sans rien casser.
+--
+-- `gain` et `lmode`, eux, restent — ils ont des lecteurs depuis le decoupage de
+-- region (`Cells.Arm`), et c'est justement ce qui les distingue.
 function Clip.new(kind)
     return {
         kind  = kind or "audio",
         gain  = 1.0,
-        pitch = 0.0,
-        rate  = 1.0,
-        q     = "none",
         lmode = "oneshot",
     }
 end
@@ -141,11 +154,18 @@ local function num(v) return string.format("%.14g", v) end
 -- on read, so old readers survive newer writers (forward compatible).
 local FIELDS = {
     { "name", "s" }, { "color", "n" },
-    { "path", "s" }, { "offs", "n" }, { "len", "n" }, { "root", "n" },
+    { "path", "s" }, { "offs", "n" }, { "len", "n" },
     { "tempo_mode", "s" }, { "src_bpm", "n" },
-    { "gain", "n" }, { "pitch", "n" }, { "rate", "n" },
+    { "gain", "n" },
     { "bars", "n" },
-    { "q", "s" }, { "lmode", "s" },
+    -- LA SIGNATURE DE CE CLIP, en beats par mesure. Absente = suivre le projet,
+    -- ce qui est le comportement de tout ce qui a ete ecrit avant elle. Elle
+    -- existe parce que la longueur d'une boucle n'appartenait a personne : elle
+    -- valait `bars * la signature sous la tete de lecture`, donc une mesure en
+    -- 3/4 quelque part dans le projet raccourcissait toutes les boucles au
+    -- moment ou le transport la traversait.
+    { "tsnum", "n" },
+    { "lmode", "s" },
     -- where the clip came from ("looper:2") — the editor:apply consumer
     -- routes the edited clip home with it, and the editor uses it to talk
     -- to the live lane (playhead, launch)

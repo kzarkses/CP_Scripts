@@ -828,7 +828,11 @@ local function drawLane(theme, l, x, y, w, h)
     local el = Loop.LiveLane(l)
     refreshLane(l, el)
     local mode  = math.floor(Loop.Mode(el) + 0.5)   -- 0 empty,1 rec,2 stopped,3 playing,4 armed
-    local muted = Loop.GetMute(el)
+    -- L'INTENTION, PAS L'ETAT EFFECTIF. Le moteur mute aussi pour des raisons
+    -- de cablage (une case audio de CP_Session mute sa lane pour que sa note
+    -- unique ne parte pas dans l'instrument de la colonne) : afficher l'effectif
+    -- allumait le bouton Mute sur des lanes que personne n'avait tues.
+    local muted = Loop.GetUserMute(el)
     local nev   = math.floor(Loop.NEv(el) + 0.5)
     local pend  = Loop.Pending(el)                  -- 0 none,1 play,2 stop,3 rec,4 stop-rec
 
@@ -972,7 +976,7 @@ local function drawLane(theme, l, x, y, w, h)
     -- MUTE
     if tinyBtn(bx, cy, 42, bh, "Mute",
                muted and 0.85 or 0.24, muted and 0.65 or 0.24, muted and 0.25 or 0.26, theme) then
-        Loop.SetMute(el, not muted)
+        Loop.SetUserMute(el, not muted)
     end
     bx = bx + 46
 

@@ -19,6 +19,7 @@ void Lane::reset() {
   tag.store(0.0, std::memory_order_relaxed);
   phase_off.store(0.0, std::memory_order_relaxed);
   play_from.store(-1.0, std::memory_order_relaxed);
+  ts_num.store(0.0, std::memory_order_relaxed);
   loop_a.store(0.0, std::memory_order_relaxed);
   loop_b.store(-1.0, std::memory_order_relaxed);   // pas d'accolade
   nbuf.store(0, std::memory_order_relaxed);
@@ -140,7 +141,12 @@ const LaneNote* Lanes::read_buf(int li) const {
 double Lanes::lane_len_beats(int li, double ts_num) const {
   double b = lanes_[li].bars.load(std::memory_order_relaxed);
   if (b < 0.125) b = 0.125;
-  return b * ((ts_num >= 1.0) ? ts_num : 4.0);
+  // LA SIENNE D'ABORD, celle du projet ensuite. Voir `Lane::ts_num` : sans ca,
+  // une mesure en 3/4 traversee par le transport raccourcit toutes les boucles
+  // du projet, y compris celles qui n'ont rien a voir avec elle.
+  const double own = lanes_[li].ts_num.load(std::memory_order_relaxed);
+  const double ts  = (own >= 1.0) ? own : ts_num;
+  return b * ((ts >= 1.0) ? ts : 4.0);
 }
 
 // UNE ACCOLADE QUI NE TIENT PLUS DANS LA CASE NE DOIT PAS LA FAIRE TAIRE.

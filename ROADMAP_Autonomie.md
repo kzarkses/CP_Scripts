@@ -3419,3 +3419,134 @@ s'écrit jamais » sans que rien dans le chemin d'écriture ne l'explique. Et le
 donné les probabilités à des notes qui ne sont plus les leurs, à chaque
 déplacement.
 
+## Le registre des défauts, fermé — et deux prémisses qui étaient fausses
+
+Onze lignes, dont sept touchaient la perte de données ou le mauvais son. Ce
+qu'elles ont en commun n'est pas une famille de bugs : c'est **une phrase écrite
+dans le code qui n'était plus vraie**, et que personne ne relisait parce qu'elle
+avait l'air d'une explication.
+
+### « Une instance par script, par projet »
+
+C'était écrit deux fois — dans `Loop.RouterChanged`, qui répondait `false`
+inconditionnellement, et au-dessus de l'autosave, où on avait ajouté « il n'y a
+plus rien à détecter ». **Un `defer` survit à un changement d'onglet de projet.**
+Une seule instance voit donc les deux, et `SetProjExtState` écrit toujours dans
+le projet *actif*.
+
+Trois conséquences, toutes silencieuses : l'autosave écrivait le set de A dans le
+fichier de B ; `RefreshDests` relisait les destinations de B et rebranchait les
+ports, donc les lanes de A se mettaient à jouer dans les pistes de B ; et les
+identités de clip, qui sont par projet, se résolvaient les unes sur les autres.
+
+Le front se détecte pour une comparaison de pointeur par frame, sans allocation.
+Il est **consommé** — le redire à la frame suivante rechargerait deux fois — et
+la première chose qu'il fait est de **suspendre l'autosave**, avant tout le
+reste : l'état en mémoire appartient encore au projet précédent. CP_Session relit
+ensuite la grille, les motions, la longueur de prise, remet `Ident` à zéro et
+invalide ses caches de nom, qui sont clés sur des pointeurs de piste que deux
+projets peuvent présenter identiques.
+
+### « Le mute ne veut dire qu'une chose »
+
+Il en voulait dire deux, et c'est ce qui rendait le défaut « une lane mutée dans
+le Looper coupe son MIDI mais pas sa case audio » impossible à corriger sans en
+fabriquer un pire. **Mécanique** : « le MIDI de cette lane ne doit pas sortir » —
+CP_Session le pose sur une case audio, dont la lane porte une note unique qui ne
+doit pas atteindre l'instrument de la colonne. C'est du câblage. **Musicale** :
+« tais cette lane » — le bouton du Looper, qui doit taire *tout*, y compris la
+voix, qui n'est pas une lane.
+
+Brancher les voix sur le mute unique aurait rendu **toute** case audio
+silencieuse. Les deux vivent séparément maintenant, entièrement côté Lua, et le
+moteur reçoit leur OU : il n'a qu'une case à cocher et n'a pas à savoir pourquoi.
+Le bouton du Looper affiche l'**intention**, pas l'état effectif — il s'allumait
+sur des lanes que personne n'avait tues.
+
+L'avertissement vivait au-dessus de `Loop.SetMute` depuis le premier jour et
+disait exactement quoi faire : « il faudra distinguer les deux intentions avant
+de corriger ». Il a tenu.
+
+### « Retirer un clip, c'est le retirer »
+
+Non : **c'est le demander.** `Pool::retire` masquait la matière du fil audio, et
+une voix qui la jouait obtenait `nullptr` au bloc suivant — elle mourait sans
+fondu, au milieu d'un son, pour une opération qui ne la concernait pas (un
+changement de mode tempo, un réarmement). Le garde-fou existait dans le vivier
+depuis toujours (`Clip::refs`) et **personne ne l'alimentait**.
+
+Il se **déduit** maintenant de ce que les voix publient, plutôt que d'être tenu
+par le fil audio. Compter au démarrage et décompter à la mort aurait demandé
+quatre chemins sans faute — démarrage, arrêt, vol de voix, enchaînement — et
+c'est le genre de comptabilité qui finit par mentir une fois. Un balayage de
+soixante-quatre voix, au moment où on veut libérer, répond à la même question
+sans état à maintenir. Il a fallu un champ de plus dans la publication de fin de
+bloc (`pub_clip`) : il n'existait aucune façon *définie* de demander au fil
+principal quel clip une voix tenait.
+
+Deux assertions au harnais, et elles disent deux choses différentes : le son
+continue pendant que la demande attend, **et** la mémoire est bien rendue une
+fois la voix éteinte — sans quoi ce serait une fuite avec un drapeau dessus.
+
+### Un slot libéré : on n'efface pas, on n'adopte pas
+
+Supprimer la piste de la colonne 1 libérait son slot, et la première piste sans
+colonne l'adoptait — en arrivant avec les huit clips de l'ancienne. Effacer les
+clips aurait été plus simple **et aurait détruit du travail pour réparer un
+rangement**. Un slot qui tient quelque chose est donc sauté par l'adoption : il
+reste, ses clips restent, et sa colonne se dessine en disant « no track », ce que
+l'en-tête savait déjà montrer. Seul l'hôte peut savoir ce qu'un slot tient —
+`Loop` ne connaît pas les cases — donc c'est lui qui le déclare, une fois par
+changement de grille et non par frame.
+
+Les slots orphelins passent en fin d'ordre d'affichage, et **après** le tri :
+sans piste ils n'ont pas de numéro de piste, donc aucune place dans un ordre qui
+suit le projet. Et une colonne qu'on ne dessine pas est un travail qu'on croit
+perdu.
+
+### Une boucle porte enfin sa signature (ABI 2.3)
+
+`bars × ts_num`, où `ts_num` était la signature **sous la tête de lecture**. Une
+seule mesure en 3/4 quelque part changeait la longueur de toutes les lanes au
+moment où le transport la traversait, alors que les notes sont en beats absolus.
+Zéro veut dire « suis le projet », donc tous les projets existants s'ouvrent
+inchangés — c'est ce qui rend cette correction gratuite pour qui ne s'en sert
+pas. Elle voyage dans le **descripteur de case**, comme l'accolade et pour la
+même raison, et elle est posée **avant** elle : c'est elle qui donne la longueur
+en beats contre laquelle le moteur borne la zone.
+
+### Ce qui trompait
+
+Quatre champs morts sont partis du descripteur (`pitch`, `rate`, `q`, `root`).
+Il en restait quatre sur les sept annoncés : `gain`, `src_bpm` et `lmode` ont
+gagné des lecteurs en chemin, et c'est exactement ce qui les distingue. Un format
+qui porte un champ **promet un modèle** — on lit le descripteur, on y voit une
+transposition par clip, et on croit que la fonctionnalité existe.
+
+`Mix.SendCreate` répond maintenant *aussi* si l'envoi vient d'être créé. Son
+message est le seul retour de ce geste : il disait « c'est fait » à quelqu'un qui
+venait de refaire ce qui était déjà là.
+
+Et **`Cells.LastOnsetError` a enfin un appelant.** C'est l'exemple le plus cher
+du dossier : la campagne du moteur a passé une soirée à chercher un retard
+constant que cette fonction affichait déjà, si seulement quelqu'un l'avait
+appelée. La zone de statut montre le **pire** écart depuis l'ouverture, pas le
+dernier — un écart qui n'arrive qu'une passe sur vingt est celui qu'on cherche,
+et montrer le dernier le fait disparaître avant qu'on ait levé les yeux. Relevé
+une fois par passe et non par frame : la vérité terrain est notée par la voix au
+démarrage et ne bouge plus.
+
+### Le plafond de 200 locales, trouvé en ajoutant une ligne
+
+Lua refuse plus de deux cents variables locales **par fonction**, et le chunk
+d'un fichier *est* une fonction. Au 201e, le fichier ne se compile plus : REAPER
+dit « too many local variables » et la fenêtre ne s'ouvre pas du tout.
+
+CP_Editor en était à **195**. Cinq. Ce n'est pas un défaut de style, c'est un mur
+qu'on ne voit pas venir, et un fichier qu'on enrichit depuis des mois s'en
+approche sans que rien ne le dise. `Tools/lua_lint.py` prévient maintenant à 180
+et refuse à 200 — un **avertissement**, pas un échec, parce qu'un linteur qui
+crie sur un fichier qui marche apprend à se faire ignorer. Deux groupes de
+constantes de même nature sont devenus deux tables : six places rendues, et rien
+qui se lise moins bien.
+

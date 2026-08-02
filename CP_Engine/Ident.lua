@@ -68,7 +68,16 @@ local EXT_KEY = "next"
 
 -- The counter belongs to the PROJECT: two clips in one project must never
 -- share an identity, and that is the only guarantee this needs to make.
--- Across projects they may collide, and it costs nothing — see `Get`.
+--
+-- ⚠️ ACROSS PROJECTS THEY DO COLLIDE, AND CE N'EST PAS GRATUIT. On a longtemps
+-- ecrit que si, parce que `Ident.Get` filtre par le registre. Mais
+-- `Loop.LaneOfTag` compare des NOMBRES BRUTS, sans passer par ici : deux projets
+-- ouverts dans la meme instance de REAPER portent chacun leur clip numero
+-- `BASE + 1`, et une fenetre qui a change d'onglet resoudrait le tag de l'un sur
+-- le clip de l'autre. La reponse n'est pas de rendre les identites globales —
+-- elles appartiennent au projet — c'est que l'hote REMETTE CE MODULE A ZERO
+-- quand le projet change sous lui. `Ident.Reset` existe pour ca, et
+-- CP_Session l'appelle sur le front que `Loop.RouterChanged` publie.
 local next_id = nil
 
 local function loadCounter()
@@ -90,6 +99,15 @@ local reg = setmetatable({}, { __mode = "v" })
 function Ident.init(reaper_api, clip_module)
     r = reaper_api or r
     Clip = clip_module or Clip
+    next_id = nil
+end
+
+-- LE PROJET A CHANGE SOUS L'HOTE. Le registre et le compteur appartiennent au
+-- projet precedent, et les GARDER est pire que de les perdre : un tag du
+-- nouveau projet trouverait un clip de l'ancien, avec le meme numero et un
+-- contenu different. Le compteur se relit du projet actif au premier besoin.
+function Ident.Reset()
+    for k in pairs(reg) do reg[k] = nil end
     next_id = nil
 end
 

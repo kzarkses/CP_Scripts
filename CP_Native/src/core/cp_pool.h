@@ -23,10 +23,14 @@ struct Clip {
   int                  nch;
   double               srate;      // taux du materiau tel que stocke
   frame_t              retire_at;  // bloc audio a partir duquel la liberation est sure
+  bool                 retire_wanted;  // on a demande le retrait, une voix le tenait
   uint32_t             gen;        // detecte un slot recycle
 
+  // L'ordre suit celui des membres : une liste d'initialisation qui s'en ecarte
+  // n'initialise pas dans l'ordre qu'elle affiche, et se lit donc a l'envers de
+  // ce qu'elle fait.
   Clip() : state(kClipEmpty), refs(0), data(nullptr), frames(0), nch(0),
-           srate(0.0), retire_at(0), gen(0) {}
+           srate(0.0), retire_at(0), retire_wanted(false), gen(0) {}
 };
 
 class Pool {
@@ -38,6 +42,14 @@ class Pool {
 
   // Reserve un slot. Rend -1 si le vivier est plein.
   int  acquire();
+
+  // --- le comptage de references, tenu par le FIL PRINCIPAL ------------------
+  // Il se DEDUIT de ce que les voix publient : compter dans le fil audio aurait
+  // demande a chaque voix d'incrementer au demarrage et de decrementer a la
+  // mort, donc quatre chemins a ne jamais rater. Un balayage des voix, appele
+  // au moment ou on veut liberer, repond a la meme question sans etat.
+  void clear_refs();
+  void add_ref(int slot);
 
   // Alloue le tampon d'un slot reserve. Une seule allocation par clip, hors du
   // fil audio. Rend false si la taille depasse le plafond decide (§12.1).
@@ -51,6 +63,12 @@ class Pool {
   void fail(int slot);
 
   // Marque un slot pour liberation. La memoire n'est rendue que par collect().
+  // ⚠️ RETIRER, C'EST DEMANDER — PAS FAIRE. Un clip qu'une voix joue encore
+  // reste VISIBLE et RESIDENT : le rendre invisible faisait obtenir `nullptr` a
+  // la voix au bloc suivant, et elle mourait sans fondu au milieu d'un son.
+  // C'est ce qui arrivait a chaque changement de mode tempo sous une case en
+  // train de jouer. La demande est notee et honoree par `collect`, des que plus
+  // personne ne tient la matiere.
   void retire(int slot, frame_t audio_block_now);
 
   // A appeler regulierement depuis le fil principal. Libere ce qui a franchi la

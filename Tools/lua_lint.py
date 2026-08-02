@@ -184,6 +184,56 @@ def check_locals(code):
 
 
 # --- 3. argument manquant que la fonction appelee concatene ----------------
+# ---------------------------------------------------------------------------
+# LE PLAFOND DE 200 LOCALES, qui est une falaise et non une pente
+# ---------------------------------------------------------------------------
+# Lua refuse plus de 200 variables locales par fonction, et le chunk d'un
+# fichier EST une fonction. Au 201e, le fichier ne se compile plus : REAPER
+# affiche « too many local variables » et la fenetre ne s'ouvre pas du tout.
+#
+# Ce n'est pas un defaut de style, c'est un mur qu'on ne voit pas venir — et
+# deux fichiers de cette suite en etaient a cinq et treize variables (2026-08-02,
+# mesure en ajoutant une seule ligne a CP_Editor). Un fichier qu'on enrichit
+# depuis des mois s'en approche sans que rien ne le dise.
+#
+# On previent a 180 et on refuse a 200 : la marge existe pour qu'on ait le temps
+# de regrouper des constantes dans une table plutot que de le decouvrir au
+# moment ou on a besoin d'ajouter quelque chose.
+LOCAL_HARD = 200
+LOCAL_WARN = 180
+
+LOCAL_DECL = re.compile(r"^local\s+(function\s+)?([A-Za-z_][\w,\s]*)")
+
+
+def count_chunk_locals(code):
+    n = 0
+    for line in code.splitlines():
+        m = LOCAL_DECL.match(line)
+        if not m:
+            continue
+        if m.group(1):
+            n += 1                     # `local function nom`
+        else:
+            n += len([x for x in m.group(2).split(",") if x.strip()])
+    return n
+
+
+def check_local_budget(code):
+    """Rend (erreurs, avertissements). Un avertissement N'EST PAS un echec :
+    un linteur qui crie sur un fichier qui marche apprend a se faire ignorer,
+    et c'est la seule chose qu'on ne peut pas lui pardonner."""
+    n = count_chunk_locals(code)
+    if n > LOCAL_HARD:
+        return (["%d locales de chunk : au-dela de %d, Lua REFUSE de compiler "
+                 "le fichier (« too many local variables »)" % (n, LOCAL_HARD)],
+                [])
+    if n >= LOCAL_WARN:
+        return ([], ["%d locales de chunk sur %d : il reste %d. Regrouper des "
+                     "constantes dans une table AVANT d'en ajouter."
+                     % (n, LOCAL_HARD, LOCAL_HARD - n)])
+    return ([], [])
+
+
 def collect_signatures(files):
     sig = {}
     for f in files:
@@ -254,7 +304,9 @@ def main(argv):
     bad = 0
     for f in files:
         code = strip(io.open(f, encoding="utf-8").read())
-        errs = check_blocks(code) + check_locals(code) + check_arity(code, sig)
+        budget_errs, warns = check_local_budget(code)
+        errs = (check_blocks(code) + check_locals(code)
+                + check_arity(code, sig) + budget_errs)
         rel = os.path.relpath(f, ROOT).replace("\\", "/")
         if errs:
             bad += 1
@@ -264,7 +316,9 @@ def main(argv):
             if len(errs) > 12:
                 print("    ... et %d autres" % (len(errs) - 12))
         else:
-            print("%-34s OK" % rel)
+            print("%-34s OK%s" % (rel, "   (avertissement)" if warns else ""))
+        for w in warns:
+            print("    ! " + w)
     print("\n%d fichier(s), %d en echec" % (len(files), bad))
     return 1 if bad else 0
 

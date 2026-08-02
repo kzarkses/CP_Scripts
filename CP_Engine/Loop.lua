@@ -181,6 +181,14 @@ end
 -- ---------------------------------------------------------------------------
 Loop.dest = {}    -- [lane] = resolved MediaTrack or nil (UI cache)
 
+-- Combien de fois les destinations ont ete relues. Un compteur, pas un
+-- horodatage : une fenetre s'en sert pour savoir qu'une COLONNE a pu changer de
+-- piste sans qu'elle ait rien demande — l'adoption automatique d'un slot libere
+-- par la suppression d'une piste. Verifier a chaque frame couterait un GUID par
+-- colonne, donc une chaine par colonne et par frame.
+local dest_ver = 0
+function Loop.DestVersion() return dest_ver end
+
 local function valid(tr) return tr and r.ValidatePtr2(0, tr, "MediaTrack*") end
 
 local function destKey(lane) return "dest" .. lane end
@@ -361,6 +369,25 @@ local function eligible(tr)
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- UN SLOT QUI TIENT QUELQUE CHOSE NE SE FAIT PAS ADOPTER
+-- ---------------------------------------------------------------------------
+-- Supprimer la piste de la colonne 1 LIBERE son slot, et la premiere piste sans
+-- colonne l'adoptait — en arrivant avec les huit clips de l'ancienne. Le
+-- mecanisme d'adoption avait ete ecrit pour que les clips restent AU SLOT ; il
+-- n'avait pas prevu qu'un slot libere change de piste.
+--
+-- ON N'EFFACE PAS, ON N'ADOPTE PAS. Effacer aurait ete plus simple et aurait
+-- detruit du travail pour reparer un rangement ; ici le slot reste, ses clips
+-- restent, et sa colonne se dessine en disant « no track » — ce qui est
+-- exactement l'etat des choses, et ce que l'en-tete sait deja montrer. Cedric
+-- la re-route ou la cache ; c'est son choix, pas celui d'un balayage.
+--
+-- Seul l'hote sait ce qu'un slot tient : `Loop` ne connait pas les cases.
+local held = {}
+function Loop.SetSlotHeld(t, on) held[t] = on and true or nil end
+function Loop.IsSlotHeld(t) return held[t] == true end
+
 -- Rebuilt in place, every refresh. No table is created here: this runs behind a
 -- half-second debounce, but it runs for the life of the window.
 local claimed = {}
@@ -378,7 +405,7 @@ local function syncColumns()
     for i = 0, r.CountTracks(0) - 1 do
         local tr = r.GetTrack(0, i)
         if not claimed[tr] and eligible(tr) then
-            while slot < n and Loop.dest[slot] do slot = slot + 1 end
+            while slot < n and (Loop.dest[slot] or held[slot]) do slot = slot + 1 end
             if slot >= n then break end
             local guid = r.GetTrackGUID(tr)
             setDestGUID(slot, guid)
@@ -409,6 +436,17 @@ local function syncColumns()
             b = b - 1
         end
         order[b + 1] = v
+    end
+    -- LES SLOTS ORPHELINS EN DERNIER, et apres le tri : ils n'ont pas de piste,
+    -- donc pas de numero de piste, donc aucune place dans un ordre qui suit le
+    -- projet. Les mettre a la fin les rend visibles sans pretendre savoir ou ils
+    -- vont — et une colonne qu'on ne dessine pas est un travail qu'on croit
+    -- perdu.
+    for t = 0, n - 1 do
+        if held[t] and not Loop.dest[t] then
+            norder = norder + 1
+            order[norder] = t
+        end
     end
 end
 
@@ -444,6 +482,7 @@ function Loop.RefreshDests()
     end
     syncColumns()
     for t = 0, Loop.TRACKS - 1 do bindPort(t, Loop.dest[t]) end
+    dest_ver = dest_ver + 1
 end
 
 -- Kept for callers: there are no sends left to synchronise, only ports to
@@ -853,19 +892,57 @@ function Loop.GetLengthBars(lane)
     local b = r.CP_LaneGet(lane, "bars")
     return (b and b > 0) and b or 1
 end
--- ATTENTION EN TOUCHANT A CECI. `mute` ne parle qu'au moteur de LANES : il
--- coupe le MIDI et laisse sonner la case AUDIO de la meme colonne, qui est une
--- voix et non une lane. Le defaut « une lane mutee dans le Looper coupe son
--- MIDI mais pas sa case audio » est donc reel — mais il ne se corrige PAS en
--- branchant les voix ici, parce que CP_Session se sert deja de ce meme mute
--- pour un autre sens : une case audio arme une lane d'une seule note et la
--- MUTE pour que cette note ne parte pas dans l'instrument de la colonne
--- (`Loop.SetMute(lane, audio)`). Taire la voix sur mute rendrait donc TOUTE
--- case audio silencieuse. Il faudra distinguer les deux intentions avant de
--- corriger — c'est note au registre, et non fait.
-function Loop.SetMute(lane, on)
-    if NATIVE then r.CP_LaneSet(lane, "mute", on and 1 or 0) end
+-- ---------------------------------------------------------------------------
+-- LE MUTE, ET LES DEUX INTENTIONS QU'IL PORTAIT
+-- ---------------------------------------------------------------------------
+-- Ce mute-la a longtemps voulu dire DEUX choses a la fois, et c'est ce qui
+-- rendait le defaut « une lane mutee dans le Looper coupe son MIDI mais pas sa
+-- case audio » impossible a corriger sans en fabriquer un pire :
+--
+--   MECANIQUE — « le MIDI de cette lane ne doit pas sortir ». CP_Session s'en
+--   sert pour une case AUDIO : elle arme une lane d'une seule note (le portail
+--   de la voix) et la mute pour que cette note ne parte pas dans l'instrument
+--   de la colonne. Ce n'est pas un geste musical, c'est du cablage.
+--
+--   MUSICALE — « tais cette lane ». C'est le bouton du Looper, et il doit taire
+--   TOUT ce que la lane produit : le MIDI, et la voix de la case audio, qui est
+--   une voix et non une lane.
+--
+-- Brancher les voix sur le mute unique aurait rendu TOUTE case audio
+-- silencieuse, puisque toutes portent le mute mecanique. Les deux vivent donc
+-- separement ici, et le moteur recoit leur OU — il n'a qu'une case a cocher, et
+-- il n'a pas a savoir pourquoi.
+--
+-- Le moteur n'apprend rien de neuf : la separation est entierement Lua, parce
+-- que c'est ici que les deux intentions se rencontrent.
+local mech_mute = {}    -- [lane] cablage : ce MIDI ne doit pas sortir
+local user_mute = {}    -- [lane] musique : tais cette lane
+
+local function applyMute(lane)
+    if not NATIVE then return end
+    local on = mech_mute[lane] or user_mute[lane]
+    r.CP_LaneSet(lane, "mute", on and 1 or 0)
 end
+
+-- L'intention MECANIQUE. C'est celle que CP_Session pose sur une case audio.
+function Loop.SetMute(lane, on)
+    mech_mute[lane] = on and true or nil
+    applyMute(lane)
+end
+
+-- L'intention MUSICALE — le bouton du Looper. `Cells` la lit pour taire la voix
+-- de la case audio de la meme colonne : c'est la moitie qui manquait, et elle
+-- ne peut se brancher que sur celle-ci.
+function Loop.SetUserMute(lane, on)
+    user_mute[lane] = on and true or nil
+    applyMute(lane)
+end
+
+function Loop.GetUserMute(lane) return user_mute[lane] == true end
+
+-- Ce que le moteur fait EFFECTIVEMENT, c'est-a-dire le OU des deux. Lu depuis
+-- le moteur et non depuis les tables : c'est lui qui joue, et deux verites qui
+-- s'accordent presque valent moins qu'une seule.
 function Loop.GetMute(lane)
     return NATIVE and r.CP_LaneGet(lane, "mute") >= 0.5
 end
@@ -978,6 +1055,30 @@ function Loop.Span(lane)
     local l = r.CP_LaneGet(lane, "spanlen")
     if not l or l <= 0 then return 0, Loop.LenBeats(lane) end
     return r.CP_LaneGet(lane, "spana") or 0, l
+end
+
+-- ---------------------------------------------------------------------------
+-- LA SIGNATURE DE LA BOUCLE (ABI 2.3)
+-- ---------------------------------------------------------------------------
+-- La longueur d'une boucle valait `bars * ts_num`, ou `ts_num` etait la
+-- signature rythmique A L'ENDROIT OU LA TETE DE LECTURE SE TROUVE. Une seule
+-- mesure en 3/4 quelque part dans le projet changeait donc la longueur de
+-- TOUTES les lanes quand le transport la traversait — alors que les notes sont
+-- en beats absolus. La musique se decalait toute seule, et il n'existait nulle
+-- part de signature DU CLIP a qui demander. Ableton en a une.
+--
+-- Zero (ou nil) veut dire « suis le projet », donc tout ce qui existe deja se
+-- comporte exactement comme avant. C'est ce qui rend cette correction gratuite
+-- pour qui ne s'en sert pas.
+function Loop.SetLaneTsNum(lane, n)
+    if not NATIVE then return end
+    r.CP_LaneSet(lane, "tsnum", (n and n >= 1) and n or 0)
+end
+
+function Loop.GetLaneTsNum(lane)
+    if not NATIVE then return nil end
+    local v = r.CP_LaneGet(lane, "tsnum")
+    return (v and v >= 1) and v or nil
 end
 
 function Loop.SetLaneAudio() end
@@ -1448,11 +1549,11 @@ function Loop.LaneToClip(lane)
     local la, lb = Loop.GetLoopRange(lane)
     return {
         kind   = "midi",
+        tsnum  = Loop.GetLaneTsNum(lane),
         id     = tag,
         name   = "Lane " .. (lane + 1),
         notes  = { s = s, l = l, p = p, v = v, pr = pr },
         bars   = Loop.GetLengthBars(lane),
-        q      = "bar",
         lmode  = "loop",
         loop_a = la,
         loop_b = lb,
@@ -1482,6 +1583,11 @@ function Loop.ApplyClip(lane, clip)
        and clip.bars ~= Loop.GetLengthBars(lane) then
         Loop.SetLengthBars(lane, clip.bars)
     end
+    -- LA SIGNATURE AVANT L'ACCOLADE, parce que c'est elle qui decide de la
+    -- longueur en beats contre laquelle l'accolade sera bornee. Ecrite TOUJOURS,
+    -- pour la meme raison que l'accolade : c'est le seul geste qui efface celle
+    -- de l'occupant precedent d'une lane partagee.
+    Loop.SetLaneTsNum(lane, clip.tsnum)
     -- TOUJOURS ECRITE, MEME QUAND LA CASE N'EN A PAS. C'est le seul geste qui
     -- efface l'accolade de l'occupant precedent ; ne l'ecrire que si la case en
     -- porte une aurait laisse passer exactement le cas qu'on ferme. Et APRES la
@@ -1508,9 +1614,9 @@ end
 -- not depend on a track surviving a copy-paste.
 --
 -- Wire format, one string, printable separators only:
---   "9;<global>;<lane>;<lane>;…"                    9 = format version
+--   "10;<global>;<lane>;<lane>;…"                  10 = format version
 --   global = "freerun|armedlane|launchq|nlanes"
---   lane   = "bars|muted|mode|tag|loopa|loopb|n|s,l,p,v[,prob]|…"
+--   lane   = "bars|muted|mode|tag|loopa|loopb|umute|tsnum|n|s,l,p,v[,prob]|…"
 -- v1..v4 (the router-track era) are still read: a project saved before this
 -- change opens with its loops.
 -- ---------------------------------------------------------------------------
@@ -1522,6 +1628,20 @@ local function migrateQ(ver, q)
 end
 
 function Loop.Serialize()
+    -- FORMAT 10 : LE MUTE MUSICAL et LA SIGNATURE entrent dans le bloc de
+    -- chaque lane. Deux champs, un seul numero de format : ils sont ecrits dans
+    -- le meme changement, et deux versions pour un meme jour n'auraient rien dit
+    -- de plus a personne.
+    --
+    -- Le champ `muted` d'origine porte l'etat EFFECTIF, qui melange les deux
+    -- intentions — et l'intention mecanique se refait toute seule au rappel
+    -- (`armLane` remute la lane d'une case audio). Ce qui ne se refait pas,
+    -- c'est le geste : « j'ai tu cette lane ». Il a donc son champ.
+    --
+    -- Un projet plus ancien n'en a pas, et l'absence vaut « personne n'a tu
+    -- cette lane » — ce qui est exactement ce qu'elle valait avant, puisque le
+    -- geste n'existait pas separement.
+    --
     -- FORMAT 9 : LA PROBABILITE entre dans l'enregistrement d'une note.
     --
     -- Cinquieme champ, et ecrit SEULEMENT quand il vaut autre chose que cent :
@@ -1561,7 +1681,7 @@ function Loop.Serialize()
     -- lane. Un lecteur ancien ignore le champ (les champs inconnus sont
     -- ignores), un lecteur neuf sur un projet ancien lit 0 — ce qui est
     -- exactement ce que le tag valait avant.
-    local out = { "9",
+    local out = { "10",
                   (Loop.GetFreeRun() and "1" or "0") .. "|"
                   .. (Loop.GetArmedLane() or -1) .. "|" .. num(Loop.GetLaunchQ())
                   .. "|" .. Loop.MAX_LANES }
@@ -1577,6 +1697,8 @@ function Loop.Serialize()
                         tostring(m),
                         string.format("%d", math.floor(Loop.GetLaneTag(lane) or 0)),
                         num(la or 0), num(lb or -1),
+                        Loop.GetUserMute(lane) and "1" or "0",
+                        num(Loop.GetLaneTsNum(lane) or 0),
                         tostring(n) }
         for i = 0, n - 1 do
             local s, l, p, v, pr = Loop.GetNote(lane, i)
@@ -1597,7 +1719,12 @@ function Loop.Deserialize(str)
     local fields = {}
     for f in str:gmatch("[^;]+") do fields[#fields + 1] = f end
     local ver = fields[1]
-    if not ver or not ver:match("^[1-9]$") then return false end
+    -- ⚠️ DEUX CHIFFRES. L'expression enumerait les versions a un chiffre, et
+    -- c'est exactement le piege deja paye deux fois sur ce fichier : `"10"` ne
+    -- correspond pas a `[1-9]`, donc le format 10 aurait ete refuse EN BLOC —
+    -- un set entier qui ne revient pas, sans un mot.
+    local vnum = math.floor(tonumber(ver) or 0)
+    if vnum < 1 or vnum > 10 then return false end
     local v2 = (ver ~= "1")
 
     -- Combien de lanes celui qui a ECRIT ceci avait. Le format 8 le dit ; avant
@@ -1651,16 +1778,25 @@ function Loop.Deserialize(str)
             -- chaque nouvelle — le format 8 les aurait rendus faux en silence,
             -- et une lane aurait relu son tag a la place de son nombre de notes.
             -- C'est la meme lecon que les gardes de version : `"10" < "4"`.
-            local vn   = tonumber(ver) or 0
+            local vn   = vnum
             local v6   = (vn >= 6)
             local v7   = (vn >= 7)
+            local v10  = (vn >= 10)
             local tag  = v6 and math.floor(tonumber(t[4]) or 0) or 0
             -- v7 glisse l'accolade entre le tag et le nombre de notes. Sur un
             -- projet plus ancien elle n'existe pas, et « pas d'accolade » est
             -- exactement ce que la lane valait : rien a migrer.
             local la   = v7 and tonumber(t[5]) or 0
             local lb   = v7 and tonumber(t[6]) or -1
-            local hdr  = v7 and 7 or (v6 and 5 or (v2 and 4 or 3))
+            -- v10 glisse le mute MUSICAL entre l'accolade et le nombre de
+            -- notes. Absent avant, et l'absence vaut « personne n'a tu cette
+            -- lane » — ce qu'elle valait deja, puisque le geste n'existait pas
+            -- separement.
+            local umute = v10 and (t[7] == "1") or false
+            -- Zero, ou absent, veut dire « suis le projet » — ce que toutes les
+            -- lanes valaient avant que ce champ existe.
+            local tsn   = v10 and tonumber(t[8]) or nil
+            local hdr  = v10 and 9 or (v7 and 7 or (v6 and 5 or (v2 and 4 or 3)))
             local n     = math.floor(tonumber(t[hdr]) or 0)
             if n > Loop.MAX_NOTES then n = Loop.MAX_NOTES end
             local written = 0
@@ -1686,7 +1822,15 @@ function Loop.Deserialize(str)
                 end
             end
             Loop.SetLengthBars(lane, bars)
+            -- L'EFFECTIF D'ABORD, PUIS L'INTENTION. `muted` est ce que le
+            -- moteur faisait ; on le repose comme mecanique parce que c'est de
+            -- la sa provenance la plus courante (une case audio), et l'intention
+            -- musicale par-dessus. Les deux se recomposent en OU.
             Loop.SetMute(lane, muted)
+            Loop.SetUserMute(lane, umute)
+            -- AVANT l'accolade : c'est elle qui donne la longueur en beats
+            -- contre laquelle le moteur borne la zone.
+            Loop.SetLaneTsNum(lane, tsn)
             Loop.SetLaneTag(lane, tag)            -- qui joue quoi, apres reouverture
             -- APRES la longueur : le moteur borne l'accolade dans la case, et
             -- la borner contre l'ancienne longueur la ramenerait a zero.
@@ -1711,6 +1855,8 @@ function Loop.Deserialize(str)
             Loop.SetLoopRange(lane, 0, -1)
             Loop.SetMode(lane, 0)
             Loop.SetMute(lane, false)
+            Loop.SetUserMute(lane, false)
+            Loop.SetLaneTsNum(lane, nil)
             Loop.BumpVer(lane)
         end
     end
@@ -1787,21 +1933,50 @@ end
 -- privately inside CP_Looper, so a set built entirely in CP_Session was lost
 -- when REAPER closed — invisible while you work, obvious the next morning.
 --
--- The cross-project hazard that came with it is GONE rather than guarded: the
--- lanes lived in gmem, which belongs to the REAPER session and not to the
--- project, so switching projects left the previous project's loops loaded and
--- an autosave would have written one project's set into another's file. The
--- notes now live in this module — one instance per script, per project — and
--- ProjExtState is the project's own. There is nothing left to detect.
+-- ⚠️ LE DANGER INTER-PROJETS N'AVAIT PAS DISPARU, IL AVAIT DEMENAGE.
+--
+-- On a longtemps ecrit ici qu'il etait clos : les lanes vivaient dans gmem, qui
+-- appartient a la SESSION REAPER et non au projet, et les notes vivent
+-- maintenant dans ce module — « une instance par script, par projet ». La
+-- premisse est fausse. Un `defer` SURVIT A UN CHANGEMENT D'ONGLET : la fenetre
+-- ouverte passe du projet A au projet B sans etre rechargee, donc une seule
+-- instance voit les deux. Et ProjExtState ecrit toujours dans le projet ACTIF.
+--
+-- Trois consequences, toutes silencieuses :
+--   · l'autosave ecrit le set de A dans le fichier de B ;
+--   · `RefreshDests` relit les destinations de B et rebranche les ports, donc
+--     les lanes de A se mettent a jouer dans les pistes de B ;
+--   · les identites de clip sont par projet, et `LaneOfTag` compare des nombres
+--     bruts : deux projets peuvent porter le meme numero.
+--
+-- Le changement se DETECTE donc, et il vaut un rechargement complet. Une
+-- comparaison de pointeur de projet, une fois par frame, sans allocation.
 -- ---------------------------------------------------------------------------
 local save_vers = {}
 local save_due  = 0
 local save_hold = false
 local adopted   = false
+local proj_seen = nil
 
--- Kept because two windows call it. It answers false now, and that is not a
--- stub: the condition it detected cannot arise any more (see above).
-function Loop.RouterChanged() return false end
+-- « Le projet a change sous cette fenetre. » Le front est CONSOMME : l'appelant
+-- doit tout recharger, et le lui redire a la frame suivante ferait recharger
+-- deux fois. Une fenetre, un appel par frame.
+function Loop.RouterChanged()
+    local p = r.EnumProjects(-1)
+    if proj_seen == nil then proj_seen = p return false end
+    if p == proj_seen then return false end
+    proj_seen = p
+    -- ON CESSE D'ECRIRE AVANT TOUT LE RESTE. L'etat en memoire est celui du
+    -- projet PRECEDENT ; un autosave qui partirait maintenant ecraserait le set
+    -- du nouveau projet avec celui de l'ancien, ce qui est exactement la perte
+    -- que cette detection existe pour empecher. `AdoptState` reprendra la main
+    -- une fois le rechargement fait.
+    adopted  = false
+    save_due = 0
+    for lane = 0, Loop.MAX_LANES - 1 do save_vers[lane] = nil end
+    return true
+end
+
 
 function Loop.IsAdopted() return adopted end
 function Loop.HoldAutoSave(on) save_hold = on and true or false end

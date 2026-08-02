@@ -197,6 +197,20 @@ int Engine::active_voices() const {
   return n;
 }
 
+// LE COMPTAGE SE DEDUIT, IL NE SE TIENT PAS. Faire incrementer le fil audio au
+// demarrage d'une voix et decrementer a sa mort aurait demande quatre chemins
+// sans faute — demarrage, arret, vol de voix, enchainement — et c'est
+// exactement le genre de comptabilite qui finit par mentir une fois. Un
+// balayage de 64 voix, au moment ou on veut liberer, repond a la meme question
+// sans etat a maintenir.
+void Engine::refresh_clip_refs() {
+  pool_.clear_refs();
+  for (int i = 0; i < kMaxVoices; ++i) {
+    if (voices_[i].pub_state.load(std::memory_order_relaxed) == kVoiceIdle) continue;
+    pool_.add_ref(voices_[i].pub_clip.load(std::memory_order_relaxed));
+  }
+}
+
 int Engine::owned_voices() const {
   int n = 0;
   for (int i = 0; i < kMaxVoices; ++i)
