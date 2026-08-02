@@ -853,6 +853,9 @@ local WHY_SHORT = {
 -- par frame allouerait une chaine par case et par frame. Elle ne change que
 -- quand un de ses termes change, ce qui arrive au clic, pas au rafraichissement.
 local sub_txt = setmetatable({}, { __mode = "k" })
+-- `sub_key[c]` tient les QUATRE COMPOSANTES separement, et non une chaine qui
+-- les concatene : construire la cle coutait exactement ce que le cache existait
+-- pour eviter — une allocation par case audio et par frame.
 local sub_key = setmetatable({}, { __mode = "k" })
 
 -- L'ETAT DE CUISSON NE SE REDEMANDE PAS PAR FRAME. Warp.State ouvre un
@@ -882,10 +885,15 @@ local function audioSub(c)
         end
     end
     local bpm = c.bpm_seen
-    local key = mode .. st .. (bpm and string.format("%.2f", bpm) or "-")
-                .. (c.bpm_why or "-")
-    if sub_key[c] ~= key then
-        sub_key[c] = key
+    -- LA CLE ETAIT UNE CHAINE, CONSTRUITE A CHAQUE FRAME. Trois concatenations
+    -- et un `string.format` par case audio et par frame, uniquement pour savoir
+    -- s'il fallait reconstruire un texte qui ne change jamais. On compare les
+    -- QUATRE COMPOSANTES : aucune allocation tant que rien ne bouge, ce qui est
+    -- le cas de toutes les frames sauf une sur mille.
+    local e = sub_key[c]
+    if not e then e = {}; sub_key[c] = e end
+    if e.mode ~= mode or e.st ~= st or e.bpm ~= bpm or e.why ~= c.bpm_why then
+        e.mode, e.st, e.bpm, e.why = mode, st, bpm, c.bpm_why
         local txt
         if mode == "none" then
             txt = "audio · free"

@@ -20,11 +20,22 @@ Cédric qui écoute.
 
 ---
 
-## L'ORDRE, décidé par Cédric le 2026-08-02
+## L'ORDRE, décidé par Cédric le 2026-08-02 — **PARCOURU LE MÊME JOUR**
 
-Ce qui reste tient en cinq chantiers. **Cet ordre est le sien, il ne se
-redécide pas** — et il ne suit délibérément pas l'ordre d'écriture de ce
-fichier.
+Les cinq chantiers sont écrits et compilés. **Rien n'a été entendu** : c'est
+Cédric qui écoute, et c'est la seule chose qui manque à cette liste.
+
+**Ce qui reste dans tout ce fichier tient en deux lignes**, toutes deux dans
+« ce qui reste ouvert sur l'instrument » (chantier 2) : les paramètres JSFX
+déclarés que rien ne lit, et le pitch à durée constante, qui demande un
+étirement qu'un fil audio de 2005 ne fera pas.
+
+**L'état du moteur** : ABI **2.3**, formats de sérialisation **10** (lanes) et
+**CPC1** (clips), **178 assertions** au harnais, zéro allocation dans le fil
+audio.
+
+L'ordre reste écrit ci-dessous parce qu'il dit *pourquoi* chacun venait là, et
+que c'est ce qu'on relit — pas la case.
 
 1. **La session devient un instrument** (§4b et §4c). Le seul qui change la
    nature de l'objet : aujourd'hui la grille exécute des ordres, demain elle
@@ -45,16 +56,30 @@ fichier.
    **dit** au lieu de laisser glisser une barre qui ne survivrait pas.
    La section sous les notes a désormais ses **en-têtes de catégories** :
    vélocité et probabilité, le nom ouvre la liste, le chevron replie.
-4. **Le registre des défauts.** Dix-sept lignes, et Cédric le dit : *« c'est
-   important de corriger les bugs en priorité »*. Sept touchent la perte de
-   données ou le mauvais son.
-5. **La performance.** Six lignes, et la cible reste un PC de 2005.
+4. ~~**Le registre des défauts.**~~ **Fait.** Onze lignes restaient, dont sept
+   touchaient la perte de données ou le mauvais son. Ce qu'elles avaient en
+   commun n'était pas une famille de bugs : c'était **une phrase écrite dans le
+   code qui n'était plus vraie**, et que personne ne relisait parce qu'elle avait
+   l'air d'une explication. « Une instance par script, par projet » ; « le mute
+   ne veut dire qu'une chose » ; « retirer un clip, c'est le retirer ».
+5. ~~**La performance.**~~ **Fait.** Cinq lignes (la sixième, la collision de clé
+   du cache de troncature, était tombée en passant à huit colonnes). La plus
+   grosse n'était pas dans la liste : à huit colonnes et huit scènes, une frame
+   franchissait le pont d'ABI trois à quatre **cents** fois. Un instantané par
+   frame rend ce coût **constant**.
 
 **Ce qui n'est dans aucune feuille** : le « plus de son sauf C2 » du sampler du
 2026-08-02. Deux vrais défauts ont été fermés (écriture redondante, anneau gmem
 sans garde) mais la cause du symptôme n'est **pas** établie. Le compteur
 `refus=` du rapport d'état existe pour que la prochaine fois réponde au lieu de
-déduire.
+déduire. **Toujours ouvert.**
+
+**La décision qui attendait dans le chantier 1 n'a pas été forcée** : le motion
+est écrit en Lua, donc l'enchaînement s'arrête quand CP_Session se ferme. Le son
+continue, la marche non. C'est écrit en tête du bloc. Descendre la règle dans le
+moteur reste un autre chantier, et il se décide à l'usage — la question est de
+savoir si Cédric ferme cette fenêtre en jouant, et elle n'a pas de réponse
+théorique.
 
 **Où NE PAS chercher ce qui reste** : `ROADMAP_Autonomie.md` est le JOURNAL. Ses
 cases non cochées sont des marqueurs « prochain chantier » que leur propre
@@ -558,24 +583,61 @@ matin ; le fond tient.
 
 ### Performance (la cible est un PC de 2005, et le dépôt l'écrit partout)
 
-- [ ] **`Mix.guidOf` alloue une chaîne par appel**, et `chainOf`/`sendsOf`
-      l'appellent chaque fois : ~14 allocations par colonne et par frame.
-- [ ] **Le cache du mixer est clé sur `GetProjectStateChangeCount`**, que les
-      écritures de fader incrémentent — donc il se reconstruit intégralement
-      pendant le geste qu'il devait rendre fluide.
-- [ ] **`audioSub` fait un `io.open` par frame et par case en stretch**
-      (`Warp.State` → `PathFor` → `fileExists`). Un accès disque dans une
-      boucle de dessin.
+- [x] **`Mix.guidOf` alloue une chaîne par appel.** Le cache était indexé par
+      GUID, et `guidOf` construisait cette chaîne à chaque appel — donc une
+      quinzaine d'allocations par colonne et par frame **uniquement pour
+      retrouver l'entrée qui évitait des allocations**. La clé est le POINTEUR
+      de piste : rien à construire, rien à comparer caractère par caractère. Le
+      prix est qu'il ne survit pas à la suppression d'une piste, donc la table
+      est bornée — au-delà de 64 pistes vues, on vide et on reconstruit les huit
+      qui comptent. Une table qui ne grandit que quand on supprime des pistes,
+      et qui se vide toute seule, n'a pas besoin de savoir ce qui est mort.
+- [x] **Le cache du mixer est clé sur `GetProjectStateChangeCount`.** On
+      distingue maintenant deux causes. Un changement de **nombre** (un effet
+      ajouté ou retiré) se voit tout de suite : `TrackFX_GetCount` est un appel
+      sans allocation, payé à chaque fois. Un changement du compteur **à nombre
+      constant** — un fader, un pan, une automation — attend un quart de
+      seconde. Un nom d'effet qui change est assez rare pour que 250 ms de
+      retard ne se voient jamais ; soixante reconstructions par seconde, si.
+      ⚠️ **Le bypass n'est plus caché**, et c'est ce qui rend l'étranglement
+      possible : caché, il aurait mis un quart de seconde à s'allumer sous le
+      doigt. Le commentaire d'origine disait déjà « every bypass is read live »
+      — le code, lui, le cachait.
+- [x] **`audioSub` fait un `io.open` par frame et par case en stretch.**
+      L'accès disque était déjà mémoïsé (`st_cache`, invalidé par
+      `Warp.Version`) ; ce qui restait était plus discret et tout aussi cher :
+      la **clé** du memo était une chaîne concaténée à chaque frame, donc trois
+      allocations par case audio et par frame pour décider s'il fallait
+      reconstruire un texte qui ne change jamais. Les quatre composantes se
+      comparent séparément — zéro allocation tant que rien ne bouge.
 - [x] **Collision de clé dans le cache de troncature.** La clé réserve
       maintenant une ligne de plus que la grille (`t * (SCENES + 1) + s`), parce
       que l'en-tête de colonne appelle `cellLabel` avec `s = SCENES` et tombait
       donc exactement sur la case `(t+1, 0)`. Fermé en passant à huit colonnes,
       où le défaut passait de trois collisions par frame à sept.
-- [ ] **`pollCapture` fait un `CP_LaneGet` par événement et par lane** pendant
-      une prise — jusqu'à 1024 appels d'ABI pour 128 événements, alors que la
-      liste des lanes en capture est déjà connue.
-- [ ] **~2 à 7 appels d'ABI par case et par frame** dans `drawCell`, là où huit
-      `GetLaneTag` construiraient une table tag→lane une fois par frame.
+- [x] **`pollCapture` fait un `CP_LaneGet` par événement et par lane.** Le
+      balayage qui ouvre la fonction répond déjà à la question : il retient les
+      lanes en capture, et la zone et le décalage de chacune sont relevés **une
+      fois** avant la boucle d'événements — ils ne bougent pas pendant la frame.
+      Et les événements bruts vont dans deux tableaux parallèles réutilisés
+      plutôt qu'une table par événement : 128 tables par frame pendant une
+      prise, c'est 128 occasions pour le ramasse-miettes de passer pendant qu'on
+      joue.
+- [x] **~2 à 7 appels d'ABI par case et par frame** — c'est mieux qu'une table
+      tag→lane : **un instantané de frame**. Les huit champs que le dessin
+      demande en boucle (`tag`, `mode`, `pending`, `phase`, `lenbeats`,
+      `target`, `spana`, `spanlen`) sont lus une fois par lane au début de
+      `Loop.Poll`, et tout ce qui suit lit la table. Le coût devient
+      **constant** (8 × 16) au lieu de croître avec la grille — à huit colonnes
+      et huit scènes, une frame franchissait le pont d'ABI trois à quatre CENTS
+      fois.
+      **La fraîcheur ne change pas**, et c'est ce qui rend l'échange gratuit :
+      ces champs sont publiés par le fil audio en fin de bloc, et une frame de
+      defer dure plus longtemps qu'un bloc — les relire au milieu d'une frame
+      rendait la même valeur. La seule exception est le **tag**, qui s'écrit
+      depuis Lua : `SetLaneTag` met donc l'instantané à jour en même temps que
+      le moteur, sans quoi une case armée puis dessinée dans la même frame
+      clignoterait au mauvais endroit pendant une frame.
 
 ---
 

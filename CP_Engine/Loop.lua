@@ -1015,6 +1015,53 @@ function Loop.PlayClipFrom(lane, beat)
 end
 
 -- ---------------------------------------------------------------------------
+-- L'INSTANTANE DE FRAME — huit lectures par lane, et non des centaines
+-- ---------------------------------------------------------------------------
+-- Ces huit champs sont demandes en boucle de dessin : `drawCell` en lisait deux
+-- a sept PAR CASE, `resolveLive` deux par lane, le motion cinq par colonne. A
+-- huit colonnes et huit scenes, une frame franchissait le pont d'ABI trois a
+-- quatre CENTS fois — et c'est un pont, pas un acces memoire.
+--
+-- Ils sont donc lus UNE FOIS PAR LANE au debut de `Loop.Poll`, et tout ce qui
+-- suit lit la table. Le cout devient CONSTANT (huit fois seize) au lieu de
+-- croitre avec la grille : c'est la propriete qui compte, parce que le nombre de
+-- colonnes vient de doubler.
+--
+-- LA FRAICHEUR NE CHANGE PAS, et c'est ce qui rend l'echange gratuit : ces
+-- champs sont publies par le FIL AUDIO en fin de bloc, et une frame de defer
+-- dure plus longtemps qu'un bloc. Les relire au milieu d'une frame rendait
+-- exactement la meme valeur. La seule exception est le TAG, qui s'ecrit depuis
+-- Lua : `SetLaneTag` met donc l'instantane a jour en meme temps que le moteur,
+-- sans quoi une case armee puis dessinee dans la meme frame clignoterait au
+-- mauvais endroit pendant une frame.
+local sn_tag, sn_mode, sn_pend = {}, {}, {}
+local sn_ph, sn_len, sn_tgt    = {}, {}, {}
+local sn_sa, sn_slen           = {}, {}
+
+local function snapshot()
+    for lane = 0, Loop.MAX_LANES - 1 do
+        if NATIVE then
+            sn_tag[lane]  = math.floor(r.CP_LaneGet(lane, "tag") + 0.5)
+            sn_mode[lane] = math.floor(r.CP_LaneGet(lane, "mode") + 0.5)
+            sn_pend[lane] = math.floor(r.CP_LaneGet(lane, "pending") + 0.5)
+            sn_ph[lane]   = r.CP_LaneGet(lane, "phase")
+            sn_len[lane]  = r.CP_LaneGet(lane, "lenbeats")
+            sn_tgt[lane]  = r.CP_LaneGet(lane, "target")
+            sn_sa[lane]   = r.CP_LaneGet(lane, "spana")
+            sn_slen[lane] = r.CP_LaneGet(lane, "spanlen")
+        else
+            sn_tag[lane], sn_mode[lane], sn_pend[lane] = 0, 0, 0
+            sn_ph[lane], sn_len[lane], sn_tgt[lane]    = 0, 4, 0
+            sn_sa[lane], sn_slen[lane]                 = 0, 4
+        end
+    end
+end
+
+-- Pose l'instantane pour une fenetre qui n'a pas encore appele `Poll` — sinon
+-- son premier dessin lirait des nil. Une fois, au chargement du module.
+snapshot()
+
+-- ---------------------------------------------------------------------------
 -- L'ACCOLADE DE BOUCLE (ABI 2.1)
 -- ---------------------------------------------------------------------------
 -- La sous-region qu'une case joue en boucle, en beats depuis son debut. Ce
@@ -1051,10 +1098,9 @@ end
 -- case. Sans accolade, (0, longueur de la case) — donc tout appelant peut s'en
 -- servir sans jamais tester s'il y en a une.
 function Loop.Span(lane)
-    if not NATIVE then return 0, 4 end
-    local l = r.CP_LaneGet(lane, "spanlen")
+    local l = sn_slen[lane]
     if not l or l <= 0 then return 0, Loop.LenBeats(lane) end
-    return r.CP_LaneGet(lane, "spana") or 0, l
+    return sn_sa[lane] or 0, l
 end
 
 -- ---------------------------------------------------------------------------
@@ -1088,29 +1134,24 @@ function Loop.GetLaneAudio() return false end
 -- Per-lane state (read)
 -- ---------------------------------------------------------------------------
 -- 0 empty · 1 recording · 2 stopped · 3 playing · 4 armed · 5 overdubbing
-function Loop.Mode(lane)       return NATIVE and r.CP_LaneGet(lane, "mode") or 0 end
+function Loop.Mode(lane)       return sn_mode[lane] or 0 end
 function Loop.NEv(lane)        return store(lane).n end
-function Loop.Phase(lane)      return NATIVE and r.CP_LaneGet(lane, "phase") or 0 end
+function Loop.Phase(lane)      return sn_ph[lane] or 0 end
 function Loop.LenBeats(lane)
-    local v = NATIVE and r.CP_LaneGet(lane, "lenbeats") or 0
+    local v = sn_len[lane] or 0
     return v > 0 and v or 4
 end
 function Loop.EvtVersion(lane) return evtver[lane] or 0 end
 function Loop.HasContent(lane) return store(lane).n > 0 end
 -- queued launch: 0 none · 1 play · 2 stop · 3 rec · 4 stop-rec · 5 overdub
-function Loop.Pending(lane)
-    if not NATIVE then return 0 end
-    return math.floor(r.CP_LaneGet(lane, "pending") + 0.5)
-end
-function Loop.PendingTarget(lane)
-    return NATIVE and r.CP_LaneGet(lane, "target") or 0
-end
+function Loop.Pending(lane)       return sn_pend[lane] or 0 end
+function Loop.PendingTarget(lane) return sn_tgt[lane] or 0 end
 
 -- A queued launch with no date: it is waiting for the CLOCK itself and fires
 -- with its first block. The UI says so instead of counting down to a beat that
 -- has no date.
 function Loop.PendingWaitsClock(lane)
-    return NATIVE and r.CP_LaneGet(lane, "target") < -1e8
+    return (sn_tgt[lane] or 0) < -1e8
 end
 
 -- ---------------------------------------------------------------------------
@@ -1120,8 +1161,7 @@ local live = {}
 for t = 0, Loop.TRACKS - 1 do live[t] = t end
 
 function Loop.IsRunning(lane)
-    if not NATIVE then return false end
-    local m = math.floor(r.CP_LaneGet(lane, "mode") + 0.5)
+    local m = sn_mode[lane] or 0
     return m == 1 or m == 3 or m == 5
 end
 
@@ -1130,9 +1170,9 @@ end
 -- and a queued REC count for the same reason — a take waiting on the transport
 -- is the half the user is looking at.
 local function laneBusy(lane)
-    local m = r.CP_LaneGet(lane, "mode")
+    local m = sn_mode[lane] or 0
     if m == 3 or m == 5 or m == 1 or m == 4 then return true end
-    local p = r.CP_LaneGet(lane, "pending")
+    local p = sn_pend[lane] or 0
     return p == 1 or p == 3
 end
 
@@ -1157,13 +1197,16 @@ function Loop.TrackOfLane(lane) return (lane or 0) % Loop.TRACKS end
 -- ---------------------------------------------------------------------------
 -- Lane occupancy tag — WHICH clip a lane currently holds
 -- ---------------------------------------------------------------------------
+-- ⚠️ LES DEUX, ET DANS CET ORDRE. Le tag est le seul champ de l'instantane qui
+-- s'ecrive depuis Lua : ne mettre a jour que le moteur ferait lire l'ancienne
+-- valeur au dessin de la meme frame, et une case qu'on vient d'armer
+-- clignoterait a la mauvaise place pendant une frame.
 function Loop.SetLaneTag(lane, tag)
-    if NATIVE then r.CP_LaneSet(lane, "tag", tag or 0) end
+    local v = math.floor((tag or 0) + 0.5)
+    if NATIVE then r.CP_LaneSet(lane, "tag", v) end
+    sn_tag[lane] = v
 end
-function Loop.GetLaneTag(lane)
-    if not NATIVE then return 0 end
-    return math.floor(r.CP_LaneGet(lane, "tag") + 0.5)
-end
+function Loop.GetLaneTag(lane) return sn_tag[lane] or 0 end
 
 -- Which half of track t holds `tag`, or NIL when the engine no longer holds
 -- that clip at all. Nil is the honest answer and the safe one: a window that
@@ -1331,6 +1374,17 @@ local function closeHeld(lane, phase)
 end
 
 -- Which lanes are capturing right now, and the engine's beat for each.
+-- Les lanes en capture de CETTE frame, et ce qu'il faut savoir d'elles pour
+-- dater une note. Tables de module, reutilisees : elles vivent dans un chemin
+-- qui tourne cent vingt-huit fois pendant une prise.
+local cap_lane, cap_sa, cap_slen, cap_off = {}, {}, {}, {}
+-- Les evenements bruts, dans deux tableaux paralleles plutot qu'une table par
+-- evenement. Cent vingt-huit tables par frame pendant une prise, c'est cent
+-- vingt-huit occasions pour le ramasse-miettes de passer pendant qu'on joue.
+-- Le numero de sequence n'est pas garde : seul le plus RECENT sert, et il est
+-- lu avant la boucle.
+local pend_buf, pend_ts = {}, {}
+
 local function pollCapture()
     if not NATIVE then return end
 
@@ -1338,6 +1392,7 @@ local function pollCapture()
     -- its take generation. It never touches the notes itself — that is the
     -- whole ownership rule — so this is where "REC clears the lane" happens.
     local capturing = false
+    local ncap = 0
     for lane = 0, Loop.MAX_LANES - 1 do
         local g = math.floor(r.CP_LaneGet(lane, "recgen") + 0.5)
         if seen_recgen[lane] ~= g then
@@ -1350,16 +1405,24 @@ local function pollCapture()
             end
             seen_recgen[lane] = g
         end
-        local m = math.floor(r.CP_LaneGet(lane, "mode") + 0.5)
+        -- L'instantane de frame, pose par `Poll` juste avant : un appel d'ABI
+        -- de moins par lane, et la meme valeur.
+        local m = Loop.Mode(lane)
         if m == 1 or m == 5 then
             capturing = true
+            -- ON RETIENT LA LANE ICI, une fois. Le remplissage des evenements
+            -- redemandait le mode de CHAQUE lane pour CHAQUE evenement : jusqu'a
+            -- 2048 franchissements du pont d'ABI pour 128 evenements, alors que
+            -- ce balayage-ci vient de repondre a la question.
+            ncap = ncap + 1
+            cap_lane[ncap] = lane
         elseif held_st[lane] then
             -- The take ended (auto-stop, boundary, transport stop): close what
             -- was still held so the last note is KEPT rather than lost. A take
             -- that stops mid-note used to strand it in the JSFX's local heap
             -- and lose it entirely.
             local Lb = Loop.LenBeats(lane)
-            local ph = r.CP_LaneGet(lane, "phase")
+            local ph = Loop.Phase(lane)
             if closeHeld(lane, (ph > 0) and ph or Lb) then
                 Loop.BumpVer(lane)
             end
@@ -1385,22 +1448,34 @@ local function pollCapture()
     local bps = tempo / (60.0 * srate)      -- beats per sample
     local now_beat = r.CP_EngineBeat()
 
+    -- LA ZONE ET LE DECALAGE DE CHAQUE LANE, UNE FOIS. Ils ne bougent pas
+    -- pendant la frame, et les redemander par evenement coutait trois appels
+    -- d'ABI de plus a chaque note.
+    for i = 1, ncap do
+        local l = cap_lane[i]
+        local sa, slen = Loop.Span(l)
+        if not slen or slen <= 0 then sa, slen = 0, 4 end
+        cap_sa[i], cap_slen[i] = sa, slen
+        cap_off[i] = Loop.GetLaneOffset(l) or 0
+    end
+
     -- Walk BACK from the newest to the last one we handled, then replay them
     -- oldest-first so a note-on precedes its note-off.
-    local pending, idx = {}, 0
+    local npend, idx = 0, 0
     local seq, buf, ts = seq0, buf0, ts0
     while seq and seq ~= 0 and idx < 128 do
         if last_seq and seq <= last_seq then break end
-        pending[#pending + 1] = { seq = seq, buf = buf, ts = ts }
+        npend = npend + 1
+        pend_buf[npend], pend_ts[npend] = buf, ts
         idx = idx + 1
         seq, buf, ts = r.MIDI_GetRecentInputEvent(idx)
     end
     last_seq = seq0
 
     local changed = {}
-    for k = #pending, 1, -1 do
-        local ev = pending[k]
-        local b = ev.buf
+    for k = npend, 1, -1 do
+        local ev_ts = pend_ts[k]
+        local b = pend_buf[k]
         if b and #b >= 3 then
             local st = b:byte(1)
             local hi = st & 0xF0
@@ -1411,10 +1486,10 @@ local function pollCapture()
                 local on    = (hi == 0x90 and vel > 0)
                 -- `ts` is in samples relative to NOW, and negative for the
                 -- past. This is the whole reason the capture is not late.
-                local beat = now_beat + (ev.ts or 0) * bps
-                for lane = 0, Loop.MAX_LANES - 1 do
-                    local m = math.floor(r.CP_LaneGet(lane, "mode") + 0.5)
-                    if m == 1 or m == 5 then
+                local beat = now_beat + (ev_ts or 0) * bps
+                for i = 1, ncap do
+                    local lane = cap_lane[i]
+                    do
                         -- LA CAPTURE ECRIT DANS LA ZONE QUE LE MOTEUR JOUE.
                         --
                         -- Elle repliait le beat modulo la longueur de la CASE.
@@ -1428,9 +1503,9 @@ local function pollCapture()
                         -- raison : la phase de la lane vaut `sa + ((x + off)
                         -- mod Ls)`. Ecrire sans lui posait la note a l'endroit
                         -- ou elle aurait sonne SANS le geste « pars d'ici ».
-                        local sa, slen = Loop.Span(lane)
-                        local a = beat + (Loop.GetLaneOffset(lane) or 0)
-                        local ph = sa + (a - math.floor(a / slen) * slen)
+                        local slen = cap_slen[i]
+                        local a = beat + cap_off[i]
+                        local ph = cap_sa[i] + (a - math.floor(a / slen) * slen)
                         local hs, hv = heldOf(lane)
                         if on then
                             -- a new note-on closes any pending note of the
@@ -1508,6 +1583,9 @@ function Loop.Poll()
     local pos = Loop.Playing() and r.CP_ClockPos() or r.GetCursorPosition()
     r.CP_TransportSync(Loop.Tempo(), r.TimeMap2_timeToQN(0, pos),
                        Loop.Playing() and 1 or 0, Loop.TsNum())
+    -- L'INSTANTANE AVANT TOUT LE RESTE : `resolveLive` et `pollCapture` le
+    -- lisent, et tout ce que la fenetre demandera ensuite aussi.
+    snapshot()
     resolveLive()
     pollCapture()
     local c = r.GetProjectStateChangeCount(0)

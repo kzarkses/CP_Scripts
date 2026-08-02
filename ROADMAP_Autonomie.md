@@ -3550,3 +3550,80 @@ crie sur un fichier qui marche apprend à se faire ignorer. Deux groupes de
 constantes de même nature sont devenus deux tables : six places rendues, et rien
 qui se lise moins bien.
 
+## La performance : le plus gros poste n'était pas dans la liste
+
+Cinq lignes au registre — la sixième, la collision de clé du cache de
+troncature, était déjà tombée en passant à huit colonnes. Elles se ressemblent
+toutes : **un cache dont le coût d'accès est du même ordre que ce qu'il évite**.
+
+**Le cache du mixer était indexé par GUID, et `guidOf` construisait cette chaîne
+à chaque appel.** `FxCount`, `Fx`, `SendCount`, `Send` passent tous par là : une
+quinzaine d'allocations par colonne et par frame, *uniquement pour retrouver
+l'entrée qui évitait des allocations*. La clé est le pointeur de piste. Le prix
+est qu'il ne survit pas à la suppression d'une piste, donc la table est bornée —
+au-delà de 64 pistes vues, on vide et on reconstruit les huit qui comptent.
+
+**Et il se reconstruisait pendant le geste qu'il devait rendre fluide**, parce
+que `GetProjectStateChangeCount` bouge dès que quoi que ce soit change, fader
+compris. On distingue maintenant deux causes : un changement de *nombre* d'effets
+se voit tout de suite (`TrackFX_GetCount` n'alloue rien) ; un changement du
+compteur à nombre constant attend un quart de seconde. Ce qui a rendu
+l'étranglement possible, c'est d'avoir **sorti le bypass du cache** — caché, il
+aurait mis 250 ms à s'allumer sous le doigt. Le commentaire d'origine disait déjà
+« every bypass is read live » ; le code, lui, le cachait.
+
+**`audioSub` : l'accès disque était déjà mémoïsé, mais la CLÉ du memo était une
+chaîne concaténée à chaque frame.** Trois allocations par case audio et par
+frame, pour décider s'il fallait reconstruire un texte qui ne change jamais. Les
+quatre composantes se comparent séparément.
+
+**`pollCapture` redemandait à chaque événement ce que son propre premier
+balayage venait de répondre** : le mode de chacune des seize lanes, pour chacun
+des cent vingt-huit événements. La liste est retenue une fois, et la zone et le
+décalage de chaque lane sont relevés avant la boucle — ils ne bougent pas pendant
+la frame. Les événements bruts vont dans deux tableaux parallèles réutilisés :
+128 tables par frame pendant une prise, c'est 128 occasions pour le
+ramasse-miettes de passer *pendant qu'on joue*.
+
+### Le poste que la liste sous-estimait
+
+Elle disait « ~2 à 7 appels d'ABI par case et par frame dans `drawCell` », et
+proposait une table tag→lane. La vraie mesure est plus grande et la réponse plus
+simple : à huit colonnes et huit scènes, en comptant `drawCell`, `resolveLive`,
+le motion et la capture, **une frame franchissait le pont d'ABI trois à quatre
+cents fois**. Et c'est un pont, pas un accès mémoire.
+
+Les huit champs que le dessin demande en boucle sont donc lus **une fois par
+lane** au début de `Loop.Poll`, et tout ce qui suit lit la table. Le coût devient
+*constant* — huit fois seize — au lieu de croître avec la grille, ce qui est la
+propriété qui compte puisque le nombre de colonnes vient de doubler.
+
+**La fraîcheur ne change pas, et c'est ce qui rend l'échange gratuit** : ces
+champs sont publiés par le fil audio en fin de bloc, et une frame de defer dure
+plus longtemps qu'un bloc — les relire au milieu d'une frame rendait exactement
+la même valeur. La seule exception est le **tag**, qui s'écrit depuis Lua :
+`SetLaneTag` met donc l'instantané à jour en même temps que le moteur, sans quoi
+une case armée puis dessinée dans la même frame clignoterait au mauvais endroit
+pendant une frame. Une exception, écrite au-dessus du code, plutôt qu'une règle
+générale qu'on n'aurait pas tenue.
+
+---
+
+## L'ordre de Cédric, parcouru
+
+Les cinq chantiers sont écrits et compilés le 2026-08-02. **Rien n'a été
+entendu** — c'est Cédric qui écoute, et c'est la seule chose qui manque.
+
+`ROADMAP_Chantiers.md` ne contient plus que deux lignes ouvertes, toutes deux sur
+l'instrument JSFX : des paramètres déclarés que rien ne lit, et le pitch à durée
+constante, qui demande un étirement qu'un fil audio de 2005 ne fera pas.
+
+**ABI 2.3.** Formats **10** (lanes) et **CPC1** (clips). **178 assertions** au
+harnais, zéro échec, zéro allocation dans le fil audio.
+
+**Deux choses n'ont pas été forcées, et le dire fait partie du travail.** Le
+motion est en Lua, donc l'enchaînement s'arrête avec la fenêtre : le descendre
+dans le moteur est une décision d'usage, pas de code. Et la cause du « plus de
+son sauf C2 » du sampler n'est toujours **pas** établie — deux vrais défauts ont
+été fermés autour, ce qui n'est pas la même chose.
+

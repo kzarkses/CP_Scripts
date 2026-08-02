@@ -293,23 +293,49 @@ end
 -- ---------------------------------------------------------------------------
 -- The two lists — FX chain and sends
 -- ---------------------------------------------------------------------------
--- Names are the only thing kept: every count, every level, every bypass is
--- read live from the track. A name costs a string allocation per call, and a
--- strip asks for all of them every frame, so they are cached against the
--- project's change counter — the one number REAPER already bumps whenever
--- anything at all moves, wherever it was moved from.
--- One entry per track a strip actually draws — four to eight of them, so the
--- table is bounded by the view and never needs pruning.
-local chain = {}     -- [guid] = { stamp, n, name[i], off[i] }
-local sends = {}     -- [guid] = { stamp, n, name[i], dest[i] }
+-- LES NOMS SEULEMENT, ET LA CLE EST LE POINTEUR.
+--
+-- Un nom coute une allocation de chaine, et une bande les demande TOUS a chaque
+-- frame — c'est pour ca qu'ils sont caches. Mais le cache etait indexe par GUID,
+-- et `guidOf` allouait une chaine A CHAQUE APPEL : `FxCount`, `Fx`, `SendCount`,
+-- `Send` passent tous par la, donc une quinzaine d'allocations par colonne et
+-- par frame, uniquement pour retrouver l'entree qui evitait des allocations. La
+-- cle est le POINTEUR de piste : rien a construire, rien a comparer caractere
+-- par caractere.
+--
+-- Le prix du pointeur est qu'il ne survit pas a la suppression d'une piste :
+-- l'entree resterait. Elle est donc BORNEE — au-dela de 64 pistes vues, on vide
+-- tout et on reconstruit les huit qui comptent. Une table qui ne grandit que
+-- quand on supprime des pistes, et qui se vide toute seule, n'a pas besoin de
+-- savoir ce qui est mort.
+--
+-- ⚠️ LE BYPASS N'EST PLUS CACHE. Il l'etait, alors que le commentaire d'origine
+-- disait deja le contraire — « every bypass is read live ». C'est ce qui a rendu
+-- l'etranglement ci-dessous possible : un bypass cache aurait mis un quart de
+-- seconde a s'allumer sous le doigt.
+local chain  = {}    -- [track*] = { stamp, t, n, name[i] }
+local sends  = {}    -- [track*] = { stamp, t, n, name[i], dest[i] }
+local nchain, nsends = 0, 0
+local CACHE_MAX = 64
+
+-- ---------------------------------------------------------------------------
+-- L'ETRANGLEMENT — pourquoi le compteur d'etat ne suffit pas
+-- ---------------------------------------------------------------------------
+-- `GetProjectStateChangeCount` bouge des que QUOI QUE CE SOIT change, y compris
+-- une ecriture de fader. Le cache se reconstruisait donc integralement pendant
+-- le geste meme qu'il devait rendre fluide : soixante reconstructions par
+-- seconde, chacune allouant un nom par effet, pendant qu'on tire un fader.
+--
+-- On distingue donc deux causes. Un changement de NOMBRE (un effet ajoute ou
+-- retire) se voit tout de suite : `TrackFX_GetCount` est un appel sans
+-- allocation, et on le paie a chaque fois. Un changement du compteur A NOMBRE
+-- CONSTANT — donc un fader, un pan, une automation — attend un quart de
+-- seconde. Un nom d'effet qui change est assez rare pour que 250 ms de retard
+-- ne se voient jamais ; soixante reconstructions par seconde, si.
+local REBUILD_S = 0.25
 
 local function stamp()
     return r.GetProjectStateChangeCount(0)
-end
-
-local function guidOf(tr)
-    local _, g = r.GetSetMediaTrackInfo_String(tr, "GUID", "", false)
-    return g
 end
 
 -- Shorten "VST3: Pro-Q 3 (FabFilter)" to "Pro-Q 3": the prefix says what
@@ -330,20 +356,34 @@ Mix.ShortFxName = shortFx
 
 local function chainOf(tr)
     if not valid(tr) then return nil end
-    local g = guidOf(tr)
-    local c = chain[g]
+    local c = chain[tr]
+    if not c then
+        if nchain >= CACHE_MAX then
+            for k in pairs(chain) do chain[k] = nil end
+            nchain = 0
+        end
+        c = { name = {}, stamp = -1, t = 0, n = -1 }
+        chain[tr] = c
+        nchain = nchain + 1
+    end
+    local n  = r.TrackFX_GetCount(tr)
     local st = stamp()
-    if c and c.stamp == st then return c end
-    if not c then c = { name = {}, off = {} }; chain[g] = c end
-    c.stamp = st
-    local n = r.TrackFX_GetCount(tr)
-    c.n = n
+    if c.n == n then
+        if c.stamp == st then return c end
+        c.stamp = st
+        local now = r.time_precise()
+        if now - c.t < REBUILD_S then return c end
+        c.t = now
+    else
+        c.stamp = st
+        c.t = r.time_precise()
+        c.n = n
+    end
     for i = 1, n do
         local ok, nm = r.TrackFX_GetFXName(tr, i - 1, "")
         c.name[i] = shortFx(ok and nm or nil)
-        c.off[i]  = not r.TrackFX_GetEnabled(tr, i - 1)
     end
-    for i = n + 1, #c.name do c.name[i] = nil c.off[i] = nil end
+    for i = n + 1, #c.name do c.name[i] = nil end
     return c
 end
 
@@ -356,7 +396,11 @@ end
 function Mix.Fx(tr, i)
     local c = chainOf(tr)
     if not c or i < 1 or i > c.n then return nil end
-    return c.name[i], c.off[i]
+    -- LU EN DIRECT. Un bypass est un bouton qu'on vient de cliquer : le cacher
+    -- derriere l'etranglement de 250 ms le ferait s'allumer en retard, ce qui
+    -- est exactement la chose qu'on ne pardonne pas a une bande de mixage.
+    -- L'appel ne construit rien.
+    return c.name[i], not r.TrackFX_GetEnabled(tr, i - 1)
 end
 
 function Mix.FxToggle(tr, i)
@@ -404,14 +448,29 @@ end
 -- ---- sends -----------------------------------------------------------------
 local function sendsOf(tr)
     if not valid(tr) then return nil end
-    local g = guidOf(tr)
-    local s = sends[g]
+    local s = sends[tr]
+    if not s then
+        if nsends >= CACHE_MAX then
+            for k in pairs(sends) do sends[k] = nil end
+            nsends = 0
+        end
+        s = { name = {}, dest = {}, stamp = -1, t = 0, n = -1 }
+        sends[tr] = s
+        nsends = nsends + 1
+    end
+    local n  = r.GetTrackNumSends(tr, 0)
     local st = stamp()
-    if s and s.stamp == st then return s end
-    if not s then s = { name = {}, dest = {} }; sends[g] = s end
-    s.stamp = st
-    local n = r.GetTrackNumSends(tr, 0)
-    s.n = n
+    if s.n == n then
+        if s.stamp == st then return s end
+        s.stamp = st
+        local now = r.time_precise()
+        if now - s.t < REBUILD_S then return s end
+        s.t = now
+    else
+        s.stamp = st
+        s.t = r.time_precise()
+        s.n = n
+    end
     for i = 1, n do
         local d = r.GetTrackSendInfo_Value(tr, 0, i - 1, "P_DESTTRACK")
         s.dest[i] = d
