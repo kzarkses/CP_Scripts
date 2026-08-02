@@ -33,6 +33,12 @@ local MODULES = {
     { name = "editor", label = "CP Editor", file = "CP_Engine/Keymaps/editor.lua" },
 }
 
+-- Le module que l'appelant veut voir. Pose par KeymapUI.OpenWindow avant de
+-- lancer ce script, et consomme ici : le laisser trainer ferait rouvrir sur le
+-- module d'hier a la prochaine ouverture depuis la liste des actions.
+local want = r.GetExtState("CP_Keymap", "open_module")
+r.DeleteExtState("CP_Keymap", "open_module", false)
+
 local sel = 1
 local panes, labels = {}, {}
 local missing = nil
@@ -47,6 +53,10 @@ for i = 1, #MODULES do
     else
         missing = (missing and (missing .. ", ") or "") .. m.file
     end
+end
+
+for i = 1, #MODULES do
+    if MODULES[i].name == want then sel = i break end
 end
 
 local function frame(theme)
@@ -71,10 +81,13 @@ local function frame(theme)
         UI.Spacing()
     end
 
-    KeymapUI.Panel(UI, S, theme)
+    -- « Close » ferme LA FENETRE : c'est desormais la sienne, pas une page
+    -- posee dans celle de quelqu'un d'autre.
+    if not KeymapUI.Panel(UI, S, theme) then UI.Core.RequestClose() end
 end
 
-UI.Init("CP Keymap", 780, 640, { scale = 1.0, dock = 0, persist = "CP_Keymap" })
+UI.Init("CP Keymap — " .. (MODULES[sel] and MODULES[sel].label or ""),
+        780, 640, { scale = 1.0, dock = 0, persist = "CP_Keymap" })
 UI.Run(frame)
 UI.OnClose(function()
     -- ON N'ENREGISTRE PAS TOUT SEUL. Une carte de raccourcis se relit avant

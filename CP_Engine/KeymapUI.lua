@@ -3,18 +3,19 @@
 -- LE PANNEAU DE RACCOURCIS, DESSINE UNE FOIS ET OUVERT DE PARTOUT.
 --
 -- ---------------------------------------------------------------------------
--- POURQUOI IL EST ICI ET PAS DANS UNE FENETRE
+-- UN MODULE, ET UNE FENETRE A PART
 -- ---------------------------------------------------------------------------
--- « Il y a les options dans CP_Editor, il y aurait key mapping, on clique
--- dessus et ça ouvre la configuration pour CP_Editor. » C'est la bonne place :
--- on regle les raccourcis de l'outil qu'on a sous la main, pas d'un outil
--- qu'on va chercher dans une liste d'actions.
+-- Chaque script ouvre la configuration de SES raccourcis depuis ses propres
+-- options — c'est la bonne porte : on regle l'outil qu'on a sous la main. Mais
+-- elle s'ouvre dans une FENETRE A PART, jamais par-dessus la fenetre qui
+-- l'ouvre : regler un raccourci se fait en regardant l'editeur, pas a sa
+-- place, et une page qui remplace ce qu'on est en train d'editer oblige a
+-- fermer pour verifier, puis a rouvrir pour corriger.
 --
--- Un module, donc, plutot qu'un script : CP_Editor l'ouvre chez lui, CP_Session
--- et CP_Sampler l'ouvriront chez eux, et la fenetre autonome
--- (`CP_Tools/CP_Keymap.lua`) reste utile pour tout voir d'un coup. Une seule
--- mise en oeuvre — sinon les cinq divergeront, ce qui est la seule chose dont
--- on soit sur.
+-- Ce fichier est donc le PANNEAU, pas la fenetre : `CP_Tools/CP_Keymap.lua`
+-- l'heberge, et chaque script l'ouvre en lui disant quel module montrer. Une
+-- seule mise en oeuvre — sinon les cinq divergeront, ce qui est la seule chose
+-- dont on soit sur.
 --
 -- ---------------------------------------------------------------------------
 -- LA LISTE EST DESSINEE, PAS EMPILEE
@@ -358,6 +359,32 @@ function KeymapUI.Panel(UI, S, theme, h)
         UI.RequestRedraw()
     end
     return keep
+end
+
+-- ---------------------------------------------------------------------------
+-- OUVRIR LA FENETRE DEPUIS N'IMPORTE QUEL SCRIPT
+-- ---------------------------------------------------------------------------
+-- `AddRemoveReaScript` enregistre le script s'il ne l'est pas et rend son
+-- identifiant de commande — idempotent, donc appelable a chaque fois sans rien
+-- accumuler. C'est le seul moyen honnete de lancer un autre script : le
+-- charger ici en ferait une PAGE de celui-ci, ce qu'on vient precisement de
+-- refuser.
+--
+-- Le module a montrer voyage par l'ExtState : la fenetre le lit a son
+-- demarrage. Un argument de ligne de commande n'existe pas pour un ReaScript,
+-- et poser un fichier pour trois caracteres serait pire.
+function KeymapUI.OpenWindow(module)
+    if module then
+        r.SetExtState("CP_Keymap", "open_module", tostring(module), false)
+    end
+    local path = r.GetResourcePath()
+                 .. "/Scripts/CP_Scripts/CP_Tools/CP_Keymap.lua"
+    local id = r.AddRemoveReaScript(true, 0, path, true)
+    if id and id ~= 0 then
+        r.Main_OnCommand(id, 0)
+        return true
+    end
+    return false
 end
 
 function KeymapUI.Flash(S)
