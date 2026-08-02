@@ -1232,6 +1232,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
   g_rec = rec;
   register_all(rec);
 
-  ShowConsoleMsg("[CP_Native] moteur charge — CP_EngineABI() disponible\n");
+  // PAS DE MESSAGE AU CHARGEMENT. Il a servi tant qu'on doutait que REAPER
+  // reprenne la DLL ; maintenant qu'il la reprend, il ouvre la console a chaque
+  // demarrage pour dire qu'il n'y a rien a dire. La question « REAPER a-t-il
+  // repris le binaire que je viens de construire » a deja une reponse qui ne
+  // derange personne : la version de l'ABI, affichee dans la zone de statut de
+  // CP_Session.
   return 1;
 }
