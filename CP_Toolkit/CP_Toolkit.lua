@@ -674,6 +674,13 @@ function UI.VFaderAt(id, x, y, w, h, value, opts)
     return Widgets.VFaderAt(id, x, y, w, h, value, UI._theme, opts)
 end
 
+-- Le bouton rond, place par rectangle. `opts` est celui de UI.Knob : on n'y
+-- ajoute que la position, en deux nombres, pour ne rien allouer par frame.
+function UI.KnobAt(id, x, y, size, value, default_value, opts)
+    opts.at_x, opts.at_y, opts.size = x, y, size
+    return Widgets.Knob(id, nil, value, default_value, UI._theme, opts)
+end
+
 function UI.MeterAt(x, y, w, h, peak_l, peak_r, vertical, hold_l, hold_r)
     return Widgets.MeterAt(x, y, w, h, peak_l, peak_r, UI._theme, vertical,
                            hold_l, hold_r)

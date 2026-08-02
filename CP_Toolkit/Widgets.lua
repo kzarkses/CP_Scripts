@@ -2049,8 +2049,19 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
     local box_w = size + lw
     local box_h = right and size or (size + (has_label and KNOB_LABEL_H or 0))
 
-    if Layout.IsWrapping() then Layout.WrapPreCheck(box_w) end
-    local x, y = Layout.GetCursorPos()
+    -- PLACE PAR RECTANGLE QUAND ON LUI EN DONNE UN. Une bande de console
+    -- calcule sa propre geometrie — c'est pour ca que ChipAt, FaderAt et
+    -- MeterAt existent — et il manquait le bouton rond a la famille. Deux
+    -- NOMBRES et non une table : ce chemin passe dans une boucle de dessin, et
+    -- une table par bouton et par frame est exactement ce qu'on evite partout
+    -- ailleurs.
+    local x, y
+    if opts.at_x then
+        x, y = opts.at_x, opts.at_y or 0
+    else
+        if Layout.IsWrapping() then Layout.WrapPreCheck(box_w) end
+        x, y = Layout.GetCursorPos()
+    end
     local radius = size / 2
     local sensitivity = opts.sensitivity or 0.004
 
@@ -2258,7 +2269,9 @@ function Widgets.Knob(id, label, value, default_value, theme, opts)
         end
     end
 
-    Layout.AdvanceCursor(box_w, box_h)
+    -- Place par rectangle : le curseur de disposition ne bouge pas, sinon il
+    -- emporterait ce qui se dessine apres nous.
+    if not opts.at_x then Layout.AdvanceCursor(box_w, box_h) end
     return changed, new_value
 end
 
@@ -6422,15 +6435,31 @@ end
 -- running bottom-up when vertical and left-right when horizontal. `hold` is
 -- the peak line — on a meter this small it is the only thing that makes a
 -- transient visible at all, since the level itself is gone by the next frame.
+-- DEUX MOITIES DE LA MEME EPAISSEUR, et il a fallu qu'on le voie pour le lire.
+--
+-- Le partage etait `half = w/2 - 1` puis « tout le reste » : sur onze pixels la
+-- gauche en prenait cinq et la droite six, sur neuf trois et cinq. Un VU dont
+-- les deux cotes n'ont pas la meme largeur ne se lit plus comme une paire — on
+-- compare deux surfaces, et l'oeil corrige en permanence une asymetrie qui ne
+-- veut rien dire. Les deux prennent maintenant la meme part, le reste va dans
+-- le rail de gauche plutot que dans l'un des deux canaux, et la paire est
+-- centree dans la place qu'on lui donne.
+local function meterSplit(w)
+    local gap = (w >= 5) and 1 or 0
+    local half = floor((w - gap) / 2)
+    if half < 1 then half = 1 gap = (w > 2) and (w - 2) or 0 end
+    return half, gap, floor((w - (half * 2 + gap)) / 2)
+end
+
 function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, hold_r)
     if not Core.IsVisible(x, y, w, h) then return end
     local bg = theme.colors.frame_bg
     if vertical then
-        local half = floor(w / 2) - 1
-        if half < 1 then half = 1 end
-        local w2 = w - half - 1
+        local half, gap, pad = meterSplit(w)
+        local w2 = half
+        x = x + pad
         Core.DrawRect(x, y, half, h, bg[1], bg[2], bg[3], bg[4])
-        Core.DrawRect(x + half + 1, y, w2, h, bg[1], bg[2], bg[3], bg[4])
+        Core.DrawRect(x + half + gap, y, w2, h, bg[1], bg[2], bg[3], bg[4])
         local hl = floor(max(0, min(1, peak_l)) * h)
         if hl > 0 then
             local mr, mg, mb, ma = meter_color(peak_l)
@@ -6439,7 +6468,7 @@ function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, ho
         local hr = floor(max(0, min(1, peak_r)) * h)
         if hr > 0 then
             local mr, mg, mb, ma = meter_color(peak_r)
-            Core.DrawRect(x + half + 1, y + h - hr, w2, hr, mr, mg, mb, ma)
+            Core.DrawRect(x + half + gap, y + h - hr, w2, hr, mr, mg, mb, ma)
         end
         if hold_l and hold_l > 0 then
             local mr, mg, mb = meter_color(hold_l)
@@ -6448,15 +6477,15 @@ function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, ho
         end
         if hold_r and hold_r > 0 then
             local mr, mg, mb = meter_color(hold_r)
-            Core.DrawRect(x + half + 1, y + h - 1 - floor(min(1, hold_r) * (h - 1)),
+            Core.DrawRect(x + half + gap, y + h - 1 - floor(min(1, hold_r) * (h - 1)),
                           w2, 1, mr, mg, mb, 1)
         end
     else
-        local half = floor(h / 2) - 1
-        if half < 1 then half = 1 end
-        local h2 = h - half - 1
+        local half, gap, pad = meterSplit(h)
+        local h2 = half
+        y = y + pad
         Core.DrawRect(x, y, w, half, bg[1], bg[2], bg[3], bg[4])
-        Core.DrawRect(x, y + half + 1, w, h2, bg[1], bg[2], bg[3], bg[4])
+        Core.DrawRect(x, y + half + gap, w, h2, bg[1], bg[2], bg[3], bg[4])
         local wl = floor(max(0, min(1, peak_l)) * w)
         if wl > 0 then
             local mr, mg, mb, ma = meter_color(peak_l)
@@ -6465,7 +6494,7 @@ function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, ho
         local wr = floor(max(0, min(1, peak_r)) * w)
         if wr > 0 then
             local mr, mg, mb, ma = meter_color(peak_r)
-            Core.DrawRect(x, y + half + 1, wr, h2, mr, mg, mb, ma)
+            Core.DrawRect(x, y + half + gap, wr, h2, mr, mg, mb, ma)
         end
         if hold_l and hold_l > 0 then
             local mr, mg, mb = meter_color(hold_l)
@@ -6473,7 +6502,7 @@ function Widgets.MeterAt(x, y, w, h, peak_l, peak_r, theme, vertical, hold_l, ho
         end
         if hold_r and hold_r > 0 then
             local mr, mg, mb = meter_color(hold_r)
-            Core.DrawRect(x + floor(min(1, hold_r) * (w - 1)), y + half + 1, 1, h2,
+            Core.DrawRect(x + floor(min(1, hold_r) * (w - 1)), y + half + gap, 1, h2,
                           mr, mg, mb, 1)
         end
     end
