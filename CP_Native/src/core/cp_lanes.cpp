@@ -26,7 +26,7 @@ void Lane::reset() {
   nbuf.store(0, std::memory_order_relaxed);
   ncount[0].store(0, std::memory_order_relaxed);
   ncount[1].store(0, std::memory_order_relaxed);
-  for (int i = 0; i < 128; ++i) sounding[i] = 0;
+  for (int i = 0; i < 128; ++i) { sounding[i] = 0; spass[i] = 0; }
   rec_start = 0.0;
   mode.store(kLaneEmpty, std::memory_order_relaxed);
   pending.store(kPendNone, std::memory_order_relaxed);
@@ -219,6 +219,40 @@ double Lanes::launch_target(double pb, bool active) const {
   return (ph < launch_tolerance(q)) ? (pb - ph) : (pb - ph + q);
 }
 
+// OU COMMENCE UNE PRISE : AU PROCHAIN DEBUT DE PASSE DE CETTE LANE-CI.
+//
+// Ce n'est PAS la meme question que « ou tombe un depart », et les confondre
+// produisait le defaut que Cedric decrit ainsi : « quand j'enregistre au piano,
+// a chaque fois c'est le milieu du clip qui est le debut ».
+//
+// Voici la mecanique exacte. Une prise dure une passe entiere — elle se ferme
+// toute seule apres `Lb` — et les notes sont ecrites A LA PHASE OU ELLES ONT
+// ETE JOUEES, ce qui est la seule facon d'obtenir une boucle qui revient sur
+// elle-meme. Si la prise ne COMMENCE pas a la phase zero, la boucle obtenue est
+// la meme musique TOURNEE : ce qu'on a joue en premier revient au milieu.
+//
+// La grille de quantize ne peut pas repondre a cette question : elle ne connait
+// pas la longueur de la case. Q a la mesure avec « Rec: 4 mesures » fait
+// commencer la prise sur n'importe laquelle des quatre — donc trois fois sur
+// quatre, tournee. A Q: Off elle repond « tout de suite », c'est-a-dire
+// n'importe ou.
+//
+// La tolerance vaut ici ce qu'elle vaut ailleurs : appuyer juste APRES le temps
+// fort prend CETTE passe, parce qu'une main est en retard de quarante a cent
+// vingt millisecondes et qu'attendre une passe entiere pour ca serait absurde.
+//
+// L'overdub, lui, garde la grille : entrer en cours de boucle est exactement ce
+// qu'on lui demande.
+double Lanes::rec_target(int li, double pb, bool active, double ts_num) const {
+  if (!active) return kWaitClock;
+  double sa, Ls;
+  lane_span(li, ts_num, &sa, &Ls);
+  if (Ls <= 0.0) return pb;
+  const double po = pb + lanes_[li].phase_off.load(std::memory_order_relaxed);
+  const double ph = po - std::floor(po / Ls) * Ls;
+  return (ph < launch_tolerance(Ls)) ? (pb - ph) : (pb + (Ls - ph));
+}
+
 // OU TOMBE UN ARRET. La meme frontiere tant qu'une horloge tourne — un clip
 // finit sa mesure — mais MAINTENANT quand il n'y en a pas : rien ne sonne,
 // donc il ne reste rien a finir et attendre ne ferait qu'echouer la lane.
@@ -324,7 +358,7 @@ void Lanes::drain_cmds(double pb, bool active, double ts_num, frame_t at) {
           L.mode.store(kLaneArmed, std::memory_order_relaxed);
           break;
         }
-        const double tq = launch_target(pb, active);
+        const double tq = rec_target(li, pb, active, ts_num);
         if (tq < kWaitTest || tq > pb + 0.0005) {
           L.pending.store(kPendRec, std::memory_order_relaxed);
           L.pend_target.store(tq, std::memory_order_relaxed);
@@ -421,6 +455,24 @@ void Lanes::drain_cmds(double pb, bool active, double ts_num, frame_t at) {
         break;
       }
 
+      // Le rendez-vous. Voir kLcPlayAt dans l'en-tete : la date est celle de
+      // l'appelant, et elle ne passe pas par la grille de quantize.
+      case kLcPlayAt: {
+        if (m == kLaneStopped) {
+          L.pending.store(kPendPlay, std::memory_order_relaxed);
+          L.pend_target.store(c.arg, std::memory_order_relaxed);
+        }
+        break;
+      }
+
+      case kLcStopAt: {
+        if (m == kLanePlaying || m == kLaneOverdub) {
+          L.pending.store(kPendStop, std::memory_order_relaxed);
+          L.pend_target.store(c.arg, std::memory_order_relaxed);
+        }
+        break;
+      }
+
       case kLcClear: {
         L.mode.store(kLaneEmpty, std::memory_order_relaxed);
         L.pending.store(kPendNone, std::memory_order_relaxed);
@@ -460,7 +512,8 @@ void Lanes::run_pendings(double pb, bool active, double ts_num, frame_t at,
     // bloc : le transport qui roule en milieu de mesure ne fait pas de cet
     // instant une barre.
     if (m == kLaneArmed && L.pending.load(std::memory_order_relaxed) == kPendNone) {
-      const double tq = launch_target(pb, active);
+      // Le debut de passe, pas la grille : voir rec_target.
+      const double tq = rec_target(li, pb, active, ts_num);
       if (tq > pb + 0.0005) {
         L.pending.store(kPendRec, std::memory_order_relaxed);
         L.pend_target.store(tq, std::memory_order_relaxed);
@@ -703,7 +756,9 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
     // la table tient dans deux lignes de cache.
     int16_t       desire[128];
     unsigned char dvel[128];
-    for (int p = 0; p < 128; ++p) { desire[p] = 0; dvel[p] = 0; }
+    // ET DE QUELLE PASSE, sur huit bits — voir Lane::spass.
+    unsigned char dpass[128];
+    for (int p = 0; p < 128; ++p) { desire[p] = 0; dvel[p] = 0; dpass[p] = 0; }
 
     const double pr = pref - std::floor(pref / Ls) * Ls;
     const unsigned seed = lane_seed(li);
@@ -720,9 +775,10 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
       double d = pr - ns;
       d -= std::floor(d / Ls) * Ls;
       if (d < (double)n.len) {
-        // LE TIRAGE, sur la passe de l'ATTAQUE. `pref - d` est l'instant ou
-        // cette note a commence : constant tant qu'elle sonne, y compris quand
-        // elle traverse la frontiere de boucle. Cent pour cent ne hache rien.
+        // LA PASSE DE L'ATTAQUE. `pref - d` est l'instant ou cette note a
+        // commence : constant tant qu'elle sonne, y compris quand elle traverse
+        // la frontiere de boucle. Elle sert DEUX FOIS — au tirage juste en
+        // dessous, et a l'identite du desir — et c'est la meme reponse.
         // ⚠️ UNE NOTE AUSSI LONGUE QUE LA ZONE NE TIRE PAS, ET C'EST MESURE.
         //
         // `d` est ramene dans [0, Ls) : pour une note dont la longueur atteint
@@ -736,9 +792,9 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
         // Une note qui couvre toute la boucle ne re-attaque jamais : il n'y a
         // pas de passe pour laquelle se taire, donc elle joue. C'est la seule
         // lecture qui ne produise pas un artefact.
+        const double onset = pref - d;
+        const long long pass = (long long)std::floor(onset / Ls);
         if (n.prob < 100 && (double)n.len < Ls) {
-          const double onset = pref - d;
-          const long long pass = (long long)std::floor(onset / Ls);
           const unsigned h = note_hash((unsigned)k,
                                        (unsigned)((unsigned long long)pass) ^ seed);
           if ((h % 100u) >= (unsigned)n.prob) continue;
@@ -746,6 +802,7 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
         const int p = n.pitch & 0x7F;
         desire[p] = (int16_t)(k + 1);
         dvel[p]   = n.vel;
+        dpass[p]  = (unsigned char)((unsigned long long)pass & 0xFFull);
       }
     }
 
@@ -753,7 +810,19 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
     for (int p = 0; p < 128; ++p) {
       const int16_t des = desire[p];
       const int16_t cur = L.sounding[p];
-      if (des == cur) continue;
+      // ⚠️ LA MEME NOTE D'UNE AUTRE PASSE EST UNE AUTRE NOTE.
+      //
+      // Comparer les seuls indices suffit tant qu'une note laisse un trou entre
+      // deux tours. Celle qui remplit sa passe n'en laisse aucun : elle est
+      // desiree a toutes les phases, l'ensemble ne change jamais, et elle
+      // n'attaque qu'une seule fois de toute la session. C'est le « il faut la
+      // raccourcir d'un cheveu pour qu'elle sonne » — un contournement qu'on
+      // finit par croire normal.
+      //
+      // La coupure et l'attaque tombent alors au MEME echantillon, celui de la
+      // frontiere : les deux `phase_hit` ci-dessous visent la meme phase, et
+      // c'est exactement ce que fait un sequenceur au point de boucle.
+      if (des == cur && (des == 0 || dpass[p] == L.spass[p])) continue;
 
       if (cur > 0) {
         // La coupure tombe a la FIN de la note qui sonnait — calculee, pas
@@ -779,6 +848,7 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
         emit(port, on_at, (unsigned char)(0x90 + ch), (unsigned char)p, dvel[p]);
       }
       L.sounding[p] = des;
+      L.spass[p]    = dpass[p];
     }
   }
 }

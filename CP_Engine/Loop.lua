@@ -95,14 +95,17 @@ Loop.LANE_TAG_BASE = 999000
 -- what-you-hear position, which puts every note out late by the device's output
 -- latency. Running against it would sound broken while claiming to work, so the
 -- honest answer is to decline the engine.
--- 2.4, et ce n'est pas de la prudence : ce fichier APPELLE des surfaces qui
+-- 2.5, et ce n'est pas de la prudence : ce fichier APPELLE des surfaces qui
 -- n'existent qu'a partir de la. `CP_LaneSetNote` avec son septieme argument
--- (2.2), `CP_LaneSet(lane, "tsnum")` (2.3), `CP_LaneSet(lane, "umute")` (2.4).
--- Contre un moteur plus ancien, aucune de ces trois n'echoue bruyamment : la
--- probabilite est perdue, la signature de boucle ne prend pas, et le mute
--- musical ne tait rien. Trois fonctionnalites qui ont l'air de marcher. Refuser
--- le moteur est la seule reponse honnete, et les fenetres le DISENT deja.
-local ABI_MIN = 2.4
+-- (2.2), `CP_LaneSet(lane, "tsnum")` (2.3), `CP_LaneSet(lane, "umute")` (2.4),
+-- `CP_LaneCmd(lane, 10|11, beat)` (2.5).
+-- Contre un moteur plus ancien, aucune des quatre n'echoue bruyamment : la
+-- probabilite est perdue, la signature de boucle ne prend pas, le mute musical
+-- ne tait rien, et un rendez-vous devient un ordre sans date — donc un
+-- enchainement qui part n'importe quand. Quatre fonctionnalites qui ont l'air
+-- de marcher. Refuser le moteur est la seule reponse honnete, et les fenetres
+-- le DISENT deja.
+local ABI_MIN = 2.5
 local NATIVE  = false
 
 local EXT_SEC    = "CP_Loop"
@@ -779,6 +782,27 @@ end
 function Loop.Panic()        if NATIVE then r.CP_LanesPanic() end end
 function Loop.Play(lane)     cmd(5, lane) end
 function Loop.StopClip(lane) cmd(6, lane) end
+
+-- ---------------------------------------------------------------------------
+-- LE RENDEZ-VOUS (ABI 2.5) — « pars / arrete-toi A CE BEAT »
+-- ---------------------------------------------------------------------------
+-- `Loop.Play` demande une frontiere de QUANTIZE ; ces deux-ci demandent une
+-- DATE. La difference n'apparait que la ou elle compte : une fin de passe n'est
+-- pas une frontiere de quantize. Sur une case de deux mesures avec Q a la
+-- mesure, la frontiere la plus proche tombe AU MILIEU du clip.
+--
+-- Un geste HUMAIN garde le quantize : cliquer une case veut dire « a la
+-- prochaine frontiere », c'est tout l'interet de la grille. Un enchainement
+-- AUTOMATIQUE, lui, connait sa date — elle vaut la fin de la passe en cours —
+-- et la lui faire arrondir par une grille qui ne connait pas la longueur de la
+-- case est ce qui rendait les sept comportements de motion faux a la fois.
+--
+-- Le beat est celui de l'HORLOGE DU MOTEUR (`Loop.EngineBeat`), et l'appelant
+-- doit le calculer a partir de valeurs du MEME bloc publie — beat, phase et
+-- longueur de zone se lisent ensemble, ou la date est fausse de ce qui s'est
+-- passe entre les deux lectures.
+function Loop.PlayAt(lane, beat)     cmd(10, lane, beat) end
+function Loop.StopClipAt(lane, beat) cmd(11, lane, beat) end
 function Loop.ClearAll()
     for l = 0, Loop.MAX_LANES - 1 do
         Loop.SetLaneTag(l, 0)

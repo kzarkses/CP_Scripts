@@ -1592,9 +1592,163 @@ static void test_lane_probability_held_note() {
     }
     clk += B;
   }
-  std::printf("      note tenue a 50%% : %d attaques, %d coupures\n", on, off);
-  check(on == 1 && off == 0,
-        "elle attaque UNE fois et ne se coupe jamais");
+  // Ce qu'on prouve : elle ne se fait pas hacher AU HASARD. Elle n'entre pas
+  // dans le tirage du tout (sa longueur atteint la zone), donc elle joue a
+  // toutes les passes ; et elle re-attaque a la FRONTIERE, une fois par tour,
+  // jamais au milieu. Une coupure par frontiere et une attaque par frontiere :
+  // c'est ce que fait une boucle d'un beat, et c'est reproductible.
+  std::printf("      note tenue a 50%%, zone d'un beat : %d attaques, %d coupures\n",
+              on, off);
+  check(on == off + 1, "une attaque par tour, une coupure par tour");
+  check(on > 20, "elle joue a chaque passe au lieu de tirer au sort");
+}
+
+// ---------------------------------------------------------------------------
+// UNE NOTE QUI REMPLIT SA PASSE RE-ATTAQUE A CHAQUE TOUR
+// ---------------------------------------------------------------------------
+// Le defaut tel que Cedric l'a decrit : « si une note se finit a la fin de la
+// boucle et commence au debut, le son ne se declenche pas ; je dois la rendre
+// legerement plus courte ».
+//
+// La porte reconcilie un ENSEMBLE. Une note qui couvre toute la passe est
+// desiree a toutes les phases : l'ensemble ne varie jamais, donc aucune
+// transition n'est emise, donc elle attaque une seule fois de toute la session.
+// Le contournement (raccourcir d'un cheveu) rouvre un trou, et c'est le trou
+// qui produisait la re-attaque.
+//
+// Depuis que la PASSE fait partie de l'identite du desir, la coupure et
+// l'attaque tombent au meme echantillon — celui de la frontiere.
+// ---------------------------------------------------------------------------
+// UNE PRISE COMMENCE AU DEBUT D'UNE PASSE
+// ---------------------------------------------------------------------------
+// « Quand j'enregistre au piano, a chaque fois c'est le milieu du clip qui est
+// le debut. » La prise partait a la prochaine frontiere de QUANTIZE, elle dure
+// une passe entiere, et les notes sont ecrites a la phase ou elles ont ete
+// jouees : commencer ailleurs qu'a la phase zero rend la meme musique TOURNEE.
+//
+// Q a la mesure et une prise de quatre mesures : trois departs sur quatre
+// tombaient au mauvais endroit, et celui du milieu tombait pile au milieu.
+static void test_lane_take_starts_on_the_pass() {
+  group("lanes : une prise commence au debut d'une passe, pas sur la grille");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(false);
+  L.set_launch_q(4.0);                          // Q = une mesure
+  L.publish_transport(120.0, 0.0, 1, 4.0, 0);   // le transport roule
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(4.0, std::memory_order_relaxed);   // 16 beats
+  L.post(0, kLcSetMode, (double)kLaneEmpty);
+
+  const int B = 512;
+  frame_t clk = 0;
+  // On avance jusqu'au beat 6 — au milieu de la deuxieme mesure — puis on
+  // demande la prise. La grille repondrait 8 ; la passe repond 16.
+  while (L.engine_beat() < 6.0) { e.tick(B); clk += B; }
+  L.post(0, kLcRec, 0.0);
+
+  double at = -1.0;
+  for (int i = 0; i < 2000 && at < 0.0; ++i) {
+    e.tick(B);
+    if (l0.mode.load(std::memory_order_relaxed) == kLaneRec) at = l0.rec_start;
+    clk += B;
+  }
+  std::printf("      REC demande au beat 6, prise datee au beat %.3f\n", at);
+  check(at > 15.9 && at < 16.1,
+        "elle attend le debut de la passe (16), pas la mesure suivante (8)");
+}
+
+static void test_lane_note_fills_the_loop() {
+  group("lanes : une note aussi longue que la boucle re-attaque a chaque tour");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);
+  L.set_launch_q(0.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(1.0, std::memory_order_relaxed);          // une mesure = 4 beats
+  lane_note(L, 0, 0, 0.0, 4.0, 60, 100);                  // exactement la boucle
+  L.publish_notes(0, 1);
+  L.post(0, kLcSetMode, (double)kLanePlaying);
+
+  const int B = 512;
+  LaneCap cap;
+  frame_t clk = 0;
+  int on = 0, off = 0;
+  // 1500 blocs de 512 a 48 kHz et 120 BPM = 32 beats = huit passes.
+  for (int i = 0; i < 1500; ++i) {
+    e.tick(B);
+    lane_pull(L, 0, clk, B, &cap);
+    for (int k = 0; k < cap.n; ++k) {
+      const int st = cap.msg[k][0] & 0xF0;
+      if (st == 0x90 && cap.msg[k][2] > 0) on++;
+      else if (st == 0x80 || (st == 0x90 && cap.msg[k][2] == 0)) off++;
+    }
+    clk += B;
+  }
+  std::printf("      note pleine longueur : %d attaques, %d coupures (8 passes)\n",
+              on, off);
+  check_eq(on, 8, "une attaque par passe");
+  check_eq(off, 7, "et une coupure a chaque frontiere traversee");
+}
+
+// ---------------------------------------------------------------------------
+// LE RENDEZ-VOUS : PARTIR A UNE DATE, PAS SUR UNE GRILLE
+// ---------------------------------------------------------------------------
+// Une fin de passe n'est pas une frontiere de quantize. Avec Q a la mesure et
+// une case de deux mesures, la frontiere la plus proche tombe AU MILIEU du
+// clip : c'est ce qui faisait changer de case a un endroit que personne n'avait
+// choisi, sur les sept comportements d'enchainement a la fois.
+//
+// On demande donc le beat 6 — qui n'est pas un multiple de 4 — et on verifie
+// que la lane part LA, et pas a 4 ni a 8.
+static void test_lane_play_at_is_a_rendezvous() {
+  group("lanes : « pars a ce beat » ignore la grille de quantize");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(false);
+  L.set_launch_q(4.0);                       // Q = une mesure
+  L.publish_transport(120.0, 0.0, 1, 4.0, 0);   // le transport roule
+
+  Lane& l0 = L.lane(0);
+  l0.port.store(0, std::memory_order_relaxed);
+  l0.bars.store(2.0, std::memory_order_relaxed);
+  lane_note(L, 0, 0, 0.0, 0.5, 60, 100);
+  L.publish_notes(0, 1);
+  L.post(0, kLcSetMode, (double)kLaneStopped);
+  e.tick(64);                                 // draine le set-mode
+
+  L.post(0, kLcPlayAt, 6.0);
+
+  const int B = 512;
+  frame_t clk = 64;
+  double at = -1.0;
+  for (int i = 0; i < 800 && at < 0.0; ++i) {
+    e.tick(B);
+    if (l0.mode.load(std::memory_order_relaxed) == kLanePlaying) at = L.engine_beat();
+    clk += B;
+  }
+  std::printf("      demande au beat 6.000, partie au beat %.3f\n", at);
+  check(at >= 0.0, "elle est bien partie");
+  // Un bloc de 512 vaut 0,0213 beat a 120 BPM : la tolerance est un bloc.
+  check(at > 5.9 && at < 6.1, "au rendez-vous, ni a la mesure d'avant ni a celle d'apres");
+
+  // Et l'arret suit la meme regle.
+  L.post(0, kLcStopAt, 9.5);
+  double sat = -1.0;
+  for (int i = 0; i < 800 && sat < 0.0; ++i) {
+    e.tick(B);
+    if (l0.mode.load(std::memory_order_relaxed) == kLaneStopped) sat = L.engine_beat();
+    clk += B;
+  }
+  std::printf("      arret demande au beat 9.500, arretee au beat %.3f\n", sat);
+  check(sat > 9.4 && sat < 9.6, "l'arret aussi est un rendez-vous");
 }
 
 // ---------------------------------------------------------------------------
@@ -1749,6 +1903,9 @@ int main() {
   test_lane_transport_stop_resume();
   test_lane_probability();
   test_lane_probability_held_note();
+  test_lane_note_fills_the_loop();
+  test_lane_take_starts_on_the_pass();
+  test_lane_play_at_is_a_rendezvous();
   test_lane_no_alloc();
 
   std::printf("\n=====================================\n");

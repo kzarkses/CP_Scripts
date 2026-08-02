@@ -101,6 +101,20 @@ enum LaneCmdType : int {
   kLcClearAll = 7,
   kLcOverdub  = 8,
   kLcSetMode  = 9,   // rappel de session : poser l'etat sans le jouer
+  // « PARS / ARRETE EXACTEMENT LA », l'argument est un beat de l'horloge du
+  // moteur. Ce n'est PAS un quantize : c'est un rendez-vous.
+  //
+  // Un enchainement automatique tombe a la FIN D'UNE PASSE, et une fin de passe
+  // n'est pas une frontiere de quantize. Sur une case de deux mesures avec Q a
+  // la mesure, la frontiere la plus proche tombe AU MILIEU du clip : la colonne
+  // changeait de case a un endroit que personne n'avait choisi, et ca se voyait
+  // sur les sept comportements a la fois puisque tous passent par la.
+  //
+  // La date vient de l'appelant parce qu'il est le seul a la connaitre : il lit
+  // la phase, la longueur de zone et le beat du MEME bloc publie, donc « la fin
+  // de cette passe » est un nombre exact et non une estimation.
+  kLcPlayAt   = 10,
+  kLcStopAt   = 11,
 };
 
 // Une cible en attente qui n'a PAS ENCORE DE DATE : elle partira au premier
@@ -269,6 +283,24 @@ struct Lane {
   // Quelle note sonne, par hauteur : indice+1, ou 0. C'est LA structure de la
   // porte, et elle n'appartient qu'au fil audio.
   int16_t             sounding[128];
+  // DE QUELLE PASSE VIENT LA NOTE QUI SONNE, sur huit bits.
+  //
+  // La porte reconcilie un ENSEMBLE : tant que la meme note couvre la phase,
+  // rien ne change et rien n'est emis. C'est juste pour une note ordinaire, et
+  // FAUX pour celle qui remplit sa passe d'un bout a l'autre — elle couvre
+  // toutes les phases, donc l'ensemble ne varie jamais, donc elle attaque une
+  // fois et plus jamais. Une note aussi longue que la boucle ne se declenchait
+  // pas : il fallait la raccourcir d'un cheveu pour l'entendre, ce qui est le
+  // genre de contournement qu'on finit par croire normal.
+  //
+  // Le numero de passe rentre donc dans l'identite du desir. Il se calcule DEJA
+  // pour le tirage de probabilite (`onset / Ls`) et ne coute rien de plus : il
+  // est CONSTANT pendant une note ordinaire — y compris pour la queue de celle
+  // qui traverse la frontiere, qui garde la passe de son attaque — et il change
+  // a chaque tour pour celle qui fait le tour. Une coupure et une attaque au
+  // meme echantillon : c'est ce que fait n'importe quel sequenceur au point de
+  // boucle.
+  unsigned char       spass[128];
   double              rec_start;   // beat auquel la prise en cours a commence
 
   // --- publie par le fil audio, lu par le principal --------------------------
@@ -369,6 +401,9 @@ class Lanes {
   // dire, et il est du cote du fil audio qui s'en sert.
   void    lane_span(int li, double ts_num, double* a, double* len) const;
   double  launch_target(double pb, bool active) const;
+  // OU COMMENCE UNE PRISE. Pas la meme question que « ou tombe un depart » :
+  // voir cp_lanes.cpp.
+  double  rec_target(int li, double pb, bool active, double ts_num) const;
   double  stop_target(double pb, bool active) const;
   void    emit(int port, frame_t at, unsigned char s, unsigned char d1,
                unsigned char d2);

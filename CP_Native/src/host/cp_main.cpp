@@ -112,7 +112,22 @@ using namespace cp;
 // d'abord ete tentee dans deux tables Lua : elle etait fausse, parce que
 // `Loop.lua` est charge separement par chaque fenetre alors que la lane est UNE,
 // donc chaque fenetre recomposait le OU a partir de la moitie qu'elle voyait.
-static const double kEngineABI = 2.4;
+// ---------------------------------------------------------------------------
+// 2.5 : CP_LaneCmd(lane, 10|11, beat) — LE RENDEZ-VOUS. « Pars a ce beat »,
+// « arrete-toi a ce beat », sur l'horloge du moteur, sans passer par la grille
+// de quantize.
+//
+// Une fin de passe n'est PAS une frontiere de quantize, et c'est ce qui rendait
+// les sept comportements d'enchainement faux a la fois : sur une case de deux
+// mesures avec Q a la mesure, la frontiere la plus proche tombe AU MILIEU du
+// clip, donc la colonne changeait de case la. Un enchainement automatique se
+// donne rendez-vous ; il ne demande pas son chemin a une grille qui ne connait
+// pas la longueur de la case.
+//
+// L'appelant est le seul a pouvoir dater : la phase, la longueur de zone et le
+// beat viennent du MEME bloc publie, donc « la fin de cette passe » est un
+// nombre. Le moteur, lui, ne connait pas la regle d'enchainement.
+static const double kEngineABI = 2.5;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -1241,7 +1256,7 @@ static void register_all(reaper_plugin_info_t* rec) {
   REG(CP_LaneBind, "bool\0int,int,int\0lane,port,channel\0Ou parle cette lane : un port du moteur, et un canal MIDI. port -1 = nulle part.");
   REG(CP_LaneSet, "bool\0int,const char*,double\0lane,param,value\0param: bars mute tag.");
   REG(CP_LaneGet, "double\0int,const char*\0lane,param\0param: mode pending target phase lenbeats tag nev recgen bars mute port.");
-  REG(CP_LaneCmd, "bool\0int,int,double\0lane,cmd,arg\0cmd: 1 rec 2 stop-rec 3 clear 4 panic 5 play 6 stop 7 clear-all 8 overdub 9 set-mode(arg). Tout ce qui est ecrit avant le bloc suivant est draine ensemble.");
+  REG(CP_LaneCmd, "bool\0int,int,double\0lane,cmd,arg\0cmd: 1 rec 2 stop-rec 3 clear 4 panic 5 play 6 stop 7 clear-all 8 overdub 9 set-mode(arg) 10 play-at(arg=beat) 11 stop-at(arg=beat). Tout ce qui est ecrit avant le bloc suivant est draine ensemble.");
   REG(CP_LaneSetNote, "bool\0int,int,double,double,int,int,int\0lane,i,start,len,pitch,vel,prob\0Ecrit dans le tampon qui dort. `prob` en pourcent (100 = toujours). Ecrire TOUTE la liste, puis CP_LanePublish.");
   REG(CP_LanePublish, "bool\0int,int\0lane,count\0Echange les deux tampons : la liste devient visible du fil audio d'un seul coup.");
   REG(CP_LaneGetNote, "bool\0int,int,double*,double*,double*,double*,double*\0lane,i,startOut,lenOut,pitchOut,velOut,probOut\0Lit la liste PUBLIEE.");

@@ -371,7 +371,8 @@ l'autre.
 | `CP_LanesDiag()` | état des lanes en une ligne |
 
 **Commandes** (`CP_LaneCmd`) : 1 rec · 2 stop-rec · 3 clear · 4 panic · 5 play ·
-6 stop · 7 clear-all · 8 overdub · 9 set-mode (`arg` = le mode).
+6 stop · 7 clear-all · 8 overdub · 9 set-mode (`arg` = le mode) ·
+**10 play-at** · **11 stop-at** (`arg` = un beat, **2.5**).
 
 **Modes** : 0 vide · 1 enregistre · 2 arrêté · 3 joue · 4 armé · 5 overdub.
 **En attente** : 0 aucun · 1 play · 2 stop · 3 rec · 4 stop-rec · 5 overdub.
@@ -429,6 +430,49 @@ qui est exactement le comportement du JSFX — moins juste, jamais faux.
 > note, plus un son, et rien n'a planté. Après 1.9 vient donc **2.0**, et ce
 > n'est pas une rupture de compatibilité : c'est une contrainte d'écriture.
 
+### 3.3 octies Le rendez-vous — `play-at` / `stop-at` (ABI 2.5)
+
+`CP_LaneCmd(lane, 10, beat)` et `CP_LaneCmd(lane, 11, beat)` mettent en file un
+départ ou un arrêt **à une date**, sur l'horloge du moteur (`CP_EngineBeat`),
+**sans passer par la grille de quantize**.
+
+> ⚠️ **Une fin de passe n'est pas une frontière de quantize**, et les confondre
+> a rendu les sept comportements d'enchaînement faux **en même temps**.
+>
+> La règle d'enchaînement vit en Lua : elle demandait la case suivante en
+> comptant sur la quantification du moteur pour poser le départ sur la fin de la
+> passe. Le moteur ne pouvait pas : il ne connaît que la grille globale. Sur une
+> case de **deux mesures** avec Q à la mesure — le cas le plus banal qui soit —
+> la fenêtre de tir s'ouvrait pile sur une frontière, le moteur répondait « tout
+> de suite », et la colonne changeait de case **au milieu du clip**.
+>
+> L'appelant est le seul à pouvoir dater : le beat, la phase et la longueur de
+> zone sont publiés **ensemble**, donc « la fin de cette passe » est un nombre
+> exact. Le moteur, lui, ne connaît aucune règle d'enchaînement — et c'est bien
+> ainsi.
+
+Un geste **humain** garde le quantize (`5 play` / `6 stop`) : cliquer une case
+veut dire « à la prochaine frontière », et c'est tout l'intérêt de la grille.
+
+### 3.3 nonies Une prise commence au **début d'une passe**
+
+Ce n'est pas la même question que « où tombe un départ », et les confondre
+produisait ceci : « quand j'enregistre au piano, à chaque fois c'est le milieu du
+clip qui est le début ».
+
+Une prise dure **une passe entière** (elle se ferme d'elle-même après `Lb`) et
+les notes sont écrites **à la phase où elles ont été jouées** — la seule façon
+d'obtenir une boucle qui revienne sur elle-même. Si elle ne **commence** pas à la
+phase zéro, la boucle obtenue est la même musique **tournée** : ce qu'on a joué en
+premier revient au milieu.
+
+La grille de quantize ne peut pas répondre : elle ignore la longueur de la case.
+Q à la mesure avec « Rec : 4 mesures » fait commencer la prise sur n'importe
+laquelle des quatre. `Lanes::rec_target` répond au **prochain début de passe de
+cette lane-ci**, avec la même tolérance qu'ailleurs — appuyer juste après le
+temps fort prend **cette** passe. L'**overdub** garde la grille : entrer en cours
+de boucle est exactement ce qu'on lui demande.
+
 ### 3.3 septies Les deux mutes — `mute` et `umute` (ABI 2.4)
 
 Le moteur tait une lane si **l'un OU l'autre** est posé, et il n'a pas à savoir
@@ -478,6 +522,26 @@ les cases d'une colonne se partagent, et `ApplyClip` l'écrit **toujours** — c
 le seul geste qui efface celle de l'occupant précédent. Elle est posée **avant**
 l'accolade, parce que c'est elle qui donne la longueur en beats contre laquelle
 le moteur borne la zone.
+
+### 3.3 decies Une note qui remplit sa passe **re-attaque à chaque tour**
+
+La porte réconcilie un **ensemble** : tant que la même note couvre la phase, rien
+n'est émis. C'est juste pour une note ordinaire, et faux pour celle qui couvre
+toute la passe — elle est désirée à **toutes** les phases, donc l'ensemble ne
+varie jamais, donc elle attaque **une fois** et plus jamais.
+
+> Le symptôme, tel qu'il se vit : « si une note se finit à la fin de la boucle et
+> commence au début, le son ne se déclenche pas ; je dois la rendre légèrement
+> plus courte ». Le contournement rouvre un trou, et c'est le trou qui produisait
+> la ré-attaque.
+
+Le **numéro de passe** fait donc partie de l'identité du désir (`Lane::spass`).
+Il se calcule déjà pour le tirage de probabilité (`onset / Ls`) et ne coûte rien
+de plus. Il est **constant** pendant une note ordinaire — y compris pour la queue
+de celle qui traverse la frontière, qui garde la passe de son attaque, donc le
+report de queue est intact — et il **change** à chaque tour pour celle qui fait
+le tour. Coupure et attaque tombent alors au **même échantillon**, celui de la
+frontière : c'est ce que fait n'importe quel séquenceur au point de boucle.
 
 ### 3.3 quinquies La probabilité par note — `prob` (ABI 2.2)
 
