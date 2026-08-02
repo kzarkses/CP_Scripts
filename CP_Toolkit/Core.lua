@@ -1803,9 +1803,26 @@ local function apply_cursor()
         cname = CURSOR_NAMES[cursor_this_frame]
     end
     if cid ~= _last_cursor_id or cname ~= _last_cursor_name then
-        -- Le nom d'abord, l'identifiant en repli : c'est l'ordre des arguments
-        -- de gfx.setcursor, et un nom inconnu retombe tout seul.
-        if cname then gfx.setcursor(cid, cname) else gfx.setcursor(cid) end
+        -- DEUX APPELS, ET L'ORDRE COMPTE.
+        --
+        -- `gfx.setcursor(id, nom)` ne pose PAS le curseur nomme quand on lui
+        -- donne aussi un identifiant : l'identifiant gagne. La documentation
+        -- dit « resource_id and/or custom_cursor_name » et j'ai lu « les deux
+        -- ensemble » ; en pratique le nom est ignore, donc tous les curseurs de
+        -- REAPER etaient branches et aucun ne s'affichait. Le seul indice
+        -- etait dans le code qui sert a les recenser : il passe `nil` en
+        -- premier argument.
+        --
+        -- On pose donc le REPLI d'abord, puis le nom SEUL, avec 0 comme
+        -- identifiant. C'est la forme exacte de `CP_Tools/CP_CursorProbe.lua`,
+        -- ou tous les curseurs s'affichent — donc la forme MESUREE, pas celle
+        -- que la documentation laissait supposer. Si le nom resout, il ecrase
+        -- le repli ; sinon REAPER ne touche a rien et le repli reste.
+        --
+        -- Les deux appels ne partent qu'au CHANGEMENT de curseur, jamais a
+        -- chaque frame.
+        gfx.setcursor(cid)
+        if cname then gfx.setcursor(0, cname) end
         _last_cursor_id, _last_cursor_name = cid, cname
     end
     cursor_this_frame = nil  -- reset for next frame
