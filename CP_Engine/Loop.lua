@@ -1726,7 +1726,14 @@ function Loop.ApplyClip(lane, clip)
     local n = (nt and nt.s and #nt.s) or 0
     if n > Loop.MAX_NOTES then return false end
     local t = store(lane)
-    local np = nt.pr
+    -- ⚠️ LA LIGNE AU-DESSUS DIT QUE `nt` PEUT ETRE NIL. Celle-ci l'oubliait, et
+    -- deux lignes qui ne sont pas d'accord sur la meme variable finissent
+    -- toujours par se rencontrer : ouvrir une case MIDI vide levait « attempt to
+    -- index a nil value ». Un clip MIDI porte desormais sa liste meme vide
+    -- (Clip.new / Clip.deserialize), donc ce cas ne devrait plus arriver — mais
+    -- cette fonction recoit des descripteurs venus d'autres fenetres, et un
+    -- garde-fou qui compte sur la bonne volonte de l'appelant n'en est pas un.
+    local np = nt and nt.pr
     for i = 1, n do
         t.s[i], t.l[i], t.p[i], t.v[i] = nt.s[i], nt.l[i], nt.p[i], nt.v[i]
         -- Un descripteur ecrit avant la probabilite n'a pas de `pr`, et l'ecart

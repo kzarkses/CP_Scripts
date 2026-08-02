@@ -44,12 +44,29 @@ Clip.VERSION = "CPC1"
 --
 -- `gain` et `lmode`, eux, restent — ils ont des lecteurs depuis le decoupage de
 -- region (`Cells.Arm`), et c'est justement ce qui les distingue.
+-- UN CLIP MIDI PORTE TOUJOURS SA LISTE DE NOTES, MEME VIDE.
+--
+-- Elle etait absente d'un clip sans note, et « absente » n'est pas « vide » :
+-- tout ce qui la lit devait alors se demander si elle existe, et il a suffi
+-- qu'UN lecteur oublie de le faire pour que la suite plante — ouvrir une case
+-- MIDI encore vide levait « attempt to index a nil value (local 'nt') ».
+--
+-- Une liste vide est la meme information, sous une forme qu'on ne peut pas
+-- oublier de tester. Le cout : quatre tables par clip audio si on n'y prenait
+-- pas garde — donc seuls les clips MIDI en recoivent une.
+--
+-- Elle n'est PAS serialisee quand elle est vide : le format ne change pas d'un
+-- octet, et un projet ecrit hier revient avec sa liste par `deserialize`.
 function Clip.new(kind)
-    return {
+    local c = {
         kind  = kind or "audio",
         gain  = 1.0,
         lmode = "oneshot",
     }
+    if c.kind == "midi" then
+        c.notes = { s = {}, l = {}, p = {}, v = {}, pr = {} }
+    end
+    return c
 end
 
 -- ---------------------------------------------------------------------------
@@ -265,6 +282,12 @@ function Clip.deserialize(str)
         for i = 1, #c.notes.s do
             pr[i] = (pending and pending[i]) or 100
         end
+    -- LA MEME REGLE AU RETOUR DU PROJET, et c'est ici qu'elle mordait : une case
+    -- MIDI sans note ne serialise aucune cle `notes` — a juste titre — donc elle
+    -- revenait sans liste du tout. C'est le chemin par lequel un clip sans notes
+    -- entrait dans la suite, et le seul.
+    elseif c.kind == "midi" then
+        c.notes = { s = {}, l = {}, p = {}, v = {}, pr = {} }
     end
     return c
 end

@@ -1459,8 +1459,10 @@ end
 local function editCell(t, s)
     local c = cells[t][s]
     if not c then
+        -- La liste de notes vient de `Clip.new` depuis qu'un clip MIDI en porte
+        -- toujours une : la reecrire ici la reposait SANS son tableau `pr`,
+        -- c'est-a-dire en recreant exactement l'inegalite qu'on vient de fermer.
         c = Clip.new("midi")
-        c.notes = { s = {}, l = {}, p = {}, v = {} }
         c.bars = 4
         cells[t][s] = c
         saveGrid()

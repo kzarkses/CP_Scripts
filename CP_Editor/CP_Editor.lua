@@ -818,6 +818,15 @@ local function histRedo(c)
 end
 
 local function makeClipBackend(c)
+    -- LA PORTE D'ENTREE D'UN DESCRIPTEUR ETRANGER. Il arrive par le bus, d'une
+    -- autre fenetre et parfois d'une autre version : une case MIDI sans note
+    -- n'avait pas de liste du tout, et les deux lignes suivantes plantaient
+    -- avant que quoi que ce soit ne s'affiche. `Clip.new` et `Clip.deserialize`
+    -- en posent une desormais ; on ne se repose pas dessus pour autant, parce
+    -- que ce point est le seul par ou un clip entre dans cet editeur.
+    if not c.notes then
+        c.notes = { s = {}, l = {}, p = {}, v = {}, pr = {} }
+    end
     local nt = c.notes
     -- LE SEUL BACKEND QUI SAIT RANGER UNE PROBABILITE. La lane est notre format ;
     -- une prise MIDI de REAPER n'a aucun champ par note ou la mettre. Le drapeau

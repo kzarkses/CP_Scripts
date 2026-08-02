@@ -1034,8 +1034,10 @@ local function drawLane(theme, l, x, y, w, h)
                 else
                     local c = Loop.LaneToClip(el)
                     if not c then
+                        -- La liste de notes vient de `Clip.new` : la reecrire ici
+                        -- la reposerait SANS son tableau `pr`, c'est-a-dire en
+                        -- recreant l'inegalite qu'on vient de fermer.
                         c = Clip.new("midi")
-                        c.notes = { s = {}, l = {}, p = {}, v = {} }
                         c.bars = Loop.GetLengthBars(el)
                     end
                     -- the TRACK, not the lane: which half holds the clip is
