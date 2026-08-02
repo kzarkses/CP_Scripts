@@ -1555,7 +1555,7 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   tampon média, lui, pré-lit les ITEMS de la piste — et un aperçu n'est pas un
   item. Le désactiver n'achetait rien et retirait de la lecture d'avance dont
   le fil audio a besoin quand son échéance est de 1,3 ms au lieu de 21.
-- [ ] **PROCHAIN CHANTIER, décidé par la mesure : le moteur verrouillé à
+- [x] **PROCHAIN CHANTIER, décidé par la mesure : le moteur verrouillé à
   l'échantillon.** À 1024 le lanceur est exact (`START ERROR ±0,0 ms` à une
   frame comme à deux secondes, `read speed 1.0000`). À 64 il est affamé, et 64
   est le réglage de la performance live — donc c'est un manque, pas un cas
@@ -1565,6 +1565,18 @@ ne jouait. Les deux à l'envers de ce qu'on attend, et l'audio par-dessus.
   d'échantillon dans le bloc** — c'est exactement pourquoi le kick MIDI mesure
   1 ms. Et toute la machinerie de compensation (`e`, `off`, `lockPhase`, `LEAD`,
   `qSlop`) DISPARAÎT : on ne compense que ce qu'on n'a pas pu placer.
+  → **FAIT, et la preuve est la section juste en dessous** : « Session 17 — Le
+  moteur verrouille à l'échantillon ». `cp_pool.h` s'ouvre sur *« les clips
+  résident en RAM, décodés une seule fois »* et le déclenchement passe par
+  `CP_VoicePlayAtSample`. Les deux causes nommées ici n'existent plus ; CF ne
+  survit que comme repli quand l'extension est absente.
+
+  ⚠️ **CETTE CASE A ÉTÉ LUE COMME UN RESTE À FAIRE LE 2026-08-02**, alors que
+  le travail est documenté à la ligne suivante. Une case dans le JOURNAL est
+  une ANNONCE, pas une tâche : ce qui reste à faire vit dans
+  `ROADMAP_Chantiers.md`, et nulle part ailleurs. Les cases non cochées de ce
+  fichier sont des marqueurs « prochain chantier » que leur propre exécution a
+  rendus caducs — ne pas les compter.
 
 ## Session 17 — Le moteur verrouille a l'echantillon (clips audio)
 
