@@ -17,6 +17,7 @@ void Lane::reset() {
   bars.store(1.0, std::memory_order_relaxed);
   muted.store(0, std::memory_order_relaxed);
   tag.store(0.0, std::memory_order_relaxed);
+  phase_off.store(0.0, std::memory_order_relaxed);
   nbuf.store(0, std::memory_order_relaxed);
   ncount[0].store(0, std::memory_order_relaxed);
   ncount[1].store(0, std::memory_order_relaxed);
@@ -520,7 +521,8 @@ void Lanes::run_gate(double pb, bool active, double ts_num, frame_t at,
     // ce cas seul on revient a la phase du debut, ce qui est exactement le
     // comportement du JSFX — moins juste, jamais faux.
     const bool  fine = (block_beats < Lb * 0.5);
-    const double pref = fine ? (pb + block_beats) : pb;
+    const double off  = L.phase_off.load(std::memory_order_relaxed);
+    const double pref = (fine ? (pb + block_beats) : pb) + off;
 
     const int  nb  = L.nbuf.load(std::memory_order_acquire);
     const int  nev = L.ncount[nb].load(std::memory_order_relaxed);
@@ -721,7 +723,10 @@ void Lanes::tick(frame_t clock, int frames) {
     const int n = note_count(i);
     if (m == kLaneEmpty && n > 0) L.mode.store(kLaneStopped, std::memory_order_relaxed);
     else if (m == kLaneStopped && n <= 0) L.mode.store(kLaneEmpty, std::memory_order_relaxed);
-    L.phase.store(active ? (pb - std::floor(pb / Lb) * Lb) : 0.0,
+    // LE MEME DECALAGE QUE LE PORTAIL, ou le son et les notes se separeraient
+    // d'exactement ce qu'on vient de poser. Une seule verite, lue deux fois.
+    const double po = pb + L.phase_off.load(std::memory_order_relaxed);
+    L.phase.store(active ? (po - std::floor(po / Lb) * Lb) : 0.0,
                   std::memory_order_relaxed);
     L.len_beats.store(Lb, std::memory_order_relaxed);
   }

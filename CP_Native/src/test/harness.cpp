@@ -1010,6 +1010,63 @@ static void test_lane_playrate() {
   check(off_seen == 1, "la note se coupe d'elle-meme");
 }
 
+// ---------------------------------------------------------------------------
+// LE DECALAGE DE PHASE — « lire a partir d'ici », mesure et non suppose
+// ---------------------------------------------------------------------------
+// Ce qu'on veut prouver tient en deux points, et le second est celui qui
+// compte : (1) la phase publiee se deplace exactement du decalage demande, et
+// (2) elle ne DERIVE pas — au bout de plusieurs passes, l'ecart vaut toujours
+// la meme chose. C'est toute la difference entre deplacer un verrou de phase et
+// le casser, et c'est la seule raison pour laquelle ce champ a le droit
+// d'exister.
+static void test_lane_phase_offset() {
+  group("lanes : le decalage de phase deplace le verrou, il ne le casse pas");
+  Engine e;
+  e.init(48000.0);
+  Lanes& L = e.lanes();
+  L.set_freerun(true);            // l'horloge de la session, qui avance seule
+  L.set_launch_q(0.0);
+  L.publish_transport(120.0, 0.0, 0, 4.0, 0);
+
+  Lane& a = L.lane(0);            // temoin, sans decalage
+  Lane& b = L.lane(1);            // decalee d'un beat
+  for (int li = 0; li < 2; ++li) {
+    Lane& l = L.lane(li);
+    l.port.store(li, std::memory_order_relaxed);
+    l.bars.store(1.0, std::memory_order_relaxed);   // 4 beats
+    lane_note(L, li, 0, 0.0, 0.5, 60, 100);
+    L.publish_notes(li, 1);
+    L.post(li, kLcSetMode, (double)kLanePlaying);
+  }
+  b.phase_off.store(1.0, std::memory_order_relaxed);
+
+  const int B = 512;
+  for (int i = 0; i < 4; ++i) e.tick(B);
+
+  const double pa = a.phase.load(std::memory_order_relaxed);
+  const double pb = b.phase.load(std::memory_order_relaxed);
+  double d = pb - pa;
+  d -= std::floor(d / 4.0) * 4.0;
+  check_near(d, 1.0, 1e-6, "un beat demande, un beat obtenu");
+
+  // Vingt passes plus loin. Un accumulateur derivant se verrait ici ; un
+  // decalage constant, non.
+  for (int i = 0; i < 4000; ++i) e.tick(B);
+  const double qa = a.phase.load(std::memory_order_relaxed);
+  const double qb = b.phase.load(std::memory_order_relaxed);
+  double d2 = qb - qa;
+  d2 -= std::floor(d2 / 4.0) * 4.0;
+  check_near(d2, 1.0, 1e-6, "et il vaut toujours un beat vingt passes plus loin");
+
+  // Remettre a zero fait coincider les deux : le decalage est un DEPLACEMENT,
+  // pas un etat qui se serait installe ailleurs.
+  b.phase_off.store(0.0, std::memory_order_relaxed);
+  e.tick(B);
+  check_near(b.phase.load(std::memory_order_relaxed),
+             a.phase.load(std::memory_order_relaxed), 1e-6,
+             "remis a zero, les deux lanes retombent l'une sur l'autre");
+}
+
 static void test_lane_no_alloc() {
   group("lanes : zero allocation dans le fil audio");
   Engine e;
@@ -1096,6 +1153,7 @@ int main() {
   test_lane_loop_and_bounds();
   test_lane_panic_and_clear();
   test_lane_playrate();
+  test_lane_phase_offset();
   test_lane_no_alloc();
 
   std::printf("\n=====================================\n");

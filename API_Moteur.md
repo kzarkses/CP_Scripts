@@ -355,7 +355,7 @@ l'autre.
 |---|---|
 | `CP_LaneCount()` | nombre de lanes servies (32) |
 | `CP_LaneBind(lane, port, chan)` | bool — où cette lane parle. `port` −1 = nulle part |
-| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` |
+| `CP_LaneSet(lane, param, value)` | bool — `bars` `mute` `tag` `offset` (**1.9**) |
 | `CP_LaneGet(lane, param)` | double — `mode` `pending` `target` `phase` `lenbeats` `tag` `nev` `recgen` `bars` `mute` `port` |
 | `CP_LaneCmd(lane, cmd, arg)` | bool |
 | `CP_LaneSetNote(lane, i, start, len, pitch, vel)` | bool — écrit dans le tampon **qui dort** |
@@ -414,6 +414,33 @@ plus ou moins un tampon.
 Dégénérescence prévue : un tampon plus long que la boucle elle-même sauterait
 des notes entières. Dans ce cas seul on revient à la phase de début de bloc, ce
 qui est exactement le comportement du JSFX — moins juste, jamais faux.
+
+### 3.3 ter Lire à partir d'ici — `offset` (ABI 1.9)
+
+`CP_LaneSet(lane, "offset", beats)` décale la phase d'une lane.
+
+La phase est ancrée sur le **beat zéro du projet** : c'est ce qui verrouille
+toutes les boucles sur la même grille, et ça ne change pas. Un décalage
+**constant** ne casse pas ce verrou — il le déplace. La lane reste calée, à
+distance fixe, et rien ne dérive. C'est le *legato launch* d'Ableton, et c'est
+ce que veut dire « lire à partir d'ici ».
+
+Le moteur le lit **au même endroit** pour le portail MIDI (`run_gate`) et pour
+la phase publiée (que `Cells` lit pour l'audio) : les notes et le son bougent
+donc ensemble. Les brancher séparément les séparerait d'un décalage exactement
+égal à celui qu'on vient de poser.
+
+**Non persisté, délibérément** : c'est un geste de jeu, comme un scrub. Le
+retrouver à la réouverture d'un projet serait une surprise, pas un service.
+
+Le harnais le **mesure** plutôt que de le supposer : un beat demandé donne un
+beat, et l'écart vaut toujours un beat vingt passes plus loin — ce qui est
+toute la différence entre déplacer un verrou de phase et le casser.
+
+Côté Lua, `Loop.PlayClipFrom(lane, beat)` fait le calcul et incrémente un
+compteur que `Cells` relit : une voix audio tient une date de départ en frames
+et finirait sa passe, alors que le MIDI saute au bloc suivant. Sans ça on
+entendrait les notes sauter et le son rester.
 
 ### 3.3 bis Une note qui a un destinataire (ABI 1.8)
 

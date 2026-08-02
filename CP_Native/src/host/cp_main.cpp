@@ -56,7 +56,12 @@ using namespace cp;
 //       toute piste armee en monitoring, et il fallait armer une piste de
 //       force pour s'entendre. Ici on ecrit dans UN port, donc dans UNE
 //       piste, et l'armement redevient ce que REAPER en dit.
-static const double kEngineABI = 1.8;
+// 1.9 : CP_LaneSet(lane, "offset", beats) — le decalage de phase d'une lane.
+// « Lire a partir d'ici » sans casser le verrouillage de phase : un decalage
+// constant garde la lane sur la grille, a distance fixe, et ne derive pas.
+// Lu au meme endroit par le portail MIDI et par la phase publiee, donc le son
+// et les notes bougent ensemble.
+static const double kEngineABI = 1.9;
 
 // ---------------------------------------------------------------------------
 // Etat global. Le moteur pese plusieurs centaines de kilo-octets : il vit sur
@@ -889,13 +894,14 @@ bool CP_LaneBind(int lane, int port, int channel) {
   return true;
 }
 
-// param : bars | mute | tag
+// param : bars | mute | tag | offset
 bool CP_LaneSet(int lane, const char* param, double value) {
   if (!lane_ok(lane) || !param) return false;
   Lane& L = g_eng->lanes().lane(lane);
   if (!strcmp(param, "bars"))  { L.bars.store(value > 0.0 ? value : 1.0, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "mute"))  { L.muted.store(value != 0.0 ? 1 : 0, std::memory_order_relaxed); return true; }
   if (!strcmp(param, "tag"))   { L.tag.store(value, std::memory_order_relaxed); return true; }
+  if (!strcmp(param, "offset")) { L.phase_off.store(value, std::memory_order_relaxed); return true; }
   return false;
 }
 
@@ -914,6 +920,7 @@ double CP_LaneGet(int lane, const char* param) {
   if (!strcmp(param, "bars"))     return L.bars.load(std::memory_order_relaxed);
   if (!strcmp(param, "mute"))     return L.muted.load(std::memory_order_relaxed) ? 1.0 : 0.0;
   if (!strcmp(param, "port"))     return (double)L.port.load(std::memory_order_relaxed);
+  if (!strcmp(param, "offset"))   return L.phase_off.load(std::memory_order_relaxed);
   return 0.0;
 }
 

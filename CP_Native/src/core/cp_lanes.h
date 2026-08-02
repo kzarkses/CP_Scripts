@@ -161,6 +161,23 @@ struct Lane {
   std::atomic<double> bars;        // longueur de boucle, en mesures
   std::atomic<int>    muted;
   std::atomic<double> tag;         // identite du clip que la lane tient
+  // LE DECALAGE DE PHASE — « joue a partir d'ici ».
+  //
+  // La phase d'une lane est ancree sur le beat ZERO du projet : c'est ce qui
+  // verrouille toutes les boucles sur la meme grille, et on n'y touche pas.
+  // Mais un decalage CONSTANT ne casse pas ce verrou — il le deplace. La lane
+  // reste sur la grille, a distance fixe, et rien ne derive : c'est exactement
+  // le legato launch d'Ableton, et c'est ce que veut dire « lire a partir
+  // d'ici ».
+  //
+  // Il est lu au MEME endroit par le portail MIDI et par la phase publiee (que
+  // lit Cells pour l'audio) : les deux moteurs doivent voir la meme boucle, ou
+  // le son et les notes se separeraient d'un decalage exactement egal a celui
+  // qu'on vient de poser.
+  //
+  // DELIBEREMENT NON PERSISTE. C'est un geste de jeu, comme un scrub ; le
+  // retrouver a la reouverture d'un projet serait une surprise, pas un service.
+  std::atomic<double> phase_off;   // en beats
   std::atomic<int>    nbuf;        // tampon de notes PUBLIE (0 ou 1)
   std::atomic<int>    ncount[2];   // nombre de notes de chaque tampon
   // Les notes elles-memes vivent dans UN bloc, alloue une seule fois par
