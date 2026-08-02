@@ -111,7 +111,7 @@ local opts = {
     -- parce que le son ne passe alors ni par le master ni par rien.
     -- `thru_track` etait la meme question posee en oui/non, et seulement pour
     -- un item ; il se relit pour ne pas perdre le reglage de l'utilisateur.
-    out_mode   = cfg.out_mode or ((cfg.thru_track ~= false) and "item" or "hw"),
+    out_mode   = cfg.out_mode or ((cfg.thru_track ~= false) and "item" or "master"),
     -- Loop the preview over the played region (the selection, or the whole
     -- region when there is none). Off by default: an audition that will not
     -- stop is a surprise, a loop you asked for is a tool.
@@ -844,6 +844,16 @@ local function targetRegion()
     return 0, state.len
 end
 
+-- « Ce que je fais maintenant s'applique a QUOI » — dit, pas devine. Une
+-- portee d'operation invisible se decouvre en quantifiant tout un clip.
+local function rangeNote()
+    if Roll.seln > 0 then return "  ·  " .. Roll.seln .. " selected" end
+    if Roll.HasRange() then
+        return "  ·  range: " .. Roll.RangeCount() .. " notes"
+    end
+    return ""
+end
+
 local function metaLine()
     if state.mode == "midi" or state.mode == "clip" then
         if state.meta_line and state.meta_rollver == Roll.version
@@ -859,13 +869,14 @@ local function metaLine()
             for i = 1, Roll.count do
                 if Roll.starts[i] >= state.len - 1e-6 then out = out + 1 end
             end
-            state.meta_line = string.format("%d notes  ·  %g beats%s%s",
-                Roll.count, state.len,
+            state.meta_line = string.format("%d notes%s  ·  %g beats%s%s",
+                Roll.count, rangeNote(), state.len,
                 out > 0 and ("  ·  " .. out .. " past the loop (kept, silent)") or "",
                 (state.clip and state.clip.origin)
                     and ("  ·  " .. state.clip.origin) or "")
         else
-            state.meta_line = string.format("%d notes  ·  %.2fs", Roll.count, state.len)
+            state.meta_line = string.format("%d notes%s  ·  %.2fs",
+                                            Roll.count, rangeNote(), state.len)
         end
         state.meta_rollver, state.meta_len = Roll.version, state.len
         return state.meta_line
@@ -1164,14 +1175,18 @@ end
 -- La piste par laquelle l'ecoute doit sortir, ou nil pour la carte son.
 -- Les DEUX moteurs l'honorent maintenant (`resolveOut` d'Audition lit
 -- `opts.out_track`), donc ce choix ne depend plus de celui qui repond.
+-- Rend la piste de sortie ET le drapeau « carte son ». Les deux, parce que
+-- « pas de piste » ne veut plus dire « la carte » : sans piste on sort par le
+-- master, qui est la sortie que tout le monde entend. Court-circuiter le projet
+-- est devenu un choix explicite, comme il aurait toujours du l'etre.
 local function previewOut()
     local m = opts.out_mode
-    if m == "master" then return r.GetMasterTrack(0) end
+    if m == "hw" then return nil, true end
     if m == "item" and state.mode == "item" and state.item
        and r.ValidatePtr2(0, state.item, "MediaItem*") then
-        return r.GetMediaItemTrack(state.item)
+        return r.GetMediaItemTrack(state.item), false
     end
-    return nil
+    return r.GetMasterTrack(0), false
 end
 
 -- from: "cursor" (default) | "sel" | "start"
@@ -1204,8 +1219,10 @@ local function togglePlay(from)
     -- the item (gain/normalize, pitch, rate, fades, repitch mode) — playing
     -- the raw file otherwise ignores every edit.
     PLAY_OPTS.vol, PLAY_OPTS.pitch, PLAY_OPTS.rate = nil, nil, nil
+    -- (out_track / hw_out sont poses juste apres : ils ne se remettent pas a
+    -- nil ici, sinon la sortie choisie serait perdue a chaque lancement.)
     PLAY_OPTS.fade_in, PLAY_OPTS.fade_out, PLAY_OPTS.ppitch = nil, nil, nil
-    PLAY_OPTS.out_track = previewOut()
+    PLAY_OPTS.out_track, PLAY_OPTS.hw_out = previewOut()
     if state.mode == "item" and state.take then
         local v = r.GetMediaItemTakeInfo_Value(state.take, "D_VOL")
         -- compose take gain WITH the user's preview-volume setting (an OR in
@@ -1371,12 +1388,12 @@ local function openSettings()
             volItem(25), volItem(50), volItem(75), volItem(100),
         } },
         { label = "Preview output", children = {
-            { label = "Sound card (direct, no project FX)",
-              checked = opts.out_mode == "hw",
-              action = function() opts.out_mode = "hw" markDirty() end },
-            { label = "Master track",
+            { label = "Master track (default)",
               checked = opts.out_mode == "master",
               action = function() opts.out_mode = "master" markDirty() end },
+            { label = "Sound card (direct — bypasses the whole project)",
+              checked = opts.out_mode == "hw",
+              action = function() opts.out_mode = "hw" markDirty() end },
             { label = "The item's own track (its FX + fader)",
               checked = opts.out_mode == "item",
               action = function() opts.out_mode = "item" markDirty() end },
@@ -1387,7 +1404,14 @@ local function openSettings()
         -- selection tres courte s'entend par paliers. Ce n'est pas un reglage,
         -- c'est une consequence — de la duree du fichier, d'une transposition,
         -- d'un taux de lecture, d'une source sans fichier.
-        { label = "Engine: " .. previewEngineLabel(), disabled = true },
+        -- Et « le son n'arrive pas par la porte que j'ai choisie » se cherche
+        -- longtemps quand rien ne le dit : le repli s'annonce sur la meme
+        -- ligne, parce qu'un menu natif n'a pas d'entree qu'on peut cacher.
+        { label = "Engine: " .. previewEngineLabel()
+                  .. (Audition.out_fallback
+                      and "   ·   ⚠ output refused, playing through the sound card"
+                      or ""),
+          disabled = true },
         { separator = true },
         -- LA CARTE DES GESTES, EN CLAIR. REAPER a eu reaper-kb.ini bien avant
         -- d'avoir une fenetre pour le remplir, et c'est le bon ordre : un
@@ -2707,6 +2731,17 @@ local function rowLabel(rows, p, kv, w)
         c.s = Core_tk.TruncateText(raw, w)
     end
     return c.s
+end
+
+-- LA PLAGE VOYAGE JUSQU'A ROLL, une fois par frame. Deux nombres : c'est moins
+-- cher que de le demander a chaque operation, et surtout ca ne peut pas etre
+-- OUBLIE par une operation ajoutee plus tard.
+local function syncRange()
+    if state.mode ~= "midi" and state.mode ~= "clip" then
+        Roll.SetRange(nil, nil)
+        return
+    end
+    Roll.SetRange(timeSel())
 end
 
 local function rollRows()
@@ -4232,6 +4267,7 @@ local function frame(theme)
     handleFileDrops()   -- OS files dropped on the window
     busConsume()        -- Clips dropped from another CP window
     pollTarget()
+    syncRange()
     Kit.Poll()
     Audition.Poll()
     pollSection()
