@@ -362,7 +362,15 @@ end
 -- Idempotent des deux cotes : appeler deux fois ne coute rien et ne casse rien.
 function Voice.BindTrack(port, track)
     if NATIVE then
-        if not track or not r.ValidatePtr2(0, track, "MediaTrack*") then return false end
+        -- LE MASTER N'EST PAS DANS LA LISTE DES PISTES DU PROJET, donc
+        -- `ValidatePtr2` repond NON sur un pointeur parfaitement bon. C'est le
+        -- MEME piege qu'`Audition.resolveOut`, et le corriger la-bas n'a rien
+        -- change : le master passait la premiere garde et se faisait rejeter
+        -- par celle-ci, un appel plus loin. Deux copies d'un controle, une
+        -- seule corrigee — le defaut survit, et il a l'air de resister.
+        if not track then return false end
+        if track ~= r.GetMasterTrack(0)
+           and not r.ValidatePtr2(0, track, "MediaTrack*") then return false end
         return r.CP_PortAttach(track, port) and true or false
     end
     if Preview and Preview.SetOutputTrack then

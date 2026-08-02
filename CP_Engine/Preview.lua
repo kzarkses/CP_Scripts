@@ -226,8 +226,14 @@ local function startPreview(src, path, opts)
     -- Optional routing: the caller's track wins, then a dedicated preview
     -- track, then the first selected track when route_track is on. Either way
     -- the preview plays through that track's FX chain. No route = hardware.
+    -- ET LA TROISIEME COPIE DU MEME CONTROLE. `ValidatePtr2` cherche la piste
+    -- parmi celles du projet, ou le master ne figure pas : il repond NON sur un
+    -- pointeur parfaitement bon. La regle vit a trois endroits — ici,
+    -- `Voice.BindTrack` et `Audition.resolveOut` — et n'en corriger qu'un
+    -- laissait le defaut intact avec l'air d'avoir ete traite.
     local out = (opts and opts.out_track) or Preview.out_track
-    if out and not r.ValidatePtr2(0, out, "MediaTrack*") then
+    if out and out ~= r.GetMasterTrack(0)
+       and not r.ValidatePtr2(0, out, "MediaTrack*") then
         out = nil
         if not (opts and opts.out_track) then Preview.out_track = nil end
     end
