@@ -3213,10 +3213,6 @@ end
 local SBAR_W = 14
 local SBAR_BTN = 14
 
--- Le signe pose a cote du pointeur pour les gestes que le curseur systeme ne
--- sait pas dire.
-local HINT_GLYPH = { copy = "+", erase = "x", stretch = "<>", draw = "/" }
-
 local function drawVScroll(theme, x, y, w, h)
     local C = theme.colors
     local col_tr = C.list_alt_bg or C.surface
@@ -3356,10 +3352,6 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
               or (in_grid and "roll") or nil
     local mods = Keymap.Mods()
     local function act(gesture, z) return Keymap.Mouse(KM, z or zone, gesture, mods) end
-    -- Le badge du pointeur s'eteint des qu'on quitte la grille : il n'est pose
-    -- que par l'affordance de survol, qui ne s'execute pas ailleurs, et un
-    -- badge qui reste allume sur une barre d'outils est pire que pas de badge.
-    state.hint = nil
 
     -- ruler strip (top): real handles. Grab a time-selection EDGE to
     -- resize, its BODY to move it, the edit-cursor flag to drag it; an
@@ -3961,17 +3953,16 @@ local function rollInput(theme, rows, row_h, lane_w, vy)
         -- gomme qui ressemble a un deplacement se decouvre en effacant une note
         -- qu'on ne voulait pas ; et c'est le seul retour qu'on a avant le clic.
         local da = act("drag")
-        state.hint = nil
         if da == "note.erase_drag" or da == "roll.erase_drag"
            or da == "note.erase_drag_free" or da == "roll.erase_drag_free" then
-            UI.SetCursor("erase") state.hint = "erase"
+            UI.SetCursor("erase")
         elseif da == "roll.paint_line" or da == "roll.paint_chord" then
-            UI.SetCursor("draw") state.hint = "draw"
+            UI.SetCursor("draw")
         elseif da == "note.copy" or da == "roll.copy_sel" then
-            UI.SetCursor("copy") state.hint = "copy"
+            UI.SetCursor("copy")
         elseif da == "edge.stretch" or da == "edge.stretch_free"
                or da == "note.stretch_pos" or da == "note.stretch_pos_free" then
-            UI.SetCursor("stretch") state.hint = "stretch"
+            UI.SetCursor("stretch")
         elseif hit then
             UI.SetCursor(on_edge and "note_edge" or "note")
         else
@@ -4271,26 +4262,12 @@ local function drawRoll(theme, area_h)
         drawVScroll(theme, wave.x + wave.w, wave.ry, sbar_w, grid_h)
     end
 
-    -- LE BADGE, EN PLUS DU CURSEUR ET NON A SA PLACE.
-    --
-    -- Les curseurs de REAPER sont maintenant poses par leur nom, donc le geste
-    -- est deja dit par le pointeur lui-meme. Le signe reste parce qu'il survit
-    -- a deux choses que le curseur ne survit pas : un theme qui a remplace le
-    -- .cur par quelque chose d'illisible, et un nom qui ne resoudrait pas sur
-    -- une version plus ancienne — auquel cas le repli est une simple fleche, et
-    -- plus rien ne distingue copier d'effacer.
-    if state.hint then
-        local hx, hy = Core_tk.GetMousePos()
-        local g = HINT_GLYPH[state.hint]
-        if g then
-            Core_tk.DrawRect(hx + 11, hy + 3, 15, 15,
-                             col_bg[1], col_bg[2], col_bg[3], 0.85)
-            Core_tk.DrawRect(hx + 11, hy + 3, 15, 15,
-                             col_acc[1], col_acc[2], col_acc[3], 0.9, false)
-            Core_tk.DrawText(g, hx + 15, hy + 5,
-                             col_acc[1], col_acc[2], col_acc[3], 1)
-        end
-    end
+    -- AUCUN GLYPHE DESSINE A COTE DU POINTEUR. J'en avais pose un pour les
+    -- gestes que Windows ne sait pas dire, du temps ou les curseurs de REAPER
+    -- etaient hors de portee. Ils ne le sont plus, et deux marques pour un seul
+    -- geste font une de trop : le pointeur porte le sens, ou il ne le porte
+    -- pas — et alors c'est le curseur qu'il faut corriger, pas une decoration
+    -- qu'on ajoute a cote.
 
     rollInput(theme, rows, row_h, lane_w, vy)
     UI.Layout.AdvanceCursor(aw, area_h)
