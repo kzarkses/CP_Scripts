@@ -50,6 +50,13 @@ local Warp   = dofile(cp_root .. "CP_Engine/Warp.lua")
 local Voice  = dofile(cp_root .. "CP_Engine/Voice.lua")
 local Cells  = dofile(cp_root .. "CP_Engine/Cells.lua")
 local Keymap = dofile(cp_root .. "CP_Engine/Keymap.lua")
+-- QUI RECOIT LA BARRE D'ESPACE. Cliquer une case ouvre le clip dans CP_Editor —
+-- c'est le geste meme — mais le focus clavier reste ICI, et une fenetre gfx ne
+-- recoit les touches que si elle a le focus. Space ne faisait donc rien : celle
+-- qui savait quoi jouer ne la recevait pas, celle qui la recevait n'avait rien a
+-- en faire. Cette grille est la DERNIERE de l'ordre — elle a son propre
+-- transport, les cases — donc elle ne reclame jamais la touche : elle la passe.
+local Focus  = dofile(cp_root .. "CP_Engine/Focus.lua")
 -- UNE SEULE QUESTION POSEE A LA TOUCHE : quelle action ? Ce qui suit ne teste
 -- plus jamais un code, donc changer une liaison ne demande de toucher a aucune
 -- ligne de `handleKeys` — c'est tout l'objet du tableau, et c'est ce qui rend
@@ -57,6 +64,7 @@ local Keymap = dofile(cp_root .. "CP_Engine/Keymap.lua")
 local KM = Keymap.Register("session",
                            dofile(cp_root .. "CP_Engine/Keymaps/session.lua"))
 Tracks.init(r)
+Focus.init(r)
 Ident.init(r, Clip)
 Loop.init(r, Tracks)
 Mix.init(r)
@@ -545,10 +553,14 @@ local ENGINE_BADGE = "engine " .. Voice.Label() .. " · cells: "
                      .. (ENGINE_OK and "voices" or "silent")
 local function engineBadge() return ENGINE_BADGE end
 
+-- UNE PASSE PLUS COURTE QU'UNE MESURE A UN NOM, et c'est un nom de musicien.
+-- « 0.25 bars » se lit comme un reglage rate ; « 1/4 bar » se lit comme une
+-- figure. Le plancher est le huitieme de mesure : celui du moteur.
+local BAR_FRACTION = { [0.125] = "1/8 bar", [0.25] = "1/4 bar", [0.5] = "1/2 bar" }
 local function barsLabel(bars)
     local s = bars_lbl[bars]
     if not s then
-        s = bars == 1 and "1 bar" or (bars .. " bars")
+        s = BAR_FRACTION[bars] or (bars == 1 and "1 bar" or (bars .. " bars"))
         bars_lbl[bars] = s
     end
     return s
@@ -1051,9 +1063,42 @@ local AUDIO_CLIP = { kind = "midi", bars = 4,
 local function audioClip(c, lane)
     local bars = cellBars(c)
     AUDIO_CLIP.bars = bars
-    AUDIO_CLIP.notes.l[1] = bars * (Loop.TsNum() or 4) * AUDIO_GATE
+    -- ⚠️ CE QUE LA CASE PORTE DOIT VOYAGER AVEC ELLE, ET C'EST TOUT LE DEFAUT.
+    --
+    -- Ce descripteur synthetique est le SEUL que la lane recoive pour une case
+    -- audio, et `Loop.ApplyClip` ecrit TOUJOURS la signature et l'accolade —
+    -- exprès, pour effacer celles de l'occupant precedent d'une lane partagee.
+    -- Ne pas les recopier ici les effacait donc a chaque armement : regler la
+    -- signature d'une case audio « ne changeait rien », parce que le lancement
+    -- suivant la remettait a zero. Le reglage marchait une seconde, puis plus.
+    AUDIO_CLIP.tsnum  = c.tsnum
+    AUDIO_CLIP.loop_a = c.loop_a
+    AUDIO_CLIP.loop_b = c.loop_b
+    -- La signature de LA CASE ici aussi : c'est elle qui decide de la longueur
+    -- en beats, donc de la porte de la note unique.
+    AUDIO_CLIP.notes.l[1] = bars * (c.tsnum or Loop.TsNum() or 4) * AUDIO_GATE
     AUDIO_CLIP.notes.p[1] = laneNote(lane)
     return AUDIO_CLIP
+end
+
+-- REPOUSSER CE QU'UNE CASE PORTE DANS LA LANE QUI LA TIENT, TOUT DE SUITE.
+--
+-- Attendre le prochain lancement donne un reglage qui « ne fait rien » jusqu'a
+-- ce qu'on relance, c'est-a-dire un reglage qu'on croit casse. Une case qu'aucune
+-- lane ne tient n'a rien a pousser : elle partira juste au prochain armement.
+local function pushCell(t, s)
+    local c = cells[t] and cells[t][s]
+    if not c then return end
+    local lane = Loop.LaneOfTag(t, cellTag(t, s))
+    if not lane then return end
+    if isAudio(c) then
+        -- Une case audio passe par son clip synthetique : c'est lui qui porte
+        -- la longueur, la signature et l'accolade jusqu'a la lane.
+        Loop.ApplyClip(lane, audioClip(c, lane))
+    else
+        Loop.SetLengthBars(lane, cellBars(c))
+        Loop.SetLaneTsNum(lane, c.tsnum)
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1123,17 +1168,32 @@ local function armLane(lane, c, t, s)
     return true
 end
 
-local function stopTrack(t)
+-- UN GESTE HUMAIN SE QUANTIFIE ; UN ENCHAINEMENT SE DONNE RENDEZ-VOUS.
+--
+-- Cliquer une case veut dire « a la prochaine frontiere » — c'est tout l'interet
+-- de la grille, et `at` est alors nil. Un motion, lui, connait sa date : la fin
+-- de la passe en cours. La faire arrondir par une grille qui ne connait pas la
+-- longueur de la case est ce qui rendait les sept comportements faux (voir
+-- pollMotion).
+local function playLane(lane, at)
+    if at then Loop.PlayAt(lane, at) else Loop.Play(lane) end
+end
+local function stopLane(lane, at)
+    if at then Loop.StopClipAt(lane, at) else Loop.StopClip(lane) end
+end
+
+local function stopTrack(t, at)
     local lane = liveLane(t)
     local m = floor(Loop.Mode(lane) + 0.5)
-    if m == 3 or m == 5 then Loop.StopClip(lane)
-    elseif Loop.Pending(lane) == 1 then Loop.StopClip(lane) end  -- cancel queue
+    if m == 3 or m == 5 then stopLane(lane, at)
+    -- Annuler une file est immediat par nature : il n'y a rien a finir.
+    elseif Loop.Pending(lane) == 1 then Loop.StopClip(lane) end
 end
 
 -- Launch cell (t, s). Re-launching the cell that is already playing stops it
 -- (Ableton's toggle on the same clip); launching a different one swaps the
 -- buffers so the change happens on the boundary instead of mid-loop.
-local function launchCell(t, s)
+local function launchCell(t, s, at)
     local c = cells[t][s]
     -- A sound cell answers a click through the SAME six branches below. The
     -- three answers it used to re-implement — cancel what is only queued, take
@@ -1181,14 +1241,14 @@ local function launchCell(t, s)
         -- nothing to swap: load the live lane directly. This also keeps
         -- ordinary use on the low lanes — the ones CP_Looper shows.
         armLane(live, c, t, s)
-        Loop.Play(live)
+        playLane(live, at)
         cur[t] = s
         return
     end
     local twin = twinLane(t)
     armLane(twin, c, t, s)
-    Loop.Play(twin)         -- queued to the next boundary…
-    Loop.StopClip(live)     -- …and the outgoing one leaves on the same one
+    playLane(twin, at)      -- queued to the next boundary…
+    stopLane(live, at)      -- …and the outgoing one leaves on the same one
     -- which half is live is re-derived from the engine (Loop.Poll), not
     -- flipped here: a launch fired from CP_Editor or CP_Looper would
     -- otherwise leave this window pointing at the wrong lane.
@@ -1269,9 +1329,9 @@ local function randomPlayable(t, cur_s, excl)
     return nil
 end
 
-local function fireMotion(t, m, s)
+local function fireMotion(t, m, s, at)
     if m == MOTION_ONCE then
-        stopTrack(t)
+        stopTrack(t, at)
         return
     end
     local nxt
@@ -1282,7 +1342,7 @@ local function fireMotion(t, m, s)
         if not nxt then
             -- Le bas de la colonne. March & stay y reste en boucle, March &
             -- stop s'y tait : c'est le seul endroit ou les deux different.
-            if m == MOTION_MSTOP then stopTrack(t) end
+            if m == MOTION_MSTOP then stopTrack(t, at) end
             return
         end
     elseif m == MOTION_RAND then
@@ -1295,33 +1355,39 @@ local function fireMotion(t, m, s)
     -- le toggle d'Ableton — donc un Random sur une colonne d'une seule case
     -- s'eteindrait des la premiere passe au lieu de tourner.
     if not nxt or nxt == s then return end
-    launchCell(t, nxt)
+    launchCell(t, nxt, at)
 end
 
--- QUAND TIRER, et c'est la seule question difficile du chantier.
+-- QUAND TIRER — et depuis l'ABI 2.5 ce n'est plus une question difficile.
 --
--- Un lancement est QUANTIFIE. Demander la case suivante au moment ou la passe
--- se termine la fait partir a la frontiere de Q d'APRES — donc un Q entier en
--- retard. On tire dans la DERNIERE FENETRE DE Q avant la fin de la passe, et la
--- quantification du moteur pose le depart exactement sur cette fin.
+-- ⚠️ CE QUI ETAIT FAUX, ET POURQUOI CA L'ETAIT SUR LES SEPT MODES A LA FOIS.
 --
--- TROIS RESERVES, ecrites la ou elles mordent :
+-- On tirait dans la derniere fenetre de Q en comptant sur la quantification du
+-- moteur pour poser le depart sur la fin de la passe. Elle ne pouvait pas : elle
+-- ne connait pas la longueur de la case, seulement la grille globale. Des que la
+-- passe fait plus de deux Q — une case de DEUX MESURES avec Q a la mesure, le
+-- cas le plus banal qui soit — la fenetre s'ouvrait PILE sur une frontiere de Q,
+-- le moteur repondait « tout de suite », et la colonne changeait de case au
+-- milieu du clip. Les sept comportements passent tous par ici : ils etaient donc
+-- tous faux, et de la meme facon. C'est ce que Cedric a vu.
 --
---  · La frontiere ne coincide avec la fin de boucle que si la longueur de la
---    lane est un MULTIPLE de Q. A Q: Bar sur une lane de trois temps, la case
---    suivante part sur la mesure suivante et non sur la fin de la passe. Ce
---    n'est pas un defaut de ce code : c'est ce que « quantifie » veut dire.
+-- Un enchainement ne demande plus son chemin : il se donne RENDEZ-VOUS a la fin
+-- de la passe (`Loop.PlayAt`, ABI 2.5). Il ne reste a choisir que l'AVANCE, et
+-- elle ne depend que du temps qu'il faut pour armer la case suivante — un beat,
+-- plafonne a la moitie de la passe pour qu'une case courte garde une fenetre.
+-- C'est exactement l'avance que `Cells` se donne pour programmer une voix.
 --
---  · A Q: Beat et 160 BPM la fenetre vaut 375 ms, soit onze frames de defer.
---    C'est le PLANCHER. Plus serre, un tir tomberait entre deux frames.
+-- LES TROIS VALEURS VIENNENT DU MEME BLOC. Le beat du moteur, la phase et la
+-- zone sont publies ensemble a la fin d'un bloc audio ; la date qu'on pose est
+-- leur difference. Les apparier depuis deux blocs differents la fausserait de
+-- tout ce qui s'est passe entre les deux lectures — c'est la faute que ce depot
+-- a deja payee deux fois.
 --
---  · Q: Off n'a pas de fenetre du tout. On tire alors SUR le repli de phase,
---    donc avec une frame de retard. C'est ce que « pas de quantize » veut dire,
---    et le dire vaut mieux qu'inventer une avance qu'on ne peut pas tenir.
---
--- Le compteur de tours tombe du meme repli, gratuitement — Ableton l'affiche
+-- Le compteur de tours tombe du repli de phase, gratuitement — Ableton l'affiche
 -- dans son Track Status field, et c'est la reponse a « ca fait combien de fois
 -- que ca tourne » qu'on se pose en jouant.
+local MOTION_LOOK = 1.0     -- un beat d'avance
+
 local function pollMotion()
     -- L'HORLOGE COMPTE AUTANT QUE LA LANE. Sans elle la phase ne bouge plus,
     -- donc `slen - ph` reste fige : un transport arrete pile dans la derniere
@@ -1330,7 +1396,6 @@ local function pollMotion()
     -- JOUEES. On remet le suivi a zero plutot que de sortir, sinon la reprise
     -- lirait un repli de phase la ou il n'y a eu qu'une pause.
     local clock = Loop.ClockRunning()
-    local q = Loop.GetLaunchQ() or 0
     for t = 0, TRACKS - 1 do
         local f = mot[t]
         local lane = liveLane(t)
@@ -1340,6 +1405,8 @@ local function pollMotion()
             local tag = Loop.GetLaneTag(lane)
             local sa, slen = Loop.Span(lane)
             if not slen or slen <= 0 then slen = 1 end
+            -- Le beat AVANT la phase, et les deux du meme bloc : voir l'en-tete.
+            local beat = Loop.EngineBeat()
             local ph = (Loop.Phase(lane) or 0) - (sa or 0)
             if ph < 0 then ph = 0 elseif ph > slen then ph = slen end
             if lane ~= f.lane or tag ~= f.tag then
@@ -1350,9 +1417,7 @@ local function pollMotion()
                 -- tot a chaque pas de sa propre marche.
                 f.lane, f.tag, f.pz, f.armed, f.plays = lane, tag, ph, false, 0
             else
-                local wrapped = false
                 if ph + 1e-9 < f.pz then
-                    wrapped = true
                     f.plays = f.plays + 1
                     f.armed = false
                 end
@@ -1362,20 +1427,15 @@ local function pollMotion()
                 -- demander a la main ne se fait pas doubler par la regle.
                 if m ~= MOTION_STAY and not f.armed
                    and Loop.Pending(lane) == 0 then
-                    local fire
-                    if q > 0 then
-                        -- Le plafond a la moitie de la passe existe pour les
-                        -- cases plus COURTES que Q : sans lui la fenetre couvre
-                        -- toute la passe et le tir part des la premiere frame.
-                        local win = (q < slen * 0.5) and q or (slen * 0.5)
-                        fire = (slen - ph) <= win + 1e-9
-                    else
-                        fire = wrapped
-                    end
-                    if fire then
+                    local look = MOTION_LOOK
+                    if look > slen * 0.5 then look = slen * 0.5 end
+                    local rem = slen - ph
+                    if rem <= look then
+                        -- Arme meme si la case ne se resout pas : un tir rate ne
+                        -- doit pas se repeter a chaque frame de la fenetre.
                         f.armed = true
                         local s = sceneOfLane(lane, t)
-                        if s then fireMotion(t, m, s) end
+                        if s then fireMotion(t, m, s, beat + rem) end
                     end
                 end
             end
@@ -1811,8 +1871,31 @@ local function setCellTsNum(t, s, n)
     if not c then return end
     c.tsnum = n
     saveGrid()
-    local lane = Loop.LaneOfTag(t, cellTag(t, s))
-    if lane then Loop.SetLaneTsNum(lane, n) end
+    pushCell(t, s)
+end
+
+-- LA LONGUEUR DE LA PASSE — le reglage qui manquait, et qu'on cherchait ailleurs.
+--
+-- « Je depose un kick, il joue une fois par mesure. Si je mets 4 fois par bar il
+-- devrait sortir quatre coups, et la, ca ne change rien. » C'etait exact : la
+-- SIGNATURE multiplie la passe (mesures x beats), elle ne la divise pas ; et
+-- « Loop the material » repete a la duree DU FICHIER, donc hors de toute grille
+-- — 0,4 s de kick sortent cinq fois par mesure a 120 BPM, ce qui n'est pas un
+-- rythme, c'est une mitraillette.
+--
+-- Ce qu'il faut dire est plus simple, et c'est le vocabulaire d'un lanceur de
+-- boucles : une case joue UNE FOIS PAR PASSE. Un kick qui doit sortir quatre
+-- fois par mesure a une passe d'un QUART DE MESURE, et il tombe sur la grille
+-- parce que la grille est ce qu'une passe est.
+--
+-- Le plancher est le huitieme de mesure : celui du moteur (`lane_len_beats`),
+-- en dessous duquel une boucle cesse d'etre une boucle.
+local function setCellBars(t, s, bars)
+    local c = cells[t][s]
+    if not c then return end
+    c.bars = bars
+    saveGrid()
+    pushCell(t, s)
 end
 
 local function cellMenu(t, s)
@@ -1870,13 +1953,31 @@ local function cellMenu(t, s)
     -- tourner (un shaker d'un temps sous une mesure) demande la boucle. C'est le
     -- seul reglage qui distingue un crash d'un shaker, et il n'existait pas.
     local lmodes = snd and {
-        { label = "One-shot (plays once per pass)",
+        { label = "One-shot — plays once per pass",
           checked = ((c.lmode or "oneshot") ~= "loop"),
           action = function() setCellLoop(t, s, false) end },
-        { label = "Loop the material inside the pass",
+        -- LE LIBELLE DIT CE QUE CA FAIT, PARCE QUE CE N'EST PAS CE QU'ON CROIT.
+        -- La repetition se fait a la duree DU FICHIER, pas sur la grille : sur
+        -- un one-shot elle donne cinq coups par mesure a une periode qui n'est
+        -- celle de rien. C'est reserve a une matiere qui EST une boucle. Pour
+        -- repeter un coup sur la grille, c'est la LONGUEUR qu'on raccourcit.
+        { label = "Loop the material — repeats at the FILE's length, not the grid",
           checked = (c.lmode == "loop"),
           action = function() setCellLoop(t, s, true) end },
     } or nil
+    -- LA LONGUEUR DE LA PASSE. Une case joue une fois par passe : un quart de
+    -- mesure fait sortir un kick quatre fois par mesure, sur la grille.
+    local lens = has and {} or nil
+    if lens then
+        for _, b in ipairs({ 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32 }) do
+            lens[#lens + 1] = {
+                label = barsLabel(b) .. ((b < 1) and ("  ·  " .. floor(1 / b + 0.5)
+                                                     .. " per bar") or ""),
+                checked = (cellBars(c) == b),
+                action = function() setCellBars(t, s, b) end,
+            }
+        end
+    end
     -- LA SIGNATURE DE CETTE CASE. La longueur d'une boucle valait
     -- `mesures × la signature SOUS LA TETE DE LECTURE` : une seule mesure en
     -- 3/4 quelque part dans le projet raccourcissait toutes les boucles au
@@ -1901,6 +2002,7 @@ local function cellMenu(t, s)
         { label = "Rename clip…", disabled = not has,
           action = function() renameCell(t, s) end },
         { label = "Color", disabled = not has, children = cols },
+        { label = "Length", disabled = not has, children = lens },
         { label = "Time signature", disabled = not has, children = sigs },
         { label = "Tempo", disabled = not snd, children = tmodes },
         { label = "Playback", disabled = not snd, children = lmodes },
@@ -2987,6 +3089,19 @@ local function handleKeys()
             erased = nil
         else
             flash("Nothing to restore")
+        end
+        Core.ConsumeChar()
+        return
+    end
+
+    -- ELLE APPARTIENT A CELUI QUI MENE. Cliquer une case ouvre son clip dans
+    -- CP_Editor, mais le focus clavier reste ici : sans ce relais, Space ne
+    -- faisait rien: la fenetre qui savait quoi jouer ne recevait pas la touche.
+    -- Cette grille est la derniere de l'ordre et ne la reclame jamais — elle a
+    -- son propre transport, qui est le clic sur une case.
+    if a == "play.toggle" then
+        if not Focus.Route("session", char, Core.Mods and Core.Mods() or 0) then
+            r.Main_OnCommand(40044, 0)   -- Transport: Play/stop
         end
         Core.ConsumeChar()
         return

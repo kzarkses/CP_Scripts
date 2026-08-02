@@ -38,11 +38,17 @@ local BEAT = 0.5     -- on ne la reecrit pas plus souvent que ca
 -- Le rang le plus BAS gagne. C'est la demande de Cedric du 2026-08-02 :
 -- « si CP_Editor est ouvert, c'est le lead, ensuite CP_Sampler, enfin
 -- CP_MediaExplorer ».
-local RANK = { editor = 1, sampler = 2, media = 3 }
+--
+-- CP_SESSION EST LA DERNIERE, ET C'EST UNE PROPRIETE DE LA FENETRE, pas un
+-- classement d'importance : elle a un transport a elle — le clic sur une case —
+-- donc elle ne veut jamais de la barre d'espace. Elle est dans la liste pour
+-- POUVOIR la passer, et pour rien d'autre. Sans elle, cliquer une case ouvrait
+-- le clip dans CP_Editor et Space ne faisait plus rien du tout.
+local RANK = { editor = 1, sampler = 2, media = 3, session = 4 }
 -- Parcouru dans l'ordre pour trouver le proprietaire : une liste, parce qu'un
 -- `pairs` sur RANK ne garantit pas l'ordre et que « le mieux place » est
 -- exactement une question d'ordre.
-local ORDER = { "editor", "sampler", "media" }
+local ORDER = { "editor", "sampler", "media", "session" }
 
 function Focus.init(reaper_api) r = reaper_api end
 

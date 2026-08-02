@@ -65,6 +65,15 @@ return {
     { act = "scene.capture",    group = "Scene", k = 9, mods = "Ctrl+Shift",
       label = "Capture what is playing into the first empty scene row" },
 
+    -- ----- le transport ------------------------------------------------------
+    -- Elle ne joue RIEN ici : cette fenetre passe la main a celle qui mene
+    -- (CP_Editor, puis CP_Sampler), et retombe sur le transport de REAPER quand
+    -- aucune n'est ouverte. Elle est declaree quand meme, parce qu'une touche
+    -- qui traverse une fenetre doit se lire dans sa page de reglages — sinon
+    -- « Space ne fait rien ici » n'a aucune explication a portee de clic.
+    { act = "play.toggle",      group = "Transport", k = Keys.SPACE, mods = "",
+      label = "Play/stop — handed to CP_Editor when it is open" },
+
     -- ----- reparer -----------------------------------------------------------
     { act = "edit.undo",        group = "Edit", k = 26, mods = "Ctrl",
       label = "Put the last erased cell back" },
