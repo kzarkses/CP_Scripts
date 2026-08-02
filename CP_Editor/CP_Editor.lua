@@ -33,6 +33,11 @@ local Rows  = dofile(cp_root .. "CP_Engine/Rows.lua")
 -- il repond « quelle ACTION pour ce geste », et c'est tout ce qui separe un
 -- raccourci fige d'un raccourci qu'on peut changer.
 local Keymap = dofile(cp_root .. "CP_Engine/Keymap.lua")
+-- LE PANNEAU DE RACCOURCIS EST UN MODULE, pas une autre fenetre. On regle les
+-- raccourcis de l'outil qu'on a sous la main : aller chercher un script dans la
+-- liste des actions pour regler CELUI-CI est un detour que personne ne fait
+-- deux fois.
+local KeymapUI = dofile(cp_root .. "CP_Engine/KeymapUI.lua")
 local Kit   = dofile(cp_root .. "CP_Engine/Kit.lua")
 local Tracks = dofile(cp_root .. "CP_Engine/Tracks.lua")
 -- L'AUDITION PARTAGEE (feuille de route phase 3). Le meme geste etait
@@ -62,6 +67,7 @@ Tracks.init(r)
 Kit.init(r, Tracks)
 Audition.init(r)
 Keymap.init(r, UI.Core, UI.Keys)
+KeymapUI.init(r, UI.Core, Keymap)
 Insert.init(r)
 DragBus.init(r)
 Ident.init(r, Clip)
@@ -1419,8 +1425,12 @@ local function openSettings()
         -- s'ecrit complet, chaque action commentee de son libelle, et se relit
         -- sans fermer la fenetre.
         { label = "Keyboard & mouse", children = {
-            { label = "(edit them in the CP Keymap script — Actions list)",
-              disabled = true },
+            { label = "Configure the keys and modifiers…",
+              action = function()
+                  state.km = state.km or KeymapUI.NewState(KM)
+                  state.km_open = true
+              end },
+            { separator = true },
             { label = "Write the current map to CP_Config/CP_Keymap.lua",
               action = function()
                   local ok, path = Keymap.Export(KM)
@@ -4163,7 +4173,15 @@ local function frame(theme)
         flushApply()
     end
     if Peaks.Step() then UI.RequestRedraw() end
-    handleKeys()
+    -- LA CAPTURE PASSE AVANT LES RACCOURCIS, et handleKeys se tait tant que le
+    -- panneau est ouvert. Sans cet ordre, appuyer sur « q » pour le reassigner
+    -- QUANTIFIERAIT : le raccourci qu'on essaie de changer se declencherait a
+    -- chaque tentative de le changer.
+    if state.km_open and state.km then
+        KeymapUI.PollCapture(state.km)
+    else
+        handleKeys()
+    end
 
     -- deferred audition note-off (the note is held for 0.2 s, then released
     -- in the track it was played into)
@@ -4173,6 +4191,17 @@ local function frame(theme)
     end
 
     UI.SetWindowPadding(theme.pad_large or 10)
+
+    -- LE PANNEAU DE RACCOURCIS PREND LA FENETRE ENTIERE tant qu'il est ouvert.
+    -- Pas une boite modale posee par-dessus : regler un raccourci demande de la
+    -- place et de la lecture, et une liste de trente-huit actions dans un coin
+    -- se parcourt au chausse-pied. On y entre, on en sort — comme une page.
+    if state.km_open and state.km then
+        if not KeymapUI.Panel(UI, state.km, theme) then
+            state.km_open = false
+        end
+        return
+    end
 
     -- FOUR ZONES, each with its own ground and a seam between: the command
     -- bar, the identity line, the canvas, the status. The rail is gone — it

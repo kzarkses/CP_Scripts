@@ -155,7 +155,25 @@ local mods_reg = {}     -- module -> { rows, bind, mouse_idx, key_idx, order }
 
 local function blank(name)
     return { name = name, rows = {}, by_act = {}, bind = {},
-             mouse = {}, keys = {}, dirty = true }
+             mouse = {}, keys = {}, dirty = true, ver = 0 }
+end
+
+-- « Quelque chose a change dans cette carte. » Un affichage qui met la liste a
+-- plat une seule fois — et non par frame, ce qui allouerait trente-huit tables
+-- dans une boucle de dessin — a besoin de savoir QUAND la refaire. Le compteur
+-- repond sans qu'il ait a comparer trente-huit liaisons.
+function Keymap.Version(name)
+    local m = mods_reg[name]
+    return m and m.ver or 0
+end
+
+-- « CETTE CARTE A BOUGE. » Deux consequences, et aucun appelant n'a de raison
+-- de se souvenir des deux : l'index de lecture doit se refaire, et l'affichage
+-- doit savoir qu'il peut refaire sa liste. Les separer garantissait qu'un jour
+-- l'un serait pose sans l'autre.
+local function touched(m)
+    touched(m)
+    m.ver = (m.ver or 0) + 1
 end
 
 -- Reconstruit les deux index de lecture depuis les liaisons. Appele a
@@ -318,7 +336,7 @@ function Keymap.Set(name, act, slot)
     if not m or not m.by_act[act] then return false end
     m.bind[act] = { ctx = slot.ctx, g = slot.g, k = slot.k,
                     mods = slot.mods or 0 }
-    m.dirty = true
+    touched(m)
     return true
 end
 
@@ -337,7 +355,7 @@ function Keymap.Reset(name, act)
                                 k = row.def.k, mods = row.def.mods }
         end
     end
-    m.dirty = true
+    touched(m)
     return true
 end
 
@@ -362,7 +380,7 @@ function Keymap.ApplyOverrides(name)
     local m = mods_reg[name]
     if not m then return end
     local s = loadStore()[name]
-    if type(s) ~= "table" then m.dirty = true return end
+    if type(s) ~= "table" then touched(m) return end
     for act, v in pairs(s) do
         if m.by_act[act] and type(v) == "table" then
             -- Le fichier ecrit « Ctrl+Shift » parce qu'il se relit ; la table
@@ -374,7 +392,7 @@ function Keymap.ApplyOverrides(name)
                             k = v.k, mods = mask }
         end
     end
-    m.dirty = true
+    touched(m)
 end
 
 -- RELIRE LE FICHIER SANS RELANCER LE SCRIPT. C'est la moitie du confort d'un
