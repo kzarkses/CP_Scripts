@@ -48,8 +48,8 @@
 
 local r = reaper
 
-local TARGET  = "CP Session"     -- le titre EXACT de la fenetre a heberger
 local SECTION = "CP_ArrangeHost"
+local DEFAULT_TARGET = "CP Session"
 
 if not r.JS_Window_SetParent then
     r.MB("This needs js_ReaScriptAPI.", "Arrange Host", 0)
@@ -58,6 +58,17 @@ end
 
 local MAIN = r.GetMainHwnd()
 if not MAIN then return end
+
+-- Publier notre action, comme toutes les fenetres de la suite. Ce sont les
+-- boutons de vue qui la declenchent : sans cette cle ils sauraient quoi
+-- demander mais pas a qui.
+do
+    local _, _, sec, cmd = r.get_action_context()
+    if cmd and cmd ~= 0 and sec == 0 then
+        local named = r.ReverseNamedCommandLookup(cmd)
+        if named then r.SetExtState(SECTION, "cmd", "_" .. named, true) end
+    end
+end
 
 -- ---------------------------------------------------------------------------
 -- L'INTERRUPTEUR. Un battement, pas un simple drapeau : un drapeau laisse par
@@ -71,11 +82,40 @@ local function aliveElsewhere()
     return b and (r.time_precise() - b) < BEAT_STALE
 end
 
+-- ---------------------------------------------------------------------------
+-- QUELLE VUE, ET POURQUOI CE N'EST PLUS UN SIMPLE INTERRUPTEUR
+-- ---------------------------------------------------------------------------
+-- L'hote ne connaissait qu'une fenetre, ecrite en dur. Avec un selecteur de
+-- vue il en connait plusieurs, et « relancer l'action » ne veut plus dire la
+-- meme chose selon ce qui est deja affiche :
+--
+--   meme vue que celle en place  -> c'est une BASCULE, on rend la bande ;
+--   vue differente               -> c'est un CHANGEMENT, l'instance vivante
+--                                   rend la fenetre en cours et prend l'autre,
+--                                   SANS lacher la bande entre les deux.
+--
+-- Ce second cas doit etre fait par l'instance VIVANTE. La faire mourir puis en
+-- lancer une autre marcherait aussi, mais entre les deux la bande reapparait,
+-- l'arrangeur se redessine, et on verrait clignoter ce qu'on essaie justement
+-- de ne plus voir. Une demande, pas une relance.
+--
+-- `want` est a USAGE UNIQUE : lu puis efface. Sinon lancer l'hote a la main
+-- six mois plus tard rejouerait le dernier choix fait par un bouton, ce qui
+-- est vrai mais imprevisible.
+local TARGET = r.GetExtState(SECTION, "want")
+if TARGET == nil or TARGET == "" then TARGET = DEFAULT_TARGET end
+r.SetExtState(SECTION, "want", "", false)
+
 if aliveElsewhere() then
-    r.SetExtState(SECTION, "stop", "1", false)
-    return                       -- l'instance vivante fera la remise en etat
+    if r.GetExtState(SECTION, "target") == TARGET then
+        r.SetExtState(SECTION, "stop", "1", false)
+    else
+        r.SetExtState(SECTION, "switch", TARGET, false)
+    end
+    return                       -- l'instance vivante fait le travail
 end
 r.SetExtState(SECTION, "stop", "", false)
+r.SetExtState(SECTION, "switch", "", false)
 
 -- ---------------------------------------------------------------------------
 -- La cible
@@ -190,12 +230,13 @@ local app_rect   = nil
 local taken      = false
 local done       = false
 
-local function restoreAll()
-    if done then return end
-    done = true
-    r.SetExtState(SECTION, "beat", "", false)
-    r.SetExtState(SECTION, "stop", "", false)
-    if taken and r.JS_Window_IsWindow(APP) then
+-- RENDRE LA FENETRE, SANS RENDRE LA BANDE. Extrait de restoreAll parce qu'un
+-- changement de vue fait exactement ce geste-la et rien d'autre : la bande
+-- reste masquee pendant qu'une fenetre part et qu'une autre arrive.
+local function releaseApp()
+    if not taken then return end
+    taken = false
+    if r.JS_Window_IsWindow(APP) then
         -- L'ORDRE COMPTE. Le style redevient celui d'une fenetre de premier
         -- rang AVANT le detachement, sinon on detache une fenetre encore
         -- marquee CHILD ; et la place se repose EN DERNIER, parce qu'un
@@ -217,6 +258,17 @@ local function restoreAll()
         end
         r.JS_Window_Show(APP, "SHOW")
     end
+    app_style, app_rect = nil, nil
+end
+
+local function restoreAll()
+    if done then return end
+    done = true
+    r.SetExtState(SECTION, "beat", "", false)
+    r.SetExtState(SECTION, "stop", "", false)
+    r.SetExtState(SECTION, "switch", "", false)
+    r.SetExtState(SECTION, "target", "", false)
+    releaseApp()
     for _, c in ipairs(band) do r.JS_Window_Show(c.h, "SHOW") end
     r.TrackList_AdjustWindows(false)
     r.UpdateArrange()
@@ -243,10 +295,26 @@ local WS_CAPTION   = 0x00C00000
 local WS_THICKFRAME = 0x00040000
 local WS_SYSMENU   = 0x00080000
 
-do
+local applied = ""
+
+-- ⚠️ `taken` SE POSE AVANT LE PREMIER GESTE, PAS APRES LE DERNIER.
+-- Il etait mis a la fin du bloc, ce qui paraissait honnete — « on ne declare
+-- possede que ce qu'on possede vraiment ». C'etait l'inverse d'un garde-fou :
+-- si SetLong passait et que SetParent echouait, restoreAll sortait au test
+-- `if taken` et NE REPOSAIT PAS LE STYLE. Cedric se retrouvait avec une
+-- CP_Session sans barre de titre, sans bordure et sans menu systeme —
+-- ni deplacable, ni fermable. Exactement ce que le long commentaire ci-dessus
+-- cherchait a eviter, rate d'une ligne.
+--
+-- Le drapeau ne dit pas « j'ai reussi », il dit « j'ai commence a toucher ».
+-- Reposer un style qu'on n'a pas modifie ne coute rien ; ne pas reposer celui
+-- qu'on a modifie coute la fenetre.
+local function takeApp(h)
+    APP = h
     local l, t, rt, b = rectOf(APP)
-    if l then app_rect = { l = l, t = t, w = rt - l, h = b - t } end
+    app_rect = l and { l = l, t = t, w = rt - l, h = b - t } or nil
     app_style = math.floor(r.JS_Window_GetLong(APP, "STYLE") or 0) & 0xFFFFFFFF
+    taken = true
     -- CHILD, et pas seulement « fille par le parent ». Sans ce bit la fenetre
     -- reste une popup possedee : elle garde son cadre, elle flotte au-dessus, et
     -- elle n'est pas clippee par la fenetre principale. On retire du meme geste
@@ -256,7 +324,21 @@ do
                   | WS_CHILD
     r.JS_Window_SetLong(APP, "STYLE", child & 0xFFFFFFFF)
     r.JS_Window_SetParent(APP, MAIN)
-    taken = true
+    -- ON VERIFIE LE RESULTAT, PAS LE GESTE. SetParent peut ne rien faire sans
+    -- rien dire ; on aurait alors une fenetre de premier rang portant le bit
+    -- CHILD, c'est-a-dire cassee des deux cotes.
+    if r.JS_Window_GetParent(APP) ~= MAIN then
+        releaseApp()
+        return false
+    end
+    applied = ""      -- la place se recalcule, l'ancienne ne veut plus rien dire
+    r.SetExtState(SECTION, "target", TARGET, false)
+    return true
+end
+
+if not takeApp(APP) then
+    r.MB("Could not reparent " .. TARGET .. ". Nothing was changed.", "Arrange Host", 0)
+    return
 end
 
 for _, c in ipairs(band) do r.JS_Window_Show(c.h, "HIDE") end
@@ -265,7 +347,6 @@ r.TrackList_AdjustWindows(false)
 -- ---------------------------------------------------------------------------
 -- La boucle
 -- ---------------------------------------------------------------------------
-local applied = ""
 
 -- LA BOUCLE GARDIENNE EST OBLIGATOIRE, et on ne l'a su qu'en regardant
 -- quelqu'un se servir de REAPER : la visibilite n'est pas reaffirmee par une
@@ -351,8 +432,39 @@ local function focusPolicy()
     end
 end
 
+-- CHANGER DE VUE SANS RENDRE LA BANDE. La fenetre demandee doit exister : les
+-- boutons de vue la remontent ou la lancent AVANT de demander, precisement
+-- pour que ce chemin-ci n'ait jamais a ouvrir une boite de dialogue depuis une
+-- boucle differee. Si elle n'est pas la, ou si elle est dockee, on garde ce
+-- qu'on affiche — refuser en silence vaut mieux que rendre l'ecran a
+-- l'arrangeur pour une demande qu'on n'a pas pu satisfaire.
+local function switchTo(title)
+    if title == TARGET then return true end
+    local h = r.JS_Window_Find(title, true)
+    if not h or h == APP then return true end
+    if r.DockIsChildOfDock and (r.DockIsChildOfDock(h) or -1) >= 0 then return true end
+    local prev_app, prev_target = APP, TARGET
+    releaseApp()
+    TARGET = title
+    if not takeApp(h) then
+        -- La reprise a echoue : on remet celle d'avant plutot que de laisser la
+        -- bande masquee devant rien. Sauf si elle a disparu entre-temps — on
+        -- vient de la rendre au bureau, elle a pu etre fermee dans l'intervalle,
+        -- et reprendre un handle mort ferait de la panne un plantage.
+        if not r.JS_Window_IsWindow(prev_app) then return false end
+        TARGET = prev_target
+        return takeApp(prev_app)
+    end
+    return true
+end
+
 local function loop()
     if r.GetExtState(SECTION, "stop") == "1" then restoreAll() return end
+    local sw = r.GetExtState(SECTION, "switch")
+    if sw ~= "" then
+        r.SetExtState(SECTION, "switch", "", false)
+        if not switchTo(sw) then restoreAll() return end
+    end
     -- LA FENETRE HEBERGEE PEUT MOURIR SOUS NOUS — l'application se ferme, le
     -- script est tue. Continuer a la placer viserait un handle mort, et laisser
     -- la bande masquee donnerait un ecran vide sans rien pour l'expliquer.
