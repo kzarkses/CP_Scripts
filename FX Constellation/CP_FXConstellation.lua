@@ -81,17 +81,44 @@ UI_TK.Init("FX Constellation", 1400, 800, {
     padding = 8,
 })
 
+-- DIRE QU'ON EXISTE, ET COMMENT NOUS RELANCER. Meme convention que l'editeur,
+-- le navigateur d'effets et la session : `cmd` publie l'action enregistree
+-- (persistante), `alive` bat toutes les demi-secondes (non persistante), et
+-- Bus.FocusApp lit le battement AVANT de declencher l'action — relancer celle
+-- d'un script vivant le tue au lieu de le remonter.
+--
+-- Cette fenetre ne publiait rien du tout : personne ne pouvait la remonter ni
+-- savoir si elle tournait. Le selecteur de vue doit pouvoir demander « montre
+-- moi la constellation » sans le savoir d'avance.
+do
+    local _, _, sec, cmd = r.get_action_context()
+    if cmd and cmd ~= 0 and sec == 0 then
+        local named = r.ReverseNamedCommandLookup(cmd)
+        if named then r.SetExtState("CP_FXConstellation", "cmd", "_" .. named, true) end
+    end
+end
+
 UI_TK.OnClose(function()
     if Core.state.track then FXManager.saveTrackSelection() end
     -- flushAll: saveSettings alone only writes sections whose dirty flag is
     -- set — edits from the last debounce window would be lost on close.
     Persistence.flushAll()
+    r.DeleteExtState("CP_FXConstellation", "alive", false)
 end)
+
+-- Le battement. Dans la boucle et non dans un minuteur : ce qu'il prouve, c'est
+-- que les frames passent, pas que le script est charge.
+local alive_t = 0
 
 UI_TK.Run(function(theme)
     -- Hot-reload theme when the Theme Tweaker (or any other CP script)
     -- saves a change. CheckThemeUpdates returns true on the frame the theme
     -- got reloaded so the next frame paints with the new values.
     UI_TK.CheckThemeUpdates()
+    local now = r.time_precise()
+    if now >= alive_t then
+        alive_t = now + 0.5
+        r.SetExtState("CP_FXConstellation", "alive", tostring(now), false)
+    end
     UI.frame(theme)
 end)

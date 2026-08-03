@@ -3766,6 +3766,32 @@ UI.Init("CP Session", 580, 400, {
     scrollable = false,
 })
 
+-- DIRE QU'ON EXISTE, ET COMMENT NOUS RELANCER. La convention est celle de
+-- l'editeur et du navigateur d'effets : `cmd` publie l'action enregistree
+-- (persistante), `alive` bat toutes les demi-secondes (non persistante), et
+-- Bus.FocusApp lit les deux — le battement d'abord, parce que relancer l'action
+-- d'un script VIVANT le tue au lieu de le remonter.
+--
+-- CP_Session ne publiait ni l'un ni l'autre, ce qui rendait
+-- Bus.FocusApp("CP_Session", "CP Session") toujours faux, meme fenetre sous les
+-- yeux. Tant qu'elle etait la seule fenetre a en appeler d'autres, ca ne se
+-- voyait pas ; le selecteur de vue, lui, doit pouvoir demander « montre-moi la
+-- session » sans savoir si elle tourne.
+--
+-- La garde sectionID == 0 est celle des deux autres : lance depuis l'editeur de
+-- scripts plutot que comme action, le script tourne mais n'a pas d'identifiant
+-- a publier. Il vaut mieux ne rien ecrire qu'ecrire une cle qui ne relance rien.
+-- Dans un bloc : ce fichier est a 198 locales de chunk sur les 200 que Lua
+-- accepte, et trois noms qui ne servent qu'une fois n'ont rien a faire dans ce
+-- budget-la.
+do
+    local _, _, sec, cmd = r.get_action_context()
+    if cmd and cmd ~= 0 and sec == 0 then
+        local named = r.ReverseNamedCommandLookup(cmd)
+        if named then r.SetExtState("CP_Session", "cmd", "_" .. named, true) end
+    end
+end
+
 UI.OnClose(function()
     -- The debounce would drop anything edited in the last half-second, and a
     -- window closing is exactly when that matters.
@@ -3775,13 +3801,23 @@ UI.OnClose(function()
     pcall(Cells.Destroy)
     -- our sounds are lanes now, and lanes outlive this window on purpose
     if state.registered then pcall(DragBus.Unregister, "session") end
+    r.DeleteExtState("CP_Session", "alive", false)
 end)
 
 -- Hard termination (Actions-window kill, a runtime error breaking the defer
 -- chain): OnClose never runs on those paths, and the set would go with it.
 r.atexit(function() pcall(Loop.SaveState) end)
 
+-- Le battement. Ecrit dans la boucle et non par un minuteur : ce qu'on veut
+-- prouver, c'est que les frames PASSENT, pas que le script est charge.
+local alive_t = 0
+
 UI.Run(function(theme)
     UI.CheckThemeUpdates()
+    local now = r.time_precise()
+    if now >= alive_t then
+        alive_t = now + 0.5
+        r.SetExtState("CP_Session", "alive", tostring(now), false)
+    end
     frame(theme)
 end)
