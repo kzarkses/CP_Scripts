@@ -1239,6 +1239,42 @@ function Core.ToggleDock()
 end
 
 -- ============================================================================
+-- « SORS DU DOCKER » — une boite aux lettres, parce qu'on ne peut pas le faire
+-- a la place de quelqu'un d'autre
+-- ============================================================================
+-- `gfx.dock` n'agit que sur SON PROPRE contexte : une fenetre ne peut etre
+-- desamarree que par elle-meme. Un script tiers n'a aucun moyen de le faire —
+-- et le selecteur de vue en a besoin, parce qu'une fenetre dockee appartient
+-- deja a quelqu'un et ne peut pas aller prendre la place de l'arrangeur.
+--
+-- D'ou une boite aux lettres : ExtState `CP_Dock` / <titre de la fenetre>,
+-- valeur "<dock>,<date>". Chaque fenetre du toolkit la releve quatre fois par
+-- seconde et obeit si elle la concerne. C'est le seul mecanisme possible : le
+-- geste doit venir de l'interieur, donc ce qui vient de l'exterieur ne peut
+-- etre qu'une DEMANDE.
+--
+-- ⚠️ AVEC PEREMPTION, ET CE N'EST PAS UN DETAIL. Sans date, une application
+-- lancee demain lirait un ordre donne aujourd'hui et se desamarrerait toute
+-- seule, sans que rien a l'ecran ne l'explique. Une consigne qui ne se perime
+-- pas n'est plus une consigne, c'est un piege a retardement.
+--
+-- La cle est EFFACEE des qu'elle est lue, meme si on n'y donne pas suite :
+-- une demande perimee qu'on laisse en place serait relue a chaque frame, et
+-- une demande satisfaite serait rejouee au prochain amarrage manuel.
+local DOCK_MAIL     = "CP_Dock"
+local DOCK_MAIL_TTL = 3.0
+
+-- Demander a une AUTRE fenetre du toolkit de changer d'amarrage. dock_id suit
+-- gfx.dock : 0 = flottante, >0 = dockee. Le demandeur doit verifier le
+-- RESULTAT — la fenetre visee peut ne pas tourner, ou refuser.
+-- La releve elle-meme est plus bas, dans la boucle principale : elle a besoin
+-- de `win_title`, qui n'existe qu'a partir de la.
+function Core.RequestDock(title, dock_id)
+    reaper.SetExtState(DOCK_MAIL, title,
+        string.format("%d,%.6f", dock_id or 0, reaper.time_precise()), false)
+end
+
+-- ============================================================================
 -- MAIN LOOP
 -- ============================================================================
 local user_loop_fn = nil
@@ -2525,6 +2561,28 @@ function Core.Run(loop_fn)
             state.win_sw, state.win_sh = dw, dh
         end
         state.frame = state.frame + 1
+
+        -- La releve de la boite aux lettres « sors du docker » (voir
+        -- Core.RequestDock). Cadencee a la FRAME et non a l'horloge : un
+        -- GetExtState toutes les quinze frames ne se mesure pas, alors que lire
+        -- l'heure a chaque frame pour decider de ne rien faire couterait plus
+        -- que ce qu'on economise. `state.dock` vient d'etre relu juste au-dessus,
+        -- donc la comparaison porte sur la valeur de CETTE frame.
+        if state.frame % 15 == 0 then
+            local mail = reaper.GetExtState(DOCK_MAIL, win_title)
+            if mail ~= "" then
+                -- Effacee des qu'elle est lue, meme si on n'y donne pas suite :
+                -- une demande perimee qu'on laisserait en place serait relue a
+                -- chaque frame, et une demande satisfaite serait rejouee au
+                -- prochain amarrage manuel.
+                reaper.DeleteExtState(DOCK_MAIL, win_title, false)
+                local want, stamp = mail:match("^(%-?%d+),([%d%.]+)$")
+                if want and (reaper.time_precise() - (tonumber(stamp) or 0)) <= DOCK_MAIL_TTL then
+                    want = tonumber(want)
+                    if want and want ~= state.dock then gfx.dock(want) end
+                end
+            end
+        end
 
         -- Any user input on this frame → refresh momentum so follow-up events
         -- stay on the active path (see INPUT_MOMENTUM).

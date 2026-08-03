@@ -230,10 +230,50 @@ local app_rect   = nil
 local taken      = false
 local done       = false
 
+-- LES FENETRES QU'ON A RENDUES MAIS MASQUEES.
+--
+-- Changer de vue ne doit pas reposer l'ancienne au milieu de l'ecran. Cedric
+-- l'a dit tout de suite : « lorsque je change de vues, je me retrouve avec des
+-- fenetres flottantes ». Il a demande a voir autre chose, pas a voir celle-la
+-- AILLEURS — et une fenetre flottante qu'on n'a pas ouverte soi-meme, en plein
+-- milieu, se lit comme un bug avant de se lire comme une fonctionnalite.
+--
+-- Mais une fenetre masquee dont personne ne se souvient est une fenetre PERDUE :
+-- elle vit, elle ne repond plus, elle n'est nulle part, et le seul moyen de la
+-- revoir est de tuer son script depuis la liste des actions. On les garde donc
+-- ici, et `restoreAll` les remontre toutes. Ce que l'hote a pris, il le rend —
+-- y compris ce qu'il a seulement cache.
+-- On y garde le TITRE avec la poignee, et pas seulement la poignee : c'est ce
+-- qui permet de retrouver une fenetre masquee sans repasser par
+-- JS_Window_Find. La documentation de celui-ci promet de chercher les fenetres
+-- filles « irrespective of docked state », mais ne dit rien des fenetres
+-- MASQUEES — et revenir a la vue precedente est justement le cas frequent. On
+-- ne parie pas sur une lecture optimiste quand on tient deja la reponse.
+local stash = {}
+
+local function unstash(h)
+    for i = #stash, 1, -1 do
+        if stash[i].h == h then table.remove(stash, i) end
+    end
+end
+
+local function stashed(title)
+    for i = 1, #stash do
+        if stash[i].title == title and r.JS_Window_IsWindow(stash[i].h) then
+            return stash[i].h
+        end
+    end
+    return nil
+end
+
 -- RENDRE LA FENETRE, SANS RENDRE LA BANDE. Extrait de restoreAll parce qu'un
 -- changement de vue fait exactement ce geste-la et rien d'autre : la bande
 -- reste masquee pendant qu'une fenetre part et qu'une autre arrive.
-local function releaseApp()
+--
+-- `hide` distingue les deux appelants : un CHANGEMENT de vue masque celle qui
+-- part, un ARRET la remontre. C'est le meme geste sur la fenetre, et deux
+-- intentions differentes sur l'ecran.
+local function releaseApp(hide)
     if not taken then return end
     taken = false
     if r.JS_Window_IsWindow(APP) then
@@ -256,7 +296,15 @@ local function releaseApp()
             r.JS_Window_SetPosition(APP, app_rect.l, app_rect.t,
                                     app_rect.w, app_rect.h)
         end
-        r.JS_Window_Show(APP, "SHOW")
+        if hide then
+            r.JS_Window_Show(APP, "HIDE")
+            stash[#stash + 1] = { h = APP, title = TARGET }
+        else
+            -- SHOWNA et pas SHOW : on la remontre la ou elle etait, sans la
+            -- mettre au premier plan. Elle revient parce qu'on la lui doit, pas
+            -- parce qu'il vient de la demander.
+            r.JS_Window_Show(APP, "SHOWNA")
+        end
     end
     app_style, app_rect = nil, nil
 end
@@ -268,7 +316,13 @@ local function restoreAll()
     r.SetExtState(SECTION, "stop", "", false)
     r.SetExtState(SECTION, "switch", "", false)
     r.SetExtState(SECTION, "target", "", false)
-    releaseApp()
+    releaseApp(false)
+    -- Tout ce qu'on a masque en cours de route revient. Sans ca, passer par
+    -- trois vues laisserait deux fenetres vivantes et invisibles.
+    for _, e in ipairs(stash) do
+        if r.JS_Window_IsWindow(e.h) then r.JS_Window_Show(e.h, "SHOWNA") end
+    end
+    stash = {}
     for _, c in ipairs(band) do r.JS_Window_Show(c.h, "SHOW") end
     r.TrackList_AdjustWindows(false)
     r.UpdateArrange()
@@ -311,6 +365,10 @@ local applied = ""
 -- qu'on a modifie coute la fenetre.
 local function takeApp(h)
     APP = h
+    -- Elle sort peut-etre de la reserve : on la reprend, donc elle n'y est plus,
+    -- et elle doit redevenir visible avant qu'on la place.
+    unstash(h)
+    r.JS_Window_Show(h, "SHOWNA")
     local l, t, rt, b = rectOf(APP)
     app_rect = l and { l = l, t = t, w = rt - l, h = b - t } or nil
     app_style = math.floor(r.JS_Window_GetLong(APP, "STYLE") or 0) & 0xFFFFFFFF
@@ -440,11 +498,13 @@ end
 -- l'arrangeur pour une demande qu'on n'a pas pu satisfaire.
 local function switchTo(title)
     if title == TARGET then return true end
-    local h = r.JS_Window_Find(title, true)
+    -- La reserve d'abord : si on l'a masquee nous-memes, on tient sa poignee et
+    -- on n'a personne a interroger.
+    local h = stashed(title) or r.JS_Window_Find(title, true)
     if not h or h == APP then return true end
     if r.DockIsChildOfDock and (r.DockIsChildOfDock(h) or -1) >= 0 then return true end
     local prev_app, prev_target = APP, TARGET
-    releaseApp()
+    releaseApp(true)          -- masquee : il a demande a voir autre chose
     TARGET = title
     if not takeApp(h) then
         -- La reprise a echoue : on remet celle d'avant plutot que de laisser la

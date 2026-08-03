@@ -50,6 +50,7 @@ local HOST       = "CP_ArrangeHost"
 local BEAT_STALE = 1.5     -- la meme peremption que l'hote s'applique a lui-meme
 local APP_STALE  = 2.0     -- celle de Bus.FocusApp : battement de 0,5 s, trois rates tolerees
 local WAIT_MAX   = 5.0     -- au-dela, l'application ne demarre pas et on le dit
+local UNDOCK_MAX = 3.0     -- au-dela, elle ne sait pas se desamarrer et on le dit
 
 -- ---------------------------------------------------------------------------
 -- Lire l'etat, sans rien supposer
@@ -101,30 +102,22 @@ if not r.JS_Window_Find then
     return
 end
 
--- L'hote refuse une fenetre DOCKEE, et il a raison tant qu'on ne sait pas la
--- desamarrer de l'exterieur. Le dire ICI plutot que de laisser la demande
--- partir : dans le chemin « changement de vue » l'hote refuse en silence, et un
--- bouton qui ne fait rien sans rien dire est pire qu'un bouton qui explique.
-local function refuseIfDocked(h)
+local function isDocked(h)
     if not (r.DockIsChildOfDock and h) then return false end
     local idx = r.DockIsChildOfDock(h)
-    if not idx or idx < 0 then return false end
-    r.MB(TITLE .. " is docked.\n\nUndock it (drag it out, or use its window "
-         .. "menu), then click this again.", "CP View", 0)
-    return true
+    return idx ~= nil and idx >= 0
 end
 
 local function askHost()
-    local h = r.JS_Window_Find(TITLE, true)
-    if not h then
-        r.MB("Could not find the " .. TITLE .. " window.", "CP View", 0)
-        return
-    end
-    if refuseIfDocked(h) then return end
     if currentView() then
         -- Un hote tient deja la bande : lui demander de changer de contenu.
         -- Relancer son action ferait une BASCULE, donc rendrait l'arrangeur si
         -- par hasard il affichait deja ce qu'on veut — d'ou le test plus haut.
+        --
+        -- On ne cherche PAS la fenetre ici. L'hote la connait mieux que nous :
+        -- s'il l'a masquee en changeant de vue, il en tient la poignee, alors
+        -- qu'un JS_Window_Find sur une fenetre masquee est un pari que la
+        -- documentation ne couvre pas.
         r.SetExtState(HOST, "switch", TITLE, false)
         return
     end
@@ -137,8 +130,43 @@ local function askHost()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- DESAMARRER, PUIS VERIFIER QUE C'EST FAIT
+-- ---------------------------------------------------------------------------
+-- Une fenetre dockee appartient deja a quelqu'un : l'hote refuse de la prendre,
+-- et il a raison. Mais refuser en demandant a Cedric de la sortir a la main,
+-- c'est lui laisser le travail que le bouton etait cense faire.
+--
+-- `gfx.dock` n'agit que sur son propre contexte, donc on ne peut pas la
+-- desamarrer a sa place : on lui DEMANDE, par la boite aux lettres du toolkit
+-- (ExtState CP_Dock / <titre>, valeur "<dock>,<date>" — voir Core.RequestDock,
+-- qui ecrit exactement ce format ; c'est ecrit ici en clair parce qu'un bouton
+-- de vue ne charge pas tout le toolkit pour deux lignes).
+--
+-- Et on verifie le RESULTAT, pas le geste : la fenetre peut ne pas etre une
+-- fenetre du toolkit, avoir sa boucle bloquee, ou refuser. Tant que
+-- DockIsChildOfDock ne dit pas -1, on n'a rien obtenu.
+local function undockThenAsk(h)
+    if not isDocked(h) then askHost() return end
+    r.SetExtState("CP_Dock", TITLE,
+                  string.format("%d,%.6f", 0, r.time_precise()), false)
+    local deadline = r.time_precise() + UNDOCK_MAX
+    local function poll()
+        if not isDocked(h) then askHost() return end
+        if r.time_precise() > deadline then
+            r.MB(TITLE .. " is docked and did not undock itself.\n\nDrag it out "
+                 .. "of the docker (or use its window menu), then click this "
+                 .. "again.", "CP View", 0)
+            return
+        end
+        r.defer(poll)
+    end
+    r.defer(poll)
+end
+
 if fresh(SECTION, "alive", APP_STALE) then
-    askHost()
+    local h = r.JS_Window_Find(TITLE, true)
+    if h then undockThenAsk(h) else askHost() end
     return
 end
 
@@ -156,7 +184,10 @@ end
 -- main quand la fenetre est prete ; c'est son existence qu'il faut voir.
 local deadline = r.time_precise() + WAIT_MAX
 local function wait()
-    if r.JS_Window_Find(TITLE, true) then askHost() return end
+    local h = r.JS_Window_Find(TITLE, true)
+    -- Elle vient de s'ouvrir : elle a pu restaurer un etat DOCKE sauvegarde la
+    -- derniere fois. On repasse donc par le desamarrage, pas droit sur l'hote.
+    if h then undockThenAsk(h) return end
     if r.time_precise() > deadline then
         r.MB(TITLE .. " did not open within " .. math.floor(WAIT_MAX)
              .. " seconds.", "CP View", 0)
