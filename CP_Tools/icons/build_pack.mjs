@@ -17,7 +17,7 @@
 // the pack can be regenerated and reviewed like any other source artifact.
 // The output is the only thing that ships.
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,6 +26,7 @@ const ROOT = join(HERE, '..', '..')
 const ICON_DIR = join(ROOT, 'Lucide', 'lucide-main', 'icons')
 const MANIFEST = join(HERE, 'manifest.txt')
 const OUT = join(ROOT, 'CP_Toolkit', 'IconsPack.lua')
+const OUT_FULL = join(ROOT, 'CP_Toolkit', 'IconsPackFull.lua')
 
 // Flattening tolerance in SOURCE units (the viewBox is 24 wide). 0.35 keeps a
 // full-width curve under ~24 segments, which is invisible at the 4x bake.
@@ -105,14 +106,22 @@ function arc(x1, y1, rx, ry, phiDeg, fa, fs, x2, y2, out) {
 // ---------------------------------------------------------------------------
 // Path data
 // ---------------------------------------------------------------------------
-const D_TOKEN = /([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)/g
+// Sticky number matcher. The path data is scanned with a CURSOR rather than
+// pre-tokenized, because one token type cannot be recognized out of context:
+// an arc's two flags are single CHARACTERS, and the spec lets them run
+// straight into the next number. `zap` is written
+//
+//     a1.5 1.5 0 00-2.474-1.561
+//
+// where "00-2.474" is flag 0, flag 0, then -2.474 — a number-first tokenizer
+// reads it as the single number 0 and every following argument shifts by one.
+// The glyph came out as garbage and the encoder dropped it, so `zap` was the
+// one icon of 1754 that silently refused to build. A context-free tokenizer
+// cannot get this right; the scanner below asks for a flag where a flag is due.
+const NUM_RE = /-?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/y
+const isSep = (c) => c === ' ' || c === ',' || c === '\n' || c === '\r' || c === '\t'
 
 function parsePath(d) {
-    const toks = []
-    let m
-    D_TOKEN.lastIndex = 0
-    while ((m = D_TOKEN.exec(d)) !== null) toks.push(m[1] !== undefined ? m[1] : parseFloat(m[2]))
-
     const subs = []
     let pts = null, closed = false
     let x = 0, y = 0, sx = 0, sy = 0
@@ -120,6 +129,10 @@ function parsePath(d) {
     let lastCmd = ''
     let lastPrev = ''           // previous command letter, for S/T reflection
     let i = 0
+
+    const skipSep = () => { while (i < d.length && isSep(d[i])) i++ }
+    const more = () => { skipSep(); return i < d.length }
+    const atCmd = () => { skipSep(); return i < d.length && /[A-Za-z]/.test(d[i]) }
 
     const flush = () => {
         if (pts && pts.length > 1) subs.push({ closed, pts })
@@ -131,11 +144,30 @@ function parsePath(d) {
         pts = [[x, y]]
         sx = x; sy = y
     }
-    const num = () => toks[i++]
+    const num = () => {
+        skipSep()
+        NUM_RE.lastIndex = i
+        const m = NUM_RE.exec(d)
+        if (!m || m[0] === '') throw new Error(`expected a number at ${i}: ${d}`)
+        i = NUM_RE.lastIndex
+        return parseFloat(m[0])
+    }
+    const flag = () => {
+        skipSep()
+        const c = d[i]
+        if (c !== '0' && c !== '1') throw new Error(`expected an arc flag at ${i}: ${d}`)
+        i++
+        return c === '1'
+    }
 
-    while (i < toks.length) {
-        let cmd = toks[i]
-        if (typeof cmd === 'string') { i++ } else { cmd = lastCmd === 'M' ? 'L' : lastCmd === 'm' ? 'l' : lastCmd }
+    while (more()) {
+        let cmd
+        if (atCmd()) {
+            cmd = d[i]; i++
+        } else {
+            cmd = lastCmd === 'M' ? 'L' : lastCmd === 'm' ? 'l' : lastCmd
+            if (!cmd) throw new Error(`number before any command: ${d}`)
+        }
         lastCmd = cmd
         const rel = cmd >= 'a'
         const C = cmd.toUpperCase()
@@ -197,7 +229,7 @@ function parsePath(d) {
             x = ex; y = ey
         } else if (C === 'A') {
             const rx = num(), ry = num(), rot = num()
-            const fa = num() !== 0, fs = num() !== 0
+            const fa = flag(), fs = flag()
             let ex = num(), ey = num()
             if (rel) { ex += x; ey += y }
             arc(x, y, rx, ry, rot, fa, fs, ex, ey, pts)
@@ -337,13 +369,53 @@ if (!existsSync(ICON_DIR)) {
     process.exit(1)
 }
 
+// Two packs, two jobs.
+//
+//   (default)  manifest.txt -> IconsPack.lua       the CORE, loaded eagerly
+//   --full     every SVG    -> IconsPackFull.lua   the REST, loaded on demand
+//
+// The core exists because the suite calls a few dozen glyphs by name in normal
+// windows; it must be there the instant a window draws. The full pack is what
+// the icon picker browses — 920 Ko that no script should parse at startup, so
+// Icons.lua loads it only when a name it does not already have is asked for.
+// Splitting the DATA is what makes that split possible; a single pack could
+// only be all-eager or all-lazy, and both are wrong.
+const FULL = process.argv.includes('--full')
+
+// lucide file name -> Lua name: kebab-case becomes PascalCase.
+// (`a-arrow-down` -> `AArrowDown`). Digits are legal inside a Lua identifier
+// but not in front of one, hence the guard — Lucide has none today, but a
+// silently invalid pack would only show up as a syntax error in REAPER.
+function luaName(file) {
+    const n = file.split('-').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('')
+    return /^[0-9]/.test(n) ? 'N' + n : n
+}
+
 const entries = []
-for (const raw of readFileSync(MANIFEST, 'utf8').split(/\r?\n/)) {
-    const line = raw.replace(/#.*$/, '').trim()
-    if (!line) continue
-    const m = line.match(/^([A-Za-z_]\w*)\s*=\s*(\S+)$/)
-    if (!m) { console.error('bad manifest line: ' + raw); process.exit(1) }
-    entries.push({ name: m[1], file: m[2] })
+if (FULL) {
+    for (const f of readdirSync(ICON_DIR)) {
+        if (!f.endsWith('.svg')) continue
+        entries.push({ name: luaName(f.slice(0, -4)), file: f.slice(0, -4) })
+    }
+} else {
+    for (const raw of readFileSync(MANIFEST, 'utf8').split(/\r?\n/)) {
+        const line = raw.replace(/#.*$/, '').trim()
+        if (!line) continue
+        const m = line.match(/^([A-Za-z_]\w*)\s*=\s*(\S+)$/)
+        if (!m) { console.error('bad manifest line: ' + raw); process.exit(1) }
+        entries.push({ name: m[1], file: m[2] })
+    }
+}
+
+// Two files collapsing onto one Lua name would make the second silently
+// overwrite the first inside the table constructor — a loss with no message.
+const seen = new Map()
+for (const e of entries) {
+    if (seen.has(e.name)) {
+        console.error(`COLLISION ${e.name}: ${seen.get(e.name)}.svg and ${e.file}.svg`)
+        process.exit(1)
+    }
+    seen.set(e.name, e.file)
 }
 
 // Names already drawn by hand in Icons.lua keep their glyph — see manifest.txt.
@@ -355,24 +427,34 @@ const lines = []
 let count = 0, skipped = 0, points = 0
 for (const { name, file } of entries) {
     if (existing.has(name)) {
-        console.warn(`skip  ${name}: already drawn by hand in Icons.lua`)
+        if (!FULL) console.warn(`skip  ${name}: already drawn by hand in Icons.lua`)
         skipped++
         continue
     }
     const path = join(ICON_DIR, file + '.svg')
     if (!existsSync(path)) { console.error(`MISS  ${name}: no ${file}.svg`); process.exit(1) }
     const ops = encode(parseSVG(readFileSync(path, 'utf8')))
+    // A glyph that encodes to nothing is a PARSER failure, not an empty icon —
+    // Lucide ships no blank SVG. Fail loudly in both modes: the whole point of
+    // the flag-aware scanner above is that this stopped being possible.
     if (!ops.length) { console.error(`EMPTY ${name} (${file})`); process.exit(1) }
     lines.push(`    ${name} = { ${ops.join(',')} },`)
     points += ops.length
     count++
 }
 
-const out = `-- CP_Toolkit IconsPack — GENERATED, do not edit by hand.
+const out = `-- CP_Toolkit ${FULL ? 'IconsPackFull' : 'IconsPack'} — GENERATED, do not edit by hand.
 --
 -- Source: Lucide (ISC licence, see LUCIDE-LICENSE.txt), the 24x24 stroke set.
--- Rebuild:  node CP_Tools/icons/build_pack.mjs   (edit CP_Tools/icons/manifest.txt
--- to change which glyphs are embedded).
+-- Rebuild:  node CP_Tools/icons/build_pack.mjs${FULL ? ' --full' : '   (edit CP_Tools/icons/manifest.txt\n-- to change which glyphs are embedded)'}.
+--
+${FULL
+    ? `-- EVERY Lucide glyph. Loaded ON DEMAND by Icons.lua — the first name asked
+-- for that the core pack does not have pulls this file in, once. Nothing
+-- parses it at startup, which is the only reason it is allowed to be this big.`
+    : `-- The CORE: what the suite calls by name in ordinary windows, so it must be
+-- resident the instant a window draws. Everything else lives in
+-- IconsPackFull.lua and arrives only if something asks for it.`}
 --
 -- Pure DATA. Icons.lua turns each entry into a normal icon function and bakes
 -- it exactly like the hand-drawn ones, so nothing here knows about gfx.
@@ -390,5 +472,5 @@ return {
 ${lines.join('\n')}
 }
 `
-writeFileSync(OUT, out)
-console.log(`${count} glyphs, ${skipped} skipped, ${points} numbers -> ${OUT}`)
+writeFileSync(FULL ? OUT_FULL : OUT, out)
+console.log(`${count} glyphs, ${skipped} skipped, ${points} numbers -> ${FULL ? OUT_FULL : OUT}`)
