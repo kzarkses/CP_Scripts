@@ -298,7 +298,6 @@ UI.Run(function(theme)
     maybe_reload()
 
     local tb = toolbar
-    local s = tb.layout.icon_size
 
     poll_states_if_due(tb.actions)
 
@@ -445,9 +444,24 @@ UI.Run(function(theme)
             gfx.set(1, 1, 1, 1)
             gfx.blit(img.buffer, 1, 0, sx, sy, sw, sh, x, y, w, h)
         elseif action.builtin_icon and UI.Icons[action.builtin_icon] then
-            local pad = math.floor(s * 0.15 + 0.5)
+            -- Le glyphe remplit sa case, sans marge, et il la tient de
+            -- action_rect — pas de tb.layout.icon_size.
+            --
+            -- La marge de 15 % venait d'une convention de bouton, mais elle
+            -- n'a pas de sens ici : un PNG REAPER a cote remplit toute la
+            -- case, donc le glyphe paraissait plus petit ET plus flou que son
+            -- voisin. A une case de 21 px elle laissait 15 px de glyphe, la
+            -- moitie de ce que le selecteur montre — et un trait Lucide fait
+            -- 2/24 de la case, donc perdre 30 % de la case perd 30 % du trait.
+            -- Le dessin garde son propre retrait de toute facon : Lucide dessine
+            -- dans 2..22 de son carre de 24.
+            --
+            -- La taille venait de tb.layout.icon_size, que `icon_size_mode =
+            -- "theme"` rend faux : la case est calculee par icon_size_of, le
+            -- glyphe l'etait par le champ brut, et les deux divergent des que
+            -- la taille suit le theme.
             local ic = is_on and theme.colors.accent_hovered or theme.colors.text
-            UI.Icons[action.builtin_icon](x + pad, y + pad, s - pad * 2, ic[1], ic[2], ic[3], ic[4] or 1)
+            UI.Icons[action.builtin_icon](x, y, w, ic[1], ic[2], ic[3], ic[4] or 1)
         else
             -- Fallback: text glyph (first letter of action name)
             local name = Actions.GetName(action.command_id)
