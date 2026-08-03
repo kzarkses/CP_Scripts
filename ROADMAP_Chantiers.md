@@ -315,6 +315,59 @@ déjà gérer. **Zéro ligne à changer dans CP_Session.**
   une fenêtre : c'est REAPER qui peint sur la fenêtre parente. Rien ne peut le
   « recacher » — et ça devient sans objet dès qu'un panneau occupe la place.
 
+### Étape 2 — le sélecteur de vue (décidé le 2026-08-03, pas commencé)
+
+Trois boutons : **Arrange · Session · FX**. Cliquer met cette fenêtre à la place
+de l'arrangeur ; cliquer Arrange remet tout comme avant.
+
+**Ils vont dans une DEUXIÈME INSTANCE de `CP_FloatingToolbar`.** Elle n'en
+accepte qu'une aujourd'hui — c'est donc le premier travail, et il profite à
+autre chose que ce chantier.
+
+**Au démarrage on part en Arrange** (les autres applications ne tournent pas
+encore, une vue qui échoue au boot est pire qu'un clic). **Une application non
+lancée : le bouton le dit et ne fait rien** — la lancer demanderait son
+identifiant de commande, donc un registre, donc une autre fonctionnalité.
+
+**Pas besoin de plusieurs fenêtres dans la bande** : une vue = une fenêtre qui
+prend toute la place. La question des panneaux se pose ailleurs (voir ci-dessous).
+
+### ⚠️ SONDE À FAIRE : peut-on désamarrer une fenêtre de l'EXTÉRIEUR ?
+
+J'ai affirmé que non — « seule l'application peut se désamarrer, `gfx.dock`
+n'agit que sur son propre contexte ». **C'est une affirmation, pas une mesure**,
+et c'est exactement la faute qui a précédé les trois sondes de l'étape 1.
+
+Ce qu'on sait : `Dock_UpdateDockID(ident_str, whichDock)` existe et prend un
+**ident_str** — l'identifiant qu'une fenêtre déclare en s'enregistrant auprès du
+docker (`DockWindowAddEx`). Ce qu'on ignore : est-ce qu'une fenêtre `gfx` de
+ReaScript en possède un exploitable, et sous quelle forme.
+
+Trois issues, et elles changent le plan :
+1. **Ça marche** → l'hôte désamarre tout seul, rien à ajouter au toolkit.
+2. **Ça ne marche pas** → un canal partagé dans `Core.Run` (« sors du docker »,
+   adressé par titre, **avec péremption** : sans horodatage, une application
+   lancée demain obéirait à un ordre donné aujourd'hui).
+3. `JS_Window_SetParent` déplace bien la fenêtre mais **le docker garde son
+   onglet** — à vérifier aussi, parce que c'est ce que je refuse actuellement
+   dans `CP_ArrangeHost`, également sans l'avoir mesuré.
+
+### Le vrai but à terme : notre PROPRE système de docking
+
+REAPER n'accepte **qu'un élément par position de dock** (left, bottom, right,
+top). Cédric veut deux choses à gauche de l'arrangeur — le Media Explorer et le
+FX Browser côte à côte — et c'est impossible nativement.
+
+C'est **le même mécanisme que la bande** : prendre une région, la découper, y
+héberger N fenêtres. Ce que l'étape 1 a prouvé (masquer tient, l'oracle existe,
+le reparentage marche, le focus se pilote) vaut pour n'importe quelle région,
+pas seulement pour l'arrangeur. Un dock CP serait donc : une région lue chez
+REAPER, un découpage à nous, des coutures à nous.
+
+Ce qui reste à savoir avant de s'y engager : REAPER maintient-il le rectangle
+d'un DOCKER masqué comme il maintient celui de l'arrangeur ? La deuxième sonde
+répond pour l'arrangeur seulement.
+
 ---
 
 ## Où on en est (2026-08-01)
