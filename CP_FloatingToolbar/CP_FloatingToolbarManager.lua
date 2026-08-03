@@ -61,6 +61,56 @@ local function dirty()
     Persistence.RequestSave()
 end
 
+local notice, notice_until = nil, 0
+local function flash(msg)
+    notice = msg
+    notice_until = r.time_precise() + 8
+end
+
+-- ---------------------------------------------------------------------------
+-- Le lanceur d'une barre
+-- ---------------------------------------------------------------------------
+-- Une barre affichee = une ACTION de REAPER, et un fichier de script ne porte
+-- qu'une action. Afficher deux barres demande donc deux fichiers — mais pas
+-- deux copies du programme : le lanceur DIT quelle barre afficher, puis charge
+-- le seul et unique CP_FloatingToolbar.lua. Trois lignes qui ne peuvent pas
+-- diverger de ce qu'elles lancent.
+--
+-- Il est enregistre comme action dans la foulee. Sans ca le bouton n'aurait
+-- servi qu'a ecrire un fichier, et il aurait fallu aller le chercher a la main
+-- dans la liste des actions — c'est-a-dire le vrai travail, laisse a faire.
+local INSTANCE_DIR = script_path .. "Instances"
+
+local function make_launcher(tb)
+    r.RecursiveCreateDirectory(INSTANCE_DIR, 0)
+    -- Le NOM de fichier est ce que la liste des actions de REAPER affiche
+    -- (« Script: CP_Toolbar_Views.lua »), donc il prend le nom de la barre et
+    -- pas son id. L'id, lui, est dans le fichier : renommer la barre plus tard
+    -- ne casse rien, ca laisse juste un lanceur au nom d'avant.
+    local safe = (tb.name or "Toolbar"):gsub("[^%w%-_ ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if safe == "" then safe = "Toolbar" end
+    local path = INSTANCE_DIR .. "/CP_Toolbar_" .. safe .. ".lua"
+    local f = io.open(path, "wb")
+    if not f then return nil, nil end
+    f:write(
+        "-- @description CP Floating Toolbar — " .. (tb.name or "?") .. "\n" ..
+        "-- @author Cedric Pamalio\n" ..
+        "--\n" ..
+        "-- GENERE par CP_FloatingToolbarManager, bouton « Launcher action ».\n" ..
+        "-- Ce fichier ne contient aucun programme : il nomme la barre a afficher\n" ..
+        "-- puis charge CP_FloatingToolbar.lua. Une barre = une action = un\n" ..
+        "-- raccourci, et un titre de fenetre unique — ce dernier point n'est pas\n" ..
+        "-- cosmetique : le toolkit retrouve sa fenetre PAR SON TITRE.\n" ..
+        "\n" ..
+        "CP_TOOLBAR_ID = " .. string.format("%q", tb.id) .. "\n" ..
+        "dofile(reaper.GetResourcePath() ..\n" ..
+        "       \"/Scripts/CP_Scripts/CP_FloatingToolbar/CP_FloatingToolbar.lua\")\n"
+    )
+    f:close()
+    local cmd = r.AddRemoveReaScript(true, 0, path, true)
+    return path, (cmd and cmd ~= 0) and cmd or nil
+end
+
 local function refresh_search()
     search_results = Actions.Search(search_text, 200)
     search_dirty = false
@@ -110,6 +160,31 @@ local function draw_toolbar_list_section()
     -- "+ New" and the enabled toggle moved into the command bar at the top,
     -- where they belong: they act on the window's whole state, not on the list
     -- they were sitting under.
+
+    -- Le lanceur, en revanche, agit sur LA BARRE SELECTIONNEE et nulle part
+    -- ailleurs : sa place est sous la liste qui la designe.
+    local sel = data.toolbars[selected_idx]
+    if sel then
+        UI.Spacing(4)
+        if UI.Button("tb_launcher", "Launcher action for \"" .. (sel.name or "?") .. "\"",
+                     { width = 260 }) then
+            Persistence.FlushSave(data)   -- l'id doit exister sur DISQUE avant qu'on l'y pointe
+            local path, cmd = make_launcher(sel)
+            if not path then
+                flash("Could not write the launcher file. Is the Scripts folder read-only?")
+            elseif cmd then
+                flash("Registered: Script: " .. path:match("[^/\\]+$") ..
+                      "  —  bind it in Actions, or drop it on a toolbar.")
+            else
+                flash("Written: " .. path ..
+                      "  —  add it yourself in the Actions list (REAPER refused to register it).")
+            end
+        end
+        UI.SetFontCaption()
+        UI.Text("One action per toolbar — that is what lets two of them run at once.",
+                { disabled = true })
+        UI.SetFontBody()
+    end
 end
 
 local function draw_anchor_section(tb)
@@ -620,7 +695,8 @@ UI.Run(function()
         UI.EndColumns()
         UI.EndChild()
 
-        UI.AppStatus("Ctrl+drag the strip to move it · edits reach the toolbar within ~1s")
+        UI.AppStatus((notice and r.time_precise() < notice_until) and notice
+            or "Ctrl+drag the strip to move it · edits reach the toolbar within ~1s")
     end
 
     Persistence.ProcessSaveQueue(data)

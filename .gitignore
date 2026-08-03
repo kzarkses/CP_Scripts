@@ -28,3 +28,9 @@ Lucide/
 
 # Le journal de diagnostic du sampler : local, et il grossit.
 CP_Config/kitsampler.log
+
+# Les lanceurs de barre flottante, generes par le manager. Chacun ne contient
+# qu'un identifiant de barre, et cet identifiant n'existe que dans le
+# CP_Config de la machine qui l'a cree : commite ailleurs, il pointerait vers
+# une barre qui n'est pas la. Ce sont des reglages, pas du code.
+CP_FloatingToolbar/Instances/

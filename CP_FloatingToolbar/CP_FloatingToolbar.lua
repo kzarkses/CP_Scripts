@@ -19,14 +19,58 @@ local Actions     = dofile(script_path .. "Modules/Actions.lua")
 
 Persistence.Init(UI)
 
-local data    = Persistence.Load()
-local toolbar = Persistence.GetActiveToolbar(data)
+-- ---------------------------------------------------------------------------
+-- QUELLE BARRE CETTE INSTANCE AFFICHE
+-- ---------------------------------------------------------------------------
+-- Le fichier de configuration contient DEJA une liste de barres avec un id
+-- chacune. Ce qui manquait pour en afficher deux a la fois n'etait pas la
+-- donnee, c'etait l'IDENTITE : ce script prenait toujours « la barre active »
+-- et ouvrait toujours une fenetre nommee « CP Floating Toolbar ».
+--
+-- Or le toolkit retrouve SA fenetre par son TITRE (Core.SetFrameless et
+-- Core.GetHWND font JS_Window_Find(win_title, true)). Deux fenetres du meme
+-- nom, et la seconde attrape le HWND de la premiere : elle lui applique
+-- ensuite sa position, sa taille, son ancrage, son opacite et sa cle de
+-- couleur. Ce n'est pas une barre en trop, c'est une barre qui en pilote une
+-- autre — le genre de panne qu'on met une soiree a attribuer.
+--
+-- D'ou un lanceur par barre : un fichier de deux lignes qui pose
+-- CP_TOOLBAR_ID puis charge celui-ci. Chaque lanceur est une ACTION distincte,
+-- donc son propre raccourci, sa propre bascule, et un titre de fenetre unique.
+-- rawget : si un jour _G recoit un garde-fou de globales, une lecture directe
+-- leverait au lieu de rendre nil.
+local TB_ID = rawget(_G, "CP_TOOLBAR_ID")
+if type(TB_ID) ~= "string" or TB_ID == "" then TB_ID = nil end
 
-if not toolbar or #toolbar.actions == 0 then
+-- Sans id explicite on garde l'ancien comportement — « la barre active » — et
+-- l'ancien titre : l'action que Cedric a deja liee doit continuer a ouvrir
+-- exactement la meme fenetre, au meme endroit.
+local WIN_TITLE = TB_ID and ("CP Floating Toolbar " .. TB_ID) or "CP Floating Toolbar"
+
+local function pick(d)
+    if TB_ID then return Persistence.GetToolbarById(d, TB_ID) end
+    return Persistence.GetActiveToolbar(d)
+end
+
+local data    = Persistence.Load()
+local toolbar = pick(data)
+
+if not toolbar then
     r.MB(
-        "No floating toolbar configured yet.\n\nRun CP_FloatingToolbarManager to create one and add actions.",
-        "CP Floating Toolbar",
-        0
+        TB_ID
+            and ("This launcher points at toolbar id " .. TB_ID ..
+                 ", which no longer exists.\n\nOpen CP_FloatingToolbarManager and " ..
+                 "create the launcher again from the toolbar you want.")
+            or "No floating toolbar configured yet.\n\nRun CP_FloatingToolbarManager to create one and add actions.",
+        "CP Floating Toolbar", 0
+    )
+    return
+end
+if #toolbar.actions == 0 then
+    r.MB(
+        "The toolbar \"" .. (toolbar.name or "?") .. "\" has no actions yet.\n\n" ..
+        "Run CP_FloatingToolbarManager and add some.",
+        "CP Floating Toolbar", 0
     )
     return
 end
@@ -119,7 +163,7 @@ end
 -- ---------------------------------------------------------------------------
 local win_w, win_h = compute_window_size(toolbar)
 
-UI.Init("CP Floating Toolbar", win_w, win_h, {
+UI.Init(WIN_TITLE, win_w, win_h, {
     frameless    = true,
     -- topmost = false: the toolbar sits at REAPER's normal Z-order so
     -- VST UIs, dialogs and other windows can naturally appear in front
@@ -247,7 +291,7 @@ local function maybe_reload()
     last_reload = now
 
     local fresh = Persistence.Load()
-    local fresh_tb = Persistence.GetActiveToolbar(fresh)
+    local fresh_tb = pick(fresh)
     if not fresh_tb then return end
     local sig = toolbar_signature(fresh_tb)
     if sig == last_signature then return end
@@ -302,8 +346,13 @@ local drag = { active = false, start_mouse_x = 0, start_mouse_y = 0 }
 local function dirty_save()
     -- Update the on-disk file with the latest offsets so the manager
     -- (and the next launch) reflects the dragged position.
+    --
+    -- pick(), pas GetActiveToolbar : on ecrit la position dans la barre que
+    -- CETTE instance affiche. Avec deux barres a l'ecran, la seconde ecrivait
+    -- sinon ses offsets dans la premiere — deplacer l'une aurait deplace
+    -- l'autre au rechargement a chaud qui suit, dans le quart de seconde.
     local fresh = Persistence.Load()
-    local tb = Persistence.GetActiveToolbar(fresh)
+    local tb = pick(fresh)
     if not tb then return end
     tb.anchor.offset_x = toolbar.anchor.offset_x
     tb.anchor.offset_y = toolbar.anchor.offset_y
