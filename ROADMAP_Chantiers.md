@@ -315,42 +315,78 @@ déjà gérer. **Zéro ligne à changer dans CP_Session.**
   une fenêtre : c'est REAPER qui peint sur la fenêtre parente. Rien ne peut le
   « recacher » — et ça devient sans objet dès qu'un panneau occupe la place.
 
-### Étape 2 — le sélecteur de vue (décidé le 2026-08-03, pas commencé)
+### Étape 2 — le sélecteur de vue ✅ écrit le 2026-08-03
 
 Trois boutons : **Arrange · Session · FX**. Cliquer met cette fenêtre à la place
 de l'arrangeur ; cliquer Arrange remet tout comme avant.
 
-**Ils vont dans une DEUXIÈME INSTANCE de `CP_FloatingToolbar`.** Elle n'en
-accepte qu'une aujourd'hui — c'est donc le premier travail, et il profite à
-autre chose que ce chantier.
+**À faire dans REAPER** (c'est de l'installation, pas du code) : ajouter
+`CP_Tools/CP_ViewArrange.lua`, `CP_ViewSession.lua`, `CP_ViewFX.lua` à la liste
+des actions, puis créer une deuxième barre dans le manager et son lanceur
+(bouton `Launcher action for "…"`).
 
-**Au démarrage on part en Arrange** (les autres applications ne tournent pas
-encore, une vue qui échoue au boot est pire qu'un clic). **Une application non
-lancée : le bouton le dit et ne fait rien** — la lancer demanderait son
-identifiant de commande, donc un registre, donc une autre fonctionnalité.
+Ce qui a été écrit, et ce que ça a coûté de comprendre :
 
-**Pas besoin de plusieurs fenêtres dans la bande** : une vue = une fenêtre qui
-prend toute la place. La question des panneaux se pose ailleurs (voir ci-dessous).
+- **La 2ᵉ instance de `CP_FloatingToolbar` ne tenait qu'à un titre de fenêtre.**
+  La config était déjà multi-barres. Ce qui bloquait, c'est que le toolkit
+  retrouve sa fenêtre par `JS_Window_Find(win_title)` : deux barres du même nom,
+  et la seconde pilote la première. Un **lanceur par barre** (trois lignes, pose
+  `CP_TOOLBAR_ID`, charge le script) donne à chacune son action, son raccourci et
+  son titre unique. Le manager écrit et enregistre le lanceur.
+- **CP_Session et FX Constellation ne publiaient ni `alive` ni `cmd`.** La
+  convention existait (l'éditeur et le navigateur d'effets la portent) mais elles
+  n'en étaient pas — `Bus.FocusApp("CP_Session", …)` rendait toujours faux, la
+  fenêtre sous les yeux. Elles la portent maintenant.
+- **L'hôte sait changer de vue sans rendre la bande.** `want` (usage unique) dit
+  quoi héberger, `switch` demande un changement à l'instance vivante, `target`
+  publie ce qui est affiché. Faire mourir l'hôte pour en lancer un autre aurait
+  fait clignoter l'arrangeur entre les deux.
+- **Un bouton de vue n'est pas un interrupteur, c'est une destination.** Cliquer
+  Session trois fois ne doit rien faire de plus que la première fois. Relancer
+  l'hôte « pour être sûr » aurait rendu l'arrangeur, parce que sa relance est une
+  bascule.
+- **Un bug attrapé au passage :** `taken` se posait *après* le reparentage. Si
+  `SetLong` passait et `SetParent` échouait, le style n'était jamais reposé —
+  CP_Session sans barre de titre, ni déplaçable ni fermable. Le drapeau ne dit
+  pas « j'ai réussi », il dit « j'ai commencé à toucher ».
+
+**Une décision est corrigée par les faits.** Il était écrit qu'une application
+non lancée ferait un bouton qui *le dit et ne fait rien*, faute d'un registre
+d'identifiants de commande. Le registre existait (`<APP>/cmd`) ; il manquait
+deux inscrits. Le bouton **lance** l'application, attend que sa fenêtre existe,
+puis demande la bande.
 
 ### ⚠️ SONDE À FAIRE : peut-on désamarrer une fenêtre de l'EXTÉRIEUR ?
 
-J'ai affirmé que non — « seule l'application peut se désamarrer, `gfx.dock`
-n'agit que sur son propre contexte ». **C'est une affirmation, pas une mesure**,
-et c'est exactement la faute qui a précédé les trois sondes de l'étape 1.
+**La sonde est écrite : `CP_Tools/CP_DockProbe.lua`.** Elle expérimente sur sa
+propre fenêtre — aucune fenêtre de Cédric n'est touchée, et une disposition de
+docker ne se remet pas avec un Ctrl+Z.
 
-Ce qu'on sait : `Dock_UpdateDockID(ident_str, whichDock)` existe et prend un
-**ident_str** — l'identifiant qu'une fenêtre déclare en s'enregistrant auprès du
-docker (`DockWindowAddEx`). Ce qu'on ignore : est-ce qu'une fenêtre `gfx` de
-ReaScript en possède un exploitable, et sous quelle forme.
+J'ai affirmé que non — « seule l'application peut se désamarrer, `gfx.dock`
+n'agit que sur son propre contexte ». **C'était une affirmation, pas une
+mesure**, exactement la faute qui a précédé les trois sondes de l'étape 1.
+
+**La documentation retire déjà une issue sur trois.** `Dock_UpdateDockID(ident_str,
+whichDock)` est décrit comme « updates preference … to be in dock whichDock **on
+next open** » : une préférence, pas un geste — elle ne déplace pas ce qui est
+ouvert. Et la recherche complète de `ident_str` dans toute la doc du dépôt ne
+rend que `Dock_UpdateDockID`, `DockWindowAddEx` et `GetConfigWantsDock` ; rien
+ne parle d'une fenêtre `gfx`. `gfx.init` prend un **nom** et un dockstate, jamais
+un ident.
+
+`GetConfigWantsDock(ident_str)` est le pendant en **lecture** — c'est lui qui
+permet de tester un ident_str candidat sans rien modifier.
 
 Trois issues, et elles changent le plan :
 1. **Ça marche** → l'hôte désamarre tout seul, rien à ajouter au toolkit.
+   *La doc rend cette issue peu probable.*
 2. **Ça ne marche pas** → un canal partagé dans `Core.Run` (« sors du docker »,
    adressé par titre, **avec péremption** : sans horodatage, une application
    lancée demain obéirait à un ordre donné aujourd'hui).
 3. `JS_Window_SetParent` déplace bien la fenêtre mais **le docker garde son
-   onglet** — à vérifier aussi, parce que c'est ce que je refuse actuellement
-   dans `CP_ArrangeHost`, également sans l'avoir mesuré.
+   onglet** — c'est ce que `CP_ArrangeHost` refuse aujourd'hui, également sans
+   l'avoir mesuré. **C'est la question C de la sonde, et la seule dont la réponse
+   ne soit pas dans un fichier : il faut regarder le docker.**
 
 ### Le vrai but à terme : notre PROPRE système de docking
 
