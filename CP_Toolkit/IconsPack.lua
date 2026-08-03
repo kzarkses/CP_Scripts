@@ -4,6 +4,10 @@
 -- Rebuild:  node CP_Tools/icons/build_pack.mjs   (edit CP_Tools/icons/manifest.txt
 -- to change which glyphs are embedded).
 --
+-- The CORE: what the suite calls by name in ordinary windows, so it must be
+-- resident the instant a window draws. Everything else lives in
+-- IconsPackFull.lua and arrives only if something asks for it.
+--
 -- Pure DATA. Icons.lua turns each entry into a normal icon function and bakes
 -- it exactly like the hand-drawn ones, so nothing here knows about gfx.
 --

@@ -709,37 +709,48 @@ end
 --
 -- The renderer allocates nothing: it walks numeric indices of a table built
 -- once at load, and it only ever runs at bake time anyway.
+--
+-- DEUX packs, et c'est la seule chose qui rend la suite tenable. IconsPack.lua
+-- est le NOYAU : ce que les fenetres appellent par leur nom, donc present des
+-- qu'une fenetre dessine. IconsPackFull.lua contient TOUT Lucide — 1723
+-- glyphes, 930 Ko — et n'est lu que si quelqu'un demande un nom absent du
+-- noyau (voir tout en bas). Un pack unique ne pourrait etre que tout-immediat
+-- ou tout-paresseux, et les deux sont faux : le premier fait payer 176 000
+-- nombres a chaque script au demarrage, le second fait charger 930 Ko a la
+-- premiere frame de n'importe quelle fenetre.
+local function pack_icon(ops)
+    return function(x, y, size, r, g, b, a)
+        set_color(r, g, b, a)
+        local k = size / 24
+        local w = stroke_w(size)
+        local i, n = 1, #ops
+        while i < n do
+            if ops[i] == 3 then
+                sring(x + ops[i + 1] * k, y + ops[i + 2] * k, ops[i + 3] * k, w)
+                i = i + 4
+            else
+                local closed = (ops[i] == 2)
+                local cnt = ops[i + 1]
+                local b0 = i + 2
+                local ax, ay = x + ops[b0] * k, y + ops[b0 + 1] * k
+                local px, py = ax, ay
+                for j = 1, cnt - 1 do
+                    local qx = x + ops[b0 + j * 2] * k
+                    local qy = y + ops[b0 + j * 2 + 1] * k
+                    sline(px, py, qx, qy, w)
+                    px, py = qx, qy
+                end
+                if closed then sline(px, py, ax, ay, w) end
+                i = b0 + cnt * 2
+            end
+        end
+    end
+end
+
 local ok_pack, pack = pcall(dofile, module_dir .. "IconsPack.lua")
 if ok_pack and type(pack) == "table" then
     for name, ops in pairs(pack) do
-        if Icons[name] == nil then
-            Icons[name] = function(x, y, size, r, g, b, a)
-                set_color(r, g, b, a)
-                local k = size / 24
-                local w = stroke_w(size)
-                local i, n = 1, #ops
-                while i < n do
-                    if ops[i] == 3 then
-                        sring(x + ops[i + 1] * k, y + ops[i + 2] * k, ops[i + 3] * k, w)
-                        i = i + 4
-                    else
-                        local closed = (ops[i] == 2)
-                        local cnt = ops[i + 1]
-                        local b0 = i + 2
-                        local ax, ay = x + ops[b0] * k, y + ops[b0 + 1] * k
-                        local px, py = ax, ay
-                        for j = 1, cnt - 1 do
-                            local qx = x + ops[b0 + j * 2] * k
-                            local qy = y + ops[b0 + j * 2 + 1] * k
-                            sline(px, py, qx, qy, w)
-                            px, py = qx, qy
-                        end
-                        if closed then sline(px, py, ax, ay, w) end
-                        i = b0 + cnt * 2
-                    end
-                end
-            end
-        end
+        if Icons[name] == nil then Icons[name] = pack_icon(ops) end
     end
 end
 
@@ -910,17 +921,107 @@ end
 -- Wrap every icon present at this point. Helpers (SetFontRestorer) are
 -- excluded by name. Icons added after this block would be unbaked — add
 -- them above.
+--
+-- `raw` garde la fonction NON emballee de chaque glyphe. Le picker en a
+-- besoin : il montre des dizaines de glyphes tous differents en meme temps,
+-- et le pool de bake fait 64 emplacements — il doit pouvoir cuire dans SON
+-- pool a lui plutot que vider celui-ci a chaque frame.
+local raw = {}
+local NOT_A_GLYPH = {
+    SetFontRestorer = true, ReloadOverrides = true,
+    AllNames = true, BakeInto = true,
+}
 do
-    local NO_BAKE = { SetFontRestorer = true }
     local names = {}
     for name, fn in pairs(Icons) do
-        if type(fn) == "function" and not NO_BAKE[name] then
+        if type(fn) == "function" and not NOT_A_GLYPH[name] then
             names[#names + 1] = name
         end
     end
     for _, name in ipairs(names) do
+        raw[name] = Icons[name]
         Icons[name] = bake_wrap(name, Icons[name])
     end
+end
+
+-- ============================================================================
+-- TOUT LUCIDE, MAIS SEULEMENT SI ON LE DEMANDE
+-- ============================================================================
+-- IconsPackFull.lua fait 930 Ko et 176 000 nombres. Le faire lire par chaque
+-- script au demarrage coute cher sur la machine cible ; ne jamais l'avoir
+-- coute les 1666 glyphes que le noyau n'embarque pas. D'ou le compromis : le
+-- fichier est lu a la PREMIERE demande d'un nom que la table n'a pas, ce qui
+-- arrive quand on ouvre le selecteur d'icones ou qu'une barre reference un
+-- glyphe rare. Un geste de l'utilisateur, une fois par session, jamais dans
+-- une frame de dessin.
+--
+-- Un nom mal orthographie declenche donc la lecture, puis rend nil comme
+-- avant. C'est le prix, il est paye une seule fois : `full_loaded` reste vrai
+-- meme si le fichier manque, sinon chaque miss retenterait un dofile.
+local full_loaded = false
+local all_names = nil
+
+local function load_full()
+    if full_loaded then return end
+    full_loaded = true
+    local ok, full = pcall(dofile, module_dir .. "IconsPackFull.lua")
+    if not (ok and type(full) == "table") then return end
+    for name, ops in pairs(full) do
+        -- rawget : le noyau et les glyphes dessines a la main gagnent. Certains
+        -- d'entre eux sont PLEINS (les triangles de transport) et se lisent
+        -- mieux que le contour Lucide aux 14 px d'une case de session.
+        if rawget(Icons, name) == nil then
+            local fn = pack_icon(ops)
+            raw[name] = fn
+            rawset(Icons, name, bake_wrap(name, fn))
+        end
+    end
+end
+
+setmetatable(Icons, {
+    __index = function(t, k)
+        if full_loaded then return nil end
+        load_full()
+        return rawget(t, k)
+    end,
+})
+
+-- Tous les noms de glyphes, tries. Force la lecture du pack complet : c'est
+-- exactement le geste pour lequel elle existe. La liste est mise en cache
+-- parce que le picker la redemande a chaque frame.
+function Icons.AllNames()
+    load_full()
+    if all_names then return all_names end
+    all_names = {}
+    for name, fn in pairs(Icons) do
+        if type(fn) == "function" and not NOT_A_GLYPH[name] then
+            all_names[#all_names + 1] = name
+        end
+    end
+    table.sort(all_names)
+    return all_names
+end
+
+-- Cuire un glyphe dans un buffer FOURNI, au lieu du pool interne. Le picker
+-- affiche une grille de ~96 glyphes visibles ; le pool en tient 64, donc il se
+-- viderait et recuirait tout a chaque frame. Le picker a deja un pool LRU de
+-- 300 emplacements pour ses vignettes PNG — celui-ci lui laisse y mettre aussi
+-- les glyphes dessines, et les deux sources deviennent la meme chose : un
+-- buffer qu'on blit.
+--
+-- Rend true si le glyphe existe (le buffer contient alors une image
+-- size x size), false sinon.
+function Icons.BakeInto(buf, name, size, r, g, b, a)
+    local fn = raw[name]
+    if not fn then
+        local _ = Icons[name]   -- declenche la charge paresseuse si besoin
+        fn = raw[name]
+    end
+    if not fn then return false end
+    local isize = floor(size + 0.5)
+    if isize < 2 then return false end
+    bake_icon(buf, name, isize, fn, r, g, b, a or 1)
+    return true
 end
 
 -- Rescan the IconOverrides folder and rebake everything (call after adding
