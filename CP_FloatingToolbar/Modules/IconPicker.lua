@@ -141,30 +141,50 @@ function IconPicker.NewState()
         target = nil,       -- the action being edited (or anything you want to remember)
         search = "",
         source = "native",  -- "native" (REAPER's PNGs) or "cp" (the toolkit pack)
+        filt = nil,         -- cached search result, see Draw
+        filt_sig = nil,     -- what `filt` was built from
         on_pick = nil,      -- function(filename) called when user clicks an icon
         on_pick_cp = nil,   -- function(icon_name) for a toolkit glyph
         on_clear = nil,     -- optional, called when "Clear" is pressed
     }
 end
 
--- The toolkit's own glyphs, listed once. They are DRAWN, not loaded: no image
--- buffer, no LRU pool, and they take the colour they are asked for — which is
--- why a CP glyph follows the theme and a REAPER PNG cannot.
-local cp_names = nil
+-- The toolkit's own glyphs. Icons.AllNames() forces the full Lucide pack in —
+-- ~1780 names instead of the ~110 the core carries — which is precisely the
+-- gesture that load is waiting for: opening the picker is a user action, not a
+-- draw frame. A `pairs(UI.Icons)` here would only ever see the core, because
+-- the rest is behind a metatable until something asks for it.
 local IP_SEARCH_OPTS = { hint = "Filter (play, mixer, fx…)" }
 
-local function ensure_cp_list()
-    if cp_names then return cp_names end
-    cp_names = {}
-    local skip = { Init = true, SetLog = true, Set = true,
-                   ReloadOverrides = true, SetFontRestorer = true }
-    for k, v in pairs(UI.Icons) do
-        if type(v) == "function" and not skip[k] then
-            cp_names[#cp_names + 1] = k
-        end
+-- A CP glyph is DRAWN, not loaded, so it could be rendered straight into the
+-- grid. It must not be: the toolkit's bake pool holds 64 entries and a grid
+-- shows ~96 different glyphs at once, so the pool would wipe and re-bake every
+-- one of them every frame. Icons.BakeInto puts the glyph in a buffer WE own —
+-- the same 300-slot LRU the PNG thumbnails use — and both sources become the
+-- same thing: a buffer to blit.
+--
+-- Baked WHITE on purpose. gfx.blit modulates by gfx.r/g/b/a, so the theme
+-- colour is applied at blit time and a theme change costs nothing; baking the
+-- colour in would make the cache key depend on it and strand every entry.
+local function get_cp_thumb(name, cell)
+    local key = "cp:" .. name .. ":" .. cell
+    local cached = thumb_cache[key]
+    if cached then
+        if cached.failed then return nil end
+        lru_tick = lru_tick + 1
+        cached.lru_tick = lru_tick
+        return cached
     end
-    table.sort(cp_names)
-    return cp_names
+    local slot = alloc_slot()
+    if not slot then return nil end
+    if not UI.Icons.BakeInto(slot, name, cell, 1, 1, 1, 1) then
+        thumb_cache[key] = { failed = true }
+        return nil
+    end
+    lru_tick = lru_tick + 1
+    local entry = { buffer = slot, w = cell, h = cell, lru_tick = lru_tick }
+    thumb_cache[key] = entry
+    return entry
 end
 
 function IconPicker.Open(state, opts)
@@ -206,11 +226,12 @@ function IconPicker.Draw(state, opts)
     local height  = opts.height or 280
     local columns = opts.columns or 12
 
-    -- Two sources, one grid. REAPER's own PNGs are the big set (~1500 files
-    -- in Data/toolbar_icons) and they are what a REAPER user already knows;
-    -- the toolkit's glyphs are ~110, they are DRAWN rather than loaded, and
-    -- they take the theme's colour. Neither replaces the other, so the picker
-    -- offers both instead of choosing for you.
+    -- Two sources, one grid. REAPER's own PNGs are the big set (~3500 files in
+    -- Data/toolbar_icons) and they are what a REAPER user already knows; the
+    -- toolkit's glyphs are the whole of Lucide, ~1780, DRAWN rather than
+    -- loaded — so they stay crisp at any size and take the theme's colour,
+    -- neither of which a 30x30 PNG can do. Neither set replaces the other, so
+    -- the picker offers both instead of choosing for you.
     local cp = (state.source == "cp")
     UI.BeginBar("ip_bar")
     UI.BarRight()
@@ -237,19 +258,30 @@ function IconPicker.Draw(state, opts)
     UI.EndBar()
     UI.Spacing(4)
 
-    -- Filter
-    local list = cp and ensure_cp_list() or ensure_list()
+    -- Filter. Kept between frames: the search runs over ~3500 names and built
+    -- a fresh table on EVERY frame while the text was unchanged, which is an
+    -- allocation per frame in a draw path for a result that cannot have moved.
+    -- It only rebuilds when the source or the query actually changes.
+    local list = cp and UI.Icons.AllNames() or ensure_list()
     local q = state.search:lower()
-    local filtered = {}
+    -- #list is in the signature so a Rescan that changes the set invalidates
+    -- the cache without the module having to reach into every consumer state.
+    local sig = (cp and "cp\0" or "png\0") .. #list .. "\0" .. q
+    local filtered
     if q == "" then
         filtered = list
+        state.filt_sig, state.filt = nil, nil
+    elseif state.filt_sig == sig then
+        filtered = state.filt
     else
+        filtered = {}
         for _, f in ipairs(list) do
             if f:lower():find(q, 1, true) then
                 filtered[#filtered + 1] = f
                 if #filtered >= 600 then break end -- cap to keep UI snappy
             end
         end
+        state.filt_sig, state.filt = sig, filtered
     end
 
     UI.TextColored(("%d match%s"):format(#filtered, #filtered == 1 and "" or "es"),
@@ -282,24 +314,22 @@ function IconPicker.Draw(state, opts)
         -- The LRU pool caps at POOL_SIZE entries so big icon folders
         -- don't exhaust gfx's hard buffer cap.
         if UI.Core.IsVisible(cx, cy, cell, cell) then
-            if cp then
-                -- Drawn, not loaded: no buffer, no pool, and it takes the
-                -- colour it is asked for.
-                local draw = UI.Icons[fname]
-                local tc = UI.GetTheme().colors.text
-                if draw then draw(cx, cy, cell, tc[1], tc[2], tc[3], 1) end
-            else
-                local thumb = get_thumb(fname)
-                if thumb then
+            local thumb = cp and get_cp_thumb(fname, cell) or get_thumb(fname)
+            if thumb then
+                -- gfx.blit modulates by gfx.r/g/b/a — set it before each blit
+                -- so the prior hover/DrawRect tint doesn't dim icons. A CP
+                -- glyph is baked white, so this is also what colours it.
+                if cp then
+                    local tc = UI.GetTheme().colors.text
+                    gfx.set(tc[1], tc[2], tc[3], 1)
+                    gfx.blit(thumb.buffer, 1, 0, 0, 0, cell, cell, cx, cy, cell, cell)
+                else
                     local sx, sy, sw, sh = first_state_rect(thumb.w, thumb.h)
-                    -- gfx.blit modulates by gfx.r/g/b/a — reset before each
-                    -- blit so the prior hover/DrawRect tint doesn't dim icons.
                     gfx.set(1, 1, 1, 1)
                     gfx.blit(thumb.buffer, 1, 0, sx, sy, sw, sh, cx, cy, cell, cell)
-                else
-                    UI.Core.DrawText(fname:sub(1, 2), cx + 6, cy + 8,
-                        0.7, 0.7, 0.7, 1)
                 end
+            else
+                UI.Core.DrawText(fname:sub(1, 2), cx + 6, cy + 8, 0.7, 0.7, 0.7, 1)
             end
         end
 
