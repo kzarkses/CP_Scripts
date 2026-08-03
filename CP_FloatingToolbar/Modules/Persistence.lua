@@ -52,6 +52,13 @@ function Persistence.NewToolbar(name)
             -- with every other CP window.
             icon_size_mode = "custom",
             icon_size = 24,
+            -- La couleur des glyphes du toolkit, quand ils cotoient des PNG de
+            -- REAPER dans la meme barre. "reaper" prend l'encre mesuree sur ces
+            -- PNG, "theme" prend la couleur de texte de la suite. Le defaut est
+            -- "reaper" parce que le voisinage immediat est ce qui se voit : une
+            -- icone plus claire que ses onze voisines se lit comme une erreur
+            -- avant de se lire comme une icone.
+            builtin_ink = "reaper",   -- reaper | theme
             spacing  = 4,
             padding  = 6,             -- inner padding around icon block
             -- The ground under the icons:

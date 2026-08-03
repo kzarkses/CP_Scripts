@@ -185,6 +185,16 @@ local function draw_layout_section(tb)
         if cs then tb.layout.icon_size = ns; dirty() end
     end
 
+    -- Les glyphes du toolkit se posent a cote de PNG de REAPER, pas sur un
+    -- fond de fenetre : c'est le voisinage qui decide de leur couleur, pas le
+    -- theme. Coche par defaut ; decoche pour la couleur de texte de la suite.
+    local cp_ink = (tb.layout.builtin_ink or "reaper") == "reaper"
+    local ci, ni = UI.Checkbox("tb_builtin_ink", "CP icons use REAPER's icon grey", cp_ink)
+    if ci then
+        tb.layout.builtin_ink = ni and "reaper" or "theme"
+        dirty()
+    end
+
     local cg, ng = UI.SliderInt("tb_spacing", "Spacing", tb.layout.spacing or 4, 0, 32)
     if cg then tb.layout.spacing = ng; dirty() end
 
@@ -382,6 +392,11 @@ end
 -- edge — and everything lines up down the column whatever the names are.
 local ROW_H     = 24
 local COL_NUM_W = 24     -- "12."
+-- L'encre des icones de REAPER, mesuree sur leurs PNG — la meme valeur que
+-- REAPER_INK dans CP_FloatingToolbar.lua. Dupliquee plutot que partagee : les
+-- deux scripts ne se chargent pas l'un l'autre, et un module tiers pour deux
+-- nombres couterait plus cher a lire qu'a ecrire deux fois.
+local PREVIEW_INK = { 0.506, 0.537, 0.537 }
 local COL_ICO_W = 24     -- what this button will actually look like
 local BTN_W     = 22     -- up / down / remove
 local BTN_N     = 3
@@ -424,7 +439,12 @@ local function draw_actions_section(tb)
         local isz = ROW_H - 6
         local iy = y + 3
         if act.builtin_icon and UI.Icons[act.builtin_icon] then
-            UI.Icons[act.builtin_icon](ix, iy, isz, tc[1], tc[2], tc[3], 1)
+            -- Meme encre que la barre : la vignette repond a « de quoi ca aura
+            -- l'air », donc elle ment si elle prend la couleur de texte de la
+            -- liste pendant que la barre prend le gris de REAPER.
+            local pk = ((tb and tb.layout.builtin_ink) or "reaper") == "reaper"
+                       and PREVIEW_INK or tc
+            UI.Icons[act.builtin_icon](ix, iy, isz, pk[1], pk[2], pk[3], 1)
         else
             local img = preview_image(act)
             if img then

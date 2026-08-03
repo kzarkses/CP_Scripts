@@ -34,6 +34,24 @@ end
 -- ---------------------------------------------------------------------------
 -- Layout helpers
 -- ---------------------------------------------------------------------------
+-- L'encre des icones de REAPER, MESUREE et pas devinee. Les onze icones
+-- natives de la barre de Cedric rendent toutes exactement la meme valeur, et
+-- les deux premieres cases de leur planche a trois etats donnent le repos et
+-- le survol :
+--
+--     repos   #818989      survol  #939a9a      actif  un accent (teal ici)
+--
+-- Un glyphe dessine a cote d'elles avec la couleur de TEXTE du theme ne
+-- ressemble pas a un voisin, il ressemble a une piece rapportee : le texte
+-- d'une fenetre est fait pour se lire sur un fond, une icone de barre est
+-- faite pour se poser a cote d'autres icones. D'ou une couleur a elle.
+--
+-- L'etat actif reste l'accent du THEME et pas le teal de sa planche : c'est la
+-- seule des trois valeurs qui appartient a un pack d'icones plutot qu'a
+-- REAPER, et la suite a deja une langue pour dire « ceci est allume ».
+local REAPER_INK       = { 0.506, 0.537, 0.537 }
+local REAPER_INK_HOVER = { 0.576, 0.604, 0.604 }
+
 -- The icon's box. `icon_size_mode = "theme"` ties it to the toolkit's own
 -- control height, so the floating strip grows and shrinks with the rest of the
 -- suite when the size is changed in the Theme Tweaker — which is the point:
@@ -196,6 +214,7 @@ local function toolbar_signature(tb)
         -- one that would have been nil in every existing config.
         tb.layout.padding, tb.layout.opacity or 1,
         tb.layout.icon_size_mode or "custom",
+        tb.layout.builtin_ink or "reaper",
         tb.layout.style or "panel", tb.layout.transparent and 1 or 0,
         tb.layout.bg_radius or 0, tb.layout.bg_border and 1 or 0,
         tb.layout.bg_color and table.concat(tb.layout.bg_color, ",") or "",
@@ -460,7 +479,14 @@ UI.Run(function(theme)
             -- "theme"` rend faux : la case est calculee par icon_size_of, le
             -- glyphe l'etait par le champ brut, et les deux divergent des que
             -- la taille suit le theme.
-            local ic = is_on and theme.colors.accent_hovered or theme.colors.text
+            local ic
+            if is_on then
+                ic = theme.colors.accent_hovered
+            elseif L.builtin_ink == "theme" then
+                ic = theme.colors.text
+            else
+                ic = hovered and REAPER_INK_HOVER or REAPER_INK
+            end
             UI.Icons[action.builtin_icon](x, y, w, ic[1], ic[2], ic[3], ic[4] or 1)
         else
             -- Fallback: text glyph (first letter of action name)
